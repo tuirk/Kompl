@@ -1,0 +1,8 @@
+# Force LF line endings for shell scripts so they run on Linux containers
+# regardless of git's core.autocrlf setting on Windows hosts.
+*.sh text eol=lf
+
+# Force LF for Dockerfiles and yml so docker build is consistent across hosts.
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

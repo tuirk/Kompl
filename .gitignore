@@ -1,0 +1,52 @@
+# Node / Next.js
+node_modules/
+.next/
+dist/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Data volumes (gitignored — Docker mounts these)
+data/db/
+data/raw/
+data/pages/
+data/vectors/
+data/wiki-content/
+data/n8n/
+data/sources.db
+
+# Env files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docusaurus build
+wiki/.docusaurus/
+wiki/build/
+
+# Logs
+*.log
+npm-debug.log*
