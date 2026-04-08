@@ -1,28 +1,53 @@
-# Kompl v2 — placeholder docker-compose.
+# Kompl v2 — docker-compose (commit 2).
 #
-# This file is a SCAFFOLD only. It declares the four services by name with
-# alpine:latest placeholders so `docker compose config` parses. Real images,
-# build contexts, ports, volumes, env vars, and healthchecks land in build
-# step 2 of the v2 plan, after the SQLite schema migration script exists.
+# At this commit only the `app` service is real. `nlp-service`, `n8n`, and
+# `wiki` remain alpine placeholders; they become real in commits 3 (nlp +
+# n8n) and 11 (wiki / Docusaurus).
 #
-# See:
-#   - docs/prd/ for the product spec
-#   - CLAUDE.md "Non-negotiable architecture rules (v2)" for the constraints
-#   - C:\Users\tuana\.claude\plans\snoopy-moseying-eagle.md for the build order
+# CRITICAL — architecture rule #1 storage substrate:
+#   kompl.db lives on a NAMED DOCKER VOLUME, never a Windows host bind
+#   mount. SQLite WAL fcntl locks do not pass through the Docker Desktop
+#   for Windows filesystem bridge (9P/SMB) and silently diverge. Verified
+#   2026-04-08 — SQLite's own "Appropriate Uses" page still recommends an
+#   HTTP-gateway pattern for multi-process access. See CLAUDE.md rule #1.
 #
-# Architecture rule #1 (single-writer SQLite) means only the `app` service
-# will mount /data/db with write access in step 2. Every other service talks
-# to SQLite through HTTP calls to `app`.
+# Single-writer enforcement:
+#   Only `app` mounts /data/db for write. Future services (nlp-service,
+#   n8n) read the DB exclusively over HTTP via /api/* routes. The
+#   migration script runs in-container before Node forks — PID-level
+#   single-writer guarantee.
 
 services:
   app:
-    image: alpine:latest
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      DB_PATH: /data/db/kompl.db
+      NODE_ENV: production
+    volumes:
+      - kompl-data:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -q -O - http://localhost:3000/api/health | grep -q '\"status\":\"ok\"' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   nlp-service:
     image: alpine:latest
+    # Placeholder — becomes real in commit 3 (Firecrawl + MarkItDown converter).
 
   n8n:
     image: alpine:latest
+    # Placeholder — becomes real in commit 3 (ingest workflow orchestration).
 
   wiki:
     image: alpine:latest
+    # Placeholder — becomes real in commit 11 (Docusaurus static wiki).
+
+volumes:
+  kompl-data:
+  n8n-data:

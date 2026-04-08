@@ -1,0 +1,32 @@
+name: Integration test
+
+# Architecture rule #6: the integration test gates every commit from
+# commit 2 onward. TODO stages are fine; REAL stages must stay green.
+# See scripts/integration-test.sh for the 11-stage harness.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run integration test
+        run: bash scripts/integration-test.sh
+        env:
+          # Commit 2 doesn't need real API keys — stages 2-10 are TODO
+          # and stage 1 only exercises DB migration + health check.
+          # When stages flip to real in later commits, they will need
+          # these values and will be set via GitHub Secrets at that time.
+          DB_PATH: /data/db/kompl.db
