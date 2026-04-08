@@ -1,0 +1,6 @@
+# Kompl v2 nlp-service — commit 3 (conversion only). Pins per docs/research/2026-04-08-conversion-deps.md.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+httpx==0.27.2
+markitdown[all]==0.1.5

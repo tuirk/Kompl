@@ -1,21 +1,30 @@
-# Kompl v2 — docker-compose (commit 2).
+# Kompl v2 — docker-compose (commit 3).
 #
-# At this commit only the `app` service is real. `nlp-service`, `n8n`, and
-# `wiki` remain alpine placeholders; they become real in commits 3 (nlp +
-# n8n) and 11 (wiki / Docusaurus).
+# Three real services + one placeholder:
+#   - app         (Next.js 16 + better-sqlite3 single-writer, commit 2)
+#   - nlp-service (FastAPI + Firecrawl + MarkItDown, commit 3)
+#   - n8n         (ingest orchestration, Sidecar pattern, commit 3)
+#   - wiki        (Docusaurus — placeholder until commit 11)
 #
 # CRITICAL — architecture rule #1 storage substrate:
 #   kompl.db lives on a NAMED DOCKER VOLUME, never a Windows host bind
 #   mount. SQLite WAL fcntl locks do not pass through the Docker Desktop
 #   for Windows filesystem bridge (9P/SMB) and silently diverge. Verified
 #   2026-04-08 — SQLite's own "Appropriate Uses" page still recommends an
-#   HTTP-gateway pattern for multi-process access. See CLAUDE.md rule #1.
+#   HTTP-gateway pattern for multi-process access.
 #
 # Single-writer enforcement:
-#   Only `app` mounts /data/db for write. Future services (nlp-service,
-#   n8n) read the DB exclusively over HTTP via /api/* routes. The
-#   migration script runs in-container before Node forks — PID-level
-#   single-writer guarantee.
+#   Only `app` writes to kompl.db. nlp-service and n8n share the same
+#   `kompl-data` volume for FILE access (raw markdown + uploads) but
+#   NEVER open kompl.db directly. The nlp-service does not mount /data/db
+#   in a read-write way — it only needs /data/raw/ for uploaded file paths.
+#
+# Sidecar pattern (CLAUDE.md rule #3):
+#   Browser → Next.js (/api/ingest/*) → Next.js → n8n webhook (internal
+#   network) → n8n → nlp-service (internal network) → n8n → Next.js
+#   (/api/sources/store, internal network). n8n port 5678 is exposed for
+#   developer convenience (n8n UI); do NOT expose it this way in prod.
+#   See docs/research/2026-04-08-commit-3-architecture.md.
 
 services:
   app:
@@ -27,8 +36,15 @@ services:
     environment:
       DB_PATH: /data/db/kompl.db
       NODE_ENV: production
+      # Internal DNS name of the n8n service on the compose network.
+      N8N_URL: http://n8n:5678
     volumes:
       - kompl-data:/data
+    depends_on:
+      n8n:
+        condition: service_started
+      nlp-service:
+        condition: service_started
     healthcheck:
       test: ["CMD", "sh", "-c", "wget -q -O - http://localhost:3000/api/health | grep -q '\"status\":\"ok\"' || exit 1"]
       interval: 10s
@@ -37,12 +53,62 @@ services:
       start_period: 30s
 
   nlp-service:
-    image: alpine:latest
-    # Placeholder — becomes real in commit 3 (Firecrawl + MarkItDown converter).
+    build:
+      context: ./nlp-service
+      dockerfile: Dockerfile
+    environment:
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # Shared file access to /data/raw so MarkItDown can read uploads
+      # that Next.js wrote. Does NOT include write access to /data/db/kompl.db
+      # — rule #1. (Docker compose named volumes are shared read-write by
+      # default; the enforcement is at the code layer: nlp-service never
+      # opens kompl.db, verified by the absence of sqlite imports in the
+      # router files.)
+      - kompl-data:/data
+    # Dev-only host port so you can curl the conversion routes directly
+    # during debugging. Remove in production.
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   n8n:
-    image: alpine:latest
-    # Placeholder — becomes real in commit 3 (ingest workflow orchestration).
+    image: n8nio/n8n:2.15.0
+    entrypoint: ["/auto-import.sh"]
+    environment:
+      # Task runner — both timeouts MUST be set explicitly in n8n 2.x
+      # because the per-request default dropped from 300s to 60s with
+      # the 2.0 task runner changes. See docs/research/2026-04-08-n8n-2x.md.
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_RUNNERS_TASK_TIMEOUT: "300"
+      N8N_RUNNERS_TASK_REQUEST_TIMEOUT: "300"
+      # Block Code-node access to process.env so API keys must flow
+      # through credentials files (commit 3 does not use Code nodes for
+      # any logic, but we set this defensively per rule #3).
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      # Binary data on the shared volume so nlp-service can read uploads.
+      N8N_DEFAULT_BINARY_DATA_MODE: "filesystem"
+      GENERIC_TIMEZONE: "UTC"
+      # Pass the Firecrawl key in case future workflows need it via
+      # credentials files (commit 3 uses nlp-service for Firecrawl).
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - kompl-data:/data
+      - ./n8n/auto-import.sh:/auto-import.sh:ro
+      - ./n8n/workflows:/workflows:ro
+    # Dev-only host port for the n8n UI. Do NOT expose in production —
+    # n8n should be reachable only on the internal Docker network behind
+    # Next.js's /api/ingest/* routes. See
+    # docs/research/2026-04-08-commit-3-architecture.md.
+    ports:
+      - "5678:5678"
 
   wiki:
     image: alpine:latest

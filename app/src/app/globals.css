@@ -1,0 +1,127 @@
+/* Kompl v2 — minimal dark-friendly base styles. Karpathy-gist vibe. */
+
+:root {
+  color-scheme: dark light;
+  --bg: #0b0f14;
+  --bg-card: #131a22;
+  --bg-card-hover: #1a232e;
+  --fg: #e6edf3;
+  --fg-muted: #8899a6;
+  --fg-dim: #5b6a78;
+  --border: #1f2937;
+  --border-hover: #2a3947;
+  --accent: #58a6ff;
+  --accent-dim: #3b7dd8;
+  --success: #3fb950;
+  --danger: #f85149;
+  --warning: #d29922;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+  margin: 0;
+  padding: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  cursor: pointer;
+  font: inherit;
+  background: var(--accent);
+  color: #ffffff;
+  border: none;
+  padding: 0.55em 1.1em;
+  border-radius: 6px;
+  font-weight: 500;
+}
+button:hover {
+  background: var(--accent-dim);
+}
+button:disabled {
+  background: var(--fg-dim);
+  cursor: not-allowed;
+}
+
+textarea,
+input[type='text'],
+input[type='file'] {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55em 0.75em;
+  width: 100%;
+}
+textarea:focus,
+input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+article {
+  max-width: 760px;
+}
+article h1 {
+  font-size: 2em;
+  margin-top: 0;
+  line-height: 1.2;
+}
+article h2,
+article h3 {
+  line-height: 1.3;
+  margin-top: 1.5em;
+}
+article p {
+  line-height: 1.65;
+}
+article code {
+  background: var(--bg-card);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.92em;
+  font-family: ui-monospace, 'Cascadia Code', 'Fira Code', Consolas, monospace;
+}
+article pre {
+  background: var(--bg-card);
+  padding: 1em;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+article pre code {
+  background: transparent;
+  padding: 0;
+}
+article blockquote {
+  border-left: 3px solid var(--border-hover);
+  margin-left: 0;
+  padding-left: 1em;
+  color: var(--fg-muted);
+}
+article table {
+  border-collapse: collapse;
+}
+article th,
+article td {
+  border: 1px solid var(--border);
+  padding: 0.4em 0.7em;
+}
+article img {
+  max-width: 100%;
+}

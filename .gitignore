@@ -31,6 +31,9 @@ data/sources.db
 .env.local
 .env.*.local
 
+# Test fixtures (local-only sample files for commit 3 file-upload verification)
+test-fixtures/
+
 # IDE
 .vscode/
 .idea/
