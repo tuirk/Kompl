@@ -53,3 +53,7 @@ wiki/build/
 # Logs
 *.log
 npm-debug.log*
+.gitnexus
+
+# Claude Code project memory (local only)
+.claude/
