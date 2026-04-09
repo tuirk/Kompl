@@ -7,7 +7,7 @@ import sys
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -105,6 +105,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
 """
 
 
+MIGRATION_V2_SQL = """
+ALTER TABLE sources ADD COLUMN compile_status TEXT DEFAULT 'pending';
+ALTER TABLE sources ADD COLUMN compile_attempts INTEGER DEFAULT 0;
+ALTER TABLE sources ADD COLUMN compile_next_eligible_at DATETIME;
+"""
+
+MIGRATION_V2_INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_sources_compile_status ON sources(compile_status);
+"""
+
+
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
@@ -128,8 +139,26 @@ def migrate():
 
     print(f"Migrating database to version {SCHEMA_VERSION}...")
 
-    conn.executescript(SCHEMA_SQL)
-    conn.executescript(FTS_SQL)
+    if current < 1:
+        conn.executescript(SCHEMA_SQL)
+        conn.executescript(FTS_SQL)
+
+    if current < 2:
+        print("  applying migration v2 (compile_status columns)...")
+        # ALTER TABLE is not idempotent — check if columns already exist first.
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(sources)").fetchall()
+        }
+        for stmt in MIGRATION_V2_SQL.strip().split(";"):
+            stmt = stmt.strip()
+            if not stmt:
+                continue
+            # Extract column name from "ALTER TABLE sources ADD COLUMN <name> ..."
+            col_name = stmt.split("ADD COLUMN")[1].strip().split()[0]
+            if col_name not in existing_cols:
+                conn.execute(stmt)
+        conn.executescript(MIGRATION_V2_INDEXES_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

@@ -275,6 +275,228 @@ export function insertActivity(args: InsertActivityArgs): number {
  * canonical format before comparing. `datetime('2026-04-08T13:51:27.000Z')`
  * → `'2026-04-08 13:51:27'`, then the comparison works correctly.
  */
+// ============================================================================
+// Page writes (sync, used inside Phase 2 transactions for compile commit)
+// ============================================================================
+
+export interface InsertPageArgs {
+  page_id: string;
+  title: string;
+  page_type: string;
+  category: string | null;
+  summary: string | null;
+  content_path: string;
+  previous_content_path: string | null;
+}
+
+/**
+ * Upsert a page row. On conflict (same page_id), update all fields and bump
+ * last_updated + source_count. Called inside db.transaction() — no await.
+ */
+export function insertPage(args: InsertPageArgs): void {
+  openDb()
+    .prepare(
+      `INSERT INTO pages
+         (page_id, title, page_type, category, summary, content_path,
+          previous_content_path, source_count)
+       VALUES
+         (@page_id, @title, @page_type, @category, @summary, @content_path,
+          @previous_content_path, 1)
+       ON CONFLICT(page_id) DO UPDATE SET
+         title                 = excluded.title,
+         page_type             = excluded.page_type,
+         category              = excluded.category,
+         summary               = excluded.summary,
+         content_path          = excluded.content_path,
+         previous_content_path = excluded.previous_content_path,
+         last_updated          = CURRENT_TIMESTAMP,
+         source_count          = source_count + 1`
+    )
+    .run(args);
+}
+
+/**
+ * Fetch one page row by id. Used by /page/[page_id] server component.
+ */
+export interface PageRow {
+  page_id: string;
+  title: string;
+  page_type: string;
+  category: string | null;
+  summary: string | null;
+  content_path: string;
+  previous_content_path: string | null;
+  last_updated: string;
+  source_count: number;
+  created_at: string;
+}
+
+export function getPage(pageId: string): PageRow | null {
+  const row = openDb()
+    .prepare(
+      `SELECT page_id, title, page_type, category, summary, content_path,
+              previous_content_path, last_updated, source_count, created_at
+         FROM pages WHERE page_id = ?`
+    )
+    .get(pageId) as PageRow | undefined;
+  return row ?? null;
+}
+
+// ============================================================================
+// Provenance writes (sync)
+// ============================================================================
+
+export interface InsertProvenanceArgs {
+  source_id: string;
+  page_id: string;
+  content_hash: string;
+  contribution_type: string;
+}
+
+export function insertProvenance(args: InsertProvenanceArgs): void {
+  openDb()
+    .prepare(
+      `INSERT INTO provenance (source_id, page_id, content_hash, contribution_type)
+       VALUES (@source_id, @page_id, @content_hash, @contribution_type)`
+    )
+    .run(args);
+}
+
+// ============================================================================
+// Page file storage (gzipped to /data/pages/<page_id>.md.gz)
+// The write (version-archiving) is done by nlp-service/services/file_store.py
+// before the transaction. This helper reads from that location.
+// ============================================================================
+
+export function pagesFilePath(pageId: string): string {
+  return path.join(DATA_ROOT, 'pages', `${pageId}.md.gz`);
+}
+
+/**
+ * Read and decompress a compiled wiki page. Used by /page/[page_id] server
+ * component. Returns null if the file is missing.
+ */
+export function readPageMarkdown(pageId: string): string | null {
+  const filePath = pagesFilePath(pageId);
+  if (!fs.existsSync(filePath)) return null;
+  const gzipped = fs.readFileSync(filePath);
+  return zlib.gunzipSync(gzipped).toString('utf-8');
+}
+
+// ============================================================================
+// Compile status helpers (sync)
+// ============================================================================
+
+/**
+ * Atomically claim one pending source for compilation.
+ * Sets compile_status='in_progress' for a single row that is:
+ *   - compile_status = 'pending'
+ *   - compile_next_eligible_at IS NULL OR <= now  (datetime() on both sides per rule #5)
+ * Returns the source_id of the claimed row, or null if nothing is eligible.
+ *
+ * The LIMIT 1 + single-writer pattern prevents double-processing even if two
+ * callers race — only one UPDATE wins because better-sqlite3 is sync.
+ */
+export function claimCompileSource(): string | null {
+  const db = openDb();
+  // Fetch first eligible row
+  const row = db
+    .prepare(
+      `SELECT source_id FROM sources
+         WHERE compile_status = 'pending'
+           AND (compile_next_eligible_at IS NULL
+                OR datetime(compile_next_eligible_at) <= datetime('now'))
+         ORDER BY date_ingested ASC
+         LIMIT 1`
+    )
+    .get() as { source_id: string } | undefined;
+
+  if (!row) return null;
+
+  // Mark it in_progress atomically.
+  db.prepare(
+    `UPDATE sources
+       SET compile_status = 'in_progress'
+       WHERE source_id = ? AND compile_status = 'pending'`
+  ).run(row.source_id);
+
+  return row.source_id;
+}
+
+/**
+ * Mark a source as successfully compiled. Called inside Phase 2 transaction.
+ */
+export function markCompileSuccess(sourceId: string, pageId: string): void {
+  openDb()
+    .prepare(
+      `UPDATE sources
+         SET compile_status = 'compiled',
+             compile_attempts = compile_attempts + 1
+         WHERE source_id = ?`
+    )
+    .run(sourceId);
+  void pageId; // pageId stored in provenance; not duplicated on sources row
+}
+
+/**
+ * Mark a source compile attempt as failed. Increments compile_attempts and
+ * sets compile_next_eligible_at to an exponential backoff (2^attempts minutes).
+ * After 5 attempts, sets compile_status = 'failed' permanently.
+ *
+ * Timestamp gotcha (CLAUDE.md rule #5): both sides of time comparisons on
+ * compile_next_eligible_at must use datetime() — see claimCompileSource above.
+ */
+export function markCompileFailed(sourceId: string): void {
+  const db = openDb();
+  const row = db
+    .prepare(
+      `SELECT compile_attempts FROM sources WHERE source_id = ?`
+    )
+    .get(sourceId) as { compile_attempts: number } | undefined;
+
+  if (!row) return;
+
+  const attempts = (row.compile_attempts ?? 0) + 1;
+  if (attempts >= 5) {
+    db.prepare(
+      `UPDATE sources
+         SET compile_status = 'failed',
+             compile_attempts = ?
+         WHERE source_id = ?`
+    ).run(attempts, sourceId);
+  } else {
+    // Exponential backoff: 2^attempts minutes
+    const delayMinutes = Math.pow(2, attempts);
+    db.prepare(
+      `UPDATE sources
+         SET compile_status = 'pending',
+             compile_attempts = ?,
+             compile_next_eligible_at = datetime('now', '+' || ? || ' minutes')
+         WHERE source_id = ?`
+    ).run(attempts, delayMinutes, sourceId);
+  }
+}
+
+/**
+ * Get one pending compile-eligible source row. Used by the drain poller to
+ * check existence before claiming (the claim is done in claimCompileSource).
+ */
+export function getPendingCompile(): SourceRow | null {
+  const row = openDb()
+    .prepare(
+      `SELECT source_id, title, source_type, source_url, content_hash,
+              file_path, status, date_ingested, metadata
+         FROM sources
+         WHERE compile_status = 'pending'
+           AND (compile_next_eligible_at IS NULL
+                OR datetime(compile_next_eligible_at) <= datetime('now'))
+         ORDER BY date_ingested ASC
+         LIMIT 1`
+    )
+    .get() as SourceRow | undefined;
+  return row ?? null;
+}
+
 export function getRecentActivity(since: string | null, limit = 100): ActivityRow[] {
   const db = openDb();
   if (since) {

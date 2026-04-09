@@ -179,7 +179,29 @@ export async function POST(request: Request) {
   }
 
   // ---- Phase 3: fire-and-forget ----
-  // (none in commit 3; vector upsert in commit 6, activity broadcast in commit 7)
+  // Trigger compile via n8n webhook. Non-blocking — if n8n is unreachable,
+  // log the failure and continue. The compile-drain poller (every 10s) will
+  // pick up sources that slipped through here. Belt-and-suspenders.
+  const n8nUrl = process.env.N8N_URL ?? 'http://n8n:5678';
+  fetch(`${n8nUrl}/webhook/compile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_id: validated.source_id }),
+    signal: AbortSignal.timeout(5_000),
+  }).catch((err: unknown) => {
+    // Log to activity so the user can see the trigger failed, but don't
+    // surface this to the caller — the poller recovers it.
+    const message = err instanceof Error ? err.message : 'unknown';
+    try {
+      insertActivity({
+        action_type: 'compile_trigger_failed',
+        source_id: validated.source_id,
+        details: { error: message },
+      });
+    } catch {
+      // Swallow — if we can't write to activity either, we can't do much.
+    }
+  });
 
   return NextResponse.json(
     {

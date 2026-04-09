@@ -1,4 +1,4 @@
-# Kompl v2 — docker-compose (commit 3).
+# Kompl v2 — docker-compose (commit 4).
 #
 # Three real services + one placeholder:
 #   - app         (Next.js 16 + better-sqlite3 single-writer, commit 2)
@@ -63,6 +63,14 @@ services:
     environment:
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
       PYTHONUNBUFFERED: "1"
+      # Commit 4: LLM compile. google-genai SDK reads GEMINI_API_KEY.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Rate limiter: 800 RPM = 80% of tier-1 cap (1000 RPM). Set lower if on free tier.
+      GEMINI_RPM: ${GEMINI_RPM:-800}
+      # Input truncation: 128,000 chars ≈ 32,000 tokens (1 token/4 chars).
+      GEMINI_INPUT_TOKEN_CAP: ${GEMINI_INPUT_TOKEN_CAP:-128000}
+      # Daily $ cost ceiling. nlp-service raises CostCeilingError when exceeded.
+      GEMINI_DAILY_USD_CAP: ${GEMINI_DAILY_USD_CAP:-5.00}
     volumes:
       # Shared file access to /data/raw so MarkItDown can read uploads
       # that Next.js wrote. Does NOT include write access to /data/db/kompl.db

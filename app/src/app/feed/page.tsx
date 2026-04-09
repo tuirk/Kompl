@@ -25,9 +25,10 @@ interface ActivityRow {
 interface SourceState {
   source_id: string;
   latest_id: number;
-  status: 'queued' | 'ready' | 'failed' | 'unknown';
+  status: 'queued' | 'ready' | 'compiled' | 'failed' | 'unknown';
   timestamp: string;
   title: string | null;
+  page_id: string | null;
   error: string | null;
 }
 
@@ -53,11 +54,15 @@ function mergeStates(existing: Map<string, SourceState>, rows: ActivityRow[]): M
       details && typeof details.title === 'string' ? (details.title as string) : (prev?.title ?? null);
     const error =
       details && typeof details.error === 'string' ? (details.error as string) : (prev?.error ?? null);
+    const page_id =
+      details && typeof details.page_id === 'string' ? (details.page_id as string) : (prev?.page_id ?? null);
 
     let status: SourceState['status'] = prev?.status ?? 'unknown';
     if (row.action_type === 'ingest_accepted') status = 'queued';
     else if (row.action_type === 'source_stored') status = 'ready';
+    else if (row.action_type === 'source_compiled') status = 'compiled';
     else if (row.action_type === 'ingest_failed') status = 'failed';
+    else if (row.action_type === 'compile_failed') status = 'failed';
 
     next.set(row.source_id, {
       source_id: row.source_id,
@@ -65,6 +70,7 @@ function mergeStates(existing: Map<string, SourceState>, rows: ActivityRow[]): M
       status,
       timestamp: row.timestamp,
       title,
+      page_id,
       error,
     });
   }
@@ -79,7 +85,8 @@ function formatTime(iso: string): string {
 
 const STATUS_STYLES: Record<SourceState['status'], { color: string; label: string }> = {
   queued: { color: 'var(--warning)', label: 'queued' },
-  ready: { color: 'var(--success)', label: 'ready' },
+  ready: { color: 'var(--warning)', label: 'indexing…' },
+  compiled: { color: 'var(--success)', label: 'compiled' },
   failed: { color: 'var(--danger)', label: 'failed' },
   unknown: { color: 'var(--fg-muted)', label: 'unknown' },
 };
@@ -202,7 +209,11 @@ export default function FeedPage() {
                 </span>
                 <span style={{ color: style.color, fontWeight: 500 }}>{style.label}</span>
                 <span style={{ textAlign: 'right' }}>
-                  {s.status === 'ready' ? <Link href={`/source/${s.source_id}`}>View →</Link> : null}
+                  {s.status === 'compiled' && s.page_id ? (
+                    <Link href={`/page/${s.page_id}`}>View wiki page →</Link>
+                  ) : s.status === 'ready' ? (
+                    <Link href={`/source/${s.source_id}`}>View source →</Link>
+                  ) : null}
                 </span>
               </div>
             );

@@ -13,11 +13,11 @@
 #   0 = all stages passed
 #   non-zero = the failing stage's number
 #
-# Stage state at commit 3:
-#   Stage 1 — REAL (migration & schema sanity via /api/health)
-#   Stage 4 — REAL (live URL ingest end-to-end via full stack), plus failure-path canary
-#             Skipped gracefully when FIRECRAWL_API_KEY is unset (CI
-#             without the secret configured).
+# Stage state at commit 4:
+#   Stage 0 — REAL (cold start: docker compose down -v + up -d --build, all 3 services healthy)
+#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=2)
+#   Stage 4 — REAL (live URL ingest + compile end-to-end), plus failure-path canary
+#             Skipped gracefully when FIRECRAWL_API_KEY or GEMINI_API_KEY is unset.
 #   All other stages — TODO.
 #
 # As real services land, each stage gets its real implementation in the same
@@ -62,11 +62,65 @@ wait_for_http_200() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage 0 — Cold start (TODO: becomes real in commit 4 when all services land)
+# Stage 0 — Cold start (REAL as of commit 4)
 # ---------------------------------------------------------------------------
+# Tears down volumes, rebuilds all images, and waits for all 3 real services
+# (app, nlp-service, n8n) to become healthy. Ensures no stale state bleeds
+# across test runs.
 stage_0_cold_start() {
-    echo "[STAGE 0] TODO: cold start (docker compose down -v + up -d --build, wait for all 4 service healthchecks)"
-    record_stage 0 TODO SKIPPED
+    echo "[STAGE 0] REAL: cold start (down -v + up -d --build)"
+
+    echo "  tearing down all containers and volumes..."
+    if ! $COMPOSE down -v >/dev/null 2>&1; then
+        echo "  WARNING: docker compose down -v returned non-zero (may be first run)"
+    fi
+
+    echo "  building and starting all services..."
+    if ! $COMPOSE up -d --build app nlp-service n8n; then
+        echo "  FAIL: docker compose up -d --build returned non-zero"
+        record_stage 0 REAL FAIL
+        return 1
+    fi
+
+    echo "  waiting for app /api/health to return 200 (up to 120s)..."
+    if ! wait_for_http_200 "http://localhost:3000/api/health" 120; then
+        echo "  FAIL: app /api/health not ready within 120s"
+        $COMPOSE logs app 2>&1 | tail -30
+        record_stage 0 REAL FAIL
+        return 1
+    fi
+
+    echo "  waiting for nlp-service /health to return 200 (up to 90s)..."
+    if ! wait_for_http_200 "http://localhost:8000/health" 90; then
+        echo "  FAIL: nlp-service /health not ready within 90s"
+        $COMPOSE logs nlp-service 2>&1 | tail -30
+        record_stage 0 REAL FAIL
+        return 1
+    fi
+
+    # n8n readiness: wait until the ingest webhook activates (same probe as stage 4)
+    echo "  waiting for n8n ingest webhook to activate (up to 120s)..."
+    local elapsed=0
+    local code="000"
+    while [ $elapsed -lt 120 ]; do
+        code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "content-type: application/json" -d '{}' \
+            "http://localhost:5678/webhook/ingest" 2>/dev/null || echo "000")
+        if [ "$code" = "200" ] || [ "$code" = "202" ]; then
+            break
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    if [ $elapsed -ge 120 ]; then
+        echo "  FAIL: n8n ingest webhook did not activate within 120s (last code: $code)"
+        $COMPOSE logs n8n 2>&1 | tail -30
+        record_stage 0 REAL FAIL
+        return 1
+    fi
+
+    echo "  PASS"
+    record_stage 0 REAL PASS
     return 0
 }
 
@@ -111,8 +165,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":1'; then
-        echo "  FAIL: schema_version != 1"
+    if ! echo "$response" | grep -q '"schema_version":2'; then
+        echo "  FAIL: schema_version != 2"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -164,7 +218,7 @@ stage_3_demo_seed_http() {
 # the stage skips gracefully with a note — CI without the Firecrawl secret
 # should see SKIPPED, not FAIL.
 stage_4_live_ingest() {
-    echo "[STAGE 4] REAL: live ingest end-to-end (commit 3)"
+    echo "[STAGE 4] REAL: live ingest + compile end-to-end (commit 4)"
 
     if [ -z "${FIRECRAWL_API_KEY:-}" ]; then
         echo "  SKIP: FIRECRAWL_API_KEY not set. Set it in .env or export it to run this stage."
@@ -297,6 +351,61 @@ stage_4_live_ingest() {
         echo "  $source_response"
         record_stage 4 REAL FAIL
         return 1
+    fi
+
+    echo "  happy path: ingest stored PASS"
+
+    # -----------------------------------------------------------------------
+    # Sub-test: compile assertion
+    # -----------------------------------------------------------------------
+    # Skipped gracefully when GEMINI_API_KEY is not set (CI without the key).
+    if [ -z "${GEMINI_API_KEY:-}" ]; then
+        echo "  SKIP: GEMINI_API_KEY not set — skipping compile assertion"
+    else
+        echo "  polling /api/activity for source_compiled (up to 120s)..."
+        elapsed=0
+        local compiled=0
+        local page_id=""
+        while [ $elapsed -lt 120 ]; do
+            local compile_activity
+            compile_activity=$(curl -sf "http://localhost:3000/api/activity?since=$since&limit=200" 2>/dev/null || echo "")
+            if echo "$compile_activity" | grep -q "\"source_id\":\"$source_id\"" \
+               && echo "$compile_activity" | grep -q '"action_type":"source_compiled"'; then
+                compiled=1
+                # Extract page_id from details JSON (no jq — use grep/sed)
+                page_id=$(echo "$compile_activity" | grep -o '"page_id":"[^"]*"' | head -1 | sed 's/"page_id":"//;s/"//')
+                break
+            fi
+            if echo "$compile_activity" | grep -q "\"source_id\":\"$source_id\"" \
+               && echo "$compile_activity" | grep -q '"action_type":"compile_failed"'; then
+                echo "  FAIL: compile_failed in activity for source_id $source_id"
+                echo "  $compile_activity"
+                record_stage 4 REAL FAIL
+                return 1
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+        if [ $compiled -ne 1 ]; then
+            echo "  FAIL: source_compiled did not appear in activity within 120s"
+            $COMPOSE logs nlp-service 2>&1 | tail -30
+            record_stage 4 REAL FAIL
+            return 1
+        fi
+        echo "  source_compiled PASS (page_id: $page_id)"
+
+        if [ -n "$page_id" ]; then
+            echo "  verifying /page/$page_id renders (200 + title)..."
+            local page_response
+            page_response=$(curl -sf "http://localhost:3000/page/$page_id" 2>/dev/null || echo "")
+            if ! echo "$page_response" | grep -qi '<h1'; then
+                echo "  FAIL: /page/$page_id did not return an <h1> element"
+                echo "  response (first 500 chars): ${page_response:0:500}"
+                record_stage 4 REAL FAIL
+                return 1
+            fi
+            echo "  wiki page render PASS"
+        fi
     fi
 
     echo "  happy path PASS"
@@ -433,7 +542,7 @@ stage_10_concurrency() {
 # ---------------------------------------------------------------------------
 main() {
     echo "=== Kompl v2 integration test ==="
-    echo "Commit 3 state: stages 1 and 4 REAL, rest TODO."
+    echo "Commit 4 state: stages 0, 1, 4 REAL; compile assertion in stage 4 requires GEMINI_API_KEY."
     echo
 
     stage_0_cold_start
