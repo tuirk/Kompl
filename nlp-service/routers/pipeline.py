@@ -1,17 +1,20 @@
-"""Pipeline router for Kompl v2 nlp-service (commit 4).
+"""Pipeline router for Kompl v2 nlp-service (commits 4 + 11).
 
-Commit 4 endpoint:
-  POST /pipeline/compile-simple
-    Request:  {source_id: str, markdown: str}
-    Response: CompileResponse (title, page_type, category, summary, body, entities)
+Endpoints:
+  POST /pipeline/compile-simple  (commit 4)
+    Compile raw markdown → structured wiki page via Gemini.
 
-The compile-simple endpoint is a thin wrapper around llm_client.compile_source().
-All rate limiting, cost tracking, and truncation live in llm_client.py — this
-router is responsible only for HTTP transport (422 on bad input, 429 on rate
-limit, 503 on cost ceiling, 500 on LLM error).
+  POST /pipeline/lint-scan  (commit 11)
+    Lightweight LLM call: scan page summaries for contradictions.
+    Called by /api/wiki/lint-pass (Next.js) during the lint operation.
+    Best-effort — rate limit / cost ceiling errors return empty results
+    rather than HTTP errors, so the lint pass never fails because of LLM budget.
 
-Commit 10 will add /pipeline/extract, /pipeline/resolve, /pipeline/draft for
-the full multi-pass Karpathy pipeline. Those are NOT in scope here — thin slice.
+  POST /pipeline/compile-entity-stub  (commit 12/Tier-2 bridge)
+    Lightweight LLM call: write a minimal stub page for a single entity/concept.
+    Called by Phase 3 of /api/compile/commit for each entity extracted during compile.
+    Uses max_output_tokens=1024 and thinking_budget=0 (no chain-of-thought needed).
+    Replaced at commit 10 when the full multi-layer NLP pipeline lands.
 
 This router NEVER opens kompl.db. rule #1 in CLAUDE.md.
 """
@@ -23,10 +26,15 @@ from pydantic import BaseModel, ConfigDict
 
 from services.llm_client import (
     CompileResponse,
+    Contradiction,
     CostCeilingError,
+    EntityStubResponse,
+    LintScanResponse,
     LLMCompileError,
     LLMRateLimitedError,
+    compile_entity_stub,
     compile_source,
+    lint_scan,
 )
 
 router = APIRouter(tags=["pipeline"])
@@ -43,11 +51,6 @@ class CompileSimpleRequest(BaseModel):
 def pipeline_compile_simple(req: CompileSimpleRequest) -> CompileResponse:
     """Compile a source's raw markdown into structured wiki content via Gemini.
 
-    Truncation, rate limiting, and cost tracking are handled inside
-    llm_client.compile_source(). This endpoint is idempotent — re-compiling
-    the same source_id returns a new result (the caller decides whether to
-    overwrite the existing page via version-preserving write_page()).
-
     HTTP 429 when rate limit bucket is full.
     HTTP 503 when daily cost ceiling is exceeded.
     HTTP 500 when the LLM call fails or the JSON response cannot be parsed.
@@ -58,5 +61,58 @@ def pipeline_compile_simple(req: CompileSimpleRequest) -> CompileResponse:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
         raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+    except LLMCompileError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+class EntityStubRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    name: str
+    entity_type: str
+
+
+@router.post("/pipeline/compile-entity-stub", response_model=EntityStubResponse)
+def pipeline_compile_entity_stub(req: EntityStubRequest) -> EntityStubResponse:
+    """Write a minimal stub page for a single entity/concept extracted during compile.
+
+    Cheaper than compile-simple: max_output_tokens=1024, thinking_budget=0.
+    Called by Phase 3 of /api/compile/commit for each entity in compileResult.entities.
+
+    HTTP 429 when rate limit bucket is full (caller falls back to empty stub).
+    HTTP 503 when daily cost ceiling is exceeded.
+    HTTP 500 when the LLM call fails or the JSON response cannot be parsed.
+    """
+    try:
+        return compile_entity_stub(req.name, req.entity_type)
+    except LLMRateLimitedError as e:
+        raise HTTPException(status_code=429, detail="llm_rate_limited") from e
+    except CostCeilingError as e:
+        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+    except LLMCompileError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+class LintScanRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    pages: list[str]  # list of "[page_id] title: summary" strings
+
+
+@router.post("/pipeline/lint-scan", response_model=LintScanResponse)
+def pipeline_lint_scan(req: LintScanRequest) -> LintScanResponse:
+    """Scan page summaries for contradictions via Gemini.
+
+    Best-effort: rate limit and cost ceiling errors return an empty
+    contradictions list rather than raising HTTP errors. The caller
+    (lint-pass) wraps this in a try/catch anyway.
+    """
+    if not req.pages:
+        return LintScanResponse(contradictions=[])
+    try:
+        return lint_scan(req.pages)
+    except (LLMRateLimitedError, CostCeilingError):
+        # Lint is low-priority — skip rather than fail
+        return LintScanResponse(contradictions=[])
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

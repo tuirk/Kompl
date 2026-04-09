@@ -191,6 +191,7 @@
       "name": "HTTP: Log Failure",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
       "position": [1240, 480]
     }
   ],

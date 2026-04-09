@@ -1,0 +1,35 @@
+# Node
+app/node_modules/
+app/.next/
+wiki/node_modules/
+wiki/.docusaurus/
+wiki/build/
+
+# Python
+nlp-service/.venv/
+nlp-service/venv/
+**/__pycache__/
+**/*.pyc
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Data volumes (mounted at runtime, never baked into image)
+data/
+
+# Dev/test artifacts
+test-fixtures/
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.github/
+
+# Env
+.env
+.env.local

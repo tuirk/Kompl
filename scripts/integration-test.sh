@@ -292,7 +292,7 @@ stage_4_live_ingest() {
     # Extract source_id from the response using grep + sed. CI doesn't have
     # jq; avoid the dep. Response shape: {"accepted":1,"source_ids":["uuid"]}
     local source_id
-    source_id=$(echo "$ingest_response" | grep -o '"source_ids":\[[^]]*\]' | grep -o '[a-f0-9-]\{36\}' | head -1)
+    source_id=$(echo "$ingest_response" | grep -o '"source_ids":\[[^]]*\]' | grep -Eo '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1)
     if [ -z "$source_id" ]; then
         echo "  FAIL: could not extract source_id from ingest response"
         record_stage 4 REAL FAIL

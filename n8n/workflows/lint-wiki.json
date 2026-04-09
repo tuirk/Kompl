@@ -1,31 +1,47 @@
 {
-  "id": "kompl-compile-source",
-  "name": "compile-source",
+  "id": "kompl-lint-wiki",
+  "name": "lint-wiki",
   "active": true,
   "nodes": [
     {
       "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "path": "lint",
         "httpMethod": "POST",
-        "path": "compile",
         "responseMode": "onReceived",
-        "responseCode": 202,
         "options": {}
       },
-      "id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
-      "name": "Webhook Trigger",
+      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "name": "Webhook: Manual Trigger",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [240, 300],
-      "webhookId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e"
+      "position": [240, 480],
+      "webhookId": "kompl-lint-manual"
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "http://app:3000/api/compile/commit",
+        "url": "http://app:3000/api/wiki/lint-pass",
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ source_id: $json.body.source_id }) }}",
+        "jsonBody": "={}",
         "options": {
           "timeout": 120000,
           "response": {
@@ -35,11 +51,11 @@
           }
         }
       },
-      "id": "b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e",
-      "name": "HTTP: Compile Commit",
+      "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+      "name": "HTTP: Run Lint Pass",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [500, 300],
+      "position": [500, 380],
       "onError": "continueErrorOutput"
     },
     {
@@ -49,7 +65,7 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ action_type: 'compile_failed', source_id: $('Webhook Trigger').first().json.body.source_id, details: { workflow: 'compile-source', error: ($json.error && $json.error.message) ? $json.error.message : 'unknown_workflow_error' } }) }}",
+        "jsonBody": "={{ JSON.stringify({ action_type: 'lint_failed', source_id: null, details: { workflow: 'lint-wiki', error: ($json.error && $json.error.message) ? $json.error.message : 'lint_pass_error' } }) }}",
         "options": {
           "timeout": 10000,
           "response": {
@@ -59,27 +75,38 @@
           }
         }
       },
-      "id": "c3d4e5f6-a7b8-9c0d-1e2f-3a4b5c6d7e8f",
+      "id": "d4e5f6a7-b8c9-0123-defa-234567890123",
       "name": "HTTP: Log Failure",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "onError": "continueErrorOutput",
-      "position": [760, 480]
+      "position": [720, 520]
     }
   ],
   "connections": {
-    "Webhook Trigger": {
+    "Schedule Trigger": {
       "main": [
         [
           {
-            "node": "HTTP: Compile Commit",
+            "node": "HTTP: Run Lint Pass",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP: Compile Commit": {
+    "Webhook: Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Run Lint Pass",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Run Lint Pass": {
       "main": [
         [],
         [

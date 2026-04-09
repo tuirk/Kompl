@@ -2,12 +2,16 @@
 """Database migration runner for Kompl (ISS-002)."""
 
 import os
-import sqlite3
 import sys
+try:
+    import sqlite3
+except ImportError:
+    print("ERROR: sqlite3 not available. Use full python3, not python3-minimal.", file=sys.stderr)
+    sys.exit(1)
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -92,6 +96,7 @@ CREATE INDEX IF NOT EXISTS idx_drafts_status ON drafts(status);
 CREATE INDEX IF NOT EXISTS idx_drafts_page ON drafts(page_id);
 CREATE INDEX IF NOT EXISTS idx_activity_action ON activity_log(action_type);
 CREATE INDEX IF NOT EXISTS idx_activity_source ON activity_log(source_id);
+CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_aliases_alias ON aliases(alias);
 CREATE INDEX IF NOT EXISTS idx_aliases_page ON aliases(canonical_page_id);
 """
@@ -112,7 +117,23 @@ ALTER TABLE sources ADD COLUMN compile_next_eligible_at DATETIME;
 """
 
 MIGRATION_V2_INDEXES_SQL = """
-CREATE INDEX IF NOT EXISTS idx_sources_compile_status ON sources(compile_status);
+DROP INDEX IF EXISTS idx_sources_compile_status;
+CREATE INDEX IF NOT EXISTS idx_sources_compile_status_date ON sources(compile_status, date_ingested);
+"""
+
+MIGRATION_V3_SQL = """
+CREATE TABLE IF NOT EXISTS page_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_page_id TEXT NOT NULL REFERENCES pages(page_id),
+  target_page_id TEXT NOT NULL REFERENCES pages(page_id),
+  link_type TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+MIGRATION_V3_INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_page_links_source ON page_links(source_page_id);
+CREATE INDEX IF NOT EXISTS idx_page_links_target ON page_links(target_page_id);
 """
 
 
@@ -159,6 +180,11 @@ def migrate():
             if col_name not in existing_cols:
                 conn.execute(stmt)
         conn.executescript(MIGRATION_V2_INDEXES_SQL)
+
+    if current < 3:
+        print("  applying migration v3 (page_links table)...")
+        conn.executescript(MIGRATION_V3_SQL)
+        conn.executescript(MIGRATION_V3_INDEXES_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

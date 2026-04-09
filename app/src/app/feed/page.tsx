@@ -114,6 +114,9 @@ export default function FeedPage() {
             sinceRef.current
           );
           sinceRef.current = maxTs;
+        } else {
+          // Advance watermark on empty polls to avoid re-fetching all history.
+          sinceRef.current = new Date().toISOString();
         }
         setPollError(null);
       } catch (e) {
@@ -151,7 +154,10 @@ export default function FeedPage() {
         }}
       >
         <h1 style={{ margin: 0, fontSize: '1.8rem' }}>Processing feed</h1>
-        <Link href="/">← Add more</Link>
+        <div style={{ display: 'flex', gap: '1rem' }}>
+          <Link href="/wiki">Browse wiki →</Link>
+          <Link href="/">← Add more</Link>
+        </div>
       </header>
 
       {pollError && (
@@ -210,7 +216,7 @@ export default function FeedPage() {
                 <span style={{ color: style.color, fontWeight: 500 }}>{style.label}</span>
                 <span style={{ textAlign: 'right' }}>
                   {s.status === 'compiled' && s.page_id ? (
-                    <Link href={`/page/${s.page_id}`}>View wiki page →</Link>
+                    <Link href={`/wiki/${s.page_id}`}>View wiki page →</Link>
                   ) : s.status === 'ready' ? (
                     <Link href={`/source/${s.source_id}`}>View source →</Link>
                   ) : null}

@@ -115,12 +115,9 @@ services:
       - kompl-data:/data
       - ./n8n/auto-import.sh:/auto-import.sh:ro
       - ./n8n/workflows:/workflows:ro
-    # Dev-only host port for the n8n UI. Do NOT expose in production —
-    # n8n should be reachable only on the internal Docker network behind
-    # Next.js's /api/ingest/* routes. See
-    # docs/research/2026-04-08-commit-3-architecture.md.
+    # Dev-only: n8n UI accessible on host at 127.0.0.1:5678. Bound to loopback — not internet-accessible. Remove for production.
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
 
   wiki:
     image: alpine:latest

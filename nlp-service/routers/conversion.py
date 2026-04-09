@@ -148,7 +148,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
 
     firecrawl_body = {
         "url": req.url,
-        "formats": [{"type": "markdown"}],
+        "formats": ["markdown"],
         "onlyMainContent": True,
         "timeout": 30000,
     }
@@ -265,7 +265,7 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
     # Path safety — straight port of v1 conversion.py check. Prevents a
     # compromised n8n from asking us to read arbitrary host paths.
     p = Path(req.file_path).resolve()
-    if not str(p).startswith(_DATA_ROOT):
+    if not str(p).startswith(_DATA_ROOT + "/"):
         raise HTTPException(status_code=403, detail="path_outside_data_volume")
 
     if not p.exists():

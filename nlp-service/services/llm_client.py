@@ -1,4 +1,4 @@
-"""Gemini LLM client for Kompl v2 nlp-service (commit 4).
+"""Gemini LLM client for Kompl v2 nlp-service (commits 4 + 11).
 
 Responsibilities:
   - Wrap the google-genai SDK for structured output via Pydantic response_schema.
@@ -29,7 +29,7 @@ from typing import Any
 
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 from pyrate_limiter import Duration, InMemoryBucket, Limiter, Rate
 
 # ---------------------------------------------------------------------------
@@ -71,15 +71,14 @@ class LLMCompileError(Exception):
 
 
 class Entity(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-
+    # No extra='forbid' — google-genai rejects schemas with additionalProperties=false.
+    # These are LLM output models, not API boundary validators.
     name: str
     type: str  # PERSON | ORG | PRODUCT | CONCEPT | EVENT | LOCATION | OTHER
 
 
 class CompileResponse(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-
+    # No extra='forbid' — same reason as Entity above.
     title: str
     page_type: str    # source-summary | concept | entity | topic
     category: str
@@ -236,3 +235,182 @@ def compile_source(source_id: str, markdown: str) -> CompileResponse:
         raise LLMCompileError(f"llm_compile_error: JSON parse failed: {e}") from e
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Lint scan — contradiction detection (commit 11)
+# ---------------------------------------------------------------------------
+
+_LINT_SYSTEM_PROMPT = """\
+You are a wiki knowledge auditor. Given a list of wiki page summaries,
+identify any factual contradictions between them.
+
+A contradiction is when two pages make claims about the same subject that
+cannot both be true. Minor contradictions are subtle differences in framing
+or emphasis. Major contradictions are direct factual conflicts.
+
+Return JSON with one field:
+  contradictions — list of objects, each with:
+    page_a: id of first page (the [id] prefix in the input)
+    page_b: id of second page
+    claim:  brief description of the contradiction (1-2 sentences)
+    severity: 'minor' or 'major'
+
+If no contradictions are found, return {"contradictions": []}.
+Do not hallucinate contradictions.
+"""
+
+
+class Contradiction(BaseModel):
+    # No extra='forbid' — LLM output model.
+    page_a: str
+    page_b: str
+    claim: str
+    severity: str  # 'minor' | 'major'
+
+
+class LintScanResponse(BaseModel):
+    # No extra='forbid' — LLM output model.
+    contradictions: list[Contradiction]
+
+
+def lint_scan(pages: list[str]) -> LintScanResponse:
+    """Scan page summaries for contradictions.
+
+    pages: list of "[page_id] title: summary" formatted strings.
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — parse failure
+    """
+    if not pages:
+        return LintScanResponse(contradictions=[])
+
+    prompt = f"{_LINT_SYSTEM_PROMPT}\n\n---\n\n" + "\n\n".join(pages)
+
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("gemini")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                max_output_tokens=4096,  # lint responses are short
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"lint_scan_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        return LintScanResponse(contradictions=[])
+
+    try:
+        import json as _json
+        data = _json.loads(raw_text)
+        contras = [
+            Contradiction(
+                page_a=c.get("page_a", ""),
+                page_b=c.get("page_b", ""),
+                claim=c.get("claim", ""),
+                severity=c.get("severity", "minor"),
+            )
+            for c in data.get("contradictions", [])
+            if isinstance(c, dict)
+        ]
+        return LintScanResponse(contradictions=contras)
+    except Exception as e:
+        raise LLMCompileError(f"lint_scan_parse_failed: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Entity stub compiler — lightweight page creation (commit 12/Tier-2 bridge)
+# ---------------------------------------------------------------------------
+
+class EntityStubResponse(BaseModel):
+    """Minimal wiki stub for a single entity/concept.
+
+    No extra='forbid' — google-genai rejects additionalProperties=false
+    in response_schema (same reason as CompileResponse / LintScanResponse).
+    """
+    summary: str
+    body: str
+
+
+_ENTITY_STUB_SYSTEM_PROMPT = """\
+You are a wiki editor writing a stub page for a single named entity or concept.
+Return JSON with exactly two fields:
+  summary — 1 to 2 factual sentences about this entity. Do NOT hallucinate.
+             If you are uncertain, write a minimal placeholder like
+             "{{name}} is a notable entity in the domain of {{type}}."
+  body    — 1 short paragraph of plain markdown (no headings, no bullet lists).
+             Must be factual. Cite nothing you do not know for certain.
+"""
+
+
+def compile_entity_stub(name: str, entity_type: str) -> EntityStubResponse:
+    """Write a minimal stub page for an entity/concept extracted during compile.
+
+    Uses max_output_tokens=1024 and thinking_budget=0 (no chain-of-thought
+    needed for a 2-sentence stub) to reduce token spend vs compile_source.
+    Same rate limiter bucket and daily cost ceiling apply.
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted (caller should fall back to empty stub)
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — response parse failed
+    """
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("gemini")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+
+    prompt = (
+        f"Entity name: {name}\n"
+        f"Entity type: {entity_type}\n"
+        "Write a brief wiki stub (summary + body) as instructed."
+    )
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=_ENTITY_STUB_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=EntityStubResponse,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                max_output_tokens=1024,
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"entity_stub_llm_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        raise LLMCompileError("entity_stub_error: empty response text")
+
+    try:
+        return EntityStubResponse.model_validate_json(raw_text)
+    except Exception as e:
+        raise LLMCompileError(f"entity_stub_parse_failed: {e}") from e

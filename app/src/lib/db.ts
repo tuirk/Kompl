@@ -86,6 +86,7 @@ const EXPECTED_TABLES = [
   'aliases',
   'settings',
   'pages_fts',
+  'page_links',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -315,6 +316,45 @@ export function insertPage(args: InsertPageArgs): void {
     .run(args);
 }
 
+export interface InsertEntityStubArgs {
+  page_id: string;
+  title: string;
+  page_type: string;
+  category: string;
+  summary: string;
+  content_path: string;
+}
+
+/**
+ * Insert an entity/concept stub page created by Phase 3 entity expansion.
+ *
+ * Differs from insertPage():
+ *   - Uses ON CONFLICT DO NOTHING (never overwrites a real compiled page).
+ *   - Does NOT increment source_count (entity stubs start at 0; source_count
+ *     rises when the full pipeline compiles a dedicated entity page later).
+ *   - Also upserts pages_fts for the stub title so search finds it immediately.
+ *
+ * Safe to call outside a db.transaction() — Phase 3 is fire-and-forget.
+ */
+export function insertEntityStubPage(args: InsertEntityStubArgs): void {
+  const db = openDb();
+  db.prepare(
+    `INSERT INTO pages (page_id, title, page_type, category, summary, content_path, source_count)
+     VALUES (@page_id, @title, @page_type, @category, @summary, @content_path, 0)
+     ON CONFLICT(page_id) DO NOTHING`
+  ).run(args);
+
+  // FTS index — only index if the row was actually inserted (changes() > 0).
+  // Avoids overwriting a richer FTS entry if a real compiled page already existed.
+  const changesRow = db.prepare('SELECT changes() AS n').get() as { n: number } | null;
+  if ((changesRow?.n ?? 0) > 0) {
+    db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(args.page_id);
+    db.prepare(`INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)`).run(
+      args.page_id, args.title, args.summary
+    );
+  }
+}
+
 /**
  * Fetch one page row by id. Used by /page/[page_id] server component.
  */
@@ -399,28 +439,31 @@ export function readPageMarkdown(pageId: string): string | null {
  */
 export function claimCompileSource(): string | null {
   const db = openDb();
-  // Fetch first eligible row
-  const row = db
-    .prepare(
-      `SELECT source_id FROM sources
-         WHERE compile_status = 'pending'
-           AND (compile_next_eligible_at IS NULL
-                OR datetime(compile_next_eligible_at) <= datetime('now'))
-         ORDER BY date_ingested ASC
-         LIMIT 1`
-    )
-    .get() as { source_id: string } | undefined;
+  const claimFn = db.transaction(() => {
+    const row = db
+      .prepare(
+        `SELECT source_id FROM sources
+           WHERE compile_status = 'pending'
+             AND (compile_next_eligible_at IS NULL
+                  OR datetime(compile_next_eligible_at) <= datetime('now'))
+           ORDER BY date_ingested ASC
+           LIMIT 1`
+      )
+      .get() as { source_id: string } | undefined;
 
-  if (!row) return null;
+    if (!row) return null;
 
-  // Mark it in_progress atomically.
-  db.prepare(
-    `UPDATE sources
-       SET compile_status = 'in_progress'
-       WHERE source_id = ? AND compile_status = 'pending'`
-  ).run(row.source_id);
+    const result = db
+      .prepare(
+        `UPDATE sources
+           SET compile_status = 'in_progress'
+           WHERE source_id = ? AND compile_status = 'pending'`
+      )
+      .run(row.source_id);
 
-  return row.source_id;
+    return result.changes > 0 ? row.source_id : null;
+  });
+  return claimFn();
 }
 
 /**
@@ -495,6 +538,133 @@ export function getPendingCompile(): SourceRow | null {
     )
     .get() as SourceRow | undefined;
   return row ?? null;
+}
+
+// ============================================================================
+// Wiki index helpers (commit 11)
+// ============================================================================
+
+/** All compiled pages, newest first. Used by /wiki index and /api/pages. */
+export function getAllPages(): PageRow[] {
+  return openDb()
+    .prepare(
+      `SELECT page_id, title, page_type, category, summary, content_path,
+              previous_content_path, last_updated, source_count, created_at
+         FROM pages
+         ORDER BY last_updated DESC`
+    )
+    .all() as PageRow[];
+}
+
+export interface CategoryGroup {
+  category: string;
+  pages: PageRow[];
+}
+
+/** Pages grouped by category, each group sorted newest-first. */
+export function getCategoryGroups(): CategoryGroup[] {
+  const rows = getAllPages();
+  const map = new Map<string, PageRow[]>();
+  for (const row of rows) {
+    const cat = row.category ?? 'Uncategorized';
+    if (!map.has(cat)) map.set(cat, []);
+    map.get(cat)!.push(row);
+  }
+  return Array.from(map.entries()).map(([category, pages]) => ({ category, pages }));
+}
+
+/** FTS5 full-text search against pages_fts (title + content).
+ *
+ * Each word in the query gets a trailing * for prefix matching so that
+ * partial input like "cryp" matches "cryptocurrency". Uses parameterized
+ * binding (no string interpolation) to eliminate SQL injection risk.
+ */
+export function searchPages(query: string, limit = 20): PageRow[] {
+  const words = query.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  // Strip FTS5 special characters per word, then append * for prefix match.
+  const ftsQuery = words
+    .map((w) => w.replace(/['"*^():.,-]/g, '').trim())
+    .filter(Boolean)
+    .map((w) => `${w}*`)
+    .join(' ');
+  if (!ftsQuery.trim()) return [];
+  return openDb()
+    .prepare(
+      `SELECT p.page_id, p.title, p.page_type, p.category, p.summary,
+              p.content_path, p.previous_content_path, p.last_updated,
+              p.source_count, p.created_at
+         FROM pages_fts f
+         JOIN pages p ON p.page_id = f.page_id
+        WHERE pages_fts MATCH ?
+        ORDER BY rank
+        LIMIT ?`
+    )
+    .all(ftsQuery, limit) as PageRow[];
+}
+
+/** Pages that link TO the given page_id (backlinks). */
+export function getBacklinks(pageId: string): PageRow[] {
+  return openDb()
+    .prepare(
+      `SELECT p.page_id, p.title, p.page_type, p.category, p.summary,
+              p.content_path, p.previous_content_path, p.last_updated,
+              p.source_count, p.created_at
+         FROM page_links l
+         JOIN pages p ON p.page_id = l.source_page_id
+        WHERE l.target_page_id = ?`
+    )
+    .all(pageId) as PageRow[];
+}
+
+/** Insert a page_links row (called from compile commit when wikilinks are parsed). */
+export function insertPageLink(sourcePageId: string, targetPageId: string, linkType: 'wikilink' | 'provenance' | 'entity-ref'): void {
+  openDb()
+    .prepare(
+      `INSERT OR IGNORE INTO page_links (source_page_id, target_page_id, link_type)
+       VALUES (?, ?, ?)`
+    )
+    .run(sourcePageId, targetPageId, linkType);
+}
+
+/** Graph data for /api/wiki/graph — all pages as nodes, provenance as edges. */
+export interface GraphNode {
+  id: string;
+  label: string;
+  group: string;    // page_type
+  category: string;
+  source_count: number;
+}
+
+export interface GraphLink {
+  source: string;
+  target: string;
+  type: string;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  links: GraphLink[];
+}
+
+export function getWikiGraph(): GraphData {
+  const db = openDb();
+  const nodes = db
+    .prepare(
+      `SELECT page_id AS id, title AS label, page_type AS "group",
+              COALESCE(category, 'Uncategorized') AS category, source_count
+         FROM pages`
+    )
+    .all() as GraphNode[];
+
+  const links = db
+    .prepare(
+      `SELECT source_page_id AS source, target_page_id AS target, link_type AS type
+         FROM page_links`
+    )
+    .all() as GraphLink[];
+
+  return { nodes, links };
 }
 
 export function getRecentActivity(since: string | null, limit = 100): ActivityRow[] {

@@ -21,7 +21,7 @@ import { SourceCard } from '../components/SourceCard';
 import { useToast } from '../components/Toast';
 
 const FILE_ACCEPT =
-  '.pdf,.docx,.pptx,.xlsx,.txt,.md,.html,.htm,.csv,.json,.xml,.jpg,.jpeg,.png,.mp3,.wav';
+  '.pdf,.docx,.pptx,.xlsx,.txt,.md,.html,.htm,.jpg,.jpeg,.png,.mp3,.wav';
 
 function parseUrls(raw: string): { urls: string[]; invalid: string[] } {
   const urls: string[] = [];
@@ -167,7 +167,7 @@ export default function HomePage() {
         <SourceCard
           icon="📄"
           title="Upload a file"
-          description="PDF, DOCX, PPTX, XLSX, HTML, CSV, images, audio."
+          description="PDF, DOCX, PPTX, XLSX, HTML, images, audio."
           status="active"
         >
           <input
