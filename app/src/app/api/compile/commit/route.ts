@@ -161,10 +161,11 @@ async function callEntityStub(name: string, entityType: string): Promise<EntityS
  *
  * Replaced at commit 10 when the full multi-layer NLP pipeline lands.
  */
-// Cap entity stubs per compile. Without this, a single entity-dense article
-// (Wikipedia taxonomy, academic paper) can extract 80-100+ entities and burn
-// the daily LLM budget in one compile. Replaced at commit 10 by relevance scoring.
-const MAX_ENTITY_STUBS = 15;
+// Entity expansion is off by default — enable via settings key
+// 'entity_expansion_enabled' = '1'. Cap prevents a single entity-dense
+// article from burning the daily LLM budget. Replaced at commit 10 by
+// the multi-layer NLP pipeline with proper relevance scoring.
+const MAX_ENTITY_STUBS = 3;
 
 async function expandEntities(
   sourceSummaryPageId: string,
@@ -172,6 +173,12 @@ async function expandEntities(
   entities: Array<{ name: string; type: string }>
 ): Promise<void> {
   const db = getDb();
+
+  // Feature flag — off by default. Toggle via settings table.
+  const flagRow = db
+    .prepare(`SELECT value FROM settings WHERE key = 'entity_expansion_enabled'`)
+    .get() as { value: string } | undefined;
+  if (flagRow?.value !== '1') return;
 
   for (const entity of entities.slice(0, MAX_ENTITY_STUBS)) {
     // Entity page_ids are derived purely from the name (no random suffix) so the
