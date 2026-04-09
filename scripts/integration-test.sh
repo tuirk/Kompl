@@ -306,57 +306,64 @@ stage_4_live_ingest() {
     # -----------------------------------------------------------------------
     # Verifies the n8n workflow's per-node onError: continueErrorOutput routing
     # fires "HTTP: Log Failure" which POSTs ingest_failed to /api/activity.
-    # Uses a reserved .invalid TLD (RFC 2606) so DNS never resolves. Firecrawl
-    # fails, nlp-service /convert/url returns 504, n8n HTTP node retries 3x
-    # and then triggers the error output branch.
-    echo "  canary: POSTing unresolvable .invalid URL to /api/ingest/url..."
+    #
+    # Uses the /webhook/ingest-sync entrypoint (responseMode: lastNode) which
+    # blocks until the last node in the executed branch completes and returns
+    # its output synchronously. No polling loop, no sleep — deterministic.
+    #
+    # URL uses RFC 2606 reserved .invalid TLD. nlp-service's convert_url()
+    # short-circuits immediately (before calling Firecrawl) with a 502, so
+    # the error branch fires in <2s instead of waiting 30s for a DNS timeout.
+    #
+    # The canary source_id is generated locally (not through Next.js /api/ingest/url)
+    # because the sync webhook bypasses the Next.js front door — it's a test-only
+    # entrypoint. We generate a UUID client-side so the activity assertion can
+    # filter by that exact source_id.
+    echo "  canary: POSTing .invalid URL to n8n sync webhook (blocking)..."
+
+    local canary_source_id
+    # Generate a UUID. Works on Linux (uuidgen), macOS (uuidgen), and
+    # Git Bash on Windows (PowerShell fallback).
+    canary_source_id=$(uuidgen 2>/dev/null || \
+        powershell -Command "[guid]::NewGuid().ToString()" 2>/dev/null || \
+        python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || \
+        cat /proc/sys/kernel/random/uuid 2>/dev/null || \
+        echo "canary-$(date +%s)")
+    echo "  canary source_id: $canary_source_id"
 
     local canary_since
     canary_since=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
-    echo "  canary poll watermark: $canary_since"
 
-    local canary_response
-    canary_response=$(curl -sf -X POST \
+    # POST directly to the sync webhook. Blocks until "HTTP: Log Failure" returns.
+    # --max-time 30: hard timeout (RFC 2606 short-circuit + 3 retries × 2s wait =
+    # ~8s worst case; 30s gives plenty of headroom without the 90s sleep-loop).
+    local canary_sync_response
+    canary_sync_response=$(curl -s --max-time 30 -X POST \
         -H "content-type: application/json" \
-        -d '{"urls":["https://this-domain-does-not-exist-kompl-canary.invalid"]}' \
-        "http://localhost:3000/api/ingest/url" 2>&1)
-    if [ -z "$canary_response" ]; then
-        echo "  FAIL: canary /api/ingest/url returned empty response"
-        record_stage 4 REAL FAIL
-        return 1
-    fi
-    echo "  canary ingest response: $canary_response"
+        -d "{\"source_id\":\"$canary_source_id\",\"source_type\":\"url\",\"source_ref\":\"https://this-domain-does-not-exist-kompl-canary.invalid\"}" \
+        "http://localhost:5678/webhook/ingest-sync" 2>&1 || echo "CURL_FAILED")
 
-    local canary_source_id
-    canary_source_id=$(echo "$canary_response" | grep -o '"source_ids":\[[^]]*\]' | grep -o '[a-f0-9-]\{36\}' | head -1)
-    if [ -z "$canary_source_id" ]; then
-        echo "  FAIL: canary could not extract source_id from ingest response"
-        record_stage 4 REAL FAIL
-        return 1
-    fi
-    echo "  canary source_id: $canary_source_id"
-
-    echo "  canary: polling /api/activity for ingest_failed (up to 90s)..."
-    elapsed=0
-    local failed=0
-    while [ $elapsed -lt 90 ]; do
-        local canary_activity
-        canary_activity=$(curl -sf "http://localhost:3000/api/activity?since=$canary_since&limit=200" 2>/dev/null || echo "")
-        if echo "$canary_activity" | grep -q "\"source_id\":\"$canary_source_id\"" \
-           && echo "$canary_activity" | grep -q '"action_type":"ingest_failed"'; then
-            failed=1
-            break
-        fi
-        sleep 3
-        elapsed=$((elapsed + 3))
-    done
-    if [ $failed -ne 1 ]; then
-        echo "  FAIL: canary ingest_failed did not appear in activity within 90s"
-        echo "  (error routing regression? HTTP: Log Failure node not firing?)"
+    if [ "$canary_sync_response" = "CURL_FAILED" ]; then
+        echo "  FAIL: canary sync webhook curl timed out or failed"
+        echo "  (Is n8n running? Is the ingest-sync webhook activated?)"
         echo "  --- n8n logs ---"
-        $COMPOSE logs n8n 2>&1 | tail -40
-        echo "  --- nlp-service logs ---"
-        $COMPOSE logs nlp-service 2>&1 | tail -40
+        $COMPOSE logs n8n 2>&1 | tail -20
+        record_stage 4 REAL FAIL
+        return 1
+    fi
+    echo "  canary sync response: $canary_sync_response"
+
+    # The sync response arrived, meaning the workflow completed synchronously.
+    # Now verify the ingest_failed activity row was actually written.
+    local canary_activity
+    canary_activity=$(curl -sf "http://localhost:3000/api/activity?since=$canary_since&limit=200" 2>/dev/null || echo "")
+    if ! echo "$canary_activity" | grep -q "\"source_id\":\"$canary_source_id\"" \
+       || ! echo "$canary_activity" | grep -q '"action_type":"ingest_failed"'; then
+        echo "  FAIL: canary ingest_failed row not found in activity after sync webhook returned"
+        echo "  (HTTP: Log Failure node fired but /api/activity POST may have failed?)"
+        echo "  canary_activity: $canary_activity"
+        echo "  --- n8n logs ---"
+        $COMPOSE logs n8n 2>&1 | tail -20
         record_stage 4 REAL FAIL
         return 1
     fi

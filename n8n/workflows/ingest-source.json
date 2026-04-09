@@ -20,6 +20,21 @@
     },
     {
       "parameters": {
+        "httpMethod": "POST",
+        "path": "ingest-sync",
+        "responseMode": "lastNode",
+        "responseCode": 200,
+        "options": {}
+      },
+      "id": "f0e1d2c3-b4a5-6c7d-8e9f-0a1b2c3d4e5f",
+      "name": "Webhook Trigger (Sync)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 500],
+      "webhookId": "c2d3e4f5-a6b7-4c8d-9e0f-1a2b3c4d5e6f"
+    },
+    {
+      "parameters": {
         "mode": "rules",
         "rules": {
           "values": [
@@ -181,6 +196,17 @@
   ],
   "connections": {
     "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Switch on source_type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger (Sync)": {
       "main": [
         [
           {

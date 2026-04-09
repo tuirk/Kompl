@@ -119,10 +119,32 @@ _ALLOWED_EXTENSIONS = {
 # ---------------------------------------------------------------------------
 
 
+# RFC 2606 reserved TLDs (never valid on the public internet). Fail fast
+# before calling Firecrawl so the error branch fires in <1s instead of
+# waiting 30s for a timeout. This also makes the stage-4 integration-test
+# canary deterministic (no polling, just a blocking curl with --max-time 30).
+_RFC2606_RESERVED_TLDS = {".invalid", ".test", ".example", ".localhost"}
+
+
 @router.post("/convert/url", response_model=ConvertResponse)
 def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     if not _FIRECRAWL_API_KEY:
         raise HTTPException(status_code=500, detail="firecrawl_not_configured")
+
+    # Reject RFC 2606 reserved TLDs immediately — they never resolve on the
+    # public internet and would only waste Firecrawl quota before failing.
+    from urllib.parse import urlparse
+    parsed_host = urlparse(req.url).hostname or ""
+    tld = "." + parsed_host.rsplit(".", 1)[-1] if "." in parsed_host else ""
+    if tld.lower() in _RFC2606_RESERVED_TLDS:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "detail": "firecrawl_error",
+                "upstream_status": 0,
+                "message": f"reserved_tld: {tld} is not resolvable on the public internet",
+            },
+        )
 
     firecrawl_body = {
         "url": req.url,
