@@ -46,7 +46,11 @@ services:
       nlp-service:
         condition: service_started
     healthcheck:
-      test: ["CMD", "sh", "-c", "wget -q -O - http://localhost:3000/api/health | grep -q '\"status\":\"ok\"' || exit 1"]
+      # node is always present in node:20-slim; wget/curl are not.
+      # JSON array form avoids shell escaping. Exits 0 only on HTTP 200
+      # + {"status":"ok"} body; exits 1 on non-200, parse error, socket
+      # error, or 3s socket timeout. Docker's own timeout: 5s (outer kill).
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health',r=>{if(r.statusCode!==200)process.exit(1);let d='';r.on('data',c=>d+=c);r.on('end',()=>{try{if(JSON.parse(d).status==='ok')process.exit(0);process.exit(1)}catch{process.exit(1)}})}).on('error',()=>process.exit(1)).setTimeout(3000,()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5
