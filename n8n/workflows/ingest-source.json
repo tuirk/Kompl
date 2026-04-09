@@ -111,7 +111,7 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ source_id: $json.body.source_id, file_path: $json.body.source_ref }) }}",
+        "jsonBody": "={{ JSON.stringify({ source_id: $json.body.source_id, file_path: $json.body.source_ref, title_hint: $json.body.title_hint ?? null }) }}",
         "options": {
           "timeout": 60000,
           "response": {

@@ -79,6 +79,11 @@ class FileConvertRequest(BaseModel):
 
     source_id: str
     file_path: str
+    # Original filename before UUID-prefix was added by Next.js. Never None
+    # in practice for browser uploads; None only if an internal caller omits
+    # it. Used as the title fallback so the UUID prefix never leaks into
+    # pages.title. Treated as untrusted user input (sanitised by caller).
+    title_hint: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -264,8 +269,19 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
     if not markdown:
         raise HTTPException(status_code=422, detail="markitdown_empty_output")
 
-    # Title: prefer MarkItDown's extracted title, else the filename stem.
-    title = result.title if result.title else p.stem
+    # Title cascade (order matters):
+    #   1. MarkItDown's extracted title — present for DOCX/PPTX with core.xml
+    #      metadata; absent for PDFs (MarkItDown 0.1.5 never sets it for PDFs).
+    #   2. title_hint — original filename without extension, sent by the caller
+    #      before the UUID prefix was added. Guaranteed for browser uploads.
+    #   3. p.stem — last resort; will include the UUID prefix if title_hint
+    #      was omitted, which is the bug we're preventing.
+    # Discard obviously-junk titles from MarkItDown (Word's default filenames).
+    _JUNK_TITLE_FRAGMENTS = ("untitled", "microsoft word - ", "document1")
+    markitdown_title = result.title or ""
+    if any(frag in markitdown_title.lower() for frag in _JUNK_TITLE_FRAGMENTS):
+        markitdown_title = ""
+    title = markitdown_title or req.title_hint or p.stem
 
     content_type = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
 

@@ -62,6 +62,7 @@ async function triggerN8n(payload: {
   source_id: string;
   source_type: 'file';
   source_ref: string;
+  title_hint: string | null;
 }): Promise<void> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), N8N_TIMEOUT_MS);
@@ -133,8 +134,12 @@ export async function POST(request: Request) {
       details: { source_type: 'file', source_ref: targetPath, filename: rawName },
     });
 
+    // Derive title hint from original filename (before UUID prefix) so the
+    // UUID never leaks into pages.title via nlp-service's p.stem fallback.
+    const title_hint = path.basename(rawName, path.extname(rawName)) || null;
+
     try {
-      await triggerN8n({ source_id, source_type: 'file', source_ref: targetPath });
+      await triggerN8n({ source_id, source_type: 'file', source_ref: targetPath, title_hint });
       accepted_source_ids.push(source_id);
     } catch (e) {
       const error = e instanceof Error ? e.message : 'unknown';
