@@ -87,6 +87,7 @@ const EXPECTED_TABLES = [
   'settings',
   'pages_fts',
   'page_links',
+  'extractions',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -724,6 +725,14 @@ export function getWikiGraph(): GraphData {
   return { nodes, links };
 }
 
+/** Count of compiled wiki pages. Used by /api/compile/extract to determine wiki_exists. */
+export function getPageCount(): number {
+  const row = openDb()
+    .prepare('SELECT COUNT(*) AS n FROM pages')
+    .get() as { n: number };
+  return row.n;
+}
+
 export function getRecentActivity(since: string | null, limit = 100): ActivityRow[] {
   const db = openDb();
   if (since) {
@@ -745,4 +754,90 @@ export function getRecentActivity(since: string | null, limit = 100): ActivityRo
          LIMIT ?`
     )
     .all(limit) as ActivityRow[];
+}
+
+// ============================================================================
+// Extraction helpers (Part 2a)
+// ============================================================================
+
+export interface ExtractionRow {
+  source_id: string;
+  ner_output: string;        // JSON TEXT
+  profile: string;
+  keyphrase_output: string | null;  // JSON TEXT
+  tfidf_output: string | null;      // JSON TEXT
+  llm_output: string;        // JSON TEXT
+  created_at: string;
+}
+
+/**
+ * Upsert an extraction result for a source. ON CONFLICT replaces the row —
+ * re-running extraction on the same source overwrites the previous result.
+ */
+export function insertExtraction(data: {
+  source_id: string;
+  ner_output: object;
+  profile: string;
+  keyphrase_output: object | null;
+  tfidf_output: object | null;
+  llm_output: object;
+}): void {
+  openDb()
+    .prepare(
+      `INSERT OR REPLACE INTO extractions
+         (source_id, ner_output, profile, keyphrase_output, tfidf_output, llm_output)
+       VALUES
+         (@source_id, @ner_output, @profile, @keyphrase_output, @tfidf_output, @llm_output)`
+    )
+    .run({
+      source_id: data.source_id,
+      ner_output: JSON.stringify(data.ner_output),
+      profile: data.profile,
+      keyphrase_output: data.keyphrase_output ? JSON.stringify(data.keyphrase_output) : null,
+      tfidf_output: data.tfidf_output ? JSON.stringify(data.tfidf_output) : null,
+      llm_output: JSON.stringify(data.llm_output),
+    });
+}
+
+/** Fetch one extraction row by source_id. Returns null if not found. */
+export function getExtraction(sourceId: string): ExtractionRow | null {
+  const row = openDb()
+    .prepare(
+      `SELECT source_id, ner_output, profile, keyphrase_output, tfidf_output,
+              llm_output, created_at
+         FROM extractions
+         WHERE source_id = ?`
+    )
+    .get(sourceId) as ExtractionRow | undefined;
+  return row ?? null;
+}
+
+/** Fetch all extractions for sources belonging to a given onboarding session. */
+export function getExtractionsBySession(sessionId: string): ExtractionRow[] {
+  return openDb()
+    .prepare(
+      `SELECT e.source_id, e.ner_output, e.profile, e.keyphrase_output,
+              e.tfidf_output, e.llm_output, e.created_at
+         FROM extractions e
+         JOIN sources s ON s.source_id = e.source_id
+        WHERE s.onboarding_session_id = ?
+        ORDER BY e.created_at ASC`
+    )
+    .all(sessionId) as ExtractionRow[];
+}
+
+/**
+ * Set compile_status = 'extracted' for a source after successful extraction.
+ * Only updates rows that are in 'pending' or 'in_progress' status — safe to
+ * call idempotently.
+ */
+export function markSourceExtracted(sourceId: string): void {
+  openDb()
+    .prepare(
+      `UPDATE sources
+          SET compile_status = 'extracted'
+        WHERE source_id = ?
+          AND compile_status IN ('pending', 'in_progress')`
+    )
+    .run(sourceId);
 }

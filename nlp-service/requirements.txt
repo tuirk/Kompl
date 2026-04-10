@@ -10,3 +10,14 @@ google-genai==1.12.1
 # Commit 4: async token-bucket rate limiter. Single uvicorn worker only —
 # InMemoryBucket is process-local; see research artifact section 3.
 pyrate-limiter==3.7.0
+# Part 2a: multi-layer NLP extraction pipeline.
+spacy==3.7.6
+rake-nltk==1.0.6
+yake==0.4.8
+keybert==0.8.5
+sentence-transformers==3.3.1
+# pytextrank: spaCy-native TextRank component (PyPI-available, no git dep).
+pytextrank==3.3.0
+scikit-learn==1.5.2
+# nltk: required by rake-nltk (stopwords + punkt tokenizer data).
+nltk==3.9.1

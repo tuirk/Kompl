@@ -15,7 +15,7 @@
 #
 # Stage state at commit 4:
 #   Stage 0 — REAL (cold start: docker compose down -v + up -d --build, all 3 services healthy)
-#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=4)
+#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=5)
 #   Stage 4 — REAL (live URL ingest + compile end-to-end), plus failure-path canary
 #             Skipped gracefully when FIRECRAWL_API_KEY or GEMINI_API_KEY is unset.
 #   All other stages — TODO.
@@ -165,13 +165,13 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":4'; then
-        echo "  FAIL: schema_version != 4"
+    if ! echo "$response" | grep -q '"schema_version":5'; then
+        echo "  FAIL: schema_version != 5"
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"table_count":9'; then
-        echo "  FAIL: table_count != 9"
+    if ! echo "$response" | grep -q '"table_count":10'; then
+        echo "  FAIL: table_count != 10"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -627,17 +627,20 @@ stage_11_onboarding_api() {
     fi
     echo "  confirm queued=1 OK"
 
-    # ── Step 4: verify compile_status in DB ──────────────────────────────────
+    # ── Step 4: verify compile_status via sources API (sqlite3 not in container) ──
+    local source_response
+    source_response=$(curl -sf "http://localhost:3000/api/sources/$SOURCE_ID")
+
     local db_status
-    db_status=$(docker exec komplcore-app-1 sqlite3 /data/db/kompl.db \
-        "SELECT compile_status FROM sources WHERE source_id='$SOURCE_ID';" 2>/dev/null || echo "")
+    db_status=$(echo "$source_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('compile_status','NOT_FOUND'))" 2>/dev/null || echo "")
 
     if [ "$db_status" != "pending" ]; then
         echo "  FAIL: expected compile_status='pending', got '$db_status'"
+        echo "  source response: $source_response"
         record_stage 11 REAL FAIL
         return 1
     fi
-    echo "  DB compile_status=pending OK"
+    echo "  compile_status=pending OK"
 
     echo "  PASS"
     record_stage 11 REAL PASS
@@ -714,6 +717,173 @@ stage_12_text_connector() {
 }
 
 # ---------------------------------------------------------------------------
+# Stage 13: Twitter connector canary
+# Submits a tweet via connector='text' with source_type_hint='tweet' and
+# date metadata. Verifies via review API (sqlite3 not in container).
+# ---------------------------------------------------------------------------
+stage_13_twitter_connector() {
+    echo "[STAGE 13] REAL: twitter connector canary (tweet → collected in DB)"
+
+    local SESSION_ID
+    SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || uuidgen)
+    local TWEET_MD
+    TWEET_MD='**@testuser:**\n\nThis is a test tweet about Bitcoin\n\n[Original tweet](https://twitter.com/testuser/status/123)'
+
+    local collect_response
+    collect_response=$(curl -sf -X POST http://localhost:3000/api/onboarding/collect \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"text\",\"items\":[{\"markdown\":\"$TWEET_MD\",\"title_hint\":\"Tweet by @testuser\",\"source_type_hint\":\"tweet\",\"metadata\":{\"date_saved\":\"2026-01-15T10:30:00Z\",\"author\":\"@testuser\"}}]}")
+
+    if [ -z "$collect_response" ]; then
+        echo "  FAIL: /api/onboarding/collect returned empty response"
+        record_stage 13 REAL FAIL
+        return 1
+    fi
+
+    if ! echo "$collect_response" | grep -q "\"session_id\":\"$SESSION_ID\""; then
+        echo "  FAIL: collect response missing expected session_id"
+        record_stage 13 REAL FAIL
+        return 1
+    fi
+
+    # ── verify via review API (sqlite3 CLI not available in container) ────────
+    local review_response
+    review_response=$(curl -sf "http://localhost:3000/api/onboarding/review?session_id=$SESSION_ID")
+
+    if [ -z "$review_response" ]; then
+        echo "  FAIL: /api/onboarding/review returned empty response"
+        record_stage 13 REAL FAIL
+        return 1
+    fi
+
+    if ! echo "$review_response" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['total']==1, f'total={d[\"total\"]}'" 2>/dev/null; then
+        echo "  FAIL: review total != 1"
+        echo "  review response: $review_response"
+        record_stage 13 REAL FAIL
+        return 1
+    fi
+
+    # Verify source_type=tweet
+    local source_type
+    source_type=$(echo "$review_response" | python3 -c "import sys,json; d=json.load(sys.stdin); src=list(d['sources'].values())[0][0]; print(src['source_type'])" 2>/dev/null)
+
+    if [ "$source_type" != "tweet" ]; then
+        echo "  FAIL: source_type='$source_type', expected 'tweet'"
+        record_stage 13 REAL FAIL
+        return 1
+    fi
+
+    echo "  source_type=tweet OK"
+    echo "  PASS"
+    record_stage 13 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 14 — Extraction pipeline canary (Part 2a)
+# ---------------------------------------------------------------------------
+# Collects a URL source, confirms it to 'pending', runs /api/compile/extract,
+# and verifies that:
+#   - the response contains an 'extraction' key with 'llm_output'
+#   - the source's compile_status transitions to 'extracted'
+#
+# Skipped gracefully when GEMINI_API_KEY is unset (same pattern as stage 4).
+# ---------------------------------------------------------------------------
+stage_14_extraction() {
+    echo "[STAGE 14] REAL: extraction pipeline canary"
+
+    if [ -z "${GEMINI_API_KEY:-}" ]; then
+        echo "  SKIPPED: GEMINI_API_KEY not set"
+        record_stage 14 REAL SKIPPED
+        return 0
+    fi
+
+    local SESSION_ID
+    SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || uuidgen)
+
+    # Collect a URL source
+    local collect_response
+    collect_response=$(curl -sf -X POST http://localhost:3000/api/onboarding/collect \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"url\",\"items\":[{\"url\":\"https://example.com\"}]}")
+
+    if [ -z "$collect_response" ]; then
+        echo "  FAIL: /api/onboarding/collect returned empty response"
+        record_stage 14 REAL FAIL
+        return 1
+    fi
+
+    local SOURCE_ID
+    SOURCE_ID=$(echo "$collect_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['stored'][0]['source_id'])" 2>/dev/null)
+
+    if [ -z "$SOURCE_ID" ]; then
+        echo "  FAIL: could not parse source_id from collect response"
+        echo "  collect response: $collect_response"
+        record_stage 14 REAL FAIL
+        return 1
+    fi
+
+    # Confirm to move to pending
+    curl -sf -X POST http://localhost:3000/api/onboarding/confirm \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"selected_source_ids\":[\"$SOURCE_ID\"],\"deleted_source_ids\":[]}" > /dev/null
+
+    # Run extraction
+    echo "  running extraction for source $SOURCE_ID (Gemini call may take 30-90s)..."
+    local extract_response
+    extract_response=$(curl -sf --max-time 180 -X POST http://localhost:3000/api/compile/extract \
+        -H 'Content-Type: application/json' \
+        -d "{\"source_id\":\"$SOURCE_ID\"}")
+
+    if [ -z "$extract_response" ]; then
+        echo "  FAIL: /api/compile/extract returned empty response"
+        record_stage 14 REAL FAIL
+        return 1
+    fi
+
+    # Verify extraction key + llm_output present
+    if ! echo "$extract_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert 'extraction' in d, 'no extraction key'
+assert 'llm_output' in d['extraction'], 'no llm_output'
+assert 'summary' in d['extraction']['llm_output'], 'no summary in llm_output'
+" 2>/dev/null; then
+        echo "  FAIL: extraction response missing expected fields"
+        echo "  response: $(echo "$extract_response" | head -c 500)"
+        record_stage 14 REAL FAIL
+        return 1
+    fi
+
+    # Verify compile_status = 'extracted' via review API
+    local review_response
+    review_response=$(curl -sf "http://localhost:3000/api/onboarding/review?session_id=$SESSION_ID")
+
+    local compile_status
+    compile_status=$(echo "$review_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+sources = list(d['sources'].values())[0] if isinstance(d.get('sources'), dict) else d.get('sources', [])
+if isinstance(sources, list):
+    src = next((s for s in sources if s['source_id'] == '$SOURCE_ID'), None)
+else:
+    src = sources[0] if sources else None
+print(src['compile_status'] if src else 'NOT_FOUND')
+" 2>/dev/null)
+
+    if [ "$compile_status" != "extracted" ]; then
+        echo "  FAIL: compile_status='$compile_status', expected 'extracted'"
+        record_stage 14 REAL FAIL
+        return 1
+    fi
+
+    echo "  extraction OK, compile_status=extracted"
+    echo "  PASS"
+    record_stage 14 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -734,6 +904,8 @@ main() {
     stage_10_concurrency
     stage_11_onboarding_api
     stage_12_text_connector
+    stage_13_twitter_connector
+    stage_14_extraction
 
     echo
     echo "=== Stage summary ==="
@@ -741,7 +913,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 13 stages executed, all passed ==="
+    echo "=== All 14 stages executed, all passed ==="
     exit 0
 }
 

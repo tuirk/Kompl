@@ -414,3 +414,167 @@ def compile_entity_stub(name: str, entity_type: str) -> EntityStubResponse:
         return EntityStubResponse.model_validate_json(raw_text)
     except Exception as e:
         raise LLMCompileError(f"entity_stub_parse_failed: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Source extraction — structured knowledge extraction (Part 2a)
+# ---------------------------------------------------------------------------
+
+
+# LLM output models: no extra='forbid' — google-genai rejects additionalProperties=false
+# in response_schema (same reason as CompileResponse / LintScanResponse above).
+
+class ExtractionEntity(BaseModel):
+    name: str
+    type: str          # PERSON | ORG | PRODUCT | CONCEPT | EVENT | LOCATION | OTHER
+    mentions: list[str]
+    context: str
+
+
+class ExtractionConcept(BaseModel):
+    name: str
+    description: str
+
+
+class ExtractionClaim(BaseModel):
+    claim: str
+    confidence: str    # "stated" | "implied" | "speculative"
+    entities_involved: list[str]
+
+
+class ExtractionRelationship(BaseModel):
+    from_entity: str   # JSON key: "from_entity" (avoids Python reserved word)
+    to: str
+    type: str          # uses | competes_with | part_of | created_by | related_to | contradicts
+    description: str
+
+
+class ExtractionContradiction(BaseModel):
+    claim: str
+    against: str       # what it contradicts (if detectable from source alone)
+
+
+class LLMExtractionResponse(BaseModel):
+    """Structured extraction result from a single source document.
+
+    No extra='forbid' — google-genai rejects additionalProperties=false
+    in response_schema (consistent with all other LLM output models here).
+    """
+    entities: list[ExtractionEntity]
+    concepts: list[ExtractionConcept]
+    claims: list[ExtractionClaim]
+    relationships: list[ExtractionRelationship]
+    contradictions: list[ExtractionContradiction]
+    summary: str
+
+
+_EXTRACTION_SYSTEM_PROMPT = """\
+You are a knowledge extraction assistant. Given a source document and NLP
+extraction outputs, produce a structured analysis for a knowledge wiki.
+
+Your job is precision, not creativity. Only extract information that is
+explicitly or strongly implicitly present in the source. Do not hallucinate.
+
+Return JSON with these fields:
+1. entities      — named entities with type, mentions, and context
+   - type: PERSON | ORG | PRODUCT | CONCEPT | EVENT | LOCATION | OTHER
+   - mentions: list of exact text spans from the source
+   - context: 1-2 sentence description of this entity as discussed in the source
+2. concepts      — key concepts with descriptions
+3. claims        — specific factual claims
+   - confidence: "stated" (explicit) | "implied" (strongly suggested) | "speculative"
+   - entities_involved: list of entity/concept names from your entities/concepts lists
+4. relationships — connections between entities/concepts
+   - from_entity: name of first entity/concept
+   - to: name of second entity/concept
+   - type: uses | competes_with | part_of | created_by | related_to | contradicts
+5. contradictions — claims that contradict other sources or internal logic
+   - claim: what this source claims
+   - against: what it contradicts (leave empty string if unknown)
+6. summary       — 2-4 sentence summary of the source
+
+Keep lists focused: 5-15 entities, 3-10 concepts, 3-15 claims, 3-10 relationships.
+"""
+
+
+def extract_source(
+    source_id: str,
+    markdown: str,
+    ner_output: dict[str, Any],
+    keyphrase_output: dict[str, Any] | None,
+    tfidf_output: dict[str, Any] | None,
+) -> LLMExtractionResponse:
+    """Call Gemini 2.5 Flash to extract structured knowledge from a source.
+
+    Takes pre-computed NLP outputs (NER, keyphrases, TF-IDF) as context to
+    guide the extraction — this improves precision vs calling the LLM cold.
+
+    Args:
+        source_id:        Source identifier (used for logging only).
+        markdown:         Full source markdown (truncated to input cap).
+        ner_output:       JSON-serializable dict from /extract/ner.
+        keyphrase_output: JSON-serializable dict from keyphrase methods (may be None).
+        tfidf_output:     JSON-serializable dict from /extract/tfidf-overlap (may be None).
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted after 60s wait
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — LLM returned but JSON parse failed
+        RuntimeError         — GEMINI_API_KEY not set
+    """
+    import json as _json
+
+    if len(markdown) > _GEMINI_INPUT_TOKEN_CAP:
+        markdown = markdown[:_GEMINI_INPUT_TOKEN_CAP]
+
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("gemini")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted after max_delay")
+
+    ner_section = _json.dumps(ner_output, ensure_ascii=False)
+    keyphrase_section = _json.dumps(keyphrase_output, ensure_ascii=False) if keyphrase_output else "N/A — no keyphrase output"
+    tfidf_section = _json.dumps(tfidf_output, ensure_ascii=False) if tfidf_output else "N/A — first compile, no existing wiki pages"
+
+    prompt = (
+        f"{_EXTRACTION_SYSTEM_PROMPT}\n\n"
+        f"---\n\n"
+        f"Source ID: {source_id}\n\n"
+        f"NLP extraction results:\n"
+        f"Named entities (spaCy NER):\n{ner_section}\n\n"
+        f"Keyphrases:\n{keyphrase_section}\n\n"
+        f"TF-IDF overlap with existing wiki:\n{tfidf_section}\n\n"
+        f"---\n\n"
+        f"Source document:\n\n{markdown}"
+    )
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=LLMExtractionResponse,
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                max_output_tokens=8192,
+                temperature=0.0,
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"extract_llm_call_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        raise LLMCompileError("extract_llm_error: empty response text")
+
+    try:
+        return LLMExtractionResponse.model_validate_json(raw_text)
+    except Exception as e:
+        raise LLMCompileError(f"extract_llm_parse_failed: {e}") from e

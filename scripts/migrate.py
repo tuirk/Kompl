@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -142,6 +142,22 @@ MIGRATION_V4_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_sources_session ON sources(onboarding_session_id);
 """
 
+MIGRATION_V5_SQL = """
+CREATE TABLE IF NOT EXISTS extractions (
+  source_id TEXT PRIMARY KEY REFERENCES sources(source_id),
+  ner_output JSON NOT NULL,
+  profile TEXT NOT NULL,
+  keyphrase_output JSON,
+  tfidf_output JSON,
+  llm_output JSON NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+MIGRATION_V5_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_extractions_source ON extractions(source_id);
+"""
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -201,6 +217,11 @@ def migrate():
         if "onboarding_session_id" not in existing_cols:
             conn.execute(MIGRATION_V4_SQL)
         conn.executescript(MIGRATION_V4_INDEX_SQL)
+
+    if current < 5:
+        print("  applying migration v5 (extractions table)...")
+        conn.executescript(MIGRATION_V5_SQL)
+        conn.executescript(MIGRATION_V5_INDEX_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

@@ -6,11 +6,20 @@ Commit 4 scope: conversion + LLM compile pipeline.
   - POST /pipeline/compile-simple — Gemini structured output → wiki page fields
   - GET  /health
 
+Part 2a additions (extraction infrastructure):
+  - POST /extract/ner           — spaCy NER + entity density
+  - POST /extract/rake          — RAKE keyphrases
+  - POST /extract/keybert       — KeyBERT keyphrases
+  - POST /extract/textrank      — TextRank via pytextrank
+  - POST /extract/yake          — YAKE keyphrases
+  - POST /extract/tfidf-overlap — TF-IDF cosine similarity vs wiki corpus
+  - POST /extract/route         — profile router (pure logic)
+  - POST /pipeline/extract-llm  — Gemini structured extraction
+
 Future commits will add routers for:
-  - extraction  (commit 10 — spaCy NER, RAKE, YAKE, KeyBERT, TextRank, TopicRank)
   - embedding   (commit 6  — sentence-transformers)
   - vectors     (commit 6  — Chroma search/upsert/delete)
-  - pipeline    (commit 10 — /pipeline/extract, /pipeline/resolve, /pipeline/draft)
+  - pipeline    (commit 10 — /pipeline/resolve, /pipeline/draft)
   - wiki        (commit 12 — wiki rebuild orchestration)
 
 Intentionally minimal: no middleware, no CORS, no logging config. This
@@ -30,6 +39,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
 from routers.conversion import router as conversion_router
+from routers.extraction import router as extraction_router
 from routers.pipeline import router as pipeline_router
 from routers.storage import router as storage_router
 
@@ -42,9 +52,10 @@ class HealthResponse(BaseModel):
     status: str
 
 
-app = FastAPI(title="kompl-nlp-service", version="0.4.0")
+app = FastAPI(title="kompl-nlp-service", version="0.5.0")
 
 app.include_router(conversion_router)
+app.include_router(extraction_router)
 app.include_router(pipeline_router)
 app.include_router(storage_router)
 

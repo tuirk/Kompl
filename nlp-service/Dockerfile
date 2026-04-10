@@ -31,10 +31,18 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Part 2a: download spaCy model and NLTK corpora required by rake-nltk.
+# en_core_web_sm is ~12 MB; punkt_tab and stopwords are small.
+RUN python -m spacy download en_core_web_sm && \
+    python -m nltk.downloader stopwords punkt_tab
+
 # Copy the rest of the nlp-service source.
 COPY . /app
 
 ENV PYTHONUNBUFFERED=1
+# gitpython (pulled in by huggingface_hub/sentence-transformers) warns about
+# missing git binary on startup. Silence the message — git is not needed here.
+ENV GIT_PYTHON_REFRESH=quiet
 
 EXPOSE 8000
 

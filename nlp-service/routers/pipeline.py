@@ -1,4 +1,4 @@
-"""Pipeline router for Kompl v2 nlp-service (commits 4 + 11).
+"""Pipeline router for Kompl v2 nlp-service (commits 4 + 11 + Part 2a).
 
 Endpoints:
   POST /pipeline/compile-simple  (commit 4)
@@ -16,6 +16,12 @@ Endpoints:
     Uses max_output_tokens=1024 and thinking_budget=0 (no chain-of-thought needed).
     Replaced at commit 10 when the full multi-layer NLP pipeline lands.
 
+  POST /pipeline/extract-llm  (Part 2a)
+    Gemini 2.5 Flash structured extraction: entities, concepts, claims,
+    relationships, contradictions, summary. Called by /api/compile/extract
+    (Next.js) after NLP pre-processing (NER + keyphrase profile) is complete.
+    thinking_budget=-1 (full thinking), temperature=0 (deterministic).
+
 This router NEVER opens kompl.db. rule #1 in CLAUDE.md.
 """
 
@@ -31,9 +37,11 @@ from services.llm_client import (
     EntityStubResponse,
     LintScanResponse,
     LLMCompileError,
+    LLMExtractionResponse,
     LLMRateLimitedError,
     compile_entity_stub,
     compile_source,
+    extract_source,
     lint_scan,
 )
 
@@ -97,6 +105,43 @@ class LintScanRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     pages: list[str]  # list of "[page_id] title: summary" strings
+
+
+class ExtractLLMRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    source_id: str
+    markdown: str
+    ner_output: dict   # type: ignore[type-arg]  # JSON from /extract/ner
+    keyphrase_output: dict | None = None   # type: ignore[type-arg]
+    tfidf_output: dict | None = None       # type: ignore[type-arg]
+
+
+@router.post("/pipeline/extract-llm", response_model=LLMExtractionResponse)
+def pipeline_extract_llm(req: ExtractLLMRequest) -> LLMExtractionResponse:
+    """Structured knowledge extraction via Gemini 2.5 Flash (Part 2a).
+
+    Called by /api/compile/extract (Next.js) after NLP pre-processing.
+    Accepts pre-computed NER and keyphrase outputs as context.
+
+    HTTP 429 when rate limit bucket is full.
+    HTTP 503 when daily cost ceiling is exceeded.
+    HTTP 500 when the LLM call fails or JSON parse fails.
+    """
+    try:
+        return extract_source(
+            req.source_id,
+            req.markdown,
+            req.ner_output,
+            req.keyphrase_output,
+            req.tfidf_output,
+        )
+    except LLMRateLimitedError as e:
+        raise HTTPException(status_code=429, detail="llm_rate_limited") from e
+    except CostCeilingError as e:
+        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+    except LLMCompileError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/pipeline/lint-scan", response_model=LintScanResponse)
