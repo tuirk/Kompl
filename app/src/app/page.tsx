@@ -225,6 +225,8 @@ export default function HomePage() {
 
       <footer style={{ marginTop: '3rem', color: 'var(--fg-muted)', fontSize: '0.9rem' }}>
         <a href="/feed">→ Processing feed</a>
+        <span style={{ margin: '0 1rem', opacity: 0.4 }}>|</span>
+        <a href="/onboarding">→ Start new onboarding</a>
       </footer>
 
       {toast}

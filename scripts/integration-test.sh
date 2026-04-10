@@ -538,12 +538,172 @@ stage_10_concurrency() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage 11 — Onboarding API canary
+# Stage 11 — Onboarding API canary (REAL as of Part 1b)
 # ---------------------------------------------------------------------------
+# Exercises the full collect → review → confirm flow:
+#   1. POST /api/onboarding/collect with example.com
+#   2. GET  /api/onboarding/review — asserts 1 collected source
+#   3. POST /api/onboarding/confirm — asserts queued=1
+#   4. Reads compile_status directly from SQLite — asserts 'pending'
+#
+# Skipped gracefully when FIRECRAWL_API_KEY is unset (collect calls Firecrawl).
 stage_11_onboarding_api() {
-    echo "[STAGE 11] TODO: onboarding API canary (collect → review → confirm → pending)"
-    echo "  Requires: Part 1b file fixtures or a live Firecrawl key."
-    record_stage 11 TODO SKIPPED
+    echo "[STAGE 11] REAL: onboarding API canary (collect → review → confirm → pending)"
+
+    if [ -z "${FIRECRAWL_API_KEY:-}" ]; then
+        echo "  SKIP: FIRECRAWL_API_KEY not set — skipping onboarding API canary."
+        record_stage 11 REAL SKIPPED
+        return 0
+    fi
+
+    # Generate a session_id: use /proc/sys/kernel/random/uuid on Linux,
+    # fall back to a timestamp-based hex string on Git Bash (no uuidgen dep).
+    local SESSION_ID
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+        SESSION_ID=$(cat /proc/sys/kernel/random/uuid)
+    else
+        SESSION_ID=$(date +%s%N | md5sum | head -c 8)-0000-0000-0000-$(date +%s%N | md5sum | head -c 12)
+    fi
+    echo "  session_id: $SESSION_ID"
+
+    # ── Step 1: collect ──────────────────────────────────────────────────────
+    echo "  POSTing to /api/onboarding/collect..."
+    local collect_response
+    collect_response=$(curl -sf -X POST \
+        -H "content-type: application/json" \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"url\",\"items\":[{\"url\":\"https://example.com\"}]}" \
+        "http://localhost:3000/api/onboarding/collect" 2>&1)
+
+    if [ -z "$collect_response" ]; then
+        echo "  FAIL: /api/onboarding/collect returned empty response"
+        record_stage 11 REAL FAIL
+        return 1
+    fi
+    echo "  collect response: $collect_response"
+
+    if ! echo "$collect_response" | grep -q "\"session_id\":\"$SESSION_ID\""; then
+        echo "  FAIL: collect response missing expected session_id"
+        record_stage 11 REAL FAIL
+        return 1
+    fi
+
+    # Extract the source_id — shape: "stored":[{"source_id":"uuid",...}]
+    local SOURCE_ID
+    SOURCE_ID=$(echo "$collect_response" | grep -o '"stored":\[{"source_id":"[^"]*"' | grep -Eo '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1)
+    if [ -z "$SOURCE_ID" ]; then
+        echo "  FAIL: could not extract source_id from collect response (stored may be empty)"
+        echo "  collect response: $collect_response"
+        record_stage 11 REAL FAIL
+        return 1
+    fi
+    echo "  source_id: $SOURCE_ID"
+
+    # ── Step 2: review ───────────────────────────────────────────────────────
+    echo "  GETting /api/onboarding/review..."
+    local review_response
+    review_response=$(curl -sf "http://localhost:3000/api/onboarding/review?session_id=$SESSION_ID")
+
+    if ! echo "$review_response" | grep -q '"total":1'; then
+        echo "  FAIL: review response missing \"total\":1"
+        echo "  review response: $review_response"
+        record_stage 11 REAL FAIL
+        return 1
+    fi
+    echo "  review total=1 OK"
+
+    # ── Step 3: confirm ──────────────────────────────────────────────────────
+    echo "  POSTing to /api/onboarding/confirm..."
+    local confirm_response
+    confirm_response=$(curl -sf -X POST \
+        -H "content-type: application/json" \
+        -d "{\"session_id\":\"$SESSION_ID\",\"selected_source_ids\":[\"$SOURCE_ID\"],\"deleted_source_ids\":[]}" \
+        "http://localhost:3000/api/onboarding/confirm")
+
+    if ! echo "$confirm_response" | grep -q '"queued":1'; then
+        echo "  FAIL: confirm response missing \"queued\":1"
+        echo "  confirm response: $confirm_response"
+        record_stage 11 REAL FAIL
+        return 1
+    fi
+    echo "  confirm queued=1 OK"
+
+    # ── Step 4: verify compile_status in DB ──────────────────────────────────
+    local db_status
+    db_status=$(docker exec komplcore-app-1 sqlite3 /data/db/kompl.db \
+        "SELECT compile_status FROM sources WHERE source_id='$SOURCE_ID';" 2>/dev/null || echo "")
+
+    if [ "$db_status" != "pending" ]; then
+        echo "  FAIL: expected compile_status='pending', got '$db_status'"
+        record_stage 11 REAL FAIL
+        return 1
+    fi
+    echo "  DB compile_status=pending OK"
+
+    echo "  PASS"
+    record_stage 11 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 12 — text connector canary
+# ---------------------------------------------------------------------------
+#
+# Submits a raw markdown note via connector='text' (no Firecrawl, no nlp-service).
+# Verifies the source is stored with compile_status='collected'.
+# This stage does NOT require FIRECRAWL_API_KEY.
+stage_12_text_connector() {
+    echo "[STAGE 12] REAL: text connector canary (collect note → collected in DB)"
+
+    local SESSION_ID
+    SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
+
+    local NOTE_MD='# My test note\n\nThis is a test note from the integration test.'
+
+    # ── collect ──────────────────────────────────────────────────────────────
+    echo "  POSTing to /api/onboarding/collect with connector=text..."
+    local collect_response
+    collect_response=$(curl -sf -X POST \
+        -H "content-type: application/json" \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"text\",\"items\":[{\"markdown\":\"$NOTE_MD\",\"title_hint\":\"Test Note\",\"source_type_hint\":\"note\"}]}" \
+        "http://localhost:3000/api/onboarding/collect")
+
+    if [ -z "$collect_response" ]; then
+        echo "  FAIL: /api/onboarding/collect returned empty response"
+        record_stage 12 REAL FAIL
+        return 1
+    fi
+
+    if ! echo "$collect_response" | grep -q "\"session_id\":\"$SESSION_ID\""; then
+        echo "  FAIL: collect response missing expected session_id"
+        record_stage 12 REAL FAIL
+        return 1
+    fi
+
+    local SOURCE_ID
+    SOURCE_ID=$(echo "$collect_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['stored'][0]['source_id'] if d.get('stored') else '')" 2>/dev/null || echo "")
+
+    if [ -z "$SOURCE_ID" ]; then
+        echo "  FAIL: could not extract source_id from collect response"
+        echo "  collect response: $collect_response"
+        record_stage 12 REAL FAIL
+        return 1
+    fi
+    echo "  source_id=$SOURCE_ID"
+
+    # ── verify DB ────────────────────────────────────────────────────────────
+    local db_status
+    db_status=$(docker exec komplcore-app-1 sqlite3 /data/db/kompl.db \
+        "SELECT compile_status FROM sources WHERE source_id='$SOURCE_ID';" 2>/dev/null || echo "")
+
+    if [ "$db_status" != "collected" ]; then
+        echo "  FAIL: expected compile_status='collected', got '$db_status'"
+        record_stage 12 REAL FAIL
+        return 1
+    fi
+    echo "  DB compile_status=collected OK"
+
+    echo "  PASS"
+    record_stage 12 REAL PASS
     return 0
 }
 
@@ -567,6 +727,7 @@ main() {
     stage_9_contract_drift_canary
     stage_10_concurrency
     stage_11_onboarding_api
+    stage_12_text_connector
 
     echo
     echo "=== Stage summary ==="
@@ -574,7 +735,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 12 stages executed, all passed ==="
+    echo "=== All 13 stages executed, all passed ==="
     exit 0
 }
 

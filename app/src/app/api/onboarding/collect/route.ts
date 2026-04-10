@@ -8,11 +8,15 @@
  * Request:
  *   {
  *     session_id: string;         // client-generated UUID for this onboarding run
- *     connector: 'url' | 'file-upload';
+ *     connector: 'url' | 'file-upload' | 'text';
  *     items: Array<{
  *       url?: string;             // for connector='url'
  *       file_path?: string;       // for connector='file-upload' (file already on disk)
+ *       markdown?: string;        // for connector='text' (content already known client-side)
  *       title_hint?: string;
+ *       source_type_hint?: string; // e.g. 'note', 'tweet' — used as source_type for connector='text'
+ *       metadata?: Record<string, unknown>;      // for connector='text': stored directly
+ *       metadata_hint?: Record<string, unknown>; // for 'url'/'file-upload': merged into NLP metadata
  *     }>;
  *   }
  *
@@ -33,7 +37,7 @@
  *   They still go through Firecrawl (best-effort) since yt-dlp is not wired yet.
  */
 
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 
 import {
@@ -101,7 +105,11 @@ async function callConvertFilePath(
 interface CollectItem {
   url?: string;
   file_path?: string;
+  markdown?: string;
   title_hint?: string;
+  source_type_hint?: string;
+  metadata?: Record<string, unknown>;
+  metadata_hint?: Record<string, unknown>;
 }
 
 export async function POST(request: Request) {
@@ -121,17 +129,16 @@ export async function POST(request: Request) {
   if (typeof body.session_id !== 'string' || !body.session_id) {
     return NextResponse.json({ error: 'missing field: session_id' }, { status: 422 });
   }
-  if (body.connector !== 'url' && body.connector !== 'file-upload') {
-    return NextResponse.json(
-      { error: 'connector must be "url" or "file-upload"' },
-      { status: 422 }
-    );
+  const VALID_CONNECTORS = ['url', 'file-upload', 'text'] as const;
+  type Connector = (typeof VALID_CONNECTORS)[number];
+  if (!VALID_CONNECTORS.includes(body.connector as Connector)) {
+    return NextResponse.json({ error: 'unknown connector' }, { status: 422 });
   }
   if (!Array.isArray(body.items) || body.items.length === 0) {
     return NextResponse.json({ error: 'items must be a non-empty array' }, { status: 422 });
   }
 
-  const { session_id, connector } = body as { session_id: string; connector: 'url' | 'file-upload' };
+  const { session_id, connector } = body as { session_id: string; connector: 'url' | 'file-upload' | 'text' };
   const items = body.items as CollectItem[];
 
   const stored: object[] = [];
@@ -150,8 +157,61 @@ export async function POST(request: Request) {
       failed.push({ item, error: 'missing file_path for connector=file-upload' });
       continue;
     }
+    if (connector === 'text' && (typeof item.markdown !== 'string' || !item.markdown.trim())) {
+      failed.push({ item, error: 'missing markdown for connector=text' });
+      continue;
+    }
 
     const sourceId = randomUUID();
+
+    // ── connector: 'text' — content already known, skip nlp-service ──────────
+    if (connector === 'text') {
+      try {
+        const md = item.markdown!.trim();
+        const hash = createHash('sha256').update(md).digest('hex');
+        const title = item.title_hint?.trim() || 'Untitled';
+        const sourceType = item.source_type_hint ?? 'text';
+        const filePath = storeRawMarkdown(sourceId, md);
+
+        const existingDupe = db
+          .prepare(
+            `SELECT source_id FROM sources
+              WHERE content_hash = ? AND compile_status != 'collected'
+              LIMIT 1`
+          )
+          .get(hash) as { source_id: string } | null;
+        if (existingDupe) {
+          warnings.push({ source_id: sourceId, warning: `duplicate_of:${existingDupe.source_id}` });
+        }
+
+        insertSource({
+          source_id: sourceId,
+          title,
+          source_type: sourceType,
+          source_url: null,
+          content_hash: hash,
+          file_path: filePath,
+          metadata: item.metadata ?? null,
+          compile_status: 'collected',
+          onboarding_session_id: session_id,
+        });
+
+        stored.push({
+          source_id: sourceId,
+          title,
+          source_type: sourceType,
+          source_url: null,
+          content_hash: hash,
+          onboarding_session_id: session_id,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'unknown';
+        failed.push({ item, error: msg });
+      }
+      continue;
+    }
+
+    // ── connector: 'url' / 'file-upload' — call nlp-service ─────────────────
 
     // YouTube detection — flag but proceed with Firecrawl (no yt-dlp yet)
     if (connector === 'url' && isYouTubeUrl(item.url!)) {
@@ -166,6 +226,11 @@ export async function POST(request: Request) {
       } else {
         convertResult = await callConvertFilePath(sourceId, item.file_path!, item.title_hint);
       }
+
+      // Merge metadata_hint (e.g. date_saved from browser bookmarks) into NLP metadata
+      const finalMetadata: Record<string, unknown> = item.metadata_hint
+        ? { ...(convertResult.metadata ?? {}), ...item.metadata_hint }
+        : convertResult.metadata;
 
       // Check for duplicate content (same hash already in DB as a non-collected source)
       const existingDupe = db
@@ -191,7 +256,7 @@ export async function POST(request: Request) {
         source_url: convertResult.source_url,
         content_hash: convertResult.content_hash,
         file_path: filePath,
-        metadata: convertResult.metadata,
+        metadata: finalMetadata,
         compile_status: 'collected',
         onboarding_session_id: session_id,
       });
