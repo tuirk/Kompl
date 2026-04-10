@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import {
   dbPath,
   getDb,
+  getPageCount,
   getSchemaVersion,
   listUserTables,
   EXPECTED_TABLES,
@@ -24,9 +25,11 @@ export async function GET() {
 
     const allExpectedPresent = EXPECTED_TABLES.every((t) => tables.includes(t));
 
-    const status = dbWritable && allExpectedPresent && schemaVersion === 6
+    const status = dbWritable && allExpectedPresent && schemaVersion === 7
       ? 'ok'
       : 'degraded';
+
+    const pageCount = getPageCount();
 
     return NextResponse.json(
       {
@@ -36,6 +39,7 @@ export async function GET() {
         table_count: tableCount,
         tables,
         db_path: dbPath(),
+        page_count: pageCount,
       },
       { status: status === 'ok' ? 200 : 500 }
     );

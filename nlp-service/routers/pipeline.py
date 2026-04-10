@@ -34,6 +34,7 @@ from services.llm_client import (
     CompileResponse,
     Contradiction,
     CostCeilingError,
+    CrossrefResponse,
     EntityStubResponse,
     LintScanResponse,
     LLMCompileError,
@@ -41,7 +42,10 @@ from services.llm_client import (
     LLMRateLimitedError,
     compile_entity_stub,
     compile_source,
+    crossref_pages,
+    draft_page,
     extract_source,
+    generate_schema,
     lint_scan,
 )
 
@@ -159,5 +163,140 @@ def pipeline_lint_scan(req: LintScanRequest) -> LintScanResponse:
     except (LLMRateLimitedError, CostCeilingError):
         # Lint is low-priority — skip rather than fail
         return LintScanResponse(contradictions=[])
+    except LLMCompileError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# Part 2c-i — draft-page, crossref, generate-schema
+# ---------------------------------------------------------------------------
+
+
+class SourceContent(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    source_id: str
+    title: str
+    markdown: str
+
+
+class RelatedPage(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    title: str
+    type: str
+    summary: str
+
+
+class DraftPageRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    page_type: str
+    title: str
+    source_contents: list[SourceContent]
+    related_pages: list[RelatedPage] = []
+    existing_content: str | None = None
+    schema: str | None = None
+
+
+class DraftPageResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    markdown: str
+
+
+@router.post("/pipeline/draft-page", response_model=DraftPageResponse)
+def pipeline_draft_page(req: DraftPageRequest) -> DraftPageResponse:
+    """Draft a single wiki page from source content via Gemini.
+
+    Returns raw markdown including YAML frontmatter. Temperature=0.3 for
+    natural writing; thinking enabled for quality synthesis.
+    """
+    try:
+        markdown = draft_page(
+            page_type=req.page_type,
+            title=req.title,
+            source_contents=[sc.model_dump() for sc in req.source_contents],
+            related_pages=[rp.model_dump() for rp in req.related_pages] if req.related_pages else None,
+            existing_content=req.existing_content,
+            schema=req.schema,
+        )
+        return DraftPageResponse(markdown=markdown)
+    except LLMRateLimitedError as e:
+        raise HTTPException(status_code=429, detail="llm_rate_limited") from e
+    except CostCeilingError as e:
+        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+    except LLMCompileError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+class CrossrefPageInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    plan_id: str
+    title: str
+    page_type: str
+    markdown: str
+
+
+class CrossrefRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    pages: list[CrossrefPageInput]
+
+
+@router.post("/pipeline/crossref", response_model=CrossrefResponse)
+def pipeline_crossref(req: CrossrefRequest) -> CrossrefResponse:
+    """Add [[wikilinks]] between pages and flag contradictions.
+
+    Returns updated markdown for every page (changed or not) plus any
+    contradictions found. Temperature=0 (no creativity — just linking).
+    """
+    if not req.pages:
+        return CrossrefResponse(updated_pages=[], contradictions_found=[])
+    try:
+        return crossref_pages([p.model_dump() for p in req.pages])
+    except LLMRateLimitedError as e:
+        raise HTTPException(status_code=429, detail="llm_rate_limited") from e
+    except CostCeilingError as e:
+        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+    except LLMCompileError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+class PageSummaryInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    title: str
+    page_type: str
+    category: str | None = None
+
+
+class GenerateSchemaRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    pages: list[PageSummaryInput]
+
+
+class GenerateSchemaResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    markdown: str
+
+
+@router.post("/pipeline/generate-schema", response_model=GenerateSchemaResponse)
+def pipeline_generate_schema(req: GenerateSchemaRequest) -> GenerateSchemaResponse:
+    """Generate wiki schema.md from the first compile's page list.
+
+    Only called when /data/schema.md does not yet exist. Temperature=0 for
+    a deterministic, authoritative schema document.
+    """
+    try:
+        markdown = generate_schema([p.model_dump() for p in req.pages])
+        return GenerateSchemaResponse(markdown=markdown)
+    except LLMRateLimitedError as e:
+        raise HTTPException(status_code=429, detail="llm_rate_limited") from e
+    except CostCeilingError as e:
+        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

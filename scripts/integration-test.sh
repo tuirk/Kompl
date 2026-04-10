@@ -15,7 +15,7 @@
 #
 # Stage state at commit 4:
 #   Stage 0 — REAL (cold start: docker compose down -v + up -d --build, all 3 services healthy)
-#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=6)
+#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=7)
 #   Stage 4 — REAL (live URL ingest + compile end-to-end), plus failure-path canary
 #             Skipped gracefully when FIRECRAWL_API_KEY or GEMINI_API_KEY is unset.
 #   All other stages — TODO.
@@ -165,13 +165,13 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":6'; then
-        echo "  FAIL: schema_version != 6"
+    if ! echo "$response" | grep -q '"schema_version":7'; then
+        echo "  FAIL: schema_version != 7"
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"table_count":10'; then
-        echo "  FAIL: table_count != 10"
+    if ! echo "$response" | grep -q '"table_count":11'; then
+        echo "  FAIL: table_count != 11"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -1007,6 +1007,240 @@ print('ok' if total > 0 and final < total else 'no_merge')
 }
 
 # ---------------------------------------------------------------------------
+# Stage 16 — full compilation pipeline canary (Part 2c-i)
+# collect 3 text sources → confirm → extract each → resolve → plan → draft
+# → crossref → commit → verify pages in DB + schema.md
+# ---------------------------------------------------------------------------
+stage_16_full_pipeline() {
+    echo "--- stage 16: full compilation pipeline ---"
+
+    if [ -z "${GEMINI_API_KEY:-}" ]; then
+        echo "  SKIPPED: GEMINI_API_KEY not set"
+        record_stage 16 REAL SKIPPED
+        return 0
+    fi
+
+    local SESSION_ID
+    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+
+    # Collect 3 related text sources
+    echo "  collecting 3 text sources..."
+    local collect_response
+    collect_response=$(curl -sf --max-time 60 -X POST http://localhost:3000/api/onboarding/collect \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"text\",\"items\":[
+            {\"markdown\":\"Bitcoin is a decentralized digital currency created by Satoshi Nakamoto in 2009. It uses proof-of-work consensus and SHA-256 hashing. Bitcoin mining consumes significant energy. The Bitcoin network processes roughly 7 transactions per second.\",\"title_hint\":\"Bitcoin Basics\",\"source_type_hint\":\"note\"},
+            {\"markdown\":\"Ethereum was founded by Vitalik Buterin in 2013. Unlike Bitcoin, Ethereum supports smart contracts and decentralized applications. Ethereum moved from proof-of-work to proof-of-stake in 2022 via the Merge. Ethereum processes around 15 transactions per second.\",\"title_hint\":\"Ethereum Overview\",\"source_type_hint\":\"note\"},
+            {\"markdown\":\"Bitcoin vs Ethereum: Bitcoin is primarily a store of value while Ethereum is a platform for decentralized applications. Bitcoin uses proof-of-work, Ethereum now uses proof-of-stake. Both are leading cryptocurrencies by market cap. Vitalik Buterin created Ethereum as an improvement over Bitcoin's scripting limitations.\",\"title_hint\":\"BTC vs ETH Comparison\",\"source_type_hint\":\"note\"}
+        ]}")
+
+    if [ -z "$collect_response" ]; then
+        echo "  FAIL: /api/onboarding/collect returned empty"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+
+    # Get source IDs from review endpoint
+    local review_response
+    review_response=$(curl -sf --max-time 30 \
+        "http://localhost:3000/api/onboarding/review?session_id=$SESSION_ID")
+    if [ -z "$review_response" ]; then
+        echo "  FAIL: /api/onboarding/review returned empty"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+
+    local SOURCE_IDS_JSON
+    SOURCE_IDS_JSON=$(echo "$review_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+sources = d.get('sources', {})
+ids = []
+if isinstance(sources, dict):
+    for v in sources.values():
+        if isinstance(v, list):
+            ids.extend(s['source_id'] for s in v)
+elif isinstance(sources, list):
+    ids = [s['source_id'] for s in sources]
+print(json.dumps(ids))
+" 2>/dev/null)
+
+    local source_count
+    source_count=$(echo "$SOURCE_IDS_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null)
+    if [ "$source_count" -ne 3 ]; then
+        echo "  FAIL: expected 3 collected sources, got $source_count"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+
+    # Confirm
+    curl -sf --max-time 30 -X POST http://localhost:3000/api/onboarding/confirm \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"selected_source_ids\":$SOURCE_IDS_JSON,\"deleted_source_ids\":[]}" > /dev/null
+
+    # Extract each source
+    echo "  extracting $source_count sources..."
+    local extract_ok=0
+    while IFS= read -r sid; do
+        local eres
+        eres=$(curl -sf --max-time 180 -X POST http://localhost:3000/api/compile/extract \
+            -H 'Content-Type: application/json' \
+            -d "{\"source_id\":\"$sid\"}" 2>/dev/null || echo "")
+        if [ -n "$eres" ]; then
+            extract_ok=$((extract_ok + 1))
+        fi
+    done < <(echo "$SOURCE_IDS_JSON" | python3 -c "import sys,json; [print(s) for s in json.load(sys.stdin)]")
+
+    if [ "$extract_ok" -ne 3 ]; then
+        echo "  FAIL: expected 3 extractions, got $extract_ok"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+
+    # Resolve
+    echo "  resolving entities..."
+    local resolve_response
+    resolve_response=$(curl -sf --max-time 180 -X POST http://localhost:3000/api/compile/resolve \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}")
+    if [ -z "$resolve_response" ]; then
+        echo "  FAIL: /api/compile/resolve returned empty"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+
+    local CANONICAL_JSON
+    CANONICAL_JSON=$(echo "$resolve_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(json.dumps(d.get('canonical_entities', [])))
+" 2>/dev/null)
+
+    # Plan
+    echo "  building page plan..."
+    local plan_response
+    plan_response=$(curl -sf --max-time 30 -X POST http://localhost:3000/api/compile/plan \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"canonical_entities\":$CANONICAL_JSON}")
+    if [ -z "$plan_response" ]; then
+        echo "  FAIL: /api/compile/plan returned empty"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+
+    local total_planned
+    total_planned=$(echo "$plan_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('stats', {}).get('total', 0))
+" 2>/dev/null)
+
+    if [ "$total_planned" -lt 4 ]; then
+        echo "  FAIL: plan: expected at least 4 pages (3 summaries + entity pages), got $total_planned"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+    echo "  planned $total_planned pages"
+
+    # Draft
+    echo "  drafting pages (this will take a while — Gemini calls)..."
+    local draft_response
+    draft_response=$(curl -sf --max-time 900 -X POST http://localhost:3000/api/compile/draft \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}")
+    if [ -z "$draft_response" ]; then
+        echo "  FAIL: /api/compile/draft returned empty"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+
+    local drafted
+    drafted=$(echo "$draft_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('drafted', 0))
+" 2>/dev/null)
+
+    if [ "$drafted" -lt 4 ]; then
+        echo "  FAIL: expected at least 4 drafted, got $drafted"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+    echo "  drafted $drafted pages"
+
+    # Cross-reference
+    echo "  cross-referencing..."
+    curl -sf --max-time 600 -X POST http://localhost:3000/api/compile/crossref \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}" > /dev/null
+
+    # Commit
+    echo "  committing pages to DB..."
+    local commit_response
+    commit_response=$(curl -sf --max-time 120 -X POST http://localhost:3000/api/compile/commit \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}")
+    if [ -z "$commit_response" ]; then
+        echo "  FAIL: /api/compile/commit returned empty"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+
+    local committed
+    committed=$(echo "$commit_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('committed', 0))
+" 2>/dev/null)
+
+    if [ "$committed" -lt 4 ]; then
+        echo "  FAIL: expected at least 4 committed, got $committed"
+        echo "  response: $commit_response"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+
+    # Verify pages exist in DB via health endpoint
+    local health_response
+    health_response=$(curl -sf --max-time 10 http://localhost:3000/api/health)
+    local page_count
+    page_count=$(echo "$health_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('page_count', 0))
+" 2>/dev/null)
+
+    if [ "$page_count" -lt 4 ]; then
+        echo "  FAIL: expected page_count >= 4 in DB, got $page_count"
+        record_stage 16 REAL FAIL
+        return 1
+    fi
+
+    # Generate schema (bootstrap)
+    echo "  generating wiki schema..."
+    local schema_response
+    schema_response=$(curl -sf --max-time 120 -X POST http://localhost:3000/api/compile/schema \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}")
+    if [ -n "$schema_response" ]; then
+        local schema_ok
+        schema_ok=$(echo "$schema_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print('ok' if d.get('schema_generated') or d.get('reason') == 'already_exists' else 'fail')
+" 2>/dev/null)
+        if [ "$schema_ok" != "ok" ]; then
+            echo "  WARN: schema generation failed: $schema_response"
+        fi
+    fi
+
+    echo "  committed $committed pages, page_count=$page_count — OK"
+    echo "  PASS"
+    record_stage 16 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -1030,6 +1264,7 @@ main() {
     stage_13_twitter_connector
     stage_14_extraction
     stage_15_resolution
+    stage_16_full_pipeline
 
     echo
     echo "=== Stage summary ==="
@@ -1037,7 +1272,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 15 stages executed, all passed ==="
+    echo "=== All 16 stages executed, all passed ==="
     exit 0
 }
 

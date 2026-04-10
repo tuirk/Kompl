@@ -20,9 +20,22 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
+import os
+
 from services.file_store import write_page
 
 router = APIRouter(tags=["storage"])
+
+_DATA_ROOT = "/data"
+
+
+def _safe_path(file_path: str) -> str:
+    """Resolve path and verify it's under /data. Raises HTTPException if not."""
+    import pathlib
+    resolved = str(pathlib.Path(file_path).resolve())
+    if not resolved.startswith(_DATA_ROOT + "/") and resolved != _DATA_ROOT:
+        raise HTTPException(status_code=403, detail="path_outside_data_volume")
+    return resolved
 
 
 class WritePageRequest(BaseModel):
@@ -55,3 +68,69 @@ def storage_write_page(req: WritePageRequest) -> WritePageResponse:
             detail=f"file_store_error: {e}",
         ) from e
     return WritePageResponse(current_path=current_path, previous_path=previous_path)
+
+
+# ---------------------------------------------------------------------------
+# Generic file read/write (schema.md and other data-volume text files)
+# ---------------------------------------------------------------------------
+
+
+class ReadFileRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    path: str
+
+
+class ReadFileResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    content: str
+    exists: bool
+
+
+class WriteFileRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    path: str
+    content: str
+
+
+class WriteFileResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    path: str
+    written: bool
+
+
+@router.post("/storage/read-file", response_model=ReadFileResponse)
+def storage_read_file(req: ReadFileRequest) -> ReadFileResponse:
+    """Read a text file from the data volume. Returns exists=False if missing."""
+    resolved = _safe_path(req.path)
+    if not os.path.exists(resolved):
+        return ReadFileResponse(content="", exists=False)
+    try:
+        with open(resolved, "r", encoding="utf-8") as f:
+            content = f.read()
+        return ReadFileResponse(content=content, exists=True)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"read_file_error: {e}") from e
+
+
+@router.post("/storage/write-file", response_model=WriteFileResponse)
+def storage_write_file(req: WriteFileRequest) -> WriteFileResponse:
+    """Write a text file to the data volume. Creates parent directories if needed."""
+    resolved = _safe_path(req.path)
+    try:
+        os.makedirs(os.path.dirname(resolved), exist_ok=True)
+        with open(resolved, "w", encoding="utf-8") as f:
+            f.write(req.content)
+        return WriteFileResponse(path=resolved, written=True)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"write_file_error: {e}") from e
+
+
+@router.post("/storage/file-exists")
+def storage_file_exists(req: ReadFileRequest) -> dict[str, bool]:
+    """Check whether a file exists on the data volume."""
+    resolved = _safe_path(req.path)
+    return {"exists": os.path.exists(resolved)}

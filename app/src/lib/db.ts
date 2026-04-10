@@ -107,6 +107,7 @@ const EXPECTED_TABLES = [
   'pages_fts',
   'page_links',
   'extractions',
+  'page_plans',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -917,4 +918,132 @@ export function findAliasByName(name: string): string | null {
     )
     .get(name) as { canonical_name: string } | undefined;
   return row?.canonical_name ?? null;
+}
+
+// ============================================================================
+// Page plan helpers (Part 2c-i)
+// ============================================================================
+
+export interface PagePlanRow {
+  plan_id: string;
+  session_id: string;
+  title: string;
+  page_type: string;
+  action: string;
+  source_ids: string;    // JSON TEXT — parse with JSON.parse
+  existing_page_id: string | null;
+  related_plan_ids: string | null;  // JSON TEXT
+  draft_content: string | null;
+  draft_status: string;
+  created_at: string;
+}
+
+export function insertPagePlan(plan: {
+  plan_id: string;
+  session_id: string;
+  title: string;
+  page_type: string;
+  action: string;
+  source_ids: string[];
+  existing_page_id?: string | null;
+  related_plan_ids?: string[];
+}): void {
+  openDb()
+    .prepare(
+      `INSERT INTO page_plans
+         (plan_id, session_id, title, page_type, action,
+          source_ids, existing_page_id, related_plan_ids)
+       VALUES
+         (@plan_id, @session_id, @title, @page_type, @action,
+          @source_ids, @existing_page_id, @related_plan_ids)`
+    )
+    .run({
+      plan_id: plan.plan_id,
+      session_id: plan.session_id,
+      title: plan.title,
+      page_type: plan.page_type,
+      action: plan.action,
+      source_ids: JSON.stringify(plan.source_ids),
+      existing_page_id: plan.existing_page_id ?? null,
+      related_plan_ids: plan.related_plan_ids ? JSON.stringify(plan.related_plan_ids) : null,
+    });
+}
+
+export function getPagePlansBySession(sessionId: string): PagePlanRow[] {
+  return openDb()
+    .prepare(
+      `SELECT plan_id, session_id, title, page_type, action,
+              source_ids, existing_page_id, related_plan_ids,
+              draft_content, draft_status, created_at
+         FROM page_plans
+        WHERE session_id = ?
+        ORDER BY created_at ASC`
+    )
+    .all(sessionId) as PagePlanRow[];
+}
+
+export function getPagePlansByStatus(sessionId: string, status: string): PagePlanRow[] {
+  return openDb()
+    .prepare(
+      `SELECT plan_id, session_id, title, page_type, action,
+              source_ids, existing_page_id, related_plan_ids,
+              draft_content, draft_status, created_at
+         FROM page_plans
+        WHERE session_id = ? AND draft_status = ?
+        ORDER BY created_at ASC`
+    )
+    .all(sessionId, status) as PagePlanRow[];
+}
+
+export function updatePlanDraft(planId: string, draftContent: string): void {
+  openDb()
+    .prepare(
+      `UPDATE page_plans
+          SET draft_content = ?, draft_status = 'drafted'
+        WHERE plan_id = ?`
+    )
+    .run(draftContent, planId);
+}
+
+export function updatePlanCrossref(planId: string, draftContent: string): void {
+  openDb()
+    .prepare(
+      `UPDATE page_plans
+          SET draft_content = ?, draft_status = 'crossreffed'
+        WHERE plan_id = ?`
+    )
+    .run(draftContent, planId);
+}
+
+export function updatePlanStatus(planId: string, status: string): void {
+  openDb()
+    .prepare(`UPDATE page_plans SET draft_status = ? WHERE plan_id = ?`)
+    .run(status, planId);
+}
+
+/** Fetch a page by title (case-insensitive). Returns null if not found. */
+export function getPageByTitle(title: string): PageRow | null {
+  const row = openDb()
+    .prepare(
+      `SELECT page_id, title, page_type, category, summary, content_path,
+              previous_content_path, last_updated, source_count, created_at
+         FROM pages WHERE title = ? COLLATE NOCASE LIMIT 1`
+    )
+    .get(title) as PageRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * Set compile_status = 'active' for sources that have been fully compiled
+ * through the session pipeline. Used by the session commit endpoint.
+ */
+export function markSourcesActive(sourceIds: string[]): void {
+  if (sourceIds.length === 0) return;
+  const placeholders = sourceIds.map(() => '?').join(', ');
+  openDb()
+    .prepare(
+      `UPDATE sources SET compile_status = 'active'
+        WHERE source_id IN (${placeholders})`
+    )
+    .run(...sourceIds);
 }

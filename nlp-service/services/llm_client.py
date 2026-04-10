@@ -681,3 +681,362 @@ def disambiguate_entities(pairs: list[dict[str, Any]]) -> DisambiguationResponse
         return DisambiguationResponse.model_validate_json(raw_text)
     except Exception as e:
         raise LLMCompileError(f"disambiguate_llm_parse_failed: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Page drafting — write a single wiki page from source content (Part 2c-i)
+# ---------------------------------------------------------------------------
+
+_DRAFT_PAGE_PROMPTS: dict[str, str] = {
+    "source-summary": """\
+Write a source summary wiki page for the following source document.
+
+The page should include:
+- YAML frontmatter: title, page_type: source-summary, sources (list with source_id and title), last_updated
+- ## Key Takeaways (3-5 bullet points)
+- ## Summary (2-4 paragraphs)
+- ## Entities Mentioned (bullet list of key people, companies, tools)
+- ## Concepts (bullet list of key ideas)
+
+Write clean markdown. Be concise and factual. Do not add information not in the source.""",
+
+    "entity": """\
+Write an entity wiki page synthesizing information from multiple sources.
+
+The page should include:
+- YAML frontmatter: title, page_type: entity, category, summary (1-2 sentences), sources (list with source_id and title), last_updated
+- A brief description paragraph
+- Thematic sections (what this entity does, key facts, relationships to other entities)
+- ## Sources (list of contributing source titles)
+
+Synthesize across all sources. If sources provide complementary information, merge coherently.
+If sources contradict each other, note the contradiction with citations to both sources.""",
+
+    "concept": """\
+Write a concept wiki page synthesizing information from multiple sources.
+
+The page should include:
+- YAML frontmatter: title, page_type: concept, category, summary (1-2 sentences), sources (list with source_id and title), last_updated
+- A definition/description paragraph
+- ## Key Claims (from sources, attributed with source title)
+- ## Contradictions section (only if sources disagree — cite both)
+- ## Related Concepts
+
+Synthesize across sources. Attribute specific claims to their source.""",
+
+    "comparison": """\
+Write a comparison wiki page comparing two entities or concepts.
+
+The page should include:
+- YAML frontmatter: title, page_type: comparison, sources (list), last_updated
+- A brief intro paragraph explaining what is being compared and why
+- A structured comparison (use a table or parallel sections)
+- ## Summary: which is better suited for different use cases (if applicable)
+
+Be objective and factual.""",
+
+    "overview": """\
+Write an overview wiki page summarizing all pages in a category.
+
+The page should include:
+- YAML frontmatter: title, page_type: overview, category, sources (list), last_updated
+- A high-level summary paragraph of the category
+- Brief descriptions of each entity/concept in the category (with [[wikilink]] references)
+- ## Common Themes
+- ## Open Questions (gaps in coverage, if any)""",
+}
+
+
+def draft_page(
+    page_type: str,
+    title: str,
+    source_contents: list[dict[str, Any]],
+    related_pages: list[dict[str, Any]] | None = None,
+    existing_content: str | None = None,
+    schema: str | None = None,
+) -> str:
+    """Draft a wiki page using Gemini 2.5 Flash.
+
+    Returns the raw markdown string for the page (including YAML frontmatter).
+    Uses free-form text output (no response_schema) since page content is
+    unstructured markdown.
+
+    Args:
+        page_type:        'source-summary' | 'entity' | 'concept' | 'comparison' | 'overview'
+        title:            Page title
+        source_contents:  List of {source_id, title, markdown} dicts
+        related_pages:    Optional list of {title, type, summary} for context
+        existing_content: Existing page markdown (for updates — None for first compile)
+        schema:           wiki schema.md content (None for first compile)
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — empty response
+    """
+    import json as _json
+
+    system_prompt = _DRAFT_PAGE_PROMPTS.get(page_type, _DRAFT_PAGE_PROMPTS["entity"])
+
+    # Build user prompt
+    parts: list[str] = [f"Title: {title}", f"Page type: {page_type}", ""]
+
+    if schema:
+        parts += ["Wiki schema (follow these conventions):", schema, ""]
+
+    if existing_content:
+        parts += ["Existing page content (update this, don't rewrite from scratch):",
+                  existing_content, ""]
+
+    if related_pages:
+        parts += ["Related pages in the wiki (for cross-reference context):"]
+        for rp in related_pages:
+            parts.append(f"  - {rp.get('title', '')} ({rp.get('type', '')}): {rp.get('summary', '')}")
+        parts.append("")
+
+    parts.append("Source documents:")
+    for sc in source_contents:
+        md = sc.get("markdown", "")
+        if len(md) > _GEMINI_INPUT_TOKEN_CAP // max(len(source_contents), 1):
+            md = md[:_GEMINI_INPUT_TOKEN_CAP // max(len(source_contents), 1)]
+        parts += [
+            f"--- Source: {sc.get('title', sc.get('source_id', ''))} ---",
+            md,
+            "",
+        ]
+
+    prompt = "\n".join(parts)
+
+    if len(prompt) > _GEMINI_INPUT_TOKEN_CAP:
+        prompt = prompt[:_GEMINI_INPUT_TOKEN_CAP]
+
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("gemini")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                max_output_tokens=16384,
+                temperature=0.3,
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"draft_page_llm_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        raise LLMCompileError(f"draft_page_error: empty response for '{title}'")
+
+    return raw_text.strip()
+
+
+# ---------------------------------------------------------------------------
+# Cross-reference — add [[wikilinks]] + flag contradictions (Part 2c-i)
+# ---------------------------------------------------------------------------
+
+
+class CrossrefUpdatedPage(BaseModel):
+    # No extra='forbid' — LLM output model.
+    plan_id: str
+    markdown: str
+
+
+class CrossrefContradiction(BaseModel):
+    # No extra='forbid' — LLM output model.
+    page_a: str
+    page_b: str
+    description: str
+
+
+class CrossrefResponse(BaseModel):
+    # No extra='forbid' — LLM output model.
+    updated_pages: list[CrossrefUpdatedPage]
+    contradictions_found: list[CrossrefContradiction]
+
+
+_CROSSREF_SYSTEM_PROMPT = """\
+You are a wiki cross-reference editor. You receive a set of wiki pages.
+
+Your job is to:
+1. Add [[wikilinks]] between pages that reference each other.
+   Use the exact page title as the link target: [[Bitcoin]], [[Ethereum]].
+   Only link to titles that exist in the provided page set.
+2. Flag contradictions: if two pages make conflicting claims, add a
+   "⚠️ Contradiction: see [[Other Page]]" note near the conflicting claim on both pages.
+3. Ensure consistent terminology across pages.
+
+Rules:
+- Do NOT change factual content or add new information.
+- Do NOT remove existing content.
+- Do NOT modify YAML frontmatter.
+- Do NOT add links to pages that are not in the provided set.
+- Return EVERY page in updated_pages, even if unchanged.
+"""
+
+
+def crossref_pages(pages: list[dict[str, Any]]) -> CrossrefResponse:
+    """Add [[wikilinks]] between pages and flag contradictions.
+
+    Args:
+        pages: List of {plan_id, title, page_type, markdown} dicts.
+
+    Returns CrossrefResponse with updated_pages[] and contradictions_found[].
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — parse failure
+    """
+    import json as _json
+
+    if not pages:
+        return CrossrefResponse(updated_pages=[], contradictions_found=[])
+
+    # Build the pages list for the prompt
+    page_titles = [p.get("title", "") for p in pages]
+    prompt_parts = [
+        f"Available page titles: {_json.dumps(page_titles)}",
+        "",
+        "Pages to cross-reference:",
+        "",
+    ]
+    for p in pages:
+        prompt_parts += [
+            f"=== plan_id: {p['plan_id']} | title: {p['title']} | type: {p['page_type']} ===",
+            p.get("markdown", ""),
+            "",
+        ]
+
+    prompt = "\n".join(prompt_parts)
+    if len(prompt) > _GEMINI_INPUT_TOKEN_CAP:
+        prompt = prompt[:_GEMINI_INPUT_TOKEN_CAP]
+
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("gemini")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=_CROSSREF_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=CrossrefResponse,
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                max_output_tokens=32768,
+                temperature=0.0,
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"crossref_llm_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        # Return pages unchanged on empty response rather than failing
+        return CrossrefResponse(
+            updated_pages=[CrossrefUpdatedPage(plan_id=p["plan_id"], markdown=p.get("markdown", "")) for p in pages],
+            contradictions_found=[],
+        )
+
+    try:
+        return CrossrefResponse.model_validate_json(raw_text)
+    except Exception as e:
+        raise LLMCompileError(f"crossref_parse_failed: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Schema generation — bootstrap wiki schema.md (Part 2c-i)
+# ---------------------------------------------------------------------------
+
+_SCHEMA_SYSTEM_PROMPT = """\
+You are a wiki schema generator. Based on the pages that were just created,
+generate a schema document that defines how this wiki should be maintained.
+
+The schema should cover:
+1. Page types and when each should be created (source-summary, entity, concept, comparison, overview)
+2. Naming conventions for page titles
+3. YAML frontmatter format (required fields per page type)
+4. Cross-referencing rules (when to add [[wikilinks]])
+5. How to handle contradictions between sources
+6. Category structure based on the content seen so far
+7. When to create a new page vs update an existing one
+8. Content quality standards (factual accuracy, attribution, no hallucination)
+
+Write the schema as a concise markdown document. It will be used as standing
+instructions for the LLM on all future wiki updates.
+"""
+
+
+def generate_schema(pages_summary: list[dict[str, Any]]) -> str:
+    """Generate a wiki schema document from the first compile's page list.
+
+    Args:
+        pages_summary: List of {title, page_type, category} dicts.
+
+    Returns raw markdown string for /data/schema.md.
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — empty response
+    """
+    import json as _json
+
+    prompt = (
+        "Pages created in this wiki:\n\n"
+        + _json.dumps(pages_summary, ensure_ascii=False, indent=2)
+    )
+
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("gemini")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=_SCHEMA_SYSTEM_PROMPT,
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                max_output_tokens=8192,
+                temperature=0.0,
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"generate_schema_llm_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        raise LLMCompileError("generate_schema_error: empty response")
+
+    return raw_text.strip()

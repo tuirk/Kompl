@@ -50,6 +50,9 @@ import {
   insertProvenance,
   markCompileFailed,
   markCompileSuccess,
+  markSourcesActive,
+  getPagePlansByStatus,
+  updatePlanStatus,
   readRawMarkdown,
 } from '../../../../lib/db';
 
@@ -253,6 +256,178 @@ async function expandEntities(
   }
 }
 
+// ── Session-based commit (Part 2c-i) ─────────────────────────────────────────
+//
+// Commits all crossreffed page_plans for a session. Each page gets its own
+// db.transaction() — one failure does not abort others (failed → 'failed').
+// After all pages: session sources → compile_status='active'.
+
+async function commitSession(session_id: string): Promise<Response> {
+  const db = getDb();
+  const plans = getPagePlansByStatus(session_id, 'crossreffed');
+
+  if (plans.length === 0) {
+    return NextResponse.json(
+      { session_id, committed: 0, failed: 0, pages_created: 0, pages_updated: 0, sources_activated: 0 },
+      { status: 200 }
+    );
+  }
+
+  let committed = 0;
+  let failed = 0;
+  let pagesCreated = 0;
+  let pagesUpdated = 0;
+  const allSourceIds = new Set<string>();
+
+  for (const plan of plans) {
+    const sourceIds: string[] = JSON.parse(plan.source_ids);
+    sourceIds.forEach((s) => allSourceIds.add(s));
+
+    if (plan.action === 'provenance-only') {
+      // provenance-only: insert provenance rows only, no page write
+      try {
+        db.transaction(() => {
+          const existingPageId = plan.existing_page_id!;
+          for (const sid of sourceIds) {
+            insertProvenance({
+              source_id: sid,
+              page_id: existingPageId,
+              content_hash: '',
+              contribution_type: 'mentioned',
+            });
+          }
+        })();
+        updatePlanStatus(plan.plan_id, 'committed');
+        committed++;
+      } catch {
+        updatePlanStatus(plan.plan_id, 'failed');
+        failed++;
+      }
+      continue;
+    }
+
+    const markdown = plan.draft_content;
+    if (!markdown) {
+      updatePlanStatus(plan.plan_id, 'failed');
+      failed++;
+      continue;
+    }
+
+    // Phase 1 async: write gzip file via nlp-service (before sync transaction)
+    let writeResult: { current_path: string; previous_path: string | null };
+    let page_id: string;
+
+    if (plan.action === 'update' && plan.existing_page_id) {
+      page_id = plan.existing_page_id;
+    } else {
+      // Generate slug-based page_id from title + plan_id suffix
+      const suffix = plan.plan_id.replace(/-/g, '').slice(0, 8);
+      const base = plan.title
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .slice(0, 56)
+        .replace(/^-+|-+$/g, '');
+      page_id = `${base || 'page'}-${suffix}`;
+    }
+
+    try {
+      const res = await fetch(`${NLP_SERVICE_URL}/storage/write-page`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ page_id, markdown }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) throw new Error(`write_page_failed: ${res.status}`);
+      writeResult = await res.json() as typeof writeResult;
+    } catch {
+      updatePlanStatus(plan.plan_id, 'failed');
+      failed++;
+      continue;
+    }
+
+    // Extract frontmatter fields (category, summary) from YAML
+    const categoryMatch = markdown.match(/^category:\s*["']?(.+?)["']?\s*$/m);
+    const summaryMatch = markdown.match(/^summary:\s*["']?(.+?)["']?\s*$/m);
+    const category = categoryMatch?.[1]?.trim() ?? null;
+    const summary = summaryMatch?.[1]?.trim() ?? null;
+
+    // Phase 2: sync transaction — insertPage + insertProvenance + FTS5
+    try {
+      db.transaction(() => {
+        insertPage({
+          page_id,
+          title: plan.title,
+          page_type: plan.page_type,
+          category,
+          summary,
+          content_path: writeResult.current_path,
+          previous_content_path: writeResult.previous_path,
+        });
+
+        // Fix source_count to actual number of contributing sources
+        db.prepare(`UPDATE pages SET source_count = ? WHERE page_id = ?`)
+          .run(sourceIds.length, page_id);
+
+        const contribType = plan.action === 'update' ? 'updated' : 'created';
+        for (const sid of sourceIds) {
+          insertProvenance({
+            source_id: sid,
+            page_id,
+            content_hash: '',
+            contribution_type: contribType,
+          });
+        }
+
+        // FTS5 upsert
+        db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(page_id);
+        db.prepare(
+          `INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)`
+        ).run(page_id, plan.title, markdown.replace(/^---[\s\S]*?---\n*/m, ''));
+
+        // Log to activity
+        insertActivity({
+          action_type: 'page_compiled',
+          source_id: sourceIds[0] ?? null,
+          details: { page_id, title: plan.title, page_type: plan.page_type, session_id },
+        });
+      })();
+
+      // Phase 3: backfill alias canonical_page_id for entity pages (fire-and-forget)
+      if (plan.page_type === 'entity') {
+        try {
+          db.prepare(
+            `UPDATE aliases SET canonical_page_id = ? WHERE canonical_name = ? COLLATE NOCASE`
+          ).run(page_id, plan.title);
+        } catch {
+          // non-critical
+        }
+      }
+
+      updatePlanStatus(plan.plan_id, 'committed');
+      committed++;
+      if (plan.action === 'update') pagesUpdated++; else pagesCreated++;
+    } catch {
+      updatePlanStatus(plan.plan_id, 'failed');
+      failed++;
+    }
+  }
+
+  // Mark all session sources as active
+  const sourcesActivated = allSourceIds.size;
+  if (sourcesActivated > 0) {
+    markSourcesActive([...allSourceIds]);
+  }
+
+  return NextResponse.json(
+    { session_id, committed, failed, pages_created: pagesCreated, pages_updated: pagesUpdated, sources_activated: sourcesActivated },
+    { status: 200 }
+  );
+}
+
+// ── Main POST handler ─────────────────────────────────────────────────────────
+
 export async function POST(request: Request) {
   // ---- Phase 1: async pre-work ----
   let rawBody: unknown;
@@ -262,6 +437,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'invalid_json' }, { status: 400 });
   }
 
+  // Detect session-based commit (has session_id, no source_id)
+  if (
+    typeof rawBody === 'object' &&
+    rawBody !== null &&
+    'session_id' in rawBody &&
+    !('source_id' in rawBody)
+  ) {
+    const { session_id } = rawBody as { session_id: unknown };
+    if (typeof session_id !== 'string' || !session_id) {
+      return NextResponse.json({ error: 'session_id must be a non-empty string' }, { status: 422 });
+    }
+    return commitSession(session_id);
+  }
+
+  // Single-source path (existing behaviour — unchanged)
   if (typeof rawBody !== 'object' || rawBody === null || !('source_id' in rawBody)) {
     return NextResponse.json({ error: 'missing field: source_id' }, { status: 422 });
   }

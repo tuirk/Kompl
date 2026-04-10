@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -171,6 +171,24 @@ CREATE INDEX IF NOT EXISTS idx_aliases_alias ON aliases(alias);
 CREATE INDEX IF NOT EXISTS idx_aliases_canonical ON aliases(canonical_name);
 """
 
+MIGRATION_V7_SQL = """
+CREATE TABLE IF NOT EXISTS page_plans (
+  plan_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  page_type TEXT NOT NULL,
+  action TEXT NOT NULL DEFAULT 'create',
+  source_ids JSON NOT NULL,
+  existing_page_id TEXT,
+  related_plan_ids JSON,
+  draft_content TEXT,
+  draft_status TEXT DEFAULT 'planned',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_page_plans_session ON page_plans(session_id);
+CREATE INDEX IF NOT EXISTS idx_page_plans_status ON page_plans(draft_status);
+"""
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -239,6 +257,10 @@ def migrate():
     if current < 6:
         print("  applying migration v6 (rebuild aliases: add canonical_name, drop NOT NULL on canonical_page_id)...")
         conn.executescript(MIGRATION_V6_SQL)
+
+    if current < 7:
+        print("  applying migration v7 (page_plans table)...")
+        conn.executescript(MIGRATION_V7_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
