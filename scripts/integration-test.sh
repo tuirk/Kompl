@@ -165,13 +165,13 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":2'; then
-        echo "  FAIL: schema_version != 2"
+    if ! echo "$response" | grep -q '"schema_version":3'; then
+        echo "  FAIL: schema_version != 3"
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"table_count":8'; then
-        echo "  FAIL: table_count != 8"
+    if ! echo "$response" | grep -q '"table_count":9'; then
+        echo "  FAIL: table_count != 9"
         record_stage 1 REAL FAIL
         return 1
     fi
