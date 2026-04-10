@@ -1125,3 +1125,217 @@ def generate_schema(pages_summary: list[dict[str, Any]]) -> str:
         raise LLMCompileError("generate_schema_error: empty response")
 
     return raw_text.strip()
+
+
+# ---------------------------------------------------------------------------
+# Chat agent — index-first page selection (commit 7)
+# ---------------------------------------------------------------------------
+
+
+class SelectPagesResponse(BaseModel):
+    # No extra='forbid' — LLM output model.
+    page_ids: list[str]
+
+
+_SELECT_PAGES_SYSTEM_PROMPT = """\
+You are a wiki retrieval assistant. Given a list of wiki pages (with titles,
+types, and summaries) and a user question, select the page IDs that are most
+relevant to answering the question.
+
+Return JSON with one field:
+  page_ids — list of page_id strings, up to 10, most relevant first.
+
+Only include pages that genuinely help answer the question. If no pages are
+relevant, return an empty list. Do not hallucinate page IDs not in the input.
+"""
+
+
+def select_pages_for_query(
+    question: str,
+    index: list[dict[str, Any]],
+) -> list[str]:
+    """Given a wiki index, select the page IDs most relevant to a question.
+
+    Args:
+        question: The user's question.
+        index:    List of {page_id, title, page_type, summary, source_count} dicts.
+
+    Returns list of page_id strings (up to 10), most relevant first.
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — parse failure
+    """
+    import json as _json
+
+    if not index:
+        return []
+
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("gemini")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+
+    index_text = _json.dumps(index, ensure_ascii=False)
+    if len(index_text) > _GEMINI_INPUT_TOKEN_CAP:
+        index_text = index_text[:_GEMINI_INPUT_TOKEN_CAP]
+
+    prompt = (
+        f"{_SELECT_PAGES_SYSTEM_PROMPT}\n\n"
+        f"Wiki index:\n{index_text}\n\n"
+        f"Question: {question}"
+    )
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=SelectPagesResponse,
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                max_output_tokens=1024,
+                temperature=0.0,
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"select_pages_llm_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        return []
+
+    try:
+        result = SelectPagesResponse.model_validate_json(raw_text)
+        return result.page_ids
+    except Exception as e:
+        raise LLMCompileError(f"select_pages_parse_failed: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Chat agent — answer synthesis (commit 7)
+# ---------------------------------------------------------------------------
+
+
+class SynthesisCitation(BaseModel):
+    # No extra='forbid' — LLM output model.
+    page_id: str
+    page_title: str
+
+
+class SynthesizeResponse(BaseModel):
+    # No extra='forbid' — LLM output model.
+    answer: str
+    citations: list[SynthesisCitation]
+
+
+_SYNTHESIZE_SYSTEM_PROMPT = """\
+You are a wiki-grounded knowledge assistant. Answer the user's question using
+ONLY the wiki pages provided. Do not use general knowledge — your answer must
+be grounded in the provided pages.
+
+Rules:
+- Cite pages using [Page Title] inline where you use their content.
+- If the answer spans multiple pages, synthesize coherently.
+- If no page has sufficient information, say so honestly.
+- Do not hallucinate. Do not invent facts not in the pages.
+
+Return JSON with two fields:
+  answer     — your full markdown answer (may use headers, bullets, code blocks)
+  citations  — list of {page_id, page_title} for every page you cited
+               (only pages you actually used in your answer)
+"""
+
+
+def synthesize_answer(
+    question: str,
+    pages: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+) -> SynthesizeResponse:
+    """Synthesize a wiki-grounded answer to a question.
+
+    Args:
+        question: The user's question.
+        pages:    List of {page_id, title, page_type, content} dicts.
+        history:  List of {role, content} dicts (conversation history).
+
+    Returns SynthesizeResponse with answer markdown and citations.
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — parse failure
+    """
+    import json as _json
+
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("gemini")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+
+    # Build page context section
+    page_sections: list[str] = []
+    for p in pages:
+        content = p.get("content", "")
+        page_sections.append(
+            f"=== [{p['page_id']}] {p['title']} (type: {p.get('page_type', '')}) ===\n{content}"
+        )
+    pages_text = "\n\n".join(page_sections)
+
+    # Build conversation history section
+    history_text = ""
+    if history:
+        history_lines = [
+            f"{h['role'].upper()}: {h['content']}" for h in history[-10:]
+        ]
+        history_text = "Conversation history:\n" + "\n".join(history_lines) + "\n\n"
+
+    prompt = (
+        f"{history_text}"
+        f"Wiki pages:\n\n{pages_text}\n\n"
+        f"---\n\n"
+        f"Question: {question}"
+    )
+
+    if len(prompt) > _GEMINI_INPUT_TOKEN_CAP:
+        prompt = prompt[:_GEMINI_INPUT_TOKEN_CAP]
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=_SYNTHESIZE_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=SynthesizeResponse,
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                max_output_tokens=4096,
+                temperature=0.2,
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"synthesize_llm_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        raise LLMCompileError("synthesize_error: empty response text")
+
+    try:
+        return SynthesizeResponse.model_validate_json(raw_text)
+    except Exception as e:
+        raise LLMCompileError(f"synthesize_parse_failed: {e}") from e

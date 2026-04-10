@@ -23,3 +23,6 @@ scikit-learn==1.5.2
 nltk==3.9.1
 # Part 2b: fast Levenshtein/Jaro-Winkler matching for entity resolution.
 rapidfuzz>=3.0
+# Commit 7: Chroma vector store (embedded, no separate server). 0.4.x API:
+# PersistentClient, get_or_create_collection, cosine distance.
+chromadb==0.4.24

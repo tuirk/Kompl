@@ -111,6 +111,7 @@ const EXPECTED_TABLES = [
   'extractions',
   'page_plans',
   'compile_progress',
+  'chat_messages',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -1237,4 +1238,100 @@ export function getCurrentPageHash(pageId: string): string {
   if (!fs.existsSync(filePath)) return '';
   const data = fs.readFileSync(filePath);
   return createHash('sha256').update(data).digest('hex');
+}
+
+// ============================================================================
+// Chat messages (commit 7)
+// ============================================================================
+
+export interface ChatMessageRow {
+  id: number;
+  session_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  citations: string | null;   // JSON: Array<{page_id, page_title}>
+  pages_used: string | null;  // JSON: string[]
+  created_at: string;
+}
+
+export function insertChatMessage(data: {
+  session_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  citations?: Array<{ page_id: string; page_title: string }>;
+  pages_used?: string[];
+}): void {
+  openDb()
+    .prepare(
+      `INSERT INTO chat_messages (session_id, role, content, citations, pages_used)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(
+      data.session_id,
+      data.role,
+      data.content,
+      data.citations ? JSON.stringify(data.citations) : null,
+      data.pages_used ? JSON.stringify(data.pages_used) : null,
+    );
+}
+
+export function getChatHistory(sessionId: string, limit = 20): ChatMessageRow[] {
+  return openDb()
+    .prepare(
+      `SELECT * FROM chat_messages
+       WHERE session_id = ?
+       ORDER BY created_at ASC
+       LIMIT ?`
+    )
+    .all(sessionId, limit) as ChatMessageRow[];
+}
+
+/**
+ * Return all pages as a lightweight index for chat retrieval.
+ * Sorted by source_count DESC so most-sourced pages appear first.
+ */
+export function getPageIndex(): Array<{
+  page_id: string;
+  title: string;
+  page_type: string;
+  summary: string | null;
+  category: string | null;
+  source_count: number;
+}> {
+  return openDb()
+    .prepare(
+      `SELECT page_id, title, page_type, summary, category, source_count
+       FROM pages
+       ORDER BY source_count DESC`
+    )
+    .all() as Array<{
+      page_id: string;
+      title: string;
+      page_type: string;
+      summary: string | null;
+      category: string | null;
+      source_count: number;
+    }>;
+}
+
+/**
+ * Insert a chat-compounding draft directly into page_plans.
+ * Used when a chat answer synthesises 3+ pages — creates a
+ * pending_approval draft for the user to review.
+ */
+export function insertChatDraft(data: {
+  plan_id: string;
+  session_id: string;
+  title: string;
+  draft_content: string;
+}): void {
+  openDb()
+    .prepare(
+      `INSERT INTO page_plans
+         (plan_id, session_id, title, page_type, action,
+          source_ids, existing_page_id, related_plan_ids,
+          draft_content, draft_status)
+       VALUES (?, ?, ?, 'query-generated', 'create', '[]', NULL, '[]', ?, 'pending_approval')`
+    )
+    .run(data.plan_id, data.session_id, data.title, data.draft_content);
 }

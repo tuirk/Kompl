@@ -21,8 +21,15 @@ Part 2b additions (entity resolution):
   - POST /resolve/embedding     — sentence-transformers cosine similarity (>0.9/0.7-0.9/<0.7)
   - POST /resolve/disambiguate  — Gemini LLM disambiguation for 0.7–0.9 ambiguous band
 
+Commit 7 additions (vector store + chat agent):
+  - POST /vectors/upsert        — embed a wiki page and store in Chroma
+  - POST /vectors/search        — semantic search over page embeddings
+  - POST /vectors/backfill      — upsert all pages not yet in Chroma (idempotent)
+  - POST /storage/read-page     — read a compiled wiki page by page_id
+  - POST /chat/select-pages     — index-first LLM page selection
+  - POST /chat/synthesize       — wiki-grounded answer synthesis
+
 Future commits will add routers for:
-  - vectors     (commit 6  — Chroma search/upsert/delete)
   - pipeline    (commit 10 — /pipeline/draft, /pipeline/plan)
   - wiki        (commit 12 — wiki rebuild orchestration)
 
@@ -42,11 +49,13 @@ import os
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
+from routers.chat import router as chat_router
 from routers.conversion import router as conversion_router
 from routers.extraction import router as extraction_router
 from routers.pipeline import router as pipeline_router
 from routers.resolution import router as resolution_router
 from routers.storage import router as storage_router
+from routers.vectors import router as vectors_router
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +66,15 @@ class HealthResponse(BaseModel):
     status: str
 
 
-app = FastAPI(title="kompl-nlp-service", version="0.6.0")
+app = FastAPI(title="kompl-nlp-service", version="0.7.0")
 
 app.include_router(conversion_router)
 app.include_router(extraction_router)
 app.include_router(pipeline_router)
 app.include_router(resolution_router)
 app.include_router(storage_router)
+app.include_router(vectors_router)
+app.include_router(chat_router)
 
 
 @app.on_event("startup")

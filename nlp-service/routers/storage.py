@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 import os
 
-from services.file_store import write_page
+from services.file_store import read_page, write_page
 
 router = APIRouter(tags=["storage"])
 
@@ -100,6 +100,31 @@ class WriteFileResponse(BaseModel):
 
     path: str
     written: bool
+
+
+class ReadPageRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    page_id: str
+
+
+class ReadPageResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    content: str
+    exists: bool
+
+
+@router.post("/storage/read-page", response_model=ReadPageResponse)
+def storage_read_page(req: ReadPageRequest) -> ReadPageResponse:
+    """Read a compiled wiki page by page_id (decompresses .md.gz automatically).
+
+    Returns exists=False if the page file does not exist yet.
+    """
+    content = read_page(req.page_id)
+    if content is None:
+        return ReadPageResponse(content="", exists=False)
+    return ReadPageResponse(content=content, exists=True)
 
 
 @router.post("/storage/read-file", response_model=ReadFileResponse)

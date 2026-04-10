@@ -25,7 +25,7 @@ export async function GET() {
 
     const allExpectedPresent = EXPECTED_TABLES.every((t) => tables.includes(t));
 
-    const status = dbWritable && allExpectedPresent && schemaVersion === 8
+    const status = dbWritable && allExpectedPresent && schemaVersion === 9
       ? 'ok'
       : 'degraded';
 

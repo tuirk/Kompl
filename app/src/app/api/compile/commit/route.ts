@@ -24,7 +24,7 @@
  *     - Entity stub expansion: for each entity in compileResult.entities,
  *       create a stub page (if it doesn't exist) and wire a page_link edge.
  *       Replaced at commit 10 by the full multi-layer NLP pipeline.
- *     - vector upsert lands in commit 6
+ *     - Vector upsert (fire-and-forget, non-fatal) via POST /vectors/upsert
  *
  * Request:  {source_id: string}
  * Response: {source_id, page_id, status: "compiled"}
@@ -409,6 +409,22 @@ async function commitSession(session_id: string): Promise<Response> {
         }
       }
 
+      // Phase 3: vector upsert — non-fatal, backfillable via /api/compile/backfill-vectors
+      void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          page_id,
+          metadata: {
+            title: plan.title,
+            page_type: plan.page_type,
+            category: category ?? '',
+            source_count: sourceIds.length,
+          },
+        }),
+        signal: AbortSignal.timeout(30_000),
+      }).catch(() => {});
+
       updatePlanStatus(plan.plan_id, 'committed');
       committed++;
       if (plan.action === 'update') pagesUpdated++; else pagesCreated++;
@@ -595,8 +611,24 @@ export async function POST(request: Request) {
 
   // ---- Phase 3: fire-and-forget ----
   // Entity stub pages — does not block the HTTP response.
-  // vector upsert lands in commit 6.
   void expandEntities(page_id, compileResult.category, compileResult.entities);
+
+  // Vector upsert — non-fatal; missing pages can be backfilled via
+  // POST /api/compile/backfill-vectors anytime.
+  void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      page_id,
+      metadata: {
+        title: compileResult.title,
+        page_type: compileResult.page_type,
+        category: compileResult.category ?? '',
+        source_count: 1,
+      },
+    }),
+    signal: AbortSignal.timeout(30_000),
+  }).catch(() => {});
 
   return NextResponse.json({ source_id, page_id, status: 'compiled' }, { status: 200 });
 }

@@ -50,6 +50,22 @@ export default function DashboardClient() {
           + Add Sources
         </Link>
         <Link
+          href="/chat"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            padding: '0.7rem 1.5rem',
+            borderRadius: 6,
+            border: '1px solid #b2dfcc',
+            background: '#f0faf4',
+            color: '#1a7a4a',
+            textDecoration: 'none',
+            fontSize: '0.95rem',
+          }}
+        >
+          Ask your wiki →
+        </Link>
+        <Link
           href="/wiki"
           style={{
             display: 'inline-flex',

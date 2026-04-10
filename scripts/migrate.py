@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -202,6 +202,19 @@ CREATE TABLE IF NOT EXISTS compile_progress (
 );
 """
 
+MIGRATION_V9_SQL = """
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  citations JSON,
+  pages_used JSON,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_messages(session_id);
+"""
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -278,6 +291,10 @@ def migrate():
     if current < 8:
         print("  applying migration v8 (compile_progress table)...")
         conn.executescript(MIGRATION_V8_SQL)
+
+    if current < 9:
+        print("  applying migration v9 (chat_messages table)...")
+        conn.executescript(MIGRATION_V9_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
