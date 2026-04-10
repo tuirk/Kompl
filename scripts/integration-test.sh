@@ -43,6 +43,13 @@
 
 set -euo pipefail
 
+# Windows Git Bash compatibility: `python3` may resolve to a Windows Store redirect
+# stub rather than a real interpreter. Test that it actually prints a version string.
+if ! python3 --version 2>&1 | grep -q "Python 3"; then
+    python3() { python "$@"; }
+    export -f python3
+fi
+
 # Compose command (some environments use `docker-compose`, newer use `docker compose`)
 COMPOSE="docker compose"
 
