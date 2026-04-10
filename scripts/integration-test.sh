@@ -15,7 +15,7 @@
 #
 # Stage state at commit 4:
 #   Stage 0 — REAL (cold start: docker compose down -v + up -d --build, all 3 services healthy)
-#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=2)
+#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=4)
 #   Stage 4 — REAL (live URL ingest + compile end-to-end), plus failure-path canary
 #             Skipped gracefully when FIRECRAWL_API_KEY or GEMINI_API_KEY is unset.
 #   All other stages — TODO.
@@ -165,8 +165,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":3'; then
-        echo "  FAIL: schema_version != 3"
+    if ! echo "$response" | grep -q '"schema_version":4'; then
+        echo "  FAIL: schema_version != 4"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -538,6 +538,16 @@ stage_10_concurrency() {
 }
 
 # ---------------------------------------------------------------------------
+# Stage 11 — Onboarding API canary
+# ---------------------------------------------------------------------------
+stage_11_onboarding_api() {
+    echo "[STAGE 11] TODO: onboarding API canary (collect → review → confirm → pending)"
+    echo "  Requires: Part 1b file fixtures or a live Firecrawl key."
+    record_stage 11 TODO SKIPPED
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -556,6 +566,7 @@ main() {
     stage_8_version_history
     stage_9_contract_drift_canary
     stage_10_concurrency
+    stage_11_onboarding_api
 
     echo
     echo "=== Stage summary ==="
@@ -563,7 +574,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 11 stages executed, all passed ==="
+    echo "=== All 12 stages executed, all passed ==="
     exit 0
 }
 

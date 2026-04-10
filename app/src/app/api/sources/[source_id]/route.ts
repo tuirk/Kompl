@@ -5,11 +5,18 @@
  * metadata without rendering the full page. The /source/[source_id]
  * server component reads directly from db.ts and does not call this
  * route, but it's here for completeness and for the integration test.
+ *
+ * DELETE /api/sources/[source_id]
+ *
+ * Removes the source row and best-effort unlinks the raw gzip file.
+ * Used by the onboarding review screen to remove unchecked sources
+ * individually (the bulk path goes through /api/onboarding/confirm).
  */
 
+import { promises as fsPromises } from 'fs';
 import { NextResponse } from 'next/server';
 
-import { getSource } from '../../../../lib/db';
+import { deleteSource, getSource, insertActivity } from '../../../../lib/db';
 
 interface RouteContext {
   params: Promise<{ source_id: string }>;
@@ -47,4 +54,23 @@ export async function GET(_request: Request, { params }: RouteContext) {
     date_ingested: row.date_ingested,
     metadata,
   });
+}
+
+export async function DELETE(_request: Request, { params }: RouteContext) {
+  const { source_id } = await params;
+  if (!source_id) {
+    return NextResponse.json({ error: 'source_id required' }, { status: 400 });
+  }
+
+  const filePath = deleteSource(source_id);
+  if (filePath === null) {
+    return NextResponse.json({ error: 'not_found' }, { status: 404 });
+  }
+
+  // Best-effort file cleanup — orphaned gzip is harmless.
+  void fsPromises.unlink(filePath).catch(() => undefined);
+
+  insertActivity({ action_type: 'source_deleted', source_id, details: {} });
+
+  return new NextResponse(null, { status: 204 });
 }

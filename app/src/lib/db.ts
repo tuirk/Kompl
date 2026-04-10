@@ -116,6 +116,7 @@ export interface SourceRow {
   status: string;
   date_ingested: string;
   metadata: string | null; // JSON TEXT; caller parses if needed
+  onboarding_session_id: string | null;
 }
 
 export interface ActivityRow {
@@ -180,6 +181,8 @@ export interface InsertSourceArgs {
   content_hash: string;
   file_path: string;
   metadata: Record<string, unknown> | null;
+  compile_status?: 'pending' | 'collected';
+  onboarding_session_id?: string | null;
 }
 
 /**
@@ -192,10 +195,10 @@ export function insertSource(args: InsertSourceArgs): void {
     .prepare(
       `INSERT INTO sources
          (source_id, title, source_type, source_url, content_hash,
-          file_path, status, metadata)
+          file_path, status, metadata, compile_status, onboarding_session_id)
        VALUES
          (@source_id, @title, @source_type, @source_url, @content_hash,
-          @file_path, 'active', @metadata)`
+          @file_path, 'active', @metadata, @compile_status, @onboarding_session_id)`
     )
     .run({
       source_id: args.source_id,
@@ -205,6 +208,8 @@ export function insertSource(args: InsertSourceArgs): void {
       content_hash: args.content_hash,
       file_path: args.file_path,
       metadata: args.metadata ? JSON.stringify(args.metadata) : null,
+      compile_status: args.compile_status ?? 'pending',
+      onboarding_session_id: args.onboarding_session_id ?? null,
     });
 }
 
@@ -233,6 +238,58 @@ export function sourceExists(sourceId: string): boolean {
     .prepare('SELECT 1 AS one FROM sources WHERE source_id = ?')
     .get(sourceId) as { one: number } | undefined;
   return !!row;
+}
+
+// ============================================================================
+// Onboarding helpers (Part 1a)
+// ============================================================================
+
+/**
+ * Fetch all sources in a given onboarding session that are still in the
+ * 'collected' state. Used by /api/onboarding/review.
+ */
+export function getCollectedSources(sessionId: string): SourceRow[] {
+  return openDb()
+    .prepare(
+      `SELECT source_id, title, source_type, source_url, content_hash,
+              file_path, status, date_ingested, metadata, onboarding_session_id
+         FROM sources
+        WHERE onboarding_session_id = ?
+          AND compile_status = 'collected'
+        ORDER BY date_ingested ASC`
+    )
+    .all(sessionId) as SourceRow[];
+}
+
+/**
+ * Transition collected sources to 'pending' so the compile drain picks them up.
+ * Only updates rows that are still 'collected' — safe to call idempotently.
+ */
+export function markSourcesPending(sourceIds: string[]): void {
+  if (sourceIds.length === 0) return;
+  const placeholders = sourceIds.map(() => '?').join(', ');
+  openDb()
+    .prepare(
+      `UPDATE sources SET compile_status = 'pending'
+        WHERE source_id IN (${placeholders})
+          AND compile_status = 'collected'`
+    )
+    .run(...sourceIds);
+}
+
+/**
+ * Delete a source row and return its file_path for cleanup by the caller.
+ * Returns null if the source does not exist.
+ * Intended to be called INSIDE a db.transaction() callback (sync only).
+ */
+export function deleteSource(sourceId: string): string | null {
+  const db = openDb();
+  const row = db
+    .prepare('SELECT file_path FROM sources WHERE source_id = ?')
+    .get(sourceId) as { file_path: string } | null;
+  if (!row) return null;
+  db.prepare('DELETE FROM sources WHERE source_id = ?').run(sourceId);
+  return row.file_path;
 }
 
 // ============================================================================

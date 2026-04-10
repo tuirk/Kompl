@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -136,6 +136,12 @@ CREATE INDEX IF NOT EXISTS idx_page_links_source ON page_links(source_page_id);
 CREATE INDEX IF NOT EXISTS idx_page_links_target ON page_links(target_page_id);
 """
 
+MIGRATION_V4_SQL = "ALTER TABLE sources ADD COLUMN onboarding_session_id TEXT"
+
+MIGRATION_V4_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_sources_session ON sources(onboarding_session_id);
+"""
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -185,6 +191,16 @@ def migrate():
         print("  applying migration v3 (page_links table)...")
         conn.executescript(MIGRATION_V3_SQL)
         conn.executescript(MIGRATION_V3_INDEXES_SQL)
+
+    if current < 4:
+        print("  applying migration v4 (onboarding_session_id column)...")
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(sources)").fetchall()
+        }
+        if "onboarding_session_id" not in existing_cols:
+            conn.execute(MIGRATION_V4_SQL)
+        conn.executescript(MIGRATION_V4_INDEX_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
