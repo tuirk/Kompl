@@ -841,3 +841,61 @@ export function markSourceExtracted(sourceId: string): void {
     )
     .run(sourceId);
 }
+
+// ---------------------------------------------------------------------------
+// Alias helpers — Part 2b entity resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Batch-insert alias → canonical_name mappings in a single transaction.
+ * The aliases table has no UNIQUE constraint on alias, so we load existing
+ * aliases into a Set first and skip duplicates rather than relying on
+ * INSERT OR IGNORE.
+ */
+export function bulkInsertAliases(
+  aliases: Array<{ alias: string; canonical: string }>
+): void {
+  if (aliases.length === 0) return;
+  const db = openDb();
+  const existing = new Set(
+    (db.prepare('SELECT alias FROM aliases').all() as { alias: string }[]).map(
+      (r) => r.alias.toLowerCase()
+    )
+  );
+  const insert = db.prepare(
+    'INSERT INTO aliases (alias, canonical_name) VALUES (?, ?)'
+  );
+  db.transaction((rows: typeof aliases) => {
+    for (const { alias, canonical } of rows) {
+      if (!existing.has(alias.toLowerCase())) {
+        insert.run(alias, canonical);
+        existing.add(alias.toLowerCase());
+      }
+    }
+  })(aliases);
+}
+
+/**
+ * Return all known alias → canonical_name pairs (for passing to Layer 1
+ * fuzzy resolution as existing_aliases).
+ */
+export function getAliases(): Array<{ alias: string; canonical_name: string }> {
+  return openDb()
+    .prepare(
+      'SELECT alias, canonical_name FROM aliases WHERE canonical_name IS NOT NULL'
+    )
+    .all() as Array<{ alias: string; canonical_name: string }>;
+}
+
+/**
+ * Look up the canonical name for a given alias string (case-insensitive).
+ * Returns null if the alias is not known.
+ */
+export function findAliasByName(name: string): string | null {
+  const row = openDb()
+    .prepare(
+      'SELECT canonical_name FROM aliases WHERE alias = ? COLLATE NOCASE LIMIT 1'
+    )
+    .get(name) as { canonical_name: string } | undefined;
+  return row?.canonical_name ?? null;
+}

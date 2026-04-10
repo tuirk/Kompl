@@ -578,3 +578,106 @@ def extract_source(
         return LLMExtractionResponse.model_validate_json(raw_text)
     except Exception as e:
         raise LLMCompileError(f"extract_llm_parse_failed: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Entity disambiguation — LLM Layer 3 of the cascading resolver (Part 2b)
+# ---------------------------------------------------------------------------
+
+
+class DisambiguationResult(BaseModel):
+    """Single pair resolution result.
+
+    No extra='forbid' — google-genai rejects additionalProperties=false
+    in response_schema (consistent with all other LLM output models here).
+    """
+    entity_a: str
+    entity_b: str
+    decision: str           # "same" | "different" | "ambiguous"
+    canonical: str | None = None
+    reason: str
+
+
+class DisambiguationResponse(BaseModel):
+    """Batch disambiguation response."""
+    results: list[DisambiguationResult]
+
+
+_DISAMBIGUATION_SYSTEM_PROMPT = """\
+You are an entity resolution assistant. For each pair of entities, decide
+whether they refer to the same real-world entity or concept.
+
+For each pair return:
+  entity_a   — name of the first entity (copy from input)
+  entity_b   — name of the second entity (copy from input)
+  decision   — "same" (they are the same entity), "different" (distinct),
+               or "ambiguous" (cannot determine from context)
+  canonical  — if "same", the better canonical name (more complete / commonly used).
+               Set to null for "different" or "ambiguous".
+  reason     — brief explanation (1 sentence)
+
+Be conservative: only return "same" if you are confident. Prefer "ambiguous"
+over a wrong "same" call. Do not hallucinate.
+"""
+
+
+def disambiguate_entities(pairs: list[dict[str, Any]]) -> DisambiguationResponse:
+    """Batch LLM entity disambiguation for the 0.7–0.9 embedding similarity band.
+
+    Accepts up to 10 pairs per call (caller is responsible for batching).
+    Each pair is a dict with keys entity_a and entity_b, each a dict with
+    at least: name (str), type (str), context (str).
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted after 60s wait
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — LLM returned but JSON parse failed
+        RuntimeError         — GEMINI_API_KEY not set
+    """
+    import json as _json
+
+    if not pairs:
+        return DisambiguationResponse(results=[])
+
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("gemini")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted after max_delay")
+
+    pairs_json = _json.dumps(pairs, ensure_ascii=False, indent=2)
+    prompt = (
+        f"{_DISAMBIGUATION_SYSTEM_PROMPT}\n\n"
+        f"---\n\n"
+        f"Pairs to resolve:\n{pairs_json}"
+    )
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=DisambiguationResponse,
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                max_output_tokens=2048,
+                temperature=0.0,
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"disambiguate_llm_call_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        raise LLMCompileError("disambiguate_llm_error: empty response text")
+
+    try:
+        return DisambiguationResponse.model_validate_json(raw_text)
+    except Exception as e:
+        raise LLMCompileError(f"disambiguate_llm_parse_failed: {e}") from e

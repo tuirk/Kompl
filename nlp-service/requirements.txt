@@ -21,3 +21,5 @@ pytextrank==3.3.0
 scikit-learn==1.5.2
 # nltk: required by rake-nltk (stopwords + punkt tokenizer data).
 nltk==3.9.1
+# Part 2b: fast Levenshtein/Jaro-Winkler matching for entity resolution.
+rapidfuzz>=3.0

@@ -1,0 +1,25 @@
+# docker-compose.ci.yml — CI build cache override.
+#
+# Never used locally. Merged via COMPOSE_FILE env var in
+# .github/workflows/integration-test.yml:
+#
+#   COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
+#
+# Adds GHA cache backend to app and nlp-service builds so repeat CI runs
+# (unchanged Dockerfile + requirements.txt) complete in ~2-3 min instead
+# of ~18 min. Scoped per service so a change to nlp-service doesn't
+# invalidate the app cache and vice versa.
+
+services:
+  app:
+    build:
+      cache_from:
+        - type=gha,scope=app
+      cache_to:
+        - type=gha,mode=max,scope=app
+  nlp-service:
+    build:
+      cache_from:
+        - type=gha,scope=nlp-service
+      cache_to:
+        - type=gha,mode=max,scope=nlp-service

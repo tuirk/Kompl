@@ -15,7 +15,7 @@
 #
 # Stage state at commit 4:
 #   Stage 0 — REAL (cold start: docker compose down -v + up -d --build, all 3 services healthy)
-#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=5)
+#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=6)
 #   Stage 4 — REAL (live URL ingest + compile end-to-end), plus failure-path canary
 #             Skipped gracefully when FIRECRAWL_API_KEY or GEMINI_API_KEY is unset.
 #   All other stages — TODO.
@@ -165,8 +165,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":5'; then
-        echo "  FAIL: schema_version != 5"
+    if ! echo "$response" | grep -q '"schema_version":6'; then
+        echo "  FAIL: schema_version != 6"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -884,6 +884,129 @@ print(src['compile_status'] if src else 'NOT_FOUND')
 }
 
 # ---------------------------------------------------------------------------
+# Stage 15: Entity resolution canary
+# Collects two text sources with overlapping entity names ("Vitalik Buterin"
+# and "Buterin"), extracts both, then resolves to verify they collapse to one
+# canonical entity. Both extract + resolve require GEMINI_API_KEY.
+# ---------------------------------------------------------------------------
+stage_15_resolution() {
+    echo "[STAGE 15] REAL: entity resolution canary (Buterin + Vitalik Buterin → 1 canonical)"
+
+    if [ -z "${GEMINI_API_KEY:-}" ]; then
+        echo "  SKIPPED: GEMINI_API_KEY not set"
+        record_stage 15 REAL SKIPPED
+        return 0
+    fi
+
+    local SESSION_ID
+    SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || uuidgen)
+
+    # Collect two sources that mention the same entity under different names
+    local collect_response
+    collect_response=$(curl -sf -X POST http://localhost:3000/api/onboarding/collect \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"text\",\"items\":[
+          {\"markdown\":\"Vitalik Buterin founded Ethereum in 2015. Ethereum is a programmable blockchain platform that supports smart contracts.\",\"title_hint\":\"Source A\",\"source_type_hint\":\"note\"},
+          {\"markdown\":\"Buterin proposed Ethereum as a next-generation cryptocurrency platform. ETH is the native token of Ethereum.\",\"title_hint\":\"Source B\",\"source_type_hint\":\"note\"}
+        ]}")
+
+    if [ -z "$collect_response" ]; then
+        echo "  FAIL: /api/onboarding/collect returned empty"
+        record_stage 15 REAL FAIL
+        return 1
+    fi
+
+    # Parse out both source IDs
+    local SOURCE_IDS_JSON
+    SOURCE_IDS_JSON=$(echo "$collect_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps([s['source_id'] for s in d.get('stored',[])]))" 2>/dev/null)
+
+    if [ -z "$SOURCE_IDS_JSON" ] || [ "$SOURCE_IDS_JSON" = "[]" ]; then
+        echo "  FAIL: could not parse source_ids from collect response"
+        echo "  collect response: $collect_response"
+        record_stage 15 REAL FAIL
+        return 1
+    fi
+
+    # Confirm both sources
+    curl -sf -X POST http://localhost:3000/api/onboarding/confirm \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"selected_source_ids\":$SOURCE_IDS_JSON,\"deleted_source_ids\":[]}" > /dev/null
+
+    # Extract each source
+    echo "  extracting 2 sources (Gemini calls — may take 60-180s each)..."
+    local extract_ok=0
+    while IFS= read -r SID; do
+        local extract_response
+        extract_response=$(curl -sf --max-time 300 -X POST http://localhost:3000/api/compile/extract \
+            -H 'Content-Type: application/json' \
+            -d "{\"source_id\":\"$SID\"}")
+        if [ -z "$extract_response" ]; then
+            echo "  FAIL: extract returned empty for source $SID"
+            record_stage 15 REAL FAIL
+            return 1
+        fi
+        extract_ok=$((extract_ok + 1))
+    done < <(echo "$SOURCE_IDS_JSON" | python3 -c "import sys,json; [print(s) for s in json.load(sys.stdin)]")
+
+    if [ "$extract_ok" -ne 2 ]; then
+        echo "  FAIL: expected 2 extractions, got $extract_ok"
+        record_stage 15 REAL FAIL
+        return 1
+    fi
+
+    # Resolve across the session
+    echo "  resolving entities across session..."
+    local resolve_response
+    resolve_response=$(curl -sf --max-time 180 -X POST http://localhost:3000/api/compile/resolve \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}")
+
+    if [ -z "$resolve_response" ]; then
+        echo "  FAIL: /api/compile/resolve returned empty"
+        record_stage 15 REAL FAIL
+        return 1
+    fi
+
+    # Verify: exactly 1 canonical entity containing "buterin" (case-insensitive)
+    local buterin_count
+    buterin_count=$(echo "$resolve_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+entities = d.get('canonical_entities', [])
+count = sum(1 for e in entities if 'buterin' in e.get('canonical','').lower())
+print(count)
+" 2>/dev/null)
+
+    if [ "$buterin_count" != "1" ]; then
+        echo "  FAIL: expected 1 Buterin canonical, got $buterin_count"
+        echo "  response: $(echo "$resolve_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d.get('canonical_entities',[])[:5], indent=2))" 2>/dev/null | head -c 500)"
+        record_stage 15 REAL FAIL
+        return 1
+    fi
+
+    # Verify: merging occurred (final_canonical < total_raw)
+    local merge_ok
+    merge_ok=$(echo "$resolve_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+stats = d.get('stats', {})
+total = stats.get('total_raw', 0)
+final = stats.get('final_canonical', total)
+print('ok' if total > 0 and final < total else 'no_merge')
+" 2>/dev/null)
+
+    if [ "$merge_ok" != "ok" ]; then
+        echo "  WARN: no entity merging detected (stats: $(echo "$resolve_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stats',{}))" 2>/dev/null))"
+        # Not a hard failure — small sources may have no duplicates after extraction
+    fi
+
+    echo "  Buterin canonical count: $buterin_count — OK"
+    echo "  PASS"
+    record_stage 15 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -906,6 +1029,7 @@ main() {
     stage_12_text_connector
     stage_13_twitter_connector
     stage_14_extraction
+    stage_15_resolution
 
     echo
     echo "=== Stage summary ==="
@@ -913,7 +1037,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 14 stages executed, all passed ==="
+    echo "=== All 15 stages executed, all passed ==="
     exit 0
 }
 

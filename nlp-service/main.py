@@ -16,10 +16,14 @@ Part 2a additions (extraction infrastructure):
   - POST /extract/route         — profile router (pure logic)
   - POST /pipeline/extract-llm  — Gemini structured extraction
 
+Part 2b additions (entity resolution):
+  - POST /resolve/fuzzy         — Levenshtein/Jaro-Winkler/substring/acronym/alias grouping
+  - POST /resolve/embedding     — sentence-transformers cosine similarity (>0.9/0.7-0.9/<0.7)
+  - POST /resolve/disambiguate  — Gemini LLM disambiguation for 0.7–0.9 ambiguous band
+
 Future commits will add routers for:
-  - embedding   (commit 6  — sentence-transformers)
   - vectors     (commit 6  — Chroma search/upsert/delete)
-  - pipeline    (commit 10 — /pipeline/resolve, /pipeline/draft)
+  - pipeline    (commit 10 — /pipeline/draft, /pipeline/plan)
   - wiki        (commit 12 — wiki rebuild orchestration)
 
 Intentionally minimal: no middleware, no CORS, no logging config. This
@@ -41,6 +45,7 @@ from pydantic import BaseModel, ConfigDict
 from routers.conversion import router as conversion_router
 from routers.extraction import router as extraction_router
 from routers.pipeline import router as pipeline_router
+from routers.resolution import router as resolution_router
 from routers.storage import router as storage_router
 
 logger = logging.getLogger(__name__)
@@ -52,11 +57,12 @@ class HealthResponse(BaseModel):
     status: str
 
 
-app = FastAPI(title="kompl-nlp-service", version="0.5.0")
+app = FastAPI(title="kompl-nlp-service", version="0.6.0")
 
 app.include_router(conversion_router)
 app.include_router(extraction_router)
 app.include_router(pipeline_router)
+app.include_router(resolution_router)
 app.include_router(storage_router)
 
 

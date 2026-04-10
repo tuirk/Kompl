@@ -43,3 +43,6 @@ jobs:
           # When stages flip to real in later commits, they will need
           # these values and will be set via GitHub Secrets at that time.
           DB_PATH: /data/db/kompl.db
+          # Merge the CI cache override so docker compose build uses the GHA
+          # cache backend. First run warms cache; subsequent runs ~2-3 min.
+          COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
