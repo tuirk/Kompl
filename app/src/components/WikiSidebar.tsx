@@ -189,6 +189,9 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
         <Link href="/" style={{ fontSize: 12, color: 'var(--fg-muted)', display: 'block', marginTop: '0.4rem' }}>
           ⚙ Manage
         </Link>
+        <Link href="/chat" style={{ fontSize: 12, color: 'var(--fg-muted)', display: 'block', marginTop: '0.4rem' }}>
+          💬 Chat
+        </Link>
       </div>
     </aside>
   );
