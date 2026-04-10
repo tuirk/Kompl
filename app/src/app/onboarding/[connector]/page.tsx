@@ -8,7 +8,7 @@
  *   kompl_connectors    — JSON array of selected connector ids
  *   kompl_connector_idx — current index into kompl_connectors
  *
- * Active connectors: 'url', 'file-upload', 'bookmarks', 'upnote'
+ * Active connectors: 'url', 'file-upload', 'bookmarks', 'twitter', 'upnote'
  * Unknown or coming-soon connectors show a holding screen.
  *
  * Navigation:
@@ -21,6 +21,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import type { AppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 
 import { useToast } from '../../../components/Toast';
+import TwitterConnector from './twitter-connector';
 
 const CONNECTOR_LABELS: Record<string, string> = {
   url: 'URLs',
@@ -718,6 +719,7 @@ const CONNECTOR_COMPONENTS: Record<string, ComponentType<ConnectorProps>> = {
   'url': UrlConnector,
   'file-upload': FileConnector,
   'bookmarks': BookmarksConnector,
+  'twitter': TwitterConnector,
   'upnote': UpnoteConnector,
 };
 

@@ -17,7 +17,7 @@ import { useEffect, useState } from 'react';
 import { SourceCard } from '../../components/SourceCard';
 import { useToast } from '../../components/Toast';
 
-const ACTIVE_CONNECTORS = ['url', 'file-upload', 'bookmarks', 'upnote'] as const;
+const ACTIVE_CONNECTORS = ['url', 'file-upload', 'bookmarks', 'twitter', 'upnote'] as const;
 type ActiveConnector = (typeof ACTIVE_CONNECTORS)[number];
 
 interface ConnectorDef {
@@ -33,7 +33,7 @@ const CONNECTORS: ConnectorDef[] = [
   { id: 'file-upload', icon: '📄', title: 'Files', description: 'PDF, DOCX, PPTX, images, audio.', status: 'active' },
   { id: 'bookmarks', icon: '🔖', title: 'Browser Bookmarks', description: 'Upload your Chrome / Firefox bookmarks HTML export.', status: 'active' },
   { id: 'upnote', icon: '📔', title: 'Upnote', description: 'Upload your Upnote markdown export.', status: 'active' },
-  { id: 'twitter', icon: '𝕏', title: 'Twitter / X Bookmarks', description: 'Import your saved tweets via bookmarklet.', status: 'coming-soon' },
+  { id: 'twitter', icon: '𝕏', title: 'Twitter / X Bookmarks', description: 'Upload a JSON export from any Twitter bookmark tool.', status: 'active' },
   { id: 'google-drive', icon: '🗂️', title: 'Google Drive', description: 'Browse and select Drive documents.', status: 'coming-soon' },
   { id: 'notion', icon: '📓', title: 'Notion', description: 'Export from Notion → upload as files.', status: 'coming-soon' },
   { id: 'iphone-notes', icon: '📱', title: 'iPhone Notes', description: 'Coming soon.', status: 'disabled' },
