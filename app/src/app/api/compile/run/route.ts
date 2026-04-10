@@ -15,11 +15,12 @@
  * Steps:
  *   1. extract  — POST /api/compile/extract per source (sequential)
  *   2. resolve  — POST /api/compile/resolve
- *   3. plan     — POST /api/compile/plan
- *   4. draft    — POST /api/compile/draft  (up to 15 min, Gemini calls)
- *   5. crossref — POST /api/compile/crossref
- *   6. commit   — POST /api/compile/commit
- *   7. schema   — POST /api/compile/schema (schema.md bootstrap)
+ *   3. match    — POST /api/compile/match (TF-IDF + LLM triage vs existing pages)
+ *   4. plan     — POST /api/compile/plan
+ *   5. draft    — POST /api/compile/draft  (up to 15 min, Gemini calls)
+ *   6. crossref — POST /api/compile/crossref
+ *   7. commit   — POST /api/compile/commit
+ *   8. schema   — POST /api/compile/schema (schema.md bootstrap)
  */
 
 import { NextResponse } from 'next/server';
@@ -54,14 +55,29 @@ async function callResolve(sessionId: string): Promise<{ canonical_entities: unk
   return res.json() as Promise<{ canonical_entities: unknown[] }>;
 }
 
-async function callPlan(
+async function callMatch(
   sessionId: string,
   canonicalEntities: unknown[]
+): Promise<{ skipped: boolean; matches: unknown[]; stats: Record<string, number> }> {
+  const res = await fetch(`${APP_URL}/api/compile/match`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, canonical_entities: canonicalEntities }),
+    signal: AbortSignal.timeout(300_000), // triage calls can stack up
+  });
+  if (!res.ok) throw new Error(`match failed: ${res.status}`);
+  return res.json() as Promise<{ skipped: boolean; matches: unknown[]; stats: Record<string, number> }>;
+}
+
+async function callPlan(
+  sessionId: string,
+  canonicalEntities: unknown[],
+  matches: unknown[]
 ): Promise<{ stats: { total: number } }> {
   const res = await fetch(`${APP_URL}/api/compile/plan`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, canonical_entities: canonicalEntities }),
+    body: JSON.stringify({ session_id: sessionId, canonical_entities: canonicalEntities, matches }),
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`plan failed: ${res.status}`);
@@ -128,27 +144,41 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   const canonicalEntities = resolveResult.canonical_entities;
   updateCompileStep(sessionId, 'resolve', 'done', `${canonicalEntities.length} canonical entities`);
 
-  // Step 3: plan
+  // Step 3: match — TF-IDF + LLM triage vs existing wiki pages
+  updateCompileStep(sessionId, 'match', 'running');
+  const matchResult = await callMatch(sessionId, canonicalEntities);
+  if (matchResult.skipped) {
+    updateCompileStep(sessionId, 'match', 'done', 'First compile — no existing pages');
+  } else {
+    updateCompileStep(
+      sessionId,
+      'match',
+      'done',
+      `${matchResult.stats.updates} updates, ${matchResult.stats.contradictions} contradictions, ${matchResult.stats.skips} skipped`
+    );
+  }
+
+  // Step 4: plan
   updateCompileStep(sessionId, 'plan', 'running');
-  const planResult = await callPlan(sessionId, canonicalEntities);
+  const planResult = await callPlan(sessionId, canonicalEntities, matchResult.matches);
   updateCompileStep(sessionId, 'plan', 'done', `${planResult.stats.total} pages planned`);
 
-  // Step 4: draft
+  // Step 5: draft
   updateCompileStep(sessionId, 'draft', 'running');
   const draftResult = await callDraft(sessionId);
   updateCompileStep(sessionId, 'draft', 'done', `${draftResult.drafted} drafts generated`);
 
-  // Step 5: crossref
+  // Step 6: crossref
   updateCompileStep(sessionId, 'crossref', 'running');
   const crossrefResult = await callCrossref(sessionId);
   updateCompileStep(sessionId, 'crossref', 'done', `${crossrefResult.wikilinks_added} wikilinks added`);
 
-  // Step 6: commit
+  // Step 7: commit
   updateCompileStep(sessionId, 'commit', 'running');
   const commitResult = await callCommit(sessionId);
   updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages committed`);
 
-  // Step 7: schema — always call, schema route handles already_exists internally
+  // Step 8: schema — always call, schema route handles already_exists internally
   updateCompileStep(sessionId, 'schema', 'running');
   await callSchema(sessionId);
   updateCompileStep(sessionId, 'schema', 'done');

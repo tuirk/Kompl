@@ -47,6 +47,7 @@ from services.llm_client import (
     extract_source,
     generate_schema,
     lint_scan,
+    triage_page_update,
 )
 
 router = APIRouter(tags=["pipeline"])
@@ -282,6 +283,50 @@ class GenerateSchemaResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     markdown: str
+
+
+# ---------------------------------------------------------------------------
+# Part 2d — wiki-aware triage
+# ---------------------------------------------------------------------------
+
+
+class TriageRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    source_claims: str
+    existing_page_summary: str
+    page_title: str
+
+
+class TriageResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    decision: str  # 'update' | 'contradiction' | 'skip'
+    reason: str
+
+
+@router.post("/pipeline/triage", response_model=TriageResponse)
+def pipeline_triage(req: TriageRequest) -> TriageResponse:
+    """Decide whether a source warrants updating an existing wiki page.
+
+    Returns decision ('update'|'contradiction'|'skip') and a brief reason.
+    HTTP 429 when rate limit bucket is full.
+    HTTP 503 when daily cost ceiling is exceeded.
+    HTTP 500 when the LLM call fails or JSON parse fails.
+    """
+    try:
+        result = triage_page_update(
+            req.source_claims,
+            req.existing_page_summary,
+            req.page_title,
+        )
+    except LLMRateLimitedError as e:
+        raise HTTPException(status_code=429, detail="llm_rate_limited") from e
+    except CostCeilingError as e:
+        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+    except LLMCompileError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return TriageResponse(**result)
 
 
 @router.post("/pipeline/generate-schema", response_model=GenerateSchemaResponse)

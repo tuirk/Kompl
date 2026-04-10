@@ -989,6 +989,91 @@ instructions for the LLM on all future wiki updates.
 """
 
 
+def triage_page_update(
+    source_claims: str,
+    existing_page_summary: str,
+    page_title: str,
+) -> dict[str, str]:
+    """Decide whether a source warrants updating an existing wiki page.
+
+    Args:
+        source_claims:        Extracted markdown text from the new source.
+        existing_page_summary: Current summary/content of the wiki page.
+        page_title:           Title of the wiki page being triaged.
+
+    Returns dict with keys 'decision' ('update'|'contradiction'|'skip') and 'reason'.
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — empty response or JSON parse failed
+    """
+    import json as _json
+
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("gemini")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+
+    prompt = (
+        f'You are a wiki maintenance assistant deciding whether a wiki page needs updating.\n\n'
+        f'Wiki page: "{page_title}"\n'
+        f'Current page summary:\n{existing_page_summary}\n\n'
+        f'New information from ingested source:\n{source_claims}\n\n'
+        f'Respond with JSON only:\n'
+        f'{{\n'
+        f'  "decision": "update" | "contradiction" | "skip",\n'
+        f'  "reason": "brief explanation (1-2 sentences)"\n'
+        f'}}\n\n'
+        f'- "update": source has material new information not in the current page\n'
+        f'- "contradiction": source directly contradicts a factual claim in the page\n'
+        f'- "skip": source is redundant or only tangentially mentions the topic'
+    )
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "OBJECT",
+                    "properties": {
+                        "decision": {"type": "STRING"},
+                        "reason": {"type": "STRING"},
+                    },
+                    "required": ["decision", "reason"],
+                },
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                max_output_tokens=512,
+                temperature=0.0,
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"triage_llm_call_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        raise LLMCompileError("triage_error: empty response text")
+
+    try:
+        result = _json.loads(raw_text)
+    except Exception as e:
+        raise LLMCompileError(f"triage_json_parse_failed: {e}") from e
+
+    decision = result.get("decision", "skip")
+    if decision not in ("update", "contradiction", "skip"):
+        decision = "skip"
+    return {"decision": decision, "reason": result.get("reason", "")}
+
+
 def generate_schema(pages_summary: list[dict[str, Any]]) -> str:
     """Generate a wiki schema document from the first compile's page list.
 

@@ -27,6 +27,7 @@
  * write + DB insert must succeed or fail together.
  */
 
+import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -35,6 +36,7 @@ import zlib from 'node:zlib';
 const DB_PATH = process.env.DB_PATH ?? '/data/db/kompl.db';
 const DATA_ROOT = path.dirname(path.dirname(DB_PATH)); // /data
 const RAW_DIR = path.join(DATA_ROOT, 'raw');
+const PAGES_DIR = path.join(DATA_ROOT, 'pages');
 
 let _db: Database.Database | null = null;
 
@@ -1053,7 +1055,7 @@ export function markSourcesActive(sourceIds: string[]): void {
 // Compile progress helpers (Part 2c-ii)
 // ============================================================================
 
-const COMPILE_STEPS = ['extract', 'resolve', 'plan', 'draft', 'crossref', 'commit', 'schema'] as const;
+const COMPILE_STEPS = ['extract', 'resolve', 'match', 'plan', 'draft', 'crossref', 'commit', 'schema'] as const;
 type CompileStep = (typeof COMPILE_STEPS)[number];
 
 const DEFAULT_STEPS = () =>
@@ -1191,4 +1193,48 @@ export function getSourcesBySession(sessionId: string): SourceRow[] {
         ORDER BY date_ingested ASC`
     )
     .all(sessionId) as SourceRow[];
+}
+
+// ============================================================================
+// Page helpers added for Part 2d (wiki-aware updates)
+// ============================================================================
+
+/**
+ * Return all pages whose page_type is in the given list.
+ * Used by /api/compile/match to build the TF-IDF candidate corpus.
+ */
+export function getPagesByType(types: string[]): PageRow[] {
+  if (types.length === 0) return [];
+  const placeholders = types.map(() => '?').join(', ');
+  return openDb()
+    .prepare(
+      `SELECT page_id, title, page_type, category, summary, content_path,
+              previous_content_path, last_updated, source_count, created_at
+         FROM pages
+        WHERE page_type IN (${placeholders})
+        ORDER BY last_updated DESC`
+    )
+    .all(...types) as PageRow[];
+}
+
+/**
+ * Increment the source_count column of a page by the given amount.
+ * Called after a provenance-only commit so source_count stays accurate.
+ */
+export function incrementPageSourceCount(pageId: string, increment: number): void {
+  openDb()
+    .prepare('UPDATE pages SET source_count = source_count + ? WHERE page_id = ?')
+    .run(increment, pageId);
+}
+
+/**
+ * Read the current gzipped page file and return its SHA-256 hex hash.
+ * Returns '' if the file does not exist (first-write path — caller handles).
+ * Synchronous so it can be called inside a db.transaction() callback.
+ */
+export function getCurrentPageHash(pageId: string): string {
+  const filePath = path.join(PAGES_DIR, `${pageId}.md.gz`);
+  if (!fs.existsSync(filePath)) return '';
+  const data = fs.readFileSync(filePath);
+  return createHash('sha256').update(data).digest('hex');
 }

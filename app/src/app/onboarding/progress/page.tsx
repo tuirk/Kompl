@@ -33,6 +33,7 @@ interface ProgressResponse {
 const STEPS = [
   { key: 'extract',  label: 'Extracting knowledge' },
   { key: 'resolve',  label: 'Resolving entities' },
+  { key: 'match',    label: 'Checking existing wiki' },
   { key: 'plan',     label: 'Planning wiki structure' },
   { key: 'draft',    label: 'Writing pages' },
   { key: 'crossref', label: 'Cross-referencing' },

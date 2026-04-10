@@ -1380,6 +1380,123 @@ print(d.get('page_count', 0))
     return 0
 }
 
+# Stage 18 — wiki-aware update: returning session match step (Part 2d)
+#
+# Skipped if:
+#   - GEMINI_API_KEY is unset
+#   - page_count < 1 (stages 16/17 must have run to create pages first)
+#
+# Flow:
+#   1. Assert page_count >= 1 from /api/health
+#   2. Add 1 text source that mentions a topic from an existing page
+#   3. Confirm session → poll progress until completed (180s)
+#   4. Assert match step detail does NOT contain "First compile"
+#   5. Assert page_count >= previous page_count (no pages deleted)
+#   6. Assert session status = 'completed'
+stage_18_wiki_aware_update() {
+    echo "--- stage 18: wiki-aware update (returning session) ---"
+
+    if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+        echo "  SKIPPED: GEMINI_API_KEY not set"
+        record_stage 18 REAL SKIPPED
+        return 0
+    fi
+
+    # Check that at least one page exists (stage 16/17 must have run first)
+    HEALTH=$(curl -sf "http://localhost:3000/api/health" 2>/dev/null || echo "")
+    PAGE_COUNT_BEFORE=$(echo "$HEALTH" | grep -o '"page_count":[0-9]*' | grep -o '[0-9]*' || echo "0")
+    if [[ "$PAGE_COUNT_BEFORE" -lt 1 ]]; then
+        echo "  SKIPPED: page_count=$PAGE_COUNT_BEFORE — stages 16/17 must run first to populate wiki"
+        record_stage 18 REAL SKIPPED
+        return 0
+    fi
+    echo "  page_count before: $PAGE_COUNT_BEFORE"
+
+    # Collect 1 source that overlaps with existing wiki content
+    SESSION_ID="stage18-returning-$(date +%s)"
+    COLLECT_RESP=$(curl -sf -X POST "http://localhost:3000/api/onboarding/collect" \
+        -H "Content-Type: application/json" \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"text\",\"items\":[
+              {\"title\":\"Returning source for wiki update test\",
+               \"text\":\"Bitcoin is a decentralized digital currency. Ethereum introduced smart contracts. Blockchain technology enables trustless transactions.\"}
+            ]}" 2>/dev/null || echo "")
+    if [[ -z "$COLLECT_RESP" ]]; then
+        echo "  FAIL: collect request failed"
+        record_stage 18 REAL FAIL
+        return 1
+    fi
+
+    # Review — get source IDs
+    REVIEW=$(curl -sf "http://localhost:3000/api/onboarding/review?session_id=$SESSION_ID" 2>/dev/null || echo "")
+    SOURCE_IDS_JSON=$(echo "$REVIEW" | grep -o '"source_id":"[^"]*"' | grep -o '"[^"]*"$' | tr '\n' ',' | sed 's/,$//' | sed 's/^/[/' | sed 's/$/]/')
+    if [[ "$SOURCE_IDS_JSON" == "[]" || -z "$SOURCE_IDS_JSON" ]]; then
+        echo "  FAIL: no sources found in review"
+        record_stage 18 REAL FAIL
+        return 1
+    fi
+
+    # Confirm — triggers n8n session-compile → /api/compile/run
+    CONFIRM=$(curl -sf -X POST "http://localhost:3000/api/onboarding/confirm" \
+        -H "Content-Type: application/json" \
+        -d "{\"session_id\":\"$SESSION_ID\",\"selected_source_ids\":$SOURCE_IDS_JSON,\"deleted_source_ids\":[]}" \
+        2>/dev/null || echo "")
+    if [[ -z "$CONFIRM" ]]; then
+        echo "  FAIL: confirm request failed"
+        record_stage 18 REAL FAIL
+        return 1
+    fi
+
+    # Poll progress until completed or failed (180s timeout)
+    TIMEOUT=180
+    ELAPSED=0
+    STATUS=""
+    while [[ $ELAPSED -lt $TIMEOUT ]]; do
+        sleep 4
+        ELAPSED=$((ELAPSED + 4))
+        PROG=$(curl -sf "http://localhost:3000/api/compile/progress?session_id=$SESSION_ID" 2>/dev/null || echo "")
+        STATUS=$(echo "$PROG" | grep -o '"status":"[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"' || echo "")
+        if [[ "$STATUS" == "completed" || "$STATUS" == "failed" ]]; then
+            break
+        fi
+    done
+
+    if [[ "$STATUS" == "failed" ]]; then
+        error_msg=$(curl -sf "http://localhost:3000/api/compile/progress?session_id=$SESSION_ID" 2>/dev/null | grep -o '"error":"[^"]*"' | head -1 || echo "")
+        echo "  FAIL: compile failed: $error_msg"
+        record_stage 18 REAL FAIL
+        return 1
+    fi
+    if [[ "$STATUS" != "completed" ]]; then
+        echo "  FAIL: compile timed out after ${TIMEOUT}s (status: $STATUS)"
+        record_stage 18 REAL FAIL
+        return 1
+    fi
+
+    # Assert match step detail does NOT say "First compile"
+    MATCH_DETAIL=$(curl -sf "http://localhost:3000/api/compile/progress?session_id=$SESSION_ID" 2>/dev/null \
+        | grep -o '"match":{[^}]*}' | head -1 || echo "")
+    if echo "$MATCH_DETAIL" | grep -qi "First compile"; then
+        echo "  FAIL: match step shows 'First compile' but page_count was $PAGE_COUNT_BEFORE — wiki-aware routing broken"
+        record_stage 18 REAL FAIL
+        return 1
+    fi
+    echo "  match step detail: $MATCH_DETAIL"
+
+    # Assert page_count did not decrease
+    HEALTH_AFTER=$(curl -sf "http://localhost:3000/api/health" 2>/dev/null || echo "")
+    PAGE_COUNT_AFTER=$(echo "$HEALTH_AFTER" | grep -o '"page_count":[0-9]*' | grep -o '[0-9]*' || echo "0")
+    if [[ "$PAGE_COUNT_AFTER" -lt "$PAGE_COUNT_BEFORE" ]]; then
+        echo "  FAIL: page_count decreased from $PAGE_COUNT_BEFORE to $PAGE_COUNT_AFTER"
+        record_stage 18 REAL FAIL
+        return 1
+    fi
+    echo "  page_count after: $PAGE_COUNT_AFTER (was $PAGE_COUNT_BEFORE)"
+
+    echo "  stage 18 PASS — returning session compile completed, match step active"
+    record_stage 18 REAL PASS
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1406,6 +1523,7 @@ main() {
     stage_15_resolution
     stage_16_full_pipeline
     stage_17_session_compile
+    stage_18_wiki_aware_update
 
     echo
     echo "=== Stage summary ==="
@@ -1413,7 +1531,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 17 stages executed, all passed ==="
+    echo "=== All 18 stages executed, all passed ==="
     exit 0
 }
 

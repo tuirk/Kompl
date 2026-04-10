@@ -118,6 +118,15 @@ export async function POST(request: Request) {
   }
 
   const canonicalEntities = body.canonical_entities as ResolvedGroup[];
+  const matches = Array.isArray(body.matches)
+    ? (body.matches as Array<{
+        source_id: string;
+        page_id: string;
+        page_title: string;
+        decision: string;
+        reason: string;
+      }>)
+    : [];
   const db = getDb();
 
   // Get session sources
@@ -304,6 +313,29 @@ export async function POST(request: Request) {
       action: 'create',
       source_ids: [...overviewSourceIds],
       related_plan_ids: relatedIds,
+    });
+  }
+
+  // ── Rule 6: Provenance-only — TF-IDF "skip" decisions ───────────────────────
+  // Sources that overlap with existing pages but have no new info get a
+  // provenance-only entry so the link is recorded without triggering a re-draft.
+  // update/contradiction decisions are handled by the existing title-match logic above.
+  for (const match of matches) {
+    if (match.decision !== 'skip') continue;
+
+    const alreadyPlanned = plans.some(
+      (p) => p.existing_page_id === match.page_id && p.source_ids.includes(match.source_id)
+    );
+    if (alreadyPlanned) continue;
+
+    plans.push({
+      plan_id: randomUUID(),
+      title: match.page_title,
+      page_type: 'entity',
+      action: 'provenance-only',
+      source_ids: [match.source_id],
+      existing_page_id: match.page_id,
+      related_plan_ids: [],
     });
   }
 

@@ -54,6 +54,8 @@ import {
   getPagePlansByStatus,
   updatePlanStatus,
   readRawMarkdown,
+  getCurrentPageHash,
+  incrementPageSourceCount,
 } from '../../../../lib/db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -286,16 +288,18 @@ async function commitSession(session_id: string): Promise<Response> {
     if (plan.action === 'provenance-only') {
       // provenance-only: insert provenance rows only, no page write
       try {
+        const existingPageId = plan.existing_page_id!;
+        const pageHash = getCurrentPageHash(existingPageId); // sync filesystem read before transaction
         db.transaction(() => {
-          const existingPageId = plan.existing_page_id!;
           for (const sid of sourceIds) {
             insertProvenance({
               source_id: sid,
               page_id: existingPageId,
-              content_hash: '',
+              content_hash: pageHash,
               contribution_type: 'mentioned',
             });
           }
+          incrementPageSourceCount(existingPageId, sourceIds.length);
         })();
         updatePlanStatus(plan.plan_id, 'committed');
         committed++;
