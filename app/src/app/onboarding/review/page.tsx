@@ -1,5 +1,4 @@
 'use client';
-export const dynamic = 'force-dynamic';
 
 /**
  * /onboarding/review — Review all collected sources before compiling.
@@ -12,7 +11,7 @@ export const dynamic = 'force-dynamic';
  */
 
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 
 import { useToast } from '../../../components/Toast';
 
@@ -66,7 +65,7 @@ function sourceDomain(row: SourceRow): string {
   return row.file_path.split('/').pop()?.replace(/\.[^.]+$/, '') ?? '';
 }
 
-export default function ReviewPage() {
+function ReviewPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast, showToast } = useToast();
@@ -330,4 +329,8 @@ export default function ReviewPage() {
       {toast}
     </main>
   );
+}
+
+export default function ReviewPage() {
+  return <Suspense><ReviewPageInner /></Suspense>;
 }

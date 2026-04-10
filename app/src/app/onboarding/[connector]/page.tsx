@@ -1,5 +1,4 @@
 'use client';
-export const dynamic = 'force-dynamic';
 
 /**
  * /onboarding/[connector] — Per-connector source collection screen.
@@ -17,7 +16,7 @@ export const dynamic = 'force-dynamic';
  *   "Skip for now"      → next connector or /review (no API call)
  */
 
-import { type ComponentType, useEffect, useRef, useState } from 'react';
+import { type ComponentType, Suspense, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import type { AppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 
@@ -724,7 +723,7 @@ const CONNECTOR_COMPONENTS: Record<string, ComponentType<ConnectorProps>> = {
 
 // ── Page shell ────────────────────────────────────────────────────────────────
 
-export default function ConnectorPage() {
+function ConnectorPageInner() {
   const params = useParams<{ connector: string }>();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -792,4 +791,8 @@ export default function ConnectorPage() {
       {toast}
     </main>
   );
+}
+
+export default function ConnectorPage() {
+  return <Suspense><ConnectorPageInner /></Suspense>;
 }

@@ -1,5 +1,4 @@
 'use client';
-export const dynamic = 'force-dynamic';
 
 /**
  * /onboarding/progress — Post-confirm progress screen.
@@ -14,7 +13,7 @@ export const dynamic = 'force-dynamic';
  */
 
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 
 interface ActivityRow {
   id: number;
@@ -27,7 +26,7 @@ interface ActivityRow {
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
-export default function ProgressPage() {
+function ProgressPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
@@ -180,4 +179,8 @@ function StepRow({
       <span style={{ fontSize: '0.95rem' }}>{label}</span>
     </div>
   );
+}
+
+export default function ProgressPage() {
+  return <Suspense><ProgressPageInner /></Suspense>;
 }
