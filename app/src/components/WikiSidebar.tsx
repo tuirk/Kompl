@@ -186,8 +186,8 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
           ← All pages
         </Link>
         <br />
-        <Link href="/feed" style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-          ← Feed
+        <Link href="/" style={{ fontSize: 12, color: 'var(--fg-muted)', display: 'block', marginTop: '0.4rem' }}>
+          ⚙ Manage
         </Link>
       </div>
     </aside>

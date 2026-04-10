@@ -4,15 +4,16 @@
  * /onboarding — Connector selection screen.
  *
  * Generates a session_id (UUID) on mount, stores it in sessionStorage.
+ * For mode=add (returning users), always generates a fresh session_id.
  * User checks active connectors → "Next →" navigates to the first
- * connector screen, passing session_id as a URL search param.
+ * connector screen, passing session_id + mode as URL search params.
  *
  * Coming-soon connectors show a toast on click; iPhone Notes is always
- * disabled. Active connectors: URL, file-upload, bookmarks, upnote.
+ * disabled. Active connectors: URL, file-upload, bookmarks, upnote, twitter.
  */
 
-import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
 
 import { SourceCard } from '../../components/SourceCard';
 import { useToast } from '../../components/Toast';
@@ -39,24 +40,25 @@ const CONNECTORS: ConnectorDef[] = [
   { id: 'iphone-notes', icon: '📱', title: 'iPhone Notes', description: 'Coming soon.', status: 'disabled' },
 ];
 
-export default function OnboardingPage() {
+function OnboardingPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { toast, showToast } = useToast();
+
+  const isReturning = searchParams.get('mode') === 'add';
 
   const [sessionId, setSessionId] = useState<string>('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    // Generate or reuse session_id
-    const existing = sessionStorage.getItem('kompl_session_id');
-    if (existing) {
-      setSessionId(existing);
-    } else {
-      const id = crypto.randomUUID();
-      sessionStorage.setItem('kompl_session_id', id);
-      setSessionId(id);
-    }
-  }, []);
+    // Returning users always get a fresh session to avoid mixing with prior runs.
+    const id =
+      isReturning || !sessionStorage.getItem('kompl_session_id')
+        ? crypto.randomUUID()
+        : sessionStorage.getItem('kompl_session_id')!;
+    sessionStorage.setItem('kompl_session_id', id);
+    setSessionId(id);
+  }, [isReturning]);
 
   function toggleConnector(id: string) {
     setSelected(prev => {
@@ -78,17 +80,20 @@ export default function OnboardingPage() {
     if (activeSelected.length === 0 || !sessionId) return;
     sessionStorage.setItem('kompl_connectors', JSON.stringify(activeSelected));
     sessionStorage.setItem('kompl_connector_idx', '0');
-    router.push(`/onboarding/${activeSelected[0]}?session_id=${sessionId}`);
+    const modeParam = isReturning ? '&mode=add' : '';
+    router.push(`/onboarding/${activeSelected[0]}?session_id=${sessionId}${modeParam}`);
   }
 
   return (
     <main style={{ maxWidth: 1040, margin: '0 auto', padding: '3.5rem 1.5rem 5rem' }}>
       <header style={{ marginBottom: '2.5rem' }}>
         <h1 style={{ margin: 0, fontSize: '2.2rem', lineHeight: 1.15 }}>
-          Where&apos;s your knowledge scattered?
+          {isReturning ? 'What do you want to add?' : 'Where\u2019s your knowledge scattered?'}
         </h1>
         <p style={{ color: 'var(--fg-muted)', fontSize: '1.05rem', marginTop: '0.75rem', maxWidth: 640 }}>
-          Select all the places you&apos;d like to pull from. You&apos;ll walk through each one.
+          {isReturning
+            ? 'Select where your new sources are.'
+            : 'Select all the places you\u2019d like to pull from. You\u2019ll walk through each one.'}
         </p>
       </header>
 
@@ -192,4 +197,8 @@ export default function OnboardingPage() {
       {toast}
     </main>
   );
+}
+
+export default function OnboardingPage() {
+  return <Suspense><OnboardingPageInner /></Suspense>;
 }

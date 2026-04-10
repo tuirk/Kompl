@@ -62,6 +62,25 @@ export function dbPath(): string {
 // ============================================================================
 
 /**
+ * Read an arbitrary key from the settings table. Returns null if absent.
+ */
+export function getSetting(key: string): string | null {
+  const row = openDb()
+    .prepare('SELECT value FROM settings WHERE key = ?')
+    .get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+/**
+ * Write an arbitrary key-value pair to the settings table (upsert).
+ */
+export function setSetting(key: string, value: string): void {
+  openDb()
+    .prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+    .run(key, value);
+}
+
+/**
  * Read the schema_version row from the settings table. Returns null if
  * the row does not exist (which would be a migration failure).
  */

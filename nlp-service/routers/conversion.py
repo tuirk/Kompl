@@ -93,6 +93,10 @@ class FileConvertRequest(BaseModel):
 router = APIRouter(tags=["conversion"])
 _http = HttpClient(timeout=30.0, max_retries=3)
 _FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
+# Minimum character count for a MarkItDown URL result to be considered usable.
+# Results below this threshold indicate a JS-rendered SPA, paywall, or a YouTube
+# video with no available transcript — Firecrawl is used as a fallback in those cases.
+_MARKITDOWN_MIN_CHARS = 500
 _DATA_ROOT = "/data"
 _ALLOWED_EXTENSIONS = {
     ".pdf",
@@ -120,20 +124,58 @@ _ALLOWED_EXTENSIONS = {
 
 
 # RFC 2606 reserved TLDs (never valid on the public internet). Fail fast
-# before calling Firecrawl so the error branch fires in <1s instead of
-# waiting 30s for a timeout. This also makes the stage-4 integration-test
-# canary deterministic (no polling, just a blocking curl with --max-time 30).
+# before trying anything so the error branch fires in <1s.
+# Also makes the stage-4 integration-test canary deterministic.
 _RFC2606_RESERVED_TLDS = {".invalid", ".test", ".example", ".localhost"}
+
+
+def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
+    """
+    Attempt to convert a URL via MarkItDown (free, local).
+
+    Returns a ConvertResponse if the result meets the quality threshold
+    (_MARKITDOWN_MIN_CHARS). Returns None if the output is empty or too short
+    so the caller can fall back to Firecrawl.
+
+    Never raises — all exceptions become None (caller decides fallback).
+    YouTube URLs are handled by MarkItDown's built-in YouTubeConverter which
+    uses youtube-transcript-api to extract full transcripts.
+    """
+    try:
+        result = MarkItDown().convert(url)
+    except Exception:
+        return None
+
+    markdown = result.text_content or ""
+    if len(markdown) < _MARKITDOWN_MIN_CHARS:
+        return None
+
+    title = result.title or url
+    content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+    return ConvertResponse(
+        source_id=source_id,
+        source_type="url",
+        title=title,
+        source_url=url,
+        markdown=markdown,
+        content_hash=content_hash,
+        metadata=ContentMetadata(
+            language=None,
+            description=None,
+            status_code=None,
+            content_type="text/html",
+            final_url=url,
+        ),
+    )
 
 
 @router.post("/convert/url", response_model=ConvertResponse)
 def convert_url(req: UrlConvertRequest) -> ConvertResponse:
-    if not _FIRECRAWL_API_KEY:
-        raise HTTPException(status_code=500, detail="firecrawl_not_configured")
+    from urllib.parse import urlparse
 
     # Reject RFC 2606 reserved TLDs immediately — they never resolve on the
-    # public internet and would only waste Firecrawl quota before failing.
-    from urllib.parse import urlparse
+    # public internet and would only waste MarkItDown or Firecrawl quota.
     parsed_host = urlparse(req.url).hostname or ""
     tld = "." + parsed_host.rsplit(".", 1)[-1] if "." in parsed_host else ""
     if tld.lower() in _RFC2606_RESERVED_TLDS:
@@ -144,6 +186,22 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
                 "upstream_status": 0,
                 "message": f"reserved_tld: {tld} is not resolvable on the public internet",
             },
+        )
+
+    # Layer 1: MarkItDown (free, local). For YouTube, uses YouTubeTranscriptApi
+    # to extract full transcripts — better quality than Firecrawl for captioned
+    # videos. For static articles and docs it also works well.
+    markitdown_result = _try_markitdown_url(req.source_id, req.url)
+    if markitdown_result is not None:
+        return markitdown_result
+
+    # Layer 2: Firecrawl fallback (paid). Reached only when MarkItDown returned
+    # insufficient content — JS-rendered SPAs, paywalled pages, YouTube videos
+    # with no available captions.
+    if not _FIRECRAWL_API_KEY:
+        raise HTTPException(
+            status_code=422,
+            detail="conversion_failed: markitdown returned insufficient content and firecrawl is not configured",
         )
 
     firecrawl_body = {

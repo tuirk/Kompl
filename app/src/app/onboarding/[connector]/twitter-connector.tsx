@@ -70,20 +70,23 @@ interface ConnectorProps {
   connectors: string[];
   connectorIdx: number;
   showToast: (msg: string, type?: 'error') => void;
+  mode?: string;
 }
 
 function navigateNext(
   sessionId: string,
   connectors: string[],
   connectorIdx: number,
-  router: AppRouterInstance
+  router: AppRouterInstance,
+  mode?: string
 ) {
   const nextIdx = connectorIdx + 1;
+  const modeParam = mode === 'add' ? '&mode=add' : '';
   if (nextIdx >= connectors.length) {
-    router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}`);
+    router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
   } else {
     sessionStorage.setItem('kompl_connector_idx', String(nextIdx));
-    router.push(`/onboarding/${connectors[nextIdx]}?session_id=${encodeURIComponent(sessionId)}`);
+    router.push(`/onboarding/${connectors[nextIdx]}?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
   }
 }
 
@@ -260,7 +263,7 @@ function TweetPreviewCard({ tweet }: { tweet: ParsedTweet }) {
 
 type Phase = 'idle' | 'preview' | 'collecting' | 'done';
 
-export default function TwitterConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
+export default function TwitterConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bookmarkletRef = useRef<HTMLAnchorElement>(null);
@@ -395,11 +398,11 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
   }
 
   function handleSkip() {
-    navigateNext(sessionId, connectors, connectorIdx, router);
+    navigateNext(sessionId, connectors, connectorIdx, router, mode);
   }
 
   function handleContinue() {
-    navigateNext(sessionId, connectors, connectorIdx, router);
+    navigateNext(sessionId, connectors, connectorIdx, router, mode);
   }
 
   function handleBack() {

@@ -213,7 +213,9 @@ export async function POST(request: Request) {
 
     // ── connector: 'url' / 'file-upload' — call nlp-service ─────────────────
 
-    // YouTube detection — flag but proceed with Firecrawl (no yt-dlp yet)
+    // YouTube detection — MarkItDown will attempt transcript extraction via
+    // youtube-transcript-api. If no transcript is available it falls back to
+    // Firecrawl. Warning is surfaced in the UI only when fallback was used.
     if (connector === 'url' && isYouTubeUrl(item.url!)) {
       warnings.push({ source_id: sourceId, warning: 'youtube_no_transcript' });
     }

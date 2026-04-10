@@ -31,8 +31,10 @@ import {
   deleteSource,
   getCollectedSources,
   getDb,
+  getSetting,
   insertActivity,
   markSourcesPending,
+  setSetting,
 } from '../../../../lib/db';
 
 export async function POST(request: Request) {
@@ -92,6 +94,10 @@ export async function POST(request: Request) {
       if (fp) filePaths.push(fp);
     }
     markSourcesPending(selectedIds);
+    // Mark first-time onboarding complete so / redirects to /feed on next visit.
+    if (!getSetting('onboarding_completed')) {
+      setSetting('onboarding_completed', '1');
+    }
     insertActivity({
       action_type: 'onboarding_confirmed',
       source_id: null,

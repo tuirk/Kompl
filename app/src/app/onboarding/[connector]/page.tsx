@@ -73,20 +73,23 @@ interface ConnectorProps {
   connectors: string[];
   connectorIdx: number;
   showToast: (msg: string, type?: 'error') => void;
+  mode?: string;
 }
 
 function navigateNext(
   sessionId: string,
   connectors: string[],
   connectorIdx: number,
-  router: AppRouterInstance
+  router: AppRouterInstance,
+  mode?: string
 ) {
   const nextIdx = connectorIdx + 1;
+  const modeParam = mode === 'add' ? '&mode=add' : '';
   if (nextIdx >= connectors.length) {
-    router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}`);
+    router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
   } else {
     sessionStorage.setItem('kompl_connector_idx', String(nextIdx));
-    router.push(`/onboarding/${connectors[nextIdx]}?session_id=${encodeURIComponent(sessionId)}`);
+    router.push(`/onboarding/${connectors[nextIdx]}?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
   }
 }
 
@@ -110,7 +113,7 @@ function SummaryCard({ result }: { result: CollectResult }) {
       {result.youtubeWarnings > 0 && (
         <p style={{ margin: '0.5rem 0 0', fontSize: '0.85rem', color: 'var(--fg-muted)' }}>
           ⚠ {result.youtubeWarnings} YouTube URL
-          {result.youtubeWarnings !== 1 ? 's' : ''} processed without transcript (full support coming soon).
+          {result.youtubeWarnings !== 1 ? 's' : ''} processed via fallback — no transcript available for this video.
         </p>
       )}
       {result.failed > 0 && (
@@ -182,7 +185,7 @@ function BottomNav({
 
 // ── URL Connector ─────────────────────────────────────────────────────────────
 
-function UrlConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
+function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const [urlInput, setUrlInput] = useState('');
   const [phase, setPhase] = useState<'idle' | 'loading' | 'done'>('idle');
@@ -240,7 +243,7 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast }: Connec
             style={{ width: '100%', resize: 'vertical', fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13, boxSizing: 'border-box' }}
           />
           <p style={{ fontSize: '0.85rem', color: 'var(--fg-dim)', marginTop: '0.4rem' }}>
-            YouTube URLs will be processed via Firecrawl for now (transcript extraction coming soon).
+            YouTube videos are supported — transcripts extracted automatically when available.
           </p>
         </>
       )}
@@ -257,9 +260,9 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast }: Connec
         phase={phase}
         hasInput={urls.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onBack={() => router.push('/onboarding')}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onBack={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)}
       />
     </>
   );
@@ -267,7 +270,7 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast }: Connec
 
 // ── File Upload Connector ─────────────────────────────────────────────────────
 
-function FileConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
+function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -414,9 +417,9 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
         phase={phase}
         hasInput={selectedFiles.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onBack={() => router.push('/onboarding')}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onBack={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)}
       />
     </>
   );
@@ -424,7 +427,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
 
 // ── Bookmarks Connector ───────────────────────────────────────────────────────
 
-function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
+function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const [bookmarkFile, setBookmarkFile] = useState<File | null>(null);
   const [parsedItems, setParsedItems] = useState<{ url: string; title: string; dateSaved: string | null }[]>([]);
@@ -562,9 +565,9 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast }: 
         phase={phase}
         hasInput={parsedItems.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onBack={() => router.push('/onboarding')}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onBack={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)}
       />
     </>
   );
@@ -572,7 +575,7 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast }: 
 
 // ── Upnote Connector ──────────────────────────────────────────────────────────
 
-function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
+function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -705,9 +708,9 @@ function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast }: Con
         phase={phase}
         hasInput={selectedFiles.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onBack={() => router.push('/onboarding')}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onBack={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)}
       />
     </>
   );
@@ -733,6 +736,7 @@ function ConnectorPageInner() {
 
   const connector = params.connector;
   const urlSessionId = searchParams.get('session_id') ?? '';
+  const mode = searchParams.get('mode') ?? '';
 
   const [sessionId, setSessionId] = useState('');
   const [connectors, setConnectors] = useState<string[]>([]);
@@ -760,7 +764,7 @@ function ConnectorPageInner() {
         <p style={{ fontSize: '2rem', marginBottom: '1rem' }}>🚧</p>
         <h2 style={{ marginBottom: '0.5rem' }}>{CONNECTOR_LABELS[connector] ?? connector}</h2>
         <p style={{ color: 'var(--fg-muted)' }}>This connector is coming soon.</p>
-        <button onClick={() => router.push('/onboarding')} style={{ marginTop: '2rem' }}>
+        <button onClick={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)} style={{ marginTop: '2rem' }}>
           ← Back to connector selection
         </button>
       </main>
@@ -788,6 +792,7 @@ function ConnectorPageInner() {
         connectors={connectors}
         connectorIdx={connectorIdx}
         showToast={showToast}
+        mode={mode}
       />
 
       {toast}

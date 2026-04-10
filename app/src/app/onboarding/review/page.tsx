@@ -71,6 +71,7 @@ function ReviewPageInner() {
   const { toast, showToast } = useToast();
 
   const sessionId = searchParams.get('session_id') ?? '';
+  const isReturning = searchParams.get('mode') === 'add';
 
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<ReviewResponse | null>(null);
@@ -133,7 +134,7 @@ function ReviewPageInner() {
         return;
       }
       router.push(
-        `/onboarding/progress?session_id=${encodeURIComponent(sessionId)}&queued=${body.queued ?? selectedIds.length}`
+        `/onboarding/progress?session_id=${encodeURIComponent(sessionId)}&queued=${body.queued ?? selectedIds.length}${isReturning ? '&mode=add' : ''}`
       );
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Network error', 'error');
@@ -172,8 +173,9 @@ function ReviewPageInner() {
       <header style={{ marginBottom: '2rem' }}>
         <h1 style={{ margin: 0, fontSize: '1.8rem' }}>Review your sources</h1>
         <p style={{ color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
-          {data.total} source{data.total !== 1 ? 's' : ''} ready to compile.
-          Uncheck anything you don&apos;t want.
+          {isReturning
+            ? 'New sources will be integrated into your existing wiki.'
+            : `${data.total} source${data.total !== 1 ? 's' : ''} ready to compile. Uncheck anything you don\u2019t want.`}
         </p>
       </header>
 
@@ -290,7 +292,7 @@ function ReviewPageInner() {
 
       {/* Add more link */}
       <p style={{ color: 'var(--fg-muted)', fontSize: '0.9rem', marginBottom: '0.5rem' }}>
-        <a href={`/onboarding?session_id=${encodeURIComponent(sessionId)}`}>
+        <a href={`/onboarding?session_id=${encodeURIComponent(sessionId)}${isReturning ? '&mode=add' : ''}`}>
           ← Add more sources
         </a>
       </p>
@@ -322,7 +324,7 @@ function ReviewPageInner() {
           disabled={confirming || selectedCount === 0}
           style={{ padding: '0.7rem 2rem', fontSize: '1rem', fontWeight: 600 }}
         >
-          {confirming ? 'Queuing…' : 'Build your wiki →'}
+          {confirming ? 'Queuing…' : isReturning ? 'Add to wiki →' : 'Build your wiki →'}
         </button>
       </div>
 
