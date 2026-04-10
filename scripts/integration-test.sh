@@ -15,7 +15,7 @@
 #
 # Stage state at commit 4:
 #   Stage 0 — REAL (cold start: docker compose down -v + up -d --build, all 3 services healthy)
-#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=8)
+#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=9)
 #   Stage 4 — REAL (live URL ingest + compile end-to-end), plus failure-path canary
 #             Skipped gracefully when FIRECRAWL_API_KEY or GEMINI_API_KEY is unset.
 #   All other stages — TODO.
@@ -165,8 +165,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":8'; then
-        echo "  FAIL: schema_version != 8"
+    if ! echo "$response" | grep -q '"schema_version":9'; then
+        echo "  FAIL: schema_version != 9"
         record_stage 1 REAL FAIL
         return 1
     fi
