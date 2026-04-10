@@ -179,8 +179,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"table_count":12'; then
-        echo "  FAIL: table_count != 12"
+    if ! echo "$response" | grep -q '"table_count":13'; then
+        echo "  FAIL: table_count != 13"
         record_stage 1 REAL FAIL
         return 1
     fi
