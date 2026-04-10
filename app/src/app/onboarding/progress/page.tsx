@@ -1,4 +1,5 @@
 'use client';
+export const dynamic = 'force-dynamic';
 
 /**
  * /onboarding/progress — Post-confirm progress screen.

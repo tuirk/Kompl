@@ -1,4 +1,5 @@
 'use client';
+export const dynamic = 'force-dynamic';
 
 /**
  * /onboarding/review — Review all collected sources before compiling.

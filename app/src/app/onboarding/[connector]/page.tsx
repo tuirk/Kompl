@@ -1,4 +1,5 @@
 'use client';
+export const dynamic = 'force-dynamic';
 
 /**
  * /onboarding/[connector] — Per-connector source collection screen.
