@@ -14,7 +14,7 @@
 
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { getChatHistory, insertChatDraft, insertChatMessage } from '@/lib/db';
+import { getChatHistory, getWikiStats, insertChatDraft, insertChatMessage } from '@/lib/db';
 import { retrievePages } from '@/lib/retrieval';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -22,6 +22,41 @@ const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000'
 const NO_CONTENT_ANSWER =
   "Your knowledge base doesn't have anything on this topic yet. " +
   'Try ingesting some sources first, then ask again.';
+
+/**
+ * Detect meta queries about the knowledge base itself and return an instant
+ * DB-backed answer, bypassing LLM retrieval entirely.
+ * Returns null if the question is not a meta query.
+ */
+function detectMetaQuery(question: string): string | null {
+  const q = question.toLowerCase();
+
+  if (/how many (sources|articles|documents|files|things)/.test(q)) {
+    const stats = getWikiStats();
+    return `Your knowledge base has ${stats.source_count} active sources compiled into ${stats.page_count} wiki pages (${stats.entity_count} entities, ${stats.concept_count} concepts).`;
+  }
+
+  if (/how many (pages|wiki pages)/.test(q)) {
+    const stats = getWikiStats();
+    return `Your wiki has ${stats.page_count} pages: ${stats.entity_count} entity pages, ${stats.concept_count} concept pages, and ${stats.page_count - stats.entity_count - stats.concept_count} others.`;
+  }
+
+  if (/what was the (last|latest|most recent).*(ingest|add|source)|last.*ingest/.test(q)) {
+    const stats = getWikiStats();
+    return stats.last_ingested
+      ? `The most recent source was ingested on ${stats.last_ingested}.`
+      : 'No sources have been ingested yet.';
+  }
+
+  if (/when was.*last (compil|updat)|last.*compil/.test(q)) {
+    const stats = getWikiStats();
+    return stats.last_compiled
+      ? `The most recently compiled wiki page was updated on ${stats.last_compiled}.`
+      : 'No pages have been compiled yet.';
+  }
+
+  return null;
+}
 
 export async function POST(request: Request) {
   try {
@@ -42,6 +77,13 @@ export async function POST(request: Request) {
 
     // 1. Persist user message
     insertChatMessage({ session_id: sessionId, role: 'user', content: question });
+
+    // 1b. Meta query bypass — instant DB answer, no LLM needed
+    const metaAnswer = detectMetaQuery(question);
+    if (metaAnswer) {
+      insertChatMessage({ session_id: sessionId, role: 'assistant', content: metaAnswer, citations: [], pages_used: [] });
+      return NextResponse.json({ answer: metaAnswer, citations: [], pages_used: [] });
+    }
 
     // 2. Retrieve relevant pages
     const pages = await retrievePages(question, 10);

@@ -13,11 +13,20 @@
 #   0 = all stages passed
 #   non-zero = the failing stage's number
 #
-# Stage state at commit 4:
-#   Stage 0 — REAL (cold start: docker compose down -v + up -d --build, all 3 services healthy)
-#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=9)
-#   Stage 4 — REAL (live URL ingest + compile end-to-end), plus failure-path canary
-#             Skipped gracefully when FIRECRAWL_API_KEY or GEMINI_API_KEY is unset.
+# Stage state at commit 8:
+#   Stage 0  — REAL (cold start)
+#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=10)
+#   Stage 4  — REAL (live URL ingest + compile end-to-end, failure-path canary)
+#   Stage 11 — REAL (onboarding API canary)
+#   Stage 12 — REAL (text connector canary)
+#   Stage 13 — REAL (twitter connector canary)
+#   Stage 14 — REAL (extraction pipeline canary, skipped without GEMINI_API_KEY)
+#   Stage 15 — REAL (entity resolution canary, skipped without GEMINI_API_KEY)
+#   Stage 16 — REAL (full compilation pipeline, skipped without GEMINI_API_KEY)
+#   Stage 17 — REAL (session compile via n8n, skipped without GEMINI_API_KEY)
+#   Stage 18 — REAL (wiki-aware update, skipped without GEMINI_API_KEY)
+#   Stage 19 — REAL (chat canary, skipped without GEMINI_API_KEY or page_count<1)
+#   Stage 20 — REAL (source management + settings + drafts endpoints)
 #   All other stages — TODO.
 #
 # As real services land, each stage gets its real implementation in the same
@@ -165,8 +174,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":9'; then
-        echo "  FAIL: schema_version != 9"
+    if ! echo "$response" | grep -q '"schema_version":10'; then
+        echo "  FAIL: schema_version != 10"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -1525,6 +1534,7 @@ main() {
     stage_17_session_compile
     stage_18_wiki_aware_update
     stage_19_chat_canary
+    stage_20_source_mgmt_canary
 
     echo
     echo "=== Stage summary ==="
@@ -1598,6 +1608,67 @@ stage_19_chat_canary() {
     echo "  answer length: ${#ANSWER} chars, messages in history: $MSG_COUNT"
     echo "  stage 19 PASS — chat answered with citations, history persisted"
     record_stage 19 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 20 — Source management + draft approval canary (REAL as of commit 8)
+#
+# 1. GET /api/sources — assert returns sources array + total keys
+# 2. GET /api/settings — assert auto_approve key present
+# 3. POST /api/settings { auto_approve: true } — assert saved
+# 4. If page_count >= 1: GET /api/drafts/pending — assert drafts key present
+# ---------------------------------------------------------------------------
+stage_20_source_mgmt_canary() {
+    echo "--- stage 20: source management + settings canary ---"
+
+    # Check GET /api/sources
+    SOURCES_RESP=$(curl -sf "http://localhost:3000/api/sources" 2>/dev/null || echo "")
+    if [[ -z "$SOURCES_RESP" ]]; then
+        echo "  FAIL: GET /api/sources returned empty"
+        record_stage 20 REAL FAIL
+        return 1
+    fi
+    SOURCES_OK=$(echo "$SOURCES_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if 'sources' in d and 'total' in d else 'no')" 2>/dev/null || echo "no")
+    if [[ "$SOURCES_OK" != "yes" ]]; then
+        echo "  FAIL: GET /api/sources missing sources or total key"
+        record_stage 20 REAL FAIL
+        return 1
+    fi
+    TOTAL=$(echo "$SOURCES_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['total'])" 2>/dev/null || echo "0")
+    echo "  sources total: $TOTAL"
+
+    # Check GET /api/settings
+    SETTINGS_RESP=$(curl -sf "http://localhost:3000/api/settings" 2>/dev/null || echo "")
+    SETTINGS_OK=$(echo "$SETTINGS_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if 'auto_approve' in d else 'no')" 2>/dev/null || echo "no")
+    if [[ "$SETTINGS_OK" != "yes" ]]; then
+        echo "  FAIL: GET /api/settings missing auto_approve key"
+        record_stage 20 REAL FAIL
+        return 1
+    fi
+
+    # Check POST /api/settings
+    PATCH_RESP=$(curl -sf -X POST "http://localhost:3000/api/settings" \
+        -H "Content-Type: application/json" \
+        -d '{"auto_approve":true}' 2>/dev/null || echo "")
+    PATCH_OK=$(echo "$PATCH_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if d.get('auto_approve') == True else 'no')" 2>/dev/null || echo "no")
+    if [[ "$PATCH_OK" != "yes" ]]; then
+        echo "  FAIL: POST /api/settings did not return auto_approve=true"
+        record_stage 20 REAL FAIL
+        return 1
+    fi
+
+    # Check GET /api/drafts/pending
+    DRAFTS_RESP=$(curl -sf "http://localhost:3000/api/drafts/pending" 2>/dev/null || echo "")
+    DRAFTS_OK=$(echo "$DRAFTS_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if 'drafts' in d else 'no')" 2>/dev/null || echo "no")
+    if [[ "$DRAFTS_OK" != "yes" ]]; then
+        echo "  FAIL: GET /api/drafts/pending missing drafts key"
+        record_stage 20 REAL FAIL
+        return 1
+    fi
+
+    echo "  stage 20 PASS — sources list, settings, and drafts endpoints OK"
+    record_stage 20 REAL PASS
     return 0
 }
 

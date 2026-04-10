@@ -21,8 +21,9 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { getSource, readRawMarkdown, type SourceRow } from '../../../lib/db';
+import { getSource, getSourceProvenanceMap, readRawMarkdown, type SourceRow } from '../../../lib/db';
 import { renderMarkdown } from '../../../lib/markdown';
+import SourceActions from './SourceActions';
 
 interface PageProps {
   params: Promise<{ source_id: string }>;
@@ -50,6 +51,7 @@ export default async function SourcePage({ params }: PageProps) {
 
   const markdown = readRawMarkdown(source_id);
   const metadata = parseMetadata(source.metadata);
+  const provenanceMap = getSourceProvenanceMap(source_id);
 
   const html = markdown ? renderMarkdown(markdown) : null;
 
@@ -61,8 +63,9 @@ export default async function SourcePage({ params }: PageProps) {
         padding: '3rem 1.5rem 5rem',
       }}
     >
-      <div style={{ marginBottom: '1.5rem' }}>
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', alignItems: 'center' }}>
         <Link href="/feed">← Back to feed</Link>
+        <Link href="/sources" style={{ color: 'var(--fg-muted)', fontSize: 13 }}>All sources</Link>
       </div>
 
       <header
@@ -123,9 +126,57 @@ export default async function SourcePage({ params }: PageProps) {
         </div>
       )}
 
+      {/* Provenance map */}
+      {provenanceMap.length > 0 && (
+        <section
+          style={{
+            marginTop: '2.5rem',
+            paddingTop: '1.5rem',
+            borderTop: '1px solid var(--border)',
+          }}
+        >
+          <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.75rem' }}>
+            Pages built from this source
+          </h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            {provenanceMap.map((p) => (
+              <Link
+                key={p.page_id}
+                href={`/wiki/${p.page_id}`}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '0.5rem 0.75rem',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-card)',
+                  textDecoration: 'none',
+                  color: 'inherit',
+                  fontSize: 13,
+                }}
+              >
+                <span>
+                  <span style={{ color: 'var(--fg)' }}>{p.title}</span>
+                  <span style={{ color: 'var(--fg-muted)', marginLeft: '0.5rem', fontSize: 11 }}>
+                    {p.page_type}
+                  </span>
+                </span>
+                <span style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
+                  {p.contribution_type} · {formatDate(p.date_compiled)}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Actions */}
+      <SourceActions sourceId={source_id} currentStatus={source.status} />
+
       <footer
         style={{
-          marginTop: '3rem',
+          marginTop: '2.5rem',
           paddingTop: '1.5rem',
           borderTop: '1px solid var(--border)',
           color: 'var(--fg-muted)',

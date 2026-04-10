@@ -20,6 +20,7 @@ import {
   getCategoryGroups,
   getBacklinks,
   getPage,
+  getPageTitleMap,
   readPageMarkdown,
   type PageRow,
 } from '../../../lib/db';
@@ -41,6 +42,18 @@ function formatDate(iso: string): string {
   const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
   if (isNaN(d.getTime())) return iso;
   return d.toISOString().replace('T', ' ').slice(0, 10);
+}
+
+/**
+ * Expand [[Page Title]] wikilinks to markdown links.
+ * Unknown titles render as plain text (no broken link).
+ */
+function expandWikilinks(md: string, titleMap: Map<string, string>): string {
+  return md.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {
+    const pageId = titleMap.get(title.toLowerCase());
+    if (pageId) return `[${title}](/wiki/${pageId})`;
+    return title;
+  });
 }
 
 /** Strip YAML frontmatter (--- ... ---) before rendering. */
@@ -78,6 +91,39 @@ function parseFrontmatterEntities(md: string): string[] {
     .filter(Boolean);
 }
 
+/** Collapsible panel that loads and renders the previous version of a page. */
+async function PreviousVersionPanel({ pageId, lastUpdated }: { pageId: string; lastUpdated: string }) {
+  const res = await fetch(
+    `${process.env.APP_URL ?? 'http://app:3000'}/api/wiki/${pageId}/previous`,
+    { cache: 'no-store' }
+  ).catch(() => null);
+
+  if (!res || !res.ok) {
+    return <p style={{ color: 'var(--fg-dim)', fontSize: 12, marginTop: '0.5rem' }}>Previous version unavailable.</p>;
+  }
+
+  const data = (await res.json()) as { content: string };
+  const prevHtml = renderMarkdown(stripFrontmatter(data.content));
+
+  return (
+    <div
+      style={{
+        marginTop: '0.75rem',
+        padding: '1rem 1.25rem',
+        borderRadius: 6,
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border)',
+        opacity: 0.75,
+      }}
+    >
+      <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        Previous version · before {formatDate(lastUpdated)}
+      </div>
+      <article dangerouslySetInnerHTML={{ __html: prevHtml }} style={{ fontSize: 13 }} />
+    </div>
+  );
+}
+
 export default async function WikiPageDetail({ params }: PageProps) {
   const { page_id } = await params;
   const page: PageRow | null = getPage(page_id);
@@ -85,7 +131,9 @@ export default async function WikiPageDetail({ params }: PageProps) {
 
   const rawMarkdown = readPageMarkdown(page_id);
   const entities = rawMarkdown ? parseFrontmatterEntities(rawMarkdown) : [];
-  const cleanMarkdown = rawMarkdown ? stripFrontmatter(rawMarkdown) : null;
+  const strippedMarkdown = rawMarkdown ? stripFrontmatter(rawMarkdown) : null;
+  const titleMap = getPageTitleMap();
+  const cleanMarkdown = strippedMarkdown ? expandWikilinks(strippedMarkdown, titleMap) : null;
   const headings = cleanMarkdown ? extractHeadings(cleanMarkdown) : [];
   const html = cleanMarkdown ? renderMarkdown(cleanMarkdown) : null;
 
@@ -253,6 +301,16 @@ export default async function WikiPageDetail({ params }: PageProps) {
                 </span>
               </div>
             ))}
+            {page.previous_content_path && (
+              <details style={{ marginTop: '1rem' }}>
+                <summary
+                  style={{ cursor: 'pointer', color: 'var(--fg-dim)', userSelect: 'none' }}
+                >
+                  View previous version
+                </summary>
+                <PreviousVersionPanel pageId={page_id} lastUpdated={page.last_updated} />
+              </details>
+            )}
           </footer>
         )}
       </main>

@@ -239,6 +239,7 @@ class TfidfOverlapRequest(BaseModel):
 
     source_text: str
     corpus_page_ids: list[str]
+    page_type_filter: list[str] | None = None  # e.g. ['entity', 'concept'] — caller filters before passing; stored for future use
 
 
 class TfidfOverlapResponse(BaseModel):

@@ -1335,3 +1335,233 @@ export function insertChatDraft(data: {
     )
     .run(data.plan_id, data.session_id, data.title, data.draft_content);
 }
+
+// ============================================================================
+// Source management helpers (commit 8)
+// ============================================================================
+
+/**
+ * Fetch all sources with optional filtering, sorting and pagination.
+ * Used by GET /api/sources and the /sources list page.
+ */
+export function getAllSources(options?: {
+  status?: string;
+  source_type?: string;
+  sort_by?: 'date_ingested' | 'title' | 'source_type';
+  sort_order?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+}): SourceRow[] {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options?.status) {
+    conditions.push('status = ?');
+    params.push(options.status);
+  }
+  if (options?.source_type) {
+    conditions.push('source_type = ?');
+    params.push(options.source_type);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const sortCol = options?.sort_by ?? 'date_ingested';
+  const sortDir = options?.sort_order ?? 'desc';
+  const limit = options?.limit ?? 200;
+  const offset = options?.offset ?? 0;
+
+  return openDb()
+    .prepare(
+      `SELECT source_id, title, source_type, source_url, content_hash,
+              file_path, status, date_ingested, metadata, onboarding_session_id
+         FROM sources
+         ${where}
+         ORDER BY ${sortCol} ${sortDir}
+         LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset) as SourceRow[];
+}
+
+/**
+ * Return all pages that a given source contributed to (via provenance).
+ * Used by the source detail page's provenance map section.
+ */
+export function getSourceProvenanceMap(sourceId: string): Array<{
+  page_id: string;
+  title: string;
+  page_type: string;
+  contribution_type: string;
+  date_compiled: string;
+}> {
+  return openDb()
+    .prepare(
+      `SELECT p.page_id, p.title, p.page_type,
+              pr.contribution_type, pr.date_compiled
+         FROM provenance pr
+         JOIN pages p ON p.page_id = pr.page_id
+        WHERE pr.source_id = ?
+        ORDER BY pr.date_compiled DESC`
+    )
+    .all(sourceId) as Array<{
+      page_id: string;
+      title: string;
+      page_type: string;
+      contribution_type: string;
+      date_compiled: string;
+    }>;
+}
+
+/**
+ * Return pages that have at least one provenance link from the given source.
+ * Used by cascade delete to determine which pages are affected.
+ */
+export function getPagesBySourceId(sourceId: string): Array<{
+  page_id: string;
+  title: string;
+  source_count: number;
+}> {
+  return openDb()
+    .prepare(
+      `SELECT p.page_id, p.title, p.source_count
+         FROM pages p
+         JOIN provenance pr ON p.page_id = pr.page_id
+        WHERE pr.source_id = ?`
+    )
+    .all(sourceId) as Array<{ page_id: string; title: string; source_count: number }>;
+}
+
+/**
+ * Remove all provenance rows for a given source_id.
+ * Called as part of source cascade delete.
+ */
+export function removeProvenanceForSource(sourceId: string): void {
+  openDb()
+    .prepare('DELETE FROM provenance WHERE source_id = ?')
+    .run(sourceId);
+}
+
+/**
+ * Archive a page (page_type → 'archived') and remove it from the FTS index.
+ * Called when a delete cascade leaves a page with no remaining sources.
+ */
+export function archivePage(pageId: string): void {
+  const db = openDb();
+  db.prepare(`UPDATE pages SET page_type = 'archived' WHERE page_id = ?`).run(pageId);
+  db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(pageId);
+}
+
+/**
+ * Decrement source_count by 1 (minimum 0) for a page.
+ * Called when a source is deleted but the page has other sources remaining.
+ */
+export function decrementPageSourceCount(pageId: string): void {
+  openDb()
+    .prepare('UPDATE pages SET source_count = MAX(source_count - 1, 0) WHERE page_id = ?')
+    .run(pageId);
+}
+
+/**
+ * Set the status column on a source row (active / archived).
+ */
+export function setSourceStatus(sourceId: string, status: 'active' | 'archived'): void {
+  openDb()
+    .prepare('UPDATE sources SET status = ? WHERE source_id = ?')
+    .run(status, sourceId);
+}
+
+// ============================================================================
+// Settings helpers (commit 8)
+// ============================================================================
+
+/**
+ * Get the auto-approve setting. Defaults to true (direct commit) if not set.
+ */
+export function getAutoApprove(): boolean {
+  return getSetting('auto_approve') !== '0';
+}
+
+/**
+ * Set the auto-approve toggle.
+ */
+export function setAutoApprove(value: boolean): void {
+  setSetting('auto_approve', value ? '1' : '0');
+}
+
+// ============================================================================
+// Wiki stats (commit 8 — meta query support in chat)
+// ============================================================================
+
+export interface WikiStats {
+  source_count: number;
+  page_count: number;
+  entity_count: number;
+  concept_count: number;
+  last_ingested: string | null;
+  last_compiled: string | null;
+}
+
+/**
+ * Quick stats snapshot for answering meta queries in chat ("how many sources?").
+ * All reads are cheap index scans — no full table scans.
+ */
+export function getWikiStats(): WikiStats {
+  const db = openDb();
+
+  const sourceCount = (db.prepare('SELECT COUNT(*) AS n FROM sources WHERE status = ?').get('active') as { n: number }).n;
+  const pageCount = (db.prepare('SELECT COUNT(*) AS n FROM pages').get() as { n: number }).n;
+  const entityCount = (db.prepare("SELECT COUNT(*) AS n FROM pages WHERE page_type = 'entity'").get() as { n: number }).n;
+  const conceptCount = (db.prepare("SELECT COUNT(*) AS n FROM pages WHERE page_type = 'concept'").get() as { n: number }).n;
+
+  const lastIngestedRow = db
+    .prepare('SELECT date_ingested FROM sources ORDER BY date_ingested DESC LIMIT 1')
+    .get() as { date_ingested: string } | undefined;
+
+  const lastCompiledRow = db
+    .prepare('SELECT last_updated FROM pages ORDER BY last_updated DESC LIMIT 1')
+    .get() as { last_updated: string } | undefined;
+
+  return {
+    source_count: sourceCount,
+    page_count: pageCount,
+    entity_count: entityCount,
+    concept_count: conceptCount,
+    last_ingested: lastIngestedRow?.date_ingested ?? null,
+    last_compiled: lastCompiledRow?.last_updated ?? null,
+  };
+}
+
+// ============================================================================
+// Draft approval helpers (commit 8)
+// ============================================================================
+
+/**
+ * Fetch all page_plans with draft_status = 'pending_approval'.
+ * Used by GET /api/drafts/pending and the dashboard draft section.
+ */
+export function getPendingDrafts(): PagePlanRow[] {
+  return openDb()
+    .prepare(
+      `SELECT plan_id, session_id, title, page_type, action,
+              source_ids, existing_page_id, related_plan_ids,
+              draft_content, draft_status, created_at
+         FROM page_plans
+        WHERE draft_status = 'pending_approval'
+        ORDER BY created_at DESC`
+    )
+    .all() as PagePlanRow[];
+}
+
+/**
+ * Return the page title → page_id map for wikilink expansion.
+ * Used by the wiki page renderer to convert [[Title]] to clickable links.
+ */
+export function getPageTitleMap(): Map<string, string> {
+  const rows = openDb()
+    .prepare('SELECT page_id, title FROM pages')
+    .all() as Array<{ page_id: string; title: string }>;
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    map.set(row.title.toLowerCase(), row.page_id);
+  }
+  return map;
+}

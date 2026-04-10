@@ -108,6 +108,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [savedDrafts, setSavedDrafts] = useState<Set<number>>(new Set());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -186,6 +187,15 @@ export default function ChatPage() {
     } finally {
       setIsLoading(false);
     }
+  }
+
+  async function saveAsDraft(msg: ChatMessage) {
+    await fetch('/api/chat/save-draft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, content: msg.content, citations: msg.citations }),
+    });
+    setSavedDrafts((prev) => new Set(prev).add(msg.id));
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -296,7 +306,8 @@ export default function ChatPage() {
             key={msg.id}
             style={{
               display: 'flex',
-              justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
+              flexDirection: 'column',
+              alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start',
             }}
           >
             <div
@@ -320,6 +331,23 @@ export default function ChatPage() {
                 ? renderAnswer(msg.content, msg.citations)
                 : msg.content}
             </div>
+            {msg.role === 'assistant' && (
+              <button
+                onClick={() => void saveAsDraft(msg)}
+                disabled={savedDrafts.has(msg.id)}
+                style={{
+                  marginTop: '0.25rem',
+                  background: 'none',
+                  border: 'none',
+                  cursor: savedDrafts.has(msg.id) ? 'default' : 'pointer',
+                  fontSize: '0.75rem',
+                  color: savedDrafts.has(msg.id) ? 'var(--success, #059669)' : 'var(--fg-dim, #aaa)',
+                  padding: '0.1rem 0.2rem',
+                }}
+              >
+                {savedDrafts.has(msg.id) ? '✓ Saved to wiki' : 'Save to wiki'}
+              </button>
+            )}
           </div>
         ))}
 

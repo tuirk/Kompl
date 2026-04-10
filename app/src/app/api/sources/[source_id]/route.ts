@@ -16,7 +16,16 @@
 import { promises as fsPromises } from 'fs';
 import { NextResponse } from 'next/server';
 
-import { deleteSource, getSource, insertActivity } from '../../../../lib/db';
+import {
+  deleteSource,
+  getSource,
+  getPagesBySourceId,
+  removeProvenanceForSource,
+  archivePage,
+  decrementPageSourceCount,
+  setSourceStatus,
+  insertActivity,
+} from '../../../../lib/db';
 
 interface RouteContext {
   params: Promise<{ source_id: string }>;
@@ -56,21 +65,85 @@ export async function GET(_request: Request, { params }: RouteContext) {
   });
 }
 
+export async function PATCH(request: Request, { params }: RouteContext) {
+  const { source_id } = await params;
+  if (!source_id) {
+    return NextResponse.json({ error: 'source_id required' }, { status: 400 });
+  }
+
+  const body = (await request.json()) as { status?: string };
+  const { status } = body;
+
+  if (!status || !['active', 'archived'].includes(status)) {
+    return NextResponse.json({ error: 'status must be active or archived' }, { status: 422 });
+  }
+
+  const existing = getSource(source_id);
+  if (!existing) {
+    return NextResponse.json({ error: 'not_found' }, { status: 404 });
+  }
+
+  setSourceStatus(source_id, status as 'active' | 'archived');
+  insertActivity({
+    action_type: status === 'archived' ? 'source_archived' : 'source_unarchived',
+    source_id,
+    details: null,
+  });
+
+  return NextResponse.json({ source_id, status });
+}
+
 export async function DELETE(_request: Request, { params }: RouteContext) {
   const { source_id } = await params;
   if (!source_id) {
     return NextResponse.json({ error: 'source_id required' }, { status: 400 });
   }
 
-  const filePath = deleteSource(source_id);
-  if (filePath === null) {
+  const source = getSource(source_id);
+  if (!source) {
     return NextResponse.json({ error: 'not_found' }, { status: 404 });
   }
 
-  // Best-effort file cleanup — orphaned gzip is harmless.
-  void fsPromises.unlink(filePath).catch(() => undefined);
+  // Cascade: find affected pages, remove provenance, archive orphans or decrement count.
+  const affectedPages = getPagesBySourceId(source_id);
+  removeProvenanceForSource(source_id);
 
-  insertActivity({ action_type: 'source_deleted', source_id, details: {} });
+  for (const page of affectedPages) {
+    if (page.source_count <= 1) {
+      archivePage(page.page_id);
+      insertActivity({
+        action_type: 'page_archived',
+        source_id: null,
+        details: { page_id: page.page_id, reason: 'source_deleted' },
+      });
+    } else {
+      decrementPageSourceCount(page.page_id);
+    }
+  }
+
+  const filePath = deleteSource(source_id);
+  if (filePath) {
+    void fsPromises.unlink(filePath).catch(() => undefined);
+  }
+
+  // Fire-and-forget: delete from vector store (non-fatal).
+  const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
+  for (const page of affectedPages) {
+    if (page.source_count <= 1) {
+      void fetch(`${NLP_SERVICE_URL}/vectors/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ page_id: page.page_id }),
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => {});
+    }
+  }
+
+  insertActivity({
+    action_type: 'source_deleted',
+    source_id,
+    details: { pages_affected: affectedPages.length },
+  });
 
   return new NextResponse(null, { status: 204 });
 }

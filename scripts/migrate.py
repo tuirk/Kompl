@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -295,6 +295,10 @@ def migrate():
     if current < 9:
         print("  applying migration v9 (chat_messages table)...")
         conn.executescript(MIGRATION_V9_SQL)
+
+    if current < 10:
+        print("  applying migration v10 (ensure provenance source index)...")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_provenance_source ON provenance(source_id)")
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
