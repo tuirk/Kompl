@@ -15,7 +15,7 @@
 #
 # Stage state at commit 4:
 #   Stage 0 — REAL (cold start: docker compose down -v + up -d --build, all 3 services healthy)
-#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=7)
+#   Stage 1 — REAL (migration & schema sanity via /api/health, schema_version=8)
 #   Stage 4 — REAL (live URL ingest + compile end-to-end), plus failure-path canary
 #             Skipped gracefully when FIRECRAWL_API_KEY or GEMINI_API_KEY is unset.
 #   All other stages — TODO.
@@ -165,13 +165,13 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":7'; then
-        echo "  FAIL: schema_version != 7"
+    if ! echo "$response" | grep -q '"schema_version":8'; then
+        echo "  FAIL: schema_version != 8"
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"table_count":11'; then
-        echo "  FAIL: table_count != 11"
+    if ! echo "$response" | grep -q '"table_count":12'; then
+        echo "  FAIL: table_count != 12"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -1241,6 +1241,146 @@ print('ok' if d.get('schema_generated') or d.get('reason') == 'already_exists' e
 }
 
 # ---------------------------------------------------------------------------
+# Stage 17 — session compile via n8n (Part 2c-ii)
+# confirm → n8n triggers /api/compile/run → progress polling → completion
+# Skipped if GEMINI_API_KEY not set (pipeline calls Gemini for extraction).
+# ---------------------------------------------------------------------------
+stage_17_session_compile() {
+    echo "--- stage 17: session compile via n8n ---"
+
+    if [ -z "${GEMINI_API_KEY:-}" ]; then
+        echo "  SKIPPED: GEMINI_API_KEY not set"
+        record_stage 17 REAL SKIPPED
+        return 0
+    fi
+
+    local SESSION_ID
+    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+
+    # Collect 2 text sources
+    echo "  collecting 2 text sources..."
+    curl -sf --max-time 60 -X POST http://localhost:3000/api/onboarding/collect \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"text\",\"items\":[
+            {\"markdown\":\"Python is a programming language created by Guido van Rossum in 1991. It is widely used in data science and machine learning.\",\"title_hint\":\"Python Intro\",\"source_type_hint\":\"note\"},
+            {\"markdown\":\"Guido van Rossum designed Python in the late 1980s. Python emphasizes code readability and simplicity over performance.\",\"title_hint\":\"Python History\",\"source_type_hint\":\"note\"}
+        ]}" > /dev/null
+
+    # Get source IDs
+    local review_response
+    review_response=$(curl -sf --max-time 30 \
+        "http://localhost:3000/api/onboarding/review?session_id=$SESSION_ID")
+    if [ -z "$review_response" ]; then
+        echo "  FAIL: /api/onboarding/review returned empty"
+        record_stage 17 REAL FAIL
+        return 1
+    fi
+
+    local SOURCE_IDS_JSON
+    SOURCE_IDS_JSON=$(echo "$review_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+sources = d.get('sources', {})
+ids = []
+if isinstance(sources, dict):
+    for v in sources.values():
+        if isinstance(v, list):
+            ids.extend(s['source_id'] for s in v)
+elif isinstance(sources, list):
+    ids = [s['source_id'] for s in sources]
+print(json.dumps(ids))
+" 2>/dev/null)
+
+    local source_count
+    source_count=$(echo "$SOURCE_IDS_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null)
+    if [ "$source_count" -ne 2 ]; then
+        echo "  FAIL: expected 2 collected sources, got $source_count"
+        record_stage 17 REAL FAIL
+        return 1
+    fi
+
+    # Confirm — this triggers n8n session-compile workflow → /api/compile/run
+    echo "  confirming (triggers n8n compile pipeline)..."
+    local confirm_response
+    confirm_response=$(curl -sf --max-time 30 -X POST http://localhost:3000/api/onboarding/confirm \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"selected_source_ids\":$SOURCE_IDS_JSON,\"deleted_source_ids\":[]}")
+    if [ -z "$confirm_response" ]; then
+        echo "  FAIL: /api/onboarding/confirm returned empty"
+        record_stage 17 REAL FAIL
+        return 1
+    fi
+
+    # Poll progress endpoint until completed or timeout (180s)
+    echo "  polling compile progress..."
+    local TIMEOUT=180
+    local ELAPSED=0
+    local STATUS="queued"
+    while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+        sleep 5
+        ELAPSED=$((ELAPSED + 5))
+
+        local progress_response
+        progress_response=$(curl -sf --max-time 10 \
+            "http://localhost:3000/api/compile/progress?session_id=$SESSION_ID" 2>/dev/null || echo "")
+        if [ -z "$progress_response" ]; then
+            continue
+        fi
+
+        STATUS=$(echo "$progress_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('status', 'unknown'))
+" 2>/dev/null)
+
+        echo "    ${ELAPSED}s: $STATUS"
+
+        if [ "$STATUS" = "completed" ]; then
+            break
+        fi
+
+        if [ "$STATUS" = "failed" ]; then
+            local error_msg
+            error_msg=$(echo "$progress_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('error', 'unknown error'))
+" 2>/dev/null)
+            echo "  FAIL: session compile failed: $error_msg"
+            record_stage 17 REAL FAIL
+            return 1
+        fi
+    done
+
+    if [ "$STATUS" != "completed" ]; then
+        echo "  FAIL: session compile timed out after ${TIMEOUT}s (status: $STATUS)"
+        record_stage 17 REAL FAIL
+        return 1
+    fi
+
+    # Verify pages were created
+    local health_response
+    health_response=$(curl -sf --max-time 10 http://localhost:3000/api/health)
+    local page_count
+    page_count=$(echo "$health_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('page_count', 0))
+" 2>/dev/null)
+
+    if [ "$page_count" -lt 3 ]; then
+        echo "  FAIL: expected at least 3 pages in DB, got $page_count"
+        record_stage 17 REAL FAIL
+        return 1
+    fi
+
+    echo "  session compile completed — $page_count pages in DB"
+    echo "  PASS"
+    record_stage 17 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -1265,6 +1405,7 @@ main() {
     stage_14_extraction
     stage_15_resolution
     stage_16_full_pipeline
+    stage_17_session_compile
 
     echo
     echo "=== Stage summary ==="
@@ -1272,7 +1413,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 16 stages executed, all passed ==="
+    echo "=== All 17 stages executed, all passed ==="
     exit 0
 }
 

@@ -28,6 +28,7 @@ import { promises as fsPromises } from 'fs';
 import { NextResponse } from 'next/server';
 
 import {
+  createCompileProgress,
   deleteSource,
   getCollectedSources,
   getDb,
@@ -116,6 +117,18 @@ export async function POST(request: Request) {
 
   // Best-effort file cleanup — orphaned gzip is harmless.
   void Promise.allSettled(filePaths.map((fp) => fsPromises.unlink(fp)));
+
+  // Create compile progress record (INSERT OR REPLACE — safe on retry)
+  createCompileProgress(session_id);
+
+  // Trigger n8n session-compile workflow (fire-and-forget)
+  const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL ?? 'http://n8n:5678/webhook';
+  fetch(`${N8N_WEBHOOK_URL}/session-compile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id }),
+    signal: AbortSignal.timeout(10_000),
+  }).catch((err: unknown) => console.error('n8n session-compile trigger failed (non-fatal):', err));
 
   return NextResponse.json({ session_id, queued: selectedIds.length });
 }

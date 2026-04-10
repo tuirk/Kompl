@@ -108,6 +108,7 @@ const EXPECTED_TABLES = [
   'page_links',
   'extractions',
   'page_plans',
+  'compile_progress',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -1046,4 +1047,148 @@ export function markSourcesActive(sourceIds: string[]): void {
         WHERE source_id IN (${placeholders})`
     )
     .run(...sourceIds);
+}
+
+// ============================================================================
+// Compile progress helpers (Part 2c-ii)
+// ============================================================================
+
+const COMPILE_STEPS = ['extract', 'resolve', 'plan', 'draft', 'crossref', 'commit', 'schema'] as const;
+type CompileStep = (typeof COMPILE_STEPS)[number];
+
+const DEFAULT_STEPS = () =>
+  Object.fromEntries(COMPILE_STEPS.map((s) => [s, { status: 'pending' }]));
+
+export interface CompileProgressRow {
+  session_id: string;
+  status: string;
+  current_step: string | null;
+  steps: string; // JSON TEXT — parse to get step states
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+/**
+ * Insert a compile_progress row for a session, or reset it if one already
+ * exists (for retry). All steps start as 'pending', status as 'queued'.
+ */
+export function createCompileProgress(sessionId: string): void {
+  openDb()
+    .prepare(
+      `INSERT INTO compile_progress
+         (session_id, status, current_step, steps, error, started_at, completed_at)
+       VALUES (?, 'queued', NULL, ?, NULL, NULL, NULL)
+       ON CONFLICT(session_id) DO UPDATE SET
+         status       = 'queued',
+         current_step = NULL,
+         steps        = excluded.steps,
+         error        = NULL,
+         started_at   = NULL,
+         completed_at = NULL`
+    )
+    .run(sessionId, JSON.stringify(DEFAULT_STEPS()));
+}
+
+/**
+ * Update a single step's status and optional detail string.
+ * Side effects:
+ *   - When the first step goes 'running': set overall status='running' + started_at
+ *   - When a step goes 'failed': set overall status='failed' + error=detail
+ *   - Always update current_step to the given step name.
+ */
+export function updateCompileStep(
+  sessionId: string,
+  step: string,
+  status: 'running' | 'done' | 'failed',
+  detail?: string
+): void {
+  const db = openDb();
+  const row = db
+    .prepare('SELECT status, steps FROM compile_progress WHERE session_id = ?')
+    .get(sessionId) as Pick<CompileProgressRow, 'status' | 'steps'> | undefined;
+  if (!row) return;
+
+  const steps = JSON.parse(row.steps) as Record<string, { status: string; detail?: string }>;
+  steps[step] = detail !== undefined ? { status, detail } : { status };
+
+  let overallStatus = row.status;
+  let setStartedAt = '';
+  if (status === 'running' && row.status === 'queued') {
+    overallStatus = 'running';
+    setStartedAt = ", started_at = CURRENT_TIMESTAMP";
+  }
+  if (status === 'failed') {
+    overallStatus = 'failed';
+  }
+
+  db.prepare(
+    `UPDATE compile_progress
+        SET steps        = ?,
+            current_step = ?,
+            status       = ?,
+            error        = CASE WHEN ? = 'failed' THEN ? ELSE error END
+            ${setStartedAt}
+      WHERE session_id   = ?`
+  ).run(
+    JSON.stringify(steps),
+    step,
+    overallStatus,
+    status,
+    detail ?? null,
+    sessionId
+  );
+}
+
+/** Mark the session compile as fully completed. */
+export function completeCompileProgress(sessionId: string): void {
+  openDb()
+    .prepare(
+      `UPDATE compile_progress
+          SET status = 'completed', completed_at = CURRENT_TIMESTAMP
+        WHERE session_id = ?`
+    )
+    .run(sessionId);
+}
+
+/** Mark the session compile as failed with an error message. */
+export function failCompileProgress(sessionId: string, error: string): void {
+  openDb()
+    .prepare(
+      `UPDATE compile_progress
+          SET status = 'failed', error = ?
+        WHERE session_id = ?`
+    )
+    .run(error, sessionId);
+}
+
+/** Fetch the progress record for a session. Returns null if not found. */
+export function getCompileProgress(sessionId: string): CompileProgressRow | null {
+  const row = openDb()
+    .prepare(
+      `SELECT session_id, status, current_step, steps, error,
+              started_at, completed_at, created_at
+         FROM compile_progress WHERE session_id = ?`
+    )
+    .get(sessionId) as CompileProgressRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * Fetch all sources for a session that still need compilation
+ * (compile_status != 'active'). Used by /api/compile/run to determine
+ * which sources to extract.
+ */
+export function getSourcesBySession(sessionId: string): SourceRow[] {
+  return openDb()
+    .prepare(
+      `SELECT source_id, title, source_type, source_url, content_hash,
+              file_path, status, date_ingested, metadata, onboarding_session_id
+         FROM sources
+        WHERE onboarding_session_id = ?
+          AND compile_status != 'active'
+        ORDER BY date_ingested ASC`
+    )
+    .all(sessionId) as SourceRow[];
 }

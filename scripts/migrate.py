@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -189,6 +189,19 @@ CREATE INDEX IF NOT EXISTS idx_page_plans_session ON page_plans(session_id);
 CREATE INDEX IF NOT EXISTS idx_page_plans_status ON page_plans(draft_status);
 """
 
+MIGRATION_V8_SQL = """
+CREATE TABLE IF NOT EXISTS compile_progress (
+  session_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'queued',
+  current_step TEXT,
+  steps JSON NOT NULL,
+  error TEXT,
+  started_at DATETIME,
+  completed_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -261,6 +274,10 @@ def migrate():
     if current < 7:
         print("  applying migration v7 (page_plans table)...")
         conn.executescript(MIGRATION_V7_SQL)
+
+    if current < 8:
+        print("  applying migration v8 (compile_progress table)...")
+        conn.executescript(MIGRATION_V8_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
