@@ -690,17 +690,23 @@ stage_12_text_connector() {
     fi
     echo "  source_id=$SOURCE_ID"
 
-    # ── verify DB ────────────────────────────────────────────────────────────
-    local db_status
-    db_status=$(docker exec komplcore-app-1 sqlite3 /data/db/kompl.db \
-        "SELECT compile_status FROM sources WHERE source_id='$SOURCE_ID';" 2>/dev/null || echo "")
+    # ── verify via review API (sqlite3 CLI not available in container) ────────
+    local review_response
+    review_response=$(curl -sf "http://localhost:3000/api/onboarding/review?session_id=$SESSION_ID")
 
-    if [ "$db_status" != "collected" ]; then
-        echo "  FAIL: expected compile_status='collected', got '$db_status'"
+    if [ -z "$review_response" ]; then
+        echo "  FAIL: /api/onboarding/review returned empty response"
         record_stage 12 REAL FAIL
         return 1
     fi
-    echo "  DB compile_status=collected OK"
+
+    if ! echo "$review_response" | grep -q '"total":1'; then
+        echo "  FAIL: review response missing \"total\":1 — source not stored"
+        echo "  review response: $review_response"
+        record_stage 12 REAL FAIL
+        return 1
+    fi
+    echo "  review total=1 OK (source stored as collected)"
 
     echo "  PASS"
     record_stage 12 REAL PASS
