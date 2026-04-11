@@ -57,3 +57,8 @@ npm-debug.log*
 
 # Claude Code project memory (local only)
 .claude/
+
+# Internal docs (local only — not for public repo)
+docs/spec/
+docs/wiki-design-points.md
+docs/kompl-v2-spec.md
