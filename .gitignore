@@ -62,3 +62,9 @@ npm-debug.log*
 docs/spec/
 docs/wiki-design-points.md
 docs/kompl-v2-spec.md
+
+# Agent instruction files (local only — not for public repo)
+CLAUDE.md
+AGENTS.md
+tui-read.me
+tui-readme.md
