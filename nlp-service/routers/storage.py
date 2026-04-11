@@ -154,8 +154,14 @@ def storage_write_file(req: WriteFileRequest) -> WriteFileResponse:
         raise HTTPException(status_code=500, detail=f"write_file_error: {e}") from e
 
 
-@router.post("/storage/file-exists")
-def storage_file_exists(req: ReadFileRequest) -> dict[str, bool]:
+class FileExistsResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    exists: bool
+
+
+@router.post("/storage/file-exists", response_model=FileExistsResponse)
+def storage_file_exists(req: ReadFileRequest) -> FileExistsResponse:
     """Check whether a file exists on the data volume."""
     resolved = _safe_path(req.path)
-    return {"exists": os.path.exists(resolved)}
+    return FileExistsResponse(exists=os.path.exists(resolved))

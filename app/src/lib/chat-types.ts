@@ -21,5 +21,6 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   citations: Citation[];
+  pages_used?: string[];
   created_at: string;
 }

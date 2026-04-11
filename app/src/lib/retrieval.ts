@@ -49,23 +49,7 @@ async function fetchPageContent(pageId: string): Promise<string | null> {
   }
 }
 
-async function indexFirstRetrieval(
-  question: string,
-  index: ReturnType<typeof getPageIndex>,
-  maxPages: number,
-): Promise<RetrievedPage[]> {
-  // Ask LLM to pick the most relevant page IDs from the full index.
-  const res = await fetch(`${NLP_SERVICE_URL}/chat/select-pages`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, index }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) return [];
-
-  const data = (await res.json()) as { page_ids: string[] };
-  const pageIds = (data.page_ids ?? []).slice(0, maxPages);
-
+async function fetchIndexPages(pageIds: string[]): Promise<RetrievedPage[]> {
   const results: RetrievedPage[] = [];
   for (const pageId of pageIds) {
     const row = getPage(pageId);
@@ -82,6 +66,36 @@ async function indexFirstRetrieval(
     });
   }
   return results;
+}
+
+async function indexFirstRetrieval(
+  question: string,
+  index: ReturnType<typeof getPageIndex>,
+  maxPages: number,
+): Promise<RetrievedPage[]> {
+  // Ask LLM to pick the most relevant page IDs from the full index.
+  const res = await fetch(`${NLP_SERVICE_URL}/chat/select-pages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, index }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  // If LLM call failed, fall back to top pages by source_count from the index.
+  if (!res.ok) {
+    const fallbackIds = index.slice(0, maxPages).map((p) => p.page_id);
+    return fetchIndexPages(fallbackIds);
+  }
+
+  const data = (await res.json()) as { page_ids: string[] };
+  let pageIds = (data.page_ids ?? []).slice(0, maxPages);
+
+  // If LLM returned no page_ids (meta question, empty response), fall back to
+  // top pages by source_count so the user always gets a grounded answer.
+  if (pageIds.length === 0 && index.length > 0) {
+    pageIds = index.slice(0, Math.min(maxPages, 5)).map((p) => p.page_id);
+  }
+
+  return fetchIndexPages(pageIds);
 }
 
 async function hybridRetrieval(
@@ -167,7 +181,17 @@ async function hybridRetrieval(
   }
 
   scored.sort((a, b) => b.score - a.score);
-  const topCandidates = scored.slice(0, maxPages);
+  let topCandidates = scored.slice(0, maxPages);
+
+  // Fallback: if both FTS and vector returned nothing, use top pages by source_count
+  // from the full index so the user always gets a grounded answer.
+  if (topCandidates.length === 0) {
+    const index = getPageIndex();
+    topCandidates = index.slice(0, Math.min(maxPages, 5)).map((p) => ({
+      page_id: p.page_id,
+      score: 0,
+    }));
+  }
 
   // Fetch full content for top candidates
   const results: RetrievedPage[] = [];

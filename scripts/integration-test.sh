@@ -1549,7 +1549,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 19 stages executed, all passed ==="
+    echo "=== All stages 0–20 executed, all passed ==="
     exit 0
 }
 
@@ -1565,7 +1565,7 @@ stage_19_chat_canary() {
 
     if [[ -z "${GEMINI_API_KEY:-}" ]]; then
         echo "  SKIP: no GEMINI_API_KEY"
-        record_stage 19 TODO SKIP
+        record_stage 19 REAL SKIPPED
         return 0
     fi
 
@@ -1573,7 +1573,7 @@ stage_19_chat_canary() {
     PAGE_COUNT=$(echo "$HEALTH" | grep -o '"page_count":[0-9]*' | grep -o '[0-9]*' || echo "0")
     if [[ "$PAGE_COUNT" -lt 1 ]]; then
         echo "  SKIP: page_count=$PAGE_COUNT (need at least 1 compiled page)"
-        record_stage 19 TODO SKIP
+        record_stage 19 REAL SKIPPED
         return 0
     fi
 

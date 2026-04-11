@@ -45,6 +45,7 @@ export async function GET(request: Request) {
       file_path: src.file_path,
       date_ingested: src.date_ingested,
       onboarding_session_id: src.onboarding_session_id,
+      compile_status: src.compile_status,
     });
   }
 

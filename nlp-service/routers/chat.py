@@ -54,7 +54,7 @@ class SynthesizePage(BaseModel):
     page_id: str
     title: str
     page_type: str
-    content: str
+    markdown: str
 
 
 class HistoryMessage(BaseModel):

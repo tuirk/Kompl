@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "better-sqlite3": "12.8.0",
+    "lucide-react": "^1.8.0",
     "marked": "^12.0.0",
     "next": "16.2.2",
     "react": "^19.0.0",

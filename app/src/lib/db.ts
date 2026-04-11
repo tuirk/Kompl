@@ -141,6 +141,8 @@ export interface SourceRow {
   status: string;
   date_ingested: string;
   metadata: string | null; // JSON TEXT; caller parses if needed
+  compile_status: string | null;
+  compile_attempts: number | null;
   onboarding_session_id: string | null;
 }
 
@@ -246,7 +248,8 @@ export function getSource(sourceId: string): SourceRow | null {
   const row = openDb()
     .prepare(
       `SELECT source_id, title, source_type, source_url, content_hash,
-              file_path, status, date_ingested, metadata
+              file_path, status, date_ingested, metadata,
+              compile_status, compile_attempts, onboarding_session_id
          FROM sources
          WHERE source_id = ?`
     )
@@ -277,7 +280,8 @@ export function getCollectedSources(sessionId: string): SourceRow[] {
   return openDb()
     .prepare(
       `SELECT source_id, title, source_type, source_url, content_hash,
-              file_path, status, date_ingested, metadata, onboarding_session_id
+              file_path, status, date_ingested, metadata, onboarding_session_id,
+              compile_status, compile_attempts
          FROM sources
         WHERE onboarding_session_id = ?
           AND compile_status = 'collected'
@@ -526,6 +530,7 @@ export function claimCompileSource(): string | null {
       .prepare(
         `SELECT source_id FROM sources
            WHERE compile_status = 'pending'
+             AND onboarding_session_id IS NULL
              AND (compile_next_eligible_at IS NULL
                   OR datetime(compile_next_eligible_at) <= datetime('now'))
            ORDER BY date_ingested ASC
@@ -610,7 +615,8 @@ export function getPendingCompile(): SourceRow | null {
   const row = openDb()
     .prepare(
       `SELECT source_id, title, source_type, source_url, content_hash,
-              file_path, status, date_ingested, metadata
+              file_path, status, date_ingested, metadata,
+              compile_status, compile_attempts, onboarding_session_id
          FROM sources
          WHERE compile_status = 'pending'
            AND (compile_next_eligible_at IS NULL
@@ -1324,6 +1330,7 @@ export function insertChatDraft(data: {
   session_id: string;
   title: string;
   draft_content: string;
+  pages_used?: string[]; // page_ids that contributed to the answer
 }): void {
   openDb()
     .prepare(
@@ -1331,9 +1338,9 @@ export function insertChatDraft(data: {
          (plan_id, session_id, title, page_type, action,
           source_ids, existing_page_id, related_plan_ids,
           draft_content, draft_status)
-       VALUES (?, ?, ?, 'query-generated', 'create', '[]', NULL, '[]', ?, 'pending_approval')`
+       VALUES (?, ?, ?, 'query-generated', 'create', ?, NULL, '[]', ?, 'pending_approval')`
     )
-    .run(data.plan_id, data.session_id, data.title, data.draft_content);
+    .run(data.plan_id, data.session_id, data.title, JSON.stringify(data.pages_used ?? []), data.draft_content);
 }
 
 // ============================================================================
@@ -1456,7 +1463,7 @@ export function archivePage(pageId: string): void {
  */
 export function decrementPageSourceCount(pageId: string): void {
   openDb()
-    .prepare('UPDATE pages SET source_count = MAX(source_count - 1, 0) WHERE page_id = ?')
+    .prepare('UPDATE pages SET source_count = CASE WHEN source_count > 0 THEN source_count - 1 ELSE 0 END WHERE page_id = ?')
     .run(pageId);
 }
 
@@ -1528,6 +1535,21 @@ export function getWikiStats(): WikiStats {
     last_ingested: lastIngestedRow?.date_ingested ?? null,
     last_compiled: lastCompiledRow?.last_updated ?? null,
   };
+}
+
+/**
+ * Return a summary of what topics/categories are in the wiki.
+ * Used by detectMetaQuery for "what topics does my wiki cover" questions.
+ */
+export function getPageCategories(): Array<{ category: string; page_type: string; count: number }> {
+  return openDb()
+    .prepare(
+      `SELECT COALESCE(category, 'General') AS category, page_type, COUNT(*) AS count
+         FROM pages
+        GROUP BY category, page_type
+        ORDER BY count DESC`
+    )
+    .all() as Array<{ category: string; page_type: string; count: number }>;
 }
 
 // ============================================================================

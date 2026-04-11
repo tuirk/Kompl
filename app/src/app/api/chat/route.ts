@@ -14,7 +14,7 @@
 
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { getChatHistory, getWikiStats, insertChatDraft, insertChatMessage } from '@/lib/db';
+import { getChatHistory, getPageCategories, getWikiStats, insertChatDraft, insertChatMessage } from '@/lib/db';
 import { retrievePages } from '@/lib/retrieval';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -53,6 +53,27 @@ function detectMetaQuery(question: string): string | null {
     return stats.last_compiled
       ? `The most recently compiled wiki page was updated on ${stats.last_compiled}.`
       : 'No pages have been compiled yet.';
+  }
+
+  if (
+    /what (topics|subjects|areas|categories|things).*(cover|know|contain|have|in|about)|what.*in my (wiki|knowledge)|overview of my (wiki|knowledge)|what do you know|(tell me what.*know)/.test(q)
+  ) {
+    const categories = getPageCategories();
+    if (categories.length === 0) {
+      return 'Your wiki has no compiled pages yet. Ingest some sources first.';
+    }
+    // Group by category
+    const catMap = new Map<string, string[]>();
+    for (const row of categories) {
+      const existing = catMap.get(row.category) ?? [];
+      existing.push(`${row.count} ${row.page_type}`);
+      catMap.set(row.category, existing);
+    }
+    const catLines = [...catMap.entries()]
+      .map(([cat, types]) => `- **${cat}**: ${types.join(', ')}`)
+      .join('\n');
+    const stats = getWikiStats();
+    return `Your wiki has ${stats.page_count} pages across these categories:\n\n${catLines}`;
   }
 
   return null;
@@ -116,7 +137,7 @@ export async function POST(request: Request) {
       page_id: p.page_id,
       title: p.title,
       page_type: p.page_type,
-      content: i < 5 ? p.content.slice(0, 2000) : `[Summary only] ${p.content.slice(0, 300)}`,
+      markdown: i < 5 ? p.content.slice(0, 2000) : `[Summary only] ${p.content.slice(0, 300)}`,
     }));
 
     // 5. Synthesise via nlp-service
@@ -195,6 +216,7 @@ export async function POST(request: Request) {
           session_id: sessionId,
           title: draftTitle,
           draft_content: draftContent,
+          pages_used: pagesUsed,
         });
       } catch {
         // Non-fatal — compounding draft is best-effort

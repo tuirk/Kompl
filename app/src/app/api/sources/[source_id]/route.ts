@@ -60,6 +60,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
     content_hash: row.content_hash,
     file_path: row.file_path,
     status: row.status,
+    compile_status: row.compile_status,
     date_ingested: row.date_ingested,
     metadata,
   });

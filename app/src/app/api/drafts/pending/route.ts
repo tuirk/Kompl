@@ -16,6 +16,7 @@ export async function GET() {
     page_type: d.page_type,
     action: d.action,
     draft_content_preview: d.draft_content ? d.draft_content.slice(0, 300) : null,
+    draft_content: d.draft_content ?? null,
     created_at: d.created_at,
   }));
   return NextResponse.json({ drafts, total: drafts.length });

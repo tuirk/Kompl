@@ -52,6 +52,7 @@ import {
   markCompileSuccess,
   markSourcesActive,
   getPagePlansByStatus,
+  getPageTitleMap,
   updatePlanStatus,
   readRawMarkdown,
   getCurrentPageHash,
@@ -432,6 +433,36 @@ async function commitSession(session_id: string): Promise<Response> {
       updatePlanStatus(plan.plan_id, 'failed');
       failed++;
     }
+  }
+
+  // ── Wikilink → page_links pass ───────────────────────────────────────────────
+  // Parse [[Page Title]] from every committed page's markdown and insert
+  // page_links rows. Done after the loop so all page_ids exist in the DB.
+  // Fire-and-forget — a failure here doesn't fail the commit response.
+  try {
+    const titleMap = getPageTitleMap(); // title.toLowerCase() → page_id
+    const committedPlans = plans.filter((p) => p.draft_content && p.action !== 'provenance-only');
+
+    for (const plan of committedPlans) {
+      const fromPageId = plan.action === 'update' && plan.existing_page_id
+        ? plan.existing_page_id
+        : (() => {
+            const suffix = plan.plan_id.replace(/-/g, '').slice(0, 8);
+            const base = plan.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 56).replace(/^-+|-+$/g, '');
+            return `${base || 'page'}-${suffix}`;
+          })();
+
+      const links = plan.draft_content!.match(/\[\[([^\]]+)\]\]/g) ?? [];
+      for (const link of links) {
+        const title = link.slice(2, -2).trim();
+        const toPageId = titleMap.get(title.toLowerCase());
+        if (toPageId && toPageId !== fromPageId) {
+          try { insertPageLink(fromPageId, toPageId, 'wikilink'); } catch { /* duplicate — ignore */ }
+        }
+      }
+    }
+  } catch {
+    // non-critical — graph edges can be rebuilt on next compile
   }
 
   // Mark all session sources as active

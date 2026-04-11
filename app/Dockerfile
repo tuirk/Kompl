@@ -48,6 +48,7 @@ WORKDIR /app
 # minimal node_modules) and the static assets.
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
 
 # Copy the migration script from the project root's scripts/ directory.
 COPY scripts/migrate.py /app/scripts/migrate.py

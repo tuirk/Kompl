@@ -1264,7 +1264,7 @@ def synthesize_answer(
 
     Args:
         question: The user's question.
-        pages:    List of {page_id, title, page_type, content} dicts.
+        pages:    List of {page_id, title, page_type, markdown} dicts.
         history:  List of {role, content} dicts (conversation history).
 
     Returns SynthesizeResponse with answer markdown and citations.
@@ -1284,7 +1284,7 @@ def synthesize_answer(
     # Build page context section
     page_sections: list[str] = []
     for p in pages:
-        content = p.get("content", "")
+        content = p.get("markdown", "")
         page_sections.append(
             f"=== [{p['page_id']}] {p['title']} (type: {p.get('page_type', '')}) ===\n{content}"
         )

@@ -234,14 +234,27 @@ export async function POST(request: Request) {
         ? { ...(convertResult.metadata ?? {}), ...item.metadata_hint }
         : convertResult.metadata;
 
-      // Check for duplicate content (same hash already in DB as a non-collected source)
-      const existingDupe = db
-        .prepare(
-          `SELECT source_id FROM sources
-            WHERE content_hash = ? AND compile_status != 'collected'
-            LIMIT 1`
-        )
-        .get(convertResult.content_hash) as { source_id: string } | null;
+      // Check for duplicate: URL match first (same URL = same source even if content drifted),
+      // then fall back to content hash (for file uploads, tweets, non-URL sources).
+      const urlDupe = convertResult.source_url
+        ? (db
+            .prepare(
+              `SELECT source_id FROM sources
+                WHERE source_url = ? AND compile_status != 'collected'
+                LIMIT 1`
+            )
+            .get(convertResult.source_url) as { source_id: string } | null)
+        : null;
+      const hashDupe = urlDupe
+        ? null
+        : (db
+            .prepare(
+              `SELECT source_id FROM sources
+                WHERE content_hash = ? AND compile_status != 'collected'
+                LIMIT 1`
+            )
+            .get(convertResult.content_hash) as { source_id: string } | null);
+      const existingDupe = urlDupe ?? hashDupe;
       if (existingDupe) {
         warnings.push({ source_id: sourceId, warning: `duplicate_of:${existingDupe.source_id}` });
       }

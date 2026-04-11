@@ -25,7 +25,6 @@ import {
   getDb,
   getExtractionsBySession,
   getPageByTitle,
-  getSource,
   insertPagePlan,
 } from '../../../../lib/db';
 
@@ -166,6 +165,11 @@ export async function POST(request: Request) {
 
   const plans: PlannedPage[] = [];
 
+  // Dynamic threshold: entity/concept page requires mentions in >= this many sources.
+  // Math.ceil(10% of session sources), minimum 2. Prevents a single dense source
+  // from creating dozens of entity pages and burning LLM budget.
+  const entityThreshold = Math.max(2, Math.ceil(sessionSources.length * 0.1));
+
   // ── Rule 1: Source summaries ─────────────────────────────────────────────────
   for (const src of sessionSources) {
     plans.push({
@@ -184,6 +188,7 @@ export async function POST(request: Request) {
 
   for (const entity of canonicalEntities) {
     if (!entity.canonical || entity.source_ids.length === 0) continue;
+    if (entity.source_ids.length < entityThreshold) continue;
 
     const existing = getPageByTitle(entity.canonical);
     const plan_id = randomUUID();
@@ -227,7 +232,7 @@ export async function POST(request: Request) {
 
   const conceptPlanIds: string[] = [];
   for (const group of conceptGroups) {
-    if (group.source_ids.length < 2) continue; // only create if 2+ sources mention it
+    if (group.source_ids.length < entityThreshold) continue;
 
     const existing = getPageByTitle(group.canonical);
     plans.push({
@@ -360,6 +365,7 @@ export async function POST(request: Request) {
     comparison_pages: plans.filter((p) => p.page_type === 'comparison').length,
     overview_pages: plans.filter((p) => p.page_type === 'overview').length,
     total: plans.length,
+    entity_threshold: entityThreshold,
   };
 
   return NextResponse.json({ session_id, pages: plans, stats }, { status: 200 });
