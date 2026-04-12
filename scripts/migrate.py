@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -216,6 +216,22 @@ CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_messages(session_id);
 """
 
 
+MIGRATION_V12_SQL = """
+CREATE TABLE IF NOT EXISTS ingest_failures (
+  failure_id TEXT PRIMARY KEY,
+  source_url TEXT,
+  title_hint TEXT,
+  date_saved TEXT,
+  date_attempted DATETIME DEFAULT CURRENT_TIMESTAMP,
+  error TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'url',
+  resolved_source_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_failures_url ON ingest_failures(source_url);
+CREATE INDEX IF NOT EXISTS idx_ingest_failures_resolved ON ingest_failures(resolved_source_id);
+"""
+
+
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
@@ -310,6 +326,10 @@ def migrate():
             conn.execute(
                 "ALTER TABLE compile_progress ADD COLUMN source_count INTEGER DEFAULT 0"
             )
+
+    if current < 12:
+        print("  applying migration v12 (ingest_failures table)...")
+        conn.executescript(MIGRATION_V12_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

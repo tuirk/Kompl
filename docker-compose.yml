@@ -132,6 +132,16 @@ services:
     image: ollama/ollama:latest
     # CPU-only: no GPU reservation block — omitting deploy.resources.reservations.devices
     # is sufficient. The official ollama/ollama image auto-detects and uses CPU.
+    environment:
+      # Pin model in RAM for 24h so first request after idle doesn't pay the
+      # 13-46s cold-start reload cost. Docker sometimes miscounts cores — set
+      # OLLAMA_NUM_THREADS explicitly to your physical core count (default: all cores).
+      OLLAMA_KEEP_ALIVE: "24h"
+      # Single parallel request on CPU — each slot needs 1.5× model RAM.
+      # More than 1 on CPU just causes swapping.
+      OLLAMA_NUM_PARALLEL: "1"
+      # Only llama3.2:3b is used — no need to hold multiple models in RAM.
+      OLLAMA_MAX_LOADED_MODELS: "1"
     volumes:
       - ollama-data:/root/.ollama
     # Internal only — nlp-service reaches it at http://ollama:11434/v1.
@@ -142,10 +152,9 @@ services:
       timeout: 5s
       retries: 8
       start_period: 60s
-    # Start the server, wait for it to be ready, then pull llama3.2:3b.
-    # The server is ready in ~2s; the first-boot model pull takes 2-4 minutes.
-    # nlp-service handles the "model not yet pulled" 404 as OllamaUnavailableError (503).
-    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull llama3.2:3b && wait"]
+    # Start the server, wait for it to be ready, then pull llama3.2:3b and
+    # warm it into RAM so the first user request has no cold-start delay.
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull llama3.2:3b && ollama run llama3.2:3b '' && wait"]
 
 volumes:
   kompl-data:

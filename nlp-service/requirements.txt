@@ -26,6 +26,9 @@ rapidfuzz>=3.0
 # Chat provider toggle: Ollama via OpenAI-compatible API. Pin <2.0.0 to avoid
 # future breaking changes. api_key is required by the SDK but ignored by Ollama.
 openai>=1.0.0,<2.0.0
+# Ollama web search tool: DuckDuckGo scraper, no API key required.
+# Used when llama3.2:3b calls the web_search tool during synthesis.
+duckduckgo-search>=6.0.0,<7.0.0
 # Commit 7: Chroma vector store (embedded, no separate server). 0.4.x API:
 # PersistentClient, get_or_create_collection, cosine distance.
 chromadb==0.4.24

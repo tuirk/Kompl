@@ -21,6 +21,12 @@
 # ---- Build stage ----
 FROM node:20-slim AS builder
 
+# python3 + build tools needed by node-gyp to compile better-sqlite3 from
+# source when the prebuild-install binary download fails (e.g. --no-cache builds).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install dependencies first for better layer caching

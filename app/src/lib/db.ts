@@ -96,7 +96,7 @@ export function getSchemaVersion(): number | null {
 /**
  * Enumerate user tables (excluding sqlite_* internals and FTS5 shadow
  * tables). Used by /api/health to verify migration completed. The
- * integration test asserts this returns exactly 8 names.
+ * integration test asserts this returns exactly 14 names.
  */
 const EXPECTED_TABLES = [
   'sources',
@@ -112,6 +112,7 @@ const EXPECTED_TABLES = [
   'page_plans',
   'compile_progress',
   'chat_messages',
+  'ingest_failures',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -487,6 +488,19 @@ export function insertProvenance(args: InsertProvenanceArgs): void {
        VALUES (@source_id, @page_id, @content_hash, @contribution_type)`
     )
     .run(args);
+}
+
+export interface ProvenanceRow {
+  source_id: string;
+  page_id: string;
+  contribution_type: string;
+  date_compiled: string;
+}
+
+export function getAllProvenance(): ProvenanceRow[] {
+  return openDb()
+    .prepare('SELECT source_id, page_id, contribution_type, date_compiled FROM provenance')
+    .all() as ProvenanceRow[];
 }
 
 // ============================================================================
@@ -1012,6 +1026,25 @@ export function insertPagePlan(plan: {
     });
 }
 
+/**
+ * Deletes all non-committed page_plans for a session before re-planning.
+ * Makes the plan step idempotent on retry: stale 'planned', 'drafted',
+ * 'crossreffed', and 'failed' rows from a prior failed run are cleared so
+ * the draft step only sees plans from the current run.
+ * Preserves 'committed' (already written to pages table),
+ * 'pending_approval' (query-generated chat plans, separate lifecycle),
+ * and 'rejected' (audit trail).
+ */
+export function clearStagedPagePlans(sessionId: string): void {
+  openDb()
+    .prepare(
+      `DELETE FROM page_plans
+        WHERE session_id = ?
+          AND draft_status NOT IN ('committed', 'pending_approval', 'rejected')`
+    )
+    .run(sessionId);
+}
+
 export function getPagePlansBySession(sessionId: string): PagePlanRow[] {
   return openDb()
     .prepare(
@@ -1077,15 +1110,16 @@ export function getPageByTitle(title: string): PageRow | null {
 }
 
 /**
- * Set compile_status = 'active' for sources that have been fully compiled
- * through the session pipeline. Used by the session commit endpoint.
+ * Sets compile_status = 'compiled' for sources that completed the session pipeline.
+ * Note: function name is legacy — it previously set 'active', now correctly sets 'compiled'.
+ * Used by the session commit endpoint (commitSession).
  */
 export function markSourcesActive(sourceIds: string[]): void {
   if (sourceIds.length === 0) return;
   const placeholders = sourceIds.map(() => '?').join(', ');
   openDb()
     .prepare(
-      `UPDATE sources SET compile_status = 'active'
+      `UPDATE sources SET compile_status = 'compiled'
         WHERE source_id IN (${placeholders})`
     )
     .run(...sourceIds);
@@ -1206,6 +1240,25 @@ export function failCompileProgress(sessionId: string, error: string): void {
     .run(error, sessionId);
 }
 
+/**
+ * Mark all 'running' sessions older than olderThanMinutes as failed.
+ * Called on server startup (health check) to recover from mid-pipeline crashes.
+ * Uses datetime() wrapper on both sides per the SQLite timestamp comparison gotcha.
+ * Returns the number of rows cleaned up.
+ */
+export function markStaleSessionsFailed(olderThanMinutes: number): number {
+  const result = openDb()
+    .prepare(
+      `UPDATE compile_progress
+          SET status = 'failed',
+              error  = 'Pipeline interrupted — server restarted or timed out. Click Retry to rerun.'
+        WHERE status = 'running'
+          AND datetime(started_at) < datetime('now', ? || ' minutes')`
+    )
+    .run(`-${olderThanMinutes}`);
+  return result.changes as number;
+}
+
 /** Fetch the progress record for a session. Returns null if not found. */
 export function getCompileProgress(sessionId: string): CompileProgressRow | null {
   const row = openDb()
@@ -1220,8 +1273,9 @@ export function getCompileProgress(sessionId: string): CompileProgressRow | null
 
 /**
  * Fetch all sources for a session that still need compilation
- * (compile_status != 'active'). Used by /api/compile/run to determine
- * which sources to extract.
+ * (compile_status NOT IN ('active', 'compiled')). Used by /api/compile/run
+ * to determine which sources to extract. Excludes both the legacy 'active'
+ * value and the current 'compiled' terminal state.
  */
 export function getSourcesBySession(sessionId: string): SourceRow[] {
   return openDb()
@@ -1231,7 +1285,7 @@ export function getSourcesBySession(sessionId: string): SourceRow[] {
               compile_attempts, onboarding_session_id
          FROM sources
         WHERE onboarding_session_id = ?
-          AND compile_status != 'active'
+          AND compile_status NOT IN ('active', 'compiled')
         ORDER BY date_ingested ASC`
     )
     .all(sessionId) as SourceRow[];
@@ -1542,6 +1596,16 @@ export function removeProvenanceForSource(sourceId: string): void {
 }
 
 /**
+ * Return all provenance rows for a given page_id.
+ * Used by recompilePage to discover remaining sources after one is deleted.
+ */
+export function getProvenanceForPage(pageId: string): Array<{ source_id: string; contribution_type: string }> {
+  return openDb()
+    .prepare('SELECT source_id, contribution_type FROM provenance WHERE page_id = ?')
+    .all(pageId) as Array<{ source_id: string; contribution_type: string }>;
+}
+
+/**
  * Archive a page (page_type → 'archived') and remove it from the FTS index.
  * Called when a delete cascade leaves a page with no remaining sources.
  */
@@ -1594,8 +1658,9 @@ export function setAutoApprove(value: boolean): void {
  * 'ollama' uses local llama3.2:3b via Ollama (free, CPU-only, ~10 tok/s).
  */
 export function getChatProvider(): 'gemini' | 'ollama' {
-  if (getSetting('chat_provider') === 'ollama') return 'ollama';
-  return 'gemini';
+  const saved = getSetting('chat_provider');
+  if (saved === 'gemini') return 'gemini';
+  return 'ollama';
 }
 
 /**
@@ -1603,6 +1668,255 @@ export function getChatProvider(): 'gemini' | 'ollama' {
  */
 export function setChatProvider(value: 'gemini' | 'ollama'): void {
   setSetting('chat_provider', value);
+}
+
+/**
+ * Minimum active source count before "related pages" panel is shown.
+ * Defaults to 100 if not set.
+ */
+export function getRelatedPagesMinSources(): number {
+  const v = getSetting('related_pages_min_sources');
+  return v !== null ? Math.max(0, parseInt(v, 10)) : 100;
+}
+
+export function setRelatedPagesMinSources(value: number): void {
+  setSetting('related_pages_min_sources', String(Math.max(0, Math.floor(value))));
+}
+
+/**
+ * Number of days before a source is considered stale. Defaults to 90.
+ * Set to 0 to disable stale source alerts.
+ */
+export function getStaleThresholdDays(): number {
+  const v = getSetting('stale_threshold_days');
+  return v !== null ? Math.max(0, parseInt(v, 10)) : 90;
+}
+
+export function setStaleThresholdDays(value: number): void {
+  setSetting('stale_threshold_days', String(Math.max(0, Math.floor(value))));
+}
+
+export interface StaleSourceRow {
+  source_id: string;
+  title: string;
+  source_type: string;
+  date_ingested: string;
+  days_old: number;
+}
+
+// ============================================================================
+// Ingest Failures — persisted records for bookmarks/URLs that could not be
+// scraped, so the user never loses a saved link.
+// ============================================================================
+
+export interface IngestFailureRow {
+  failure_id: string;
+  source_url: string | null;
+  title_hint: string | null;
+  date_saved: string | null;
+  date_attempted: string;
+  error: string;
+  source_type: string;
+  resolved_source_id: string | null;
+}
+
+export interface InsertIngestFailureArgs {
+  failure_id: string;
+  source_url: string | null;
+  title_hint?: string | null;
+  date_saved?: string | null;
+  error: string;
+  source_type?: string;
+}
+
+export function insertIngestFailure(args: InsertIngestFailureArgs): void {
+  openDb()
+    .prepare(
+      `INSERT OR IGNORE INTO ingest_failures
+         (failure_id, source_url, title_hint, date_saved, error, source_type)
+       VALUES
+         (@failure_id, @source_url, @title_hint, @date_saved, @error, @source_type)`
+    )
+    .run({
+      failure_id: args.failure_id,
+      source_url: args.source_url ?? null,
+      title_hint: args.title_hint ?? null,
+      date_saved: args.date_saved ?? null,
+      error: args.error,
+      source_type: args.source_type ?? 'url',
+    });
+}
+
+/**
+ * Return all ingest failures, unresolved first, then resolved, newest first.
+ */
+export function getIngestFailures(): IngestFailureRow[] {
+  return openDb()
+    .prepare(
+      `SELECT failure_id, source_url, title_hint, date_saved,
+              date_attempted, error, source_type, resolved_source_id
+         FROM ingest_failures
+        ORDER BY resolved_source_id IS NOT NULL ASC,
+                 date_attempted DESC`
+    )
+    .all() as IngestFailureRow[];
+}
+
+/**
+ * Mark any unresolved failures for a given URL as resolved.
+ * Called by /api/sources/store after a successful ingest.
+ */
+export function resolveIngestFailures(sourceUrl: string, resolvedSourceId: string): void {
+  openDb()
+    .prepare(
+      `UPDATE ingest_failures
+          SET resolved_source_id = ?
+        WHERE source_url = ?
+          AND resolved_source_id IS NULL`
+    )
+    .run(resolvedSourceId, sourceUrl);
+}
+
+/**
+ * Unresolved saved links for the wiki page.
+ * Only rows in ingest_failures that have not been resolved yet.
+ * Once a link is successfully ingested it drops off.
+ */
+export interface SavedLinkRow {
+  source_url: string;
+  title: string | null;
+  date_saved: string | null;
+  date_attempted: string;
+  error: string;
+  source_type: string;
+}
+
+export function getUnresolvedLinks(): SavedLinkRow[] {
+  return openDb()
+    .prepare(
+      `SELECT source_url,
+              title_hint  AS title,
+              date_saved,
+              date_attempted,
+              error,
+              source_type
+         FROM ingest_failures
+        WHERE resolved_source_id IS NULL
+          AND source_url IS NOT NULL
+        ORDER BY date_attempted DESC`
+    )
+    .all() as SavedLinkRow[];
+}
+
+/**
+ * Return active sources older than thresholdDays, ordered oldest-first.
+ * Uses julianday() for correct date arithmetic — avoids the SQLite
+ * lexicographic timestamp gotcha.
+ */
+export function getStaleSources(thresholdDays: number): StaleSourceRow[] {
+  if (thresholdDays <= 0) return [];
+  return openDb()
+    .prepare(
+      `SELECT source_id, title, source_type, date_ingested,
+              CAST(julianday('now') - julianday(date_ingested) AS INTEGER) AS days_old
+         FROM sources
+        WHERE status = 'active'
+          AND julianday('now') - julianday(date_ingested) > ?
+        ORDER BY date_ingested ASC`
+    )
+    .all(thresholdDays) as StaleSourceRow[];
+}
+
+// ============================================================================
+// Lint settings helpers
+// ============================================================================
+
+/**
+ * Whether the scheduled lint pass (n8n every 6h) is enabled.
+ * Defaults to true. When false, lint-pass/route.ts returns early immediately.
+ * Manual trigger in settings bypasses this flag.
+ */
+export function getLintEnabled(): boolean {
+  return getSetting('lint_enabled') !== '0';
+}
+
+export function setLintEnabled(value: boolean): void {
+  setSetting('lint_enabled', value ? '1' : '0');
+}
+
+/**
+ * Fetch the details JSON from the most recent lint_complete activity row.
+ * Returns null if no lint has ever run.
+ */
+export function getLastLintResult(): Record<string, unknown> | null {
+  const row = openDb()
+    .prepare(
+      `SELECT details FROM activity_log
+       WHERE action_type = 'lint_complete'
+       ORDER BY id DESC LIMIT 1`
+    )
+    .get() as { details: string | null } | undefined;
+  if (!row?.details) return null;
+  try {
+    return JSON.parse(row.details) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
+// Weekly Digest settings helpers
+// ============================================================================
+
+export function getDigestSettings(): {
+  enabled: boolean;
+  telegram_token: string | null;
+  telegram_chat_id: string | null;
+} {
+  return {
+    enabled: getSetting('digest_enabled') === '1',
+    telegram_token: getSetting('digest_telegram_token'),
+    telegram_chat_id: getSetting('digest_telegram_chat_id'),
+  };
+}
+
+export function setDigestSettings(data: {
+  enabled?: boolean;
+  telegram_token?: string;
+  telegram_chat_id?: string;
+}): void {
+  if (data.enabled !== undefined) {
+    setSetting('digest_enabled', data.enabled ? '1' : '0');
+  }
+  if (data.telegram_token !== undefined) {
+    setSetting('digest_telegram_token', data.telegram_token);
+  }
+  if (data.telegram_chat_id !== undefined) {
+    setSetting('digest_telegram_chat_id', data.telegram_chat_id);
+  }
+}
+
+export interface ActivityRow {
+  action_type: string;
+  source_id: string | null;
+  details: string | null;
+  timestamp: string;
+}
+
+/**
+ * Fetch all activity_log rows newer than `since` (ISO 8601 string).
+ * Uses datetime() wrapping to avoid the SQLite lexicographic timestamp gotcha
+ * (CURRENT_TIMESTAMP stores 'YYYY-MM-DD HH:MM:SS', not ISO 8601).
+ */
+export function getActivitySince(since: string): ActivityRow[] {
+  return openDb()
+    .prepare(
+      `SELECT action_type, source_id, details, timestamp
+       FROM activity_log
+       WHERE datetime(timestamp) > datetime(?)
+       ORDER BY timestamp DESC`
+    )
+    .all(since) as ActivityRow[];
 }
 
 // ============================================================================
@@ -1682,6 +1996,28 @@ export function getPendingDrafts(): PagePlanRow[] {
         ORDER BY created_at DESC`
     )
     .all() as PagePlanRow[];
+}
+
+/**
+ * Update a page's file paths and source_count after a recompile.
+ * Called inside a db.transaction() — no await.
+ */
+export function updatePageContent(
+  pageId: string,
+  contentPath: string,
+  previousContentPath: string | null,
+  sourceCount: number
+): void {
+  openDb()
+    .prepare(
+      `UPDATE pages
+          SET content_path = ?,
+              previous_content_path = ?,
+              source_count = ?,
+              last_updated = datetime('now')
+        WHERE page_id = ?`
+    )
+    .run(contentPath, previousContentPath, sourceCount, pageId);
 }
 
 /**
