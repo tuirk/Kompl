@@ -1,0 +1,34 @@
+{
+  "name": "kompl",
+  "version": "1.0.0",
+  "description": "CLI for managing the Kompl knowledge compiler stack",
+  "bin": {
+    "kompl": "./bin/kompl.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "docker-compose": "^0.24.8",
+    "open": "^9.1.0",
+    "picocolors": "^1.1.1",
+    "prompts": "^2.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/prompts": "^2.4.9",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0"
+  }
+}
