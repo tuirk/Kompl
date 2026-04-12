@@ -8,14 +8,14 @@
         "rule": {
           "interval": [
             {
-              "field": "hours",
-              "hoursInterval": 6
+              "field": "cronExpression",
+              "expression": "0 22 * * 6"
             }
           ]
         }
       },
       "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "name": "Schedule Trigger",
+      "name": "Schedule: Sat 22:00 UTC (Pre-Digest)",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [240, 300]
@@ -84,7 +84,7 @@
     }
   ],
   "connections": {
-    "Schedule Trigger": {
+    "Schedule: Sat 22:00 UTC (Pre-Digest)": {
       "main": [
         [
           {

@@ -37,14 +37,16 @@
  *   They still go through Firecrawl (best-effort) since yt-dlp is not wired yet.
  */
 
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 
 import {
   getDb,
+  insertIngestFailure,
   insertSource,
   storeRawMarkdown,
 } from '../../../../lib/db';
+import { regenerateSavedLinksPage } from '../../../../lib/saved-links';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -207,6 +209,21 @@ export async function POST(request: Request) {
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'unknown';
         failed.push({ item, error: msg });
+        // For tweet text failures, preserve tweet_url + title_hint so the link
+        // is not lost even when the DB insert itself fails.
+        const tweetUrl = typeof item.metadata?.tweet_url === 'string' ? item.metadata.tweet_url : null;
+        if (tweetUrl) {
+          const dateSaved = typeof item.metadata?.date_saved === 'string' ? item.metadata.date_saved : null;
+          insertIngestFailure({
+            failure_id: randomUUID(),
+            source_url: tweetUrl,
+            title_hint: item.title_hint ?? null,
+            date_saved: dateSaved,
+            error: msg,
+            source_type: 'tweet',
+          });
+          void regenerateSavedLinksPage().catch(() => {});
+        }
       }
       continue;
     }
@@ -287,6 +304,22 @@ export async function POST(request: Request) {
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'unknown';
       failed.push({ item, error: msg });
+      // Persist the link so it appears on the Saved Links wiki page even if
+      // scraping failed. URL bookmarks have url + optional title_hint +
+      // optional date_saved from browser export.
+      if (connector === 'url' && item.url) {
+        const dateSaved =
+          typeof item.metadata_hint?.date_saved === 'string' ? item.metadata_hint.date_saved : null;
+        insertIngestFailure({
+          failure_id: randomUUID(),
+          source_url: item.url,
+          title_hint: item.title_hint ?? null,
+          date_saved: dateSaved,
+          error: msg,
+          source_type: 'url',
+        });
+        void regenerateSavedLinksPage().catch(() => {});
+      }
     }
   }
 
