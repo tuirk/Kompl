@@ -39,7 +39,6 @@ export default function AppleNotesConnector({
   connectors,
   connectorIdx,
   showToast,
-  mode,
 }: ConnectorProps) {
   const router = useRouter();
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -213,8 +212,8 @@ export default function AppleNotesConnector({
           hasInput={false}
           onIngest={() => {}}
           onSkip={() => {}}
-          onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-          onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
+          onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+          onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
         />
       </div>
     );
@@ -380,9 +379,9 @@ export default function AppleNotesConnector({
         phase={phase}
         hasInput={selectedFiles.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
       />
     </div>
   );

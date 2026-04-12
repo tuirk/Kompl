@@ -4,11 +4,11 @@
  * /onboarding — Connector selection screen.
  *
  * Generates a session_id (UUID) on mount, stores it in sessionStorage.
- * For mode=add (returning users), always generates a fresh session_id.
  * User checks active connectors → "Next →" navigates to the first
- * connector screen, passing session_id + mode as URL search params.
+ * connector screen, passing session_id as a URL search param.
  */
 
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 import {
@@ -45,19 +45,14 @@ function OnboardingPageInner() {
   const searchParams = useSearchParams();
   const { toast, showToast } = useToast();
 
-  const isReturning = searchParams.get('mode') === 'add';
-
   const [sessionId, setSessionId] = useState<string>('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    const id =
-      isReturning || !sessionStorage.getItem('kompl_session_id')
-        ? crypto.randomUUID()
-        : sessionStorage.getItem('kompl_session_id')!;
+    const id = sessionStorage.getItem('kompl_session_id') ?? crypto.randomUUID();
     sessionStorage.setItem('kompl_session_id', id);
     setSessionId(id);
-  }, [isReturning]);
+  }, []);
 
   function toggleConnector(id: string) {
     setSelected(prev => {
@@ -75,21 +70,33 @@ function OnboardingPageInner() {
     if (activeSelected.length === 0 || !sessionId) return;
     sessionStorage.setItem('kompl_connectors', JSON.stringify(activeSelected));
     sessionStorage.setItem('kompl_connector_idx', '0');
-    const modeParam = isReturning ? '&mode=add' : '';
-    router.push(`/onboarding/${activeSelected[0]}?session_id=${sessionId}${modeParam}`);
+    router.push(`/onboarding/${activeSelected[0]}?session_id=${sessionId}`);
   }
 
-  const heading = isReturning ? 'Add More Sources.' : 'Select Your Data Sources.';
-  const subtitle = isReturning
-    ? 'Select where your new sources are coming from.'
-    : "Pick all the places your knowledge lives. You'll walk through each connector.";
+  const heading = 'Select Your Data Sources.';
+  const subtitle = "Pick all the places your knowledge lives. You'll walk through each connector.";
 
   return (
     <>
-      <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 2.5rem' }}>
+      <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 100px' }}>
 
         {/* Header */}
         <section style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 32 }}>
+          <Link
+            href="/"
+            style={{
+              fontFamily: 'var(--font-body)',
+              fontWeight: 400,
+              fontSize: 10,
+              lineHeight: '15px',
+              letterSpacing: 3,
+              textTransform: 'uppercase',
+              color: 'var(--accent)',
+              textDecoration: 'none',
+            }}
+          >
+            ← Dashboard
+          </Link>
           <h1 style={{
             fontFamily: 'var(--font-heading)',
             fontWeight: 700,
@@ -255,25 +262,32 @@ function OnboardingPageInner() {
 
         {/* Inline footer nav */}
         <div style={{
-          marginTop: 48,
+          position: 'fixed',
+          bottom: 32, left: 0, right: 0,
+          zIndex: 50,
+          background: 'var(--bg)',
+          borderTop: '1px solid rgba(71,72,74,0.12)',
+          padding: '16px 56px',
           display: 'flex',
           flexDirection: 'row',
           justifyContent: 'space-between',
           alignItems: 'center',
         }}>
           {/* Left: selection count */}
-          <span style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: 10,
-            lineHeight: '15px',
-            letterSpacing: '1px',
-            textTransform: 'uppercase',
-            color: 'var(--fg-dim)',
-          }}>
-            {activeSelected.length > 0
-              ? `${activeSelected.length} Source${activeSelected.length !== 1 ? 's' : ''} Selected`
-              : 'None Selected'}
-          </span>
+          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <span style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              lineHeight: '15px',
+              letterSpacing: '1px',
+              textTransform: 'uppercase',
+              color: 'var(--fg-dim)',
+            }}>
+              {activeSelected.length > 0
+                ? `${activeSelected.length} Source${activeSelected.length !== 1 ? 's' : ''} Selected`
+                : 'None Selected'}
+            </span>
+          </div>
 
           {/* Right: primary button */}
           <button

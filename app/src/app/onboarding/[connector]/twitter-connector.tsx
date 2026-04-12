@@ -86,36 +86,36 @@ function ExportGuide({
   const [extensionsOpen, setExtensionsOpen] = useState(false);
 
   return (
-    <div style={{ marginBottom: '2rem' }}>
+    <div style={{ marginBottom: '1.5rem' }}>
 
-      {/* Step 1 — bookmarklet drag target */}
-      <div
-        style={{
-          padding: '1.25rem 1.5rem',
-          border: '1px solid var(--border)',
-          borderRadius: 8,
-          background: 'var(--bg-card)',
-          marginBottom: '0.75rem',
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
-          <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>
-            Step 1 — Install the exporter <span style={{ color: 'var(--fg-dim)', fontWeight: 400 }}>(one time)</span>
-          </h2>
-          {collapsed && (
-            <button
-              onClick={onToggle}
-              style={{ background: 'none', border: 'none', color: 'var(--fg-muted)', cursor: 'pointer', fontSize: '0.82rem', padding: 0, flexShrink: 0 }}
-            >
-              Show ↓
-            </button>
-          )}
+      {collapsed ? (
+        /* Collapsed: single compact row */
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: '0.6rem 1rem',
+          border: '1px solid var(--border)', borderRadius: 6,
+          background: 'var(--bg-card)', marginBottom: '0.75rem',
+        }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>
+            Step 1 — Install the exporter
+          </span>
+          <button
+            onClick={onToggle}
+            style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: '0.78rem', padding: 0 }}
+          >
+            Show ↓
+          </button>
         </div>
+      ) : (
+        /* Expanded: two columns side by side */
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
 
-        {!collapsed && (
-          <>
-            {/* Drag target */}
-            <div style={{ textAlign: 'center', margin: '0.5rem 0 1.25rem' }}>
+          {/* Step 1 */}
+          <div style={{ padding: '1rem 1.25rem', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg-card)' }}>
+            <h2 style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', fontWeight: 600 }}>
+              Step 1 — Install the exporter <span style={{ color: 'var(--fg-dim)', fontWeight: 400 }}>(one time)</span>
+            </h2>
+            <div style={{ textAlign: 'center', margin: '0.25rem 0 0.75rem' }}>
               {/* eslint-disable-next-line jsx-a11y/anchor-is-valid */}
               <a
                 ref={bookmarkletRef}
@@ -123,12 +123,12 @@ function ExportGuide({
                 draggable
                 style={{
                   display: 'inline-block',
-                  padding: '0.65rem 1.6rem',
+                  padding: '0.5rem 1.25rem',
                   border: '2px solid var(--accent)',
-                  borderRadius: 8,
+                  borderRadius: 6,
                   color: 'var(--accent)',
                   fontWeight: 600,
-                  fontSize: '0.95rem',
+                  fontSize: '0.82rem',
                   cursor: 'grab',
                   userSelect: 'none',
                   textDecoration: 'none',
@@ -137,46 +137,34 @@ function ExportGuide({
               >
                 ↓ Drag to bookmark bar
               </a>
-              <p style={{ margin: '0.6rem 0 0', fontSize: '0.8rem', color: 'var(--fg-dim)' }}>
-                Works on desktop Chrome, Firefox, Safari, Edge. On mobile, use a browser extension below.
+              <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: 'var(--fg-dim)' }}>
+                Chrome, Firefox, Safari, Edge. Mobile: use a browser extension below.
               </p>
             </div>
-
-            <p style={{ margin: '0 0 0.4rem', fontSize: '0.88rem', color: 'var(--fg-muted)' }}>
-              Drag the button above to your bookmark bar (the bar below your address bar).
-              If it&apos;s hidden, enable it first: <strong>View → Always Show Bookmarks Bar</strong>.
+            <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+              Drag above to your bookmark bar. If hidden: <strong>View → Always Show Bookmarks Bar</strong>.
             </p>
-          </>
-        )}
-      </div>
+          </div>
 
-      {/* Step 2 — run on Twitter */}
-      {!collapsed && (
-        <div
-          style={{
-            padding: '1.25rem 1.5rem',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            background: 'var(--bg-card)',
-            marginBottom: '0.75rem',
-          }}
-        >
-          <h2 style={{ margin: '0 0 0.75rem', fontSize: '1rem', fontWeight: 600 }}>
-            Step 2 — Run it on Twitter
-          </h2>
-          <ol style={{ margin: 0, paddingLeft: '1.25rem', fontSize: '0.9rem', lineHeight: 1.9, color: 'var(--fg-muted)' }}>
-            <li>Go to <a href="https://twitter.com/i/bookmarks" target="_blank" rel="noreferrer">twitter.com/i/bookmarks</a></li>
-            <li>Click the bookmark you just installed</li>
-            <li>The page scrolls automatically — don&apos;t click anything</li>
-            <li>A <code>twitter-bookmarks.json</code> file downloads when done</li>
-            <li>Upload it below ↓</li>
-          </ol>
-          <button
-            onClick={onToggle}
-            style={{ marginTop: '1rem', background: 'none', border: 'none', color: 'var(--fg-dim)', cursor: 'pointer', fontSize: '0.82rem', padding: 0 }}
-          >
-            Hide guide ↑
-          </button>
+          {/* Step 2 */}
+          <div style={{ padding: '1rem 1.25rem', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg-card)' }}>
+            <h2 style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', fontWeight: 600 }}>
+              Step 2 — Run it on Twitter
+            </h2>
+            <ol style={{ margin: 0, paddingLeft: '1.1rem', fontSize: '0.78rem', lineHeight: 1.8, color: 'var(--fg-muted)' }}>
+              <li>Go to <a href="https://twitter.com/i/bookmarks" target="_blank" rel="noreferrer">twitter.com/i/bookmarks</a></li>
+              <li>Click the bookmark you just installed</li>
+              <li>Page scrolls automatically — don&apos;t click anything</li>
+              <li>A <code>twitter-bookmarks.json</code> downloads when done</li>
+              <li>Upload it below ↓</li>
+            </ol>
+            <button
+              onClick={onToggle}
+              style={{ marginTop: '0.75rem', background: 'none', border: 'none', color: 'var(--fg-dim)', cursor: 'pointer', fontSize: '0.72rem', padding: 0 }}
+            >
+              Hide guide ↑
+            </button>
+          </div>
         </div>
       )}
 
@@ -245,7 +233,7 @@ function TweetPreviewCard({ tweet }: { tweet: ParsedTweet }) {
 
 type Phase = 'idle' | 'preview' | 'collecting' | 'done';
 
-export default function TwitterConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
+export default function TwitterConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bookmarkletRef = useRef<HTMLAnchorElement>(null);
@@ -380,15 +368,15 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
   }
 
   function handleSkip() {
-    navigateNext(sessionId, connectors, connectorIdx, router, mode);
+    navigateNext(sessionId, connectors, connectorIdx, router);
   }
 
   function handleContinue() {
-    navigateNext(sessionId, connectors, connectorIdx, router, mode);
+    navigateNext(sessionId, connectors, connectorIdx, router);
   }
 
   function handleBack() {
-    navigateBack(sessionId, connectors, connectorIdx, router, mode);
+    navigateBack(sessionId, connectors, connectorIdx, router);
   }
 
   // ── Done state ───────────────────────────────────────────────────────────────

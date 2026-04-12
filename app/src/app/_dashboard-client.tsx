@@ -39,39 +39,59 @@ interface ActiveCompileInfo {
 interface ProgressResponse {
   status: string;
   current_step: string | null;
+  steps: Record<string, { status: string; detail?: string }>;
+}
+
+type BannerDoneState = 'completed' | 'failed' | null;
+
+function parsePages(steps: ProgressResponse['steps']): number {
+  const detail = steps?.commit?.detail ?? '';
+  const m = detail.match(/(\d+)\s+pages?/i);
+  return m ? parseInt(m[1], 10) : 0;
 }
 
 function ActiveCompileBanner() {
-  const [info, setInfo] = useState<ActiveCompileInfo | null>(null);
+  const [info,      setInfo]      = useState<ActiveCompileInfo | null>(null);
   const [currentStep, setCurrentStep] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [doneState, setDoneState] = useState<BannerDoneState>(null);
+  const [pages,     setPages]     = useState(0);
+  const intervalRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const dismissRef    = useRef<ReturnType<typeof setTimeout>  | null>(null);
 
   function stopPolling() {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+  }
+  function dismiss() {
+    if (dismissRef.current) { clearTimeout(dismissRef.current); dismissRef.current = null; }
+    localStorage.removeItem(LS_KEY);
+    setInfo(null);
+    setDoneState(null);
   }
 
   async function poll(sessionId: string) {
     try {
       const res = await fetch(`/api/compile/progress?session_id=${encodeURIComponent(sessionId)}`);
-      if (!res.ok) {
-        localStorage.removeItem(LS_KEY);
-        setInfo(null);
+      if (!res.ok) { dismiss(); stopPolling(); return; }
+      const data = await res.json() as ProgressResponse;
+
+      if (data.status === 'completed') {
         stopPolling();
+        localStorage.removeItem(LS_KEY);
+        setPages(parsePages(data.steps ?? {}));
+        setDoneState('completed');
+        dismissRef.current = setTimeout(dismiss, 180_000);
         return;
       }
-      const data = await res.json() as ProgressResponse;
-      if (data.status !== 'running') {
-        localStorage.removeItem(LS_KEY);
-        setInfo(null);
+      if (data.status === 'failed') {
         stopPolling();
+        localStorage.removeItem(LS_KEY);
+        setDoneState('failed');
+        dismissRef.current = setTimeout(dismiss, 180_000);
         return;
       }
       setCurrentStep(data.current_step);
     } catch {
-      // silent
+      // silent — keep polling
     }
   }
 
@@ -80,41 +100,102 @@ function ActiveCompileBanner() {
     try {
       const raw = localStorage.getItem(LS_KEY);
       if (raw) stored = JSON.parse(raw) as ActiveCompileInfo;
-    } catch {
-      localStorage.removeItem(LS_KEY);
-    }
+    } catch { localStorage.removeItem(LS_KEY); }
 
     if (!stored) return;
-
     setInfo(stored);
-
-    // Immediate check, then poll every 3s
     void poll(stored.session_id);
     intervalRef.current = setInterval(() => void poll(stored.session_id), BANNER_POLL_MS);
-
-    return () => stopPolling();
+    return () => { stopPolling(); if (dismissRef.current) clearTimeout(dismissRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!info) return null;
 
+  const sc        = info.source_count;
+  const sessionId = info.session_id;
+
+  /* ── Completed state ── */
+  if (doneState === 'completed') {
+    return (
+      <div style={{
+        background: 'rgba(74,178,144,0.08)',
+        borderLeft: '2px solid var(--accent)',
+        padding: '12px 20px', marginBottom: 24,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
+      }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent)', letterSpacing: '0.5px' }}>
+          COMPILE COMPLETE
+          {pages > 0 && <span style={{ color: 'var(--fg-muted)', marginLeft: 12 }}>
+            {pages} page{pages !== 1 ? 's' : ''} compiled
+            {sc > 0 ? ` from ${sc} source${sc !== 1 ? 's' : ''}` : ''}
+          </span>}
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+          <Link href="/wiki" style={{
+            fontFamily: 'var(--font-mono)', fontSize: '0.7rem',
+            color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap',
+          }}>
+            View Wiki →
+          </Link>
+          <button onClick={dismiss} style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: 'var(--fg-dim)', padding: '0 4px', lineHeight: 1,
+            fontSize: 16, display: 'flex', alignItems: 'center',
+          }}>
+            ×
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Failed state ── */
+  if (doneState === 'failed') {
+    return (
+      <div style={{
+        background: 'rgba(255,113,108,0.06)',
+        borderLeft: '2px solid var(--danger)',
+        padding: '12px 20px', marginBottom: 24,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
+      }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--danger)', letterSpacing: '0.5px' }}>
+          COMPILE FAILED
+          {sc > 0 && <span style={{ color: 'var(--fg-muted)', marginLeft: 12 }}>
+            {sc} source{sc !== 1 ? 's' : ''} — some may be incomplete
+          </span>}
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+          <Link href={`/onboarding/progress?session_id=${encodeURIComponent(sessionId)}&queued=${sc}`}
+            style={{
+              fontFamily: 'var(--font-mono)', fontSize: '0.7rem',
+              color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap',
+            }}>
+            View Details →
+          </Link>
+          <button onClick={dismiss} style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: 'var(--fg-dim)', padding: '0 4px', lineHeight: 1,
+            fontSize: 16, display: 'flex', alignItems: 'center',
+          }}>
+            ×
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Running state ── */
   const stepIndex = currentStep ? Math.max(1, STEP_KEYS.indexOf(currentStep) + 1) : 1;
   const stepLabel = currentStep ? (STEP_LABELS[currentStep] ?? currentStep) : null;
-  const sc = info.source_count;
 
   return (
-    <div
-      style={{
-        background: 'var(--bg-card)',
-        borderLeft: '2px solid var(--accent)',
-        padding: '12px 20px',
-        marginBottom: 24,
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        gap: 16,
-      }}
-    >
+    <div style={{
+      background: 'var(--bg-card)',
+      borderLeft: '2px solid var(--accent)',
+      padding: '12px 20px', marginBottom: 24,
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
+    }}>
       <span style={{ fontSize: 13, color: 'var(--fg-secondary)' }}>
         ⏳ {sc > 0 ? `Compiling ${sc} source${sc !== 1 ? 's' : ''}` : 'Compiling'}…
         {stepLabel && (
@@ -124,18 +205,89 @@ function ActiveCompileBanner() {
         )}
       </span>
       <Link
-        href={`/onboarding/progress?session_id=${encodeURIComponent(info.session_id)}&queued=${sc}`}
+        href={`/onboarding/progress?session_id=${encodeURIComponent(sessionId)}&queued=${sc}`}
         style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: '0.7rem',
-          color: 'var(--accent)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-          whiteSpace: 'nowrap',
+          fontFamily: 'var(--font-mono)', fontSize: '0.7rem',
+          color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap',
         }}
       >
-        View progress →
+        View Progress →
       </Link>
+    </div>
+  );
+}
+
+// ── Stale sources banner ───────────────────────────────────────────────────
+
+const STALE_DISMISS_KEY = 'kompl_stale_dismissed';
+
+interface StaleSourceItem {
+  source_id: string;
+  title: string;
+  days_old: number;
+}
+
+function StaleBanner() {
+  const [count, setCount] = useState<number | null>(null);
+  const [threshold, setThreshold] = useState<number>(0);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    if (sessionStorage.getItem(STALE_DISMISS_KEY)) {
+      setDismissed(true);
+      return;
+    }
+    void fetch('/api/settings')
+      .then((r) => r.json())
+      .then((data: { stale_threshold_days: number }) => {
+        const days = data.stale_threshold_days ?? 90;
+        setThreshold(days);
+        if (days <= 0) return;
+        return fetch(`/api/sources/stale?days=${days}`)
+          .then((r) => r.json())
+          .then((d: { count: number; sources: StaleSourceItem[] }) => {
+            void d.sources; // consumed for count only
+            setCount(d.count);
+          });
+      });
+  }, []);
+
+  if (dismissed || count === null || count === 0 || threshold === 0) return null;
+
+  function dismiss() {
+    sessionStorage.setItem(STALE_DISMISS_KEY, '1');
+    setDismissed(true);
+  }
+
+  return (
+    <div style={{
+      background: 'rgba(245,158,11,0.06)',
+      borderLeft: '2px solid rgba(245,158,11,0.5)',
+      padding: '12px 20px', marginBottom: 24,
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
+    }}>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(245,158,11,0.9)', letterSpacing: '0.5px' }}>
+        ⚠ {count} source{count !== 1 ? 's' : ''} {count !== 1 ? 'haven\'t' : 'hasn\'t'} been updated in over {threshold} days.
+      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+        <a
+          href={`/sources?older_than=${threshold}`}
+          style={{
+            fontFamily: 'var(--font-mono)', fontSize: '0.7rem',
+            color: 'rgba(245,158,11,0.9)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap',
+            textDecoration: 'none',
+          }}
+        >
+          Review stale sources →
+        </a>
+        <button onClick={dismiss} style={{
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          color: 'var(--fg-dim)', padding: '0 4px', lineHeight: 1,
+          fontSize: 16, display: 'flex', alignItems: 'center',
+        }}>
+          ×
+        </button>
+      </div>
     </div>
   );
 }
@@ -381,31 +533,15 @@ function PendingDrafts() {
               <button
                 onClick={() => void approve(d.plan_id)}
                 disabled={busy === d.plan_id}
-                style={{
-                  padding: '0.35rem 0.8rem',
-                  borderRadius: 6,
-                  border: 'none',
-                  background: 'var(--success, #059669)',
-                  color: '#fff',
-                  cursor: busy === d.plan_id ? 'not-allowed' : 'pointer',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                }}
+                style={{ padding: '0.35rem 0.8rem', fontSize: '0.8rem' }}
               >
                 ✓ Approve
               </button>
               <button
+                className="btn-danger"
                 onClick={() => void reject(d.plan_id)}
                 disabled={busy === d.plan_id}
-                style={{
-                  padding: '0.35rem 0.8rem',
-                  borderRadius: 6,
-                  border: '1px solid var(--border)',
-                  background: 'transparent',
-                  cursor: busy === d.plan_id ? 'not-allowed' : 'pointer',
-                  fontSize: '0.8rem',
-                  color: 'var(--fg-muted)',
-                }}
+                style={{ padding: '0.35rem 0.8rem', fontSize: '0.8rem' }}
               >
                 ✗ Reject
               </button>
@@ -439,10 +575,13 @@ function PendingDrafts() {
 
 export default function DashboardClient() {
   return (
-    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 5rem' }}>
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px calc(5rem + 32px)' }}>
 
       {/* Active compile banner — only rendered when localStorage has a running session */}
       <ActiveCompileBanner />
+
+      {/* Stale sources nudge — only rendered when sources exceed threshold age */}
+      <StaleBanner />
 
       {/* ── Hero ───────────────────────────────────────────────────────── */}
       <section
@@ -499,7 +638,7 @@ export default function DashboardClient() {
                 lineHeight: '16px',
               }}
             >
-              Knowledge Compiler
+              Kompl Wiki
             </span>
             <h1
               style={{
@@ -512,7 +651,7 @@ export default function DashboardClient() {
                 margin: 0,
               }}
             >
-              RE_INITIALIZED_
+              COMPILED.
             </h1>
             <p
               style={{
@@ -637,9 +776,21 @@ export default function DashboardClient() {
 
       {/* Pending Drafts */}
       <section>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600, marginBottom: '0.75rem' }}>
-          Pending Drafts
-        </h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
+          <h2 style={{
+            fontFamily: 'var(--font-heading)',
+            fontWeight: 700,
+            fontSize: 18,
+            letterSpacing: '1.8px',
+            textTransform: 'uppercase',
+            color: 'var(--fg-secondary)',
+            margin: 0,
+            whiteSpace: 'nowrap',
+          }}>
+            Pending Drafts
+          </h2>
+          <div style={{ flex: 1, height: 1, background: 'rgba(71,72,74,0.3)' }} />
+        </div>
         <PendingDrafts />
       </section>
 

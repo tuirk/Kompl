@@ -71,7 +71,6 @@ function ReviewPageInner() {
   const { toast, showToast } = useToast();
 
   const sessionId = searchParams.get('session_id') ?? '';
-  const isReturning = searchParams.get('mode') === 'add';
 
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<ReviewResponse | null>(null);
@@ -134,7 +133,7 @@ function ReviewPageInner() {
         return;
       }
       router.push(
-        `/onboarding/progress?session_id=${encodeURIComponent(sessionId)}&queued=${body.queued ?? selectedIds.length}${isReturning ? '&mode=add' : ''}`
+        `/onboarding/progress?session_id=${encodeURIComponent(sessionId)}&queued=${body.queued ?? selectedIds.length}`
       );
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Network error', 'error');
@@ -158,8 +157,12 @@ function ReviewPageInner() {
   if (!data || data.total === 0) {
     return (
       <main style={{ maxWidth: 760, margin: '8rem auto', padding: '0 1.5rem', textAlign: 'center' }}>
-        <p style={{ color: 'var(--fg-muted)', marginBottom: '1.5rem' }}>No sources found for this session.</p>
-        <a href={`/onboarding${sessionId ? `?session_id=${sessionId}` : ''}`}>← Add sources</a>
+        <p style={{ color: 'var(--fg-muted)', marginBottom: '2rem' }}>No sources found for this session.</p>
+        <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+          <a href={`/onboarding${sessionId ? `?session_id=${sessionId}` : ''}`}>← Add sources</a>
+          <a href="/">← Dashboard</a>
+          <a href="/wiki">Visit wiki →</a>
+        </div>
       </main>
     );
   }
@@ -173,9 +176,7 @@ function ReviewPageInner() {
       <header style={{ marginBottom: '2rem' }}>
         <h1 style={{ margin: 0, fontSize: '1.8rem' }}>Review your sources</h1>
         <p style={{ color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
-          {isReturning
-            ? 'New sources will be integrated into your existing wiki.'
-            : `${data.total} source${data.total !== 1 ? 's' : ''} ready to compile. Uncheck anything you don\u2019t want.`}
+          {data.total} source{data.total !== 1 ? 's' : ''} ready to compile. Uncheck anything you don&apos;t want.
         </p>
       </header>
 
@@ -292,7 +293,7 @@ function ReviewPageInner() {
 
       {/* Add more link */}
       <p style={{ color: 'var(--fg-muted)', fontSize: '0.9rem', marginBottom: '0.5rem' }}>
-        <a href={`/onboarding?session_id=${encodeURIComponent(sessionId)}${isReturning ? '&mode=add' : ''}`}>
+        <a href={`/onboarding?session_id=${encodeURIComponent(sessionId)}`}>
           ← Add more sources
         </a>
       </p>
@@ -310,7 +311,7 @@ function ReviewPageInner() {
       }}>
         {/* Left: back link */}
         <a
-          href={`/onboarding${sessionId ? `?session_id=${sessionId}` : ''}${isReturning ? (sessionId ? '&' : '?') + 'mode=add' : ''}`}
+          href={`/onboarding${sessionId ? `?session_id=${sessionId}` : ''}`}
           style={{
             display: 'flex', alignItems: 'center', gap: 8,
             fontFamily: 'var(--font-mono)', fontSize: 10,
@@ -337,7 +338,7 @@ function ReviewPageInner() {
             color: 'var(--accent-text)',
           }}
         >
-          {confirming ? 'Queuing…' : isReturning ? 'Add to Wiki' : 'Build Your Wiki'}
+          {confirming ? 'Queuing…' : 'Build Your Wiki'}
           {!confirming && <svg width="9" height="12" viewBox="0 0 9 12" fill="none"><path d="M1 1L8 6L1 11" stroke="#005A44" strokeWidth="1.5" strokeLinecap="square"/></svg>}
         </button>
       </div>

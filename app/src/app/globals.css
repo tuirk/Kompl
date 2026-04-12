@@ -62,6 +62,7 @@
 
   /* --- Accent (mint green) --- */
   --accent:        #98FFD9;
+  --accent-rgb:    152, 255, 217; /* RGB of --accent for rgba() usage */
   --accent-dim:    #6ee8bf;
   --accent-text:   #00291D;   /* dark text for use ON the accent background */
 
@@ -81,6 +82,10 @@
 
 * {
   box-sizing: border-box;
+}
+
+html {
+  zoom: 0.9;
 }
 
 html,
@@ -191,6 +196,22 @@ button.btn-ghost:hover {
   color: var(--fg);
 }
 
+/* Danger variant — destructive / reject actions */
+button.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+button.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: var(--danger);
+}
+button.btn-danger:disabled {
+  background: transparent;
+  color: var(--fg-dim);
+  border-color: var(--border);
+}
+
 /* =============================================================================
    Form inputs
    ============================================================================= */
@@ -280,6 +301,7 @@ article h3 {
   line-height: 1.3;
   margin-top: 1.5em;
   color: var(--fg);
+  scroll-margin-top: 80px;
 }
 article p {
   line-height: 1.65;

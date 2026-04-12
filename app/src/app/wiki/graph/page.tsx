@@ -81,6 +81,7 @@ export default function WikiGraphPage() {
   const [hovered, setHovered] = useState<GraphNode | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
   const zoomLevelRef = useRef(1);
   const graphRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
@@ -108,7 +109,7 @@ export default function WikiGraphPage() {
       if (graphRef.current) {
         setDimensions({
           width: graphRef.current.offsetWidth,
-          height: Math.max(400, window.innerHeight - 56),
+          height: Math.max(400, graphRef.current.offsetHeight),
         });
       }
     }
@@ -147,6 +148,29 @@ export default function WikiGraphPage() {
     return set;
   }, [selectedNode, graphData.links]);
 
+  const visibleGraphData = useMemo(() => {
+    if (hiddenTypes.size === 0) return graphData;
+    const visibleIds = new Set(
+      graphData.nodes.filter((n) => !hiddenTypes.has(n.group)).map((n) => n.id)
+    );
+    return {
+      nodes: graphData.nodes.filter((n) => !hiddenTypes.has(n.group)),
+      links: graphData.links.filter((l) => {
+        const s = typeof l.source === 'string' ? l.source : (l.source as GraphNode).id;
+        const t = typeof l.target === 'string' ? l.target : (l.target as GraphNode).id;
+        return visibleIds.has(s) && visibleIds.has(t);
+      }),
+    };
+  }, [graphData, hiddenTypes]);
+
+  const toggleType = useCallback((type: string) => {
+    setHiddenTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type); else next.add(type);
+      return next;
+    });
+  }, []);
+
   const handleNodeClick = useCallback((node: GraphNode) => {
     setSelectedNode(node);
   }, []);
@@ -160,7 +184,7 @@ export default function WikiGraphPage() {
 
   return (
     <main
-      style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#0D0E10' }}
+      style={{ height: 'calc(100dvh / 0.9 - 97px)', display: 'flex', flexDirection: 'column', background: '#0D0E10', overflow: 'hidden' }}
     >
       {/* Floating header bar */}
       <header
@@ -179,7 +203,12 @@ export default function WikiGraphPage() {
       >
         <Link
           href="/wiki"
-          style={{ fontSize: 10, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '1px', fontFamily: 'var(--font-body)', fontWeight: 700 }}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            fontFamily: 'var(--font-mono)', fontSize: 10,
+            textTransform: 'uppercase', letterSpacing: '1px',
+            color: 'var(--fg-dim)', textDecoration: 'none',
+          }}
         >
           ← Wiki
         </Link>
@@ -215,7 +244,7 @@ export default function WikiGraphPage() {
         {!loading && !error && graphData.nodes.length > 0 && (
           <ForceGraph2D
             ref={fgRef}
-            graphData={graphData as { nodes: object[]; links: object[] }}
+            graphData={visibleGraphData as { nodes: object[]; links: object[] }}
             width={canvasWidth}
             height={dimensions.height}
             backgroundColor="#0D0E10"
@@ -378,32 +407,47 @@ export default function WikiGraphPage() {
             Schema Classification
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {Object.entries(NODE_COLORS).map(([type, color]) => (
-              <div key={type} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: '50%',
-                    background: color,
-                    flexShrink: 0,
-                    display: 'inline-block',
-                  }}
-                />
-                <span
-                  style={{
-                    fontFamily: 'var(--font-body)',
-                    fontSize: 11,
-                    lineHeight: '16px',
-                    letterSpacing: '0.55px',
-                    textTransform: 'uppercase',
-                    color: '#FDFBFE',
-                  }}
+            {Object.entries(NODE_COLORS).map(([type, color]) => {
+              const hidden = hiddenTypes.has(type);
+              return (
+                <label
+                  key={type}
+                  style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', userSelect: 'none' }}
                 >
-                  {type === 'source-summary' ? 'Source Summary' : type.charAt(0).toUpperCase() + type.slice(1)}
-                </span>
-              </div>
-            ))}
+                  <input
+                    type="checkbox"
+                    checked={!hidden}
+                    onChange={() => toggleType(type)}
+                    style={{ display: 'none' }}
+                  />
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      background: hidden ? 'transparent' : color,
+                      border: `1.5px solid ${color}`,
+                      flexShrink: 0,
+                      display: 'inline-block',
+                      transition: 'background 150ms',
+                    }}
+                  />
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-body)',
+                      fontSize: 11,
+                      lineHeight: '16px',
+                      letterSpacing: '0.55px',
+                      textTransform: 'uppercase',
+                      color: hidden ? '#52525b' : '#FDFBFE',
+                      transition: 'color 150ms',
+                    }}
+                  >
+                    {type === 'source-summary' ? 'Source Summary' : type.charAt(0).toUpperCase() + type.slice(1)}
+                  </span>
+                </label>
+              );
+            })}
           </div>
         </div>
 

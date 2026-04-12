@@ -3,66 +3,57 @@ export const dynamic = 'force-dynamic';
 
 /**
  * /sources — Browse all ingested sources.
- * SERVER component — badge styles are inlined (no client imports).
+ * SERVER component — fetches data and passes to SourcesTable client component.
  */
 
 import Link from 'next/link';
-import { getAllSources, getDb, type SourceRow } from '../../lib/db';
+import { getAllSources, getDb } from '../../lib/db';
+import SourcesTable, { type SourceWithCount } from './SourcesTable';
 
-function formatDate(iso: string): string {
-  const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
-  if (isNaN(d.getTime())) return iso;
-  const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
-}
+export default async function SourcesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ older_than?: string }>;
+}) {
+  const params = await searchParams;
+  const olderThan = params.older_than ? parseInt(params.older_than, 10) : null;
 
-interface BadgeCfg {
-  bg: string;
-  border: string;
-  color: string;
-  label: string;
-}
-
-function getStatusBadge(source: SourceRow): BadgeCfg {
-  if (source.status === 'archived') {
-    return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg-dim)', label: 'ARCHIVED' };
-  }
-  switch (source.compile_status) {
-    case 'compiled':
-      return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg)', label: 'COMPILED' };
-    case 'failed':
-      return { bg: 'rgba(255,113,108,0.1)', border: 'rgba(255,113,108,0.2)', color: 'var(--danger)', label: 'FAILED' };
-    case 'in_progress':
-    case 'extracted':
-      return { bg: 'rgba(137,240,203,0.1)', border: 'rgba(137,240,203,0.2)', color: 'var(--accent)', label: 'INDEXING' };
-    default:
-      return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg-dim)', label: 'PENDING' };
-  }
-}
-
-interface SourceWithCount extends SourceRow {
-  page_count: number;
-}
-
-export default async function SourcesPage() {
   const sources = getAllSources({ sort_by: 'date_ingested', sort_order: 'desc', limit: 500 });
   const db = getDb();
 
-  const withCounts: SourceWithCount[] = sources.map((s) => {
-    const row = db
-      .prepare('SELECT COUNT(DISTINCT page_id) AS n FROM provenance WHERE source_id = ?')
-      .get(s.source_id) as { n: number };
-    return { ...s, page_count: row.n };
-  });
+  const withCounts: SourceWithCount[] = sources
+    .filter((s) => {
+      if (!olderThan || olderThan <= 0) return true;
+      const ingestedMs = new Date(s.date_ingested.replace(' ', 'T') + 'Z').getTime();
+      const daysOld = (Date.now() - ingestedMs) / 86_400_000;
+      return daysOld > olderThan;
+    })
+    .map((s) => {
+      const row = db
+        .prepare('SELECT COUNT(DISTINCT page_id) AS n FROM provenance WHERE source_id = ?')
+        .get(s.source_id) as { n: number };
+      return { ...s, page_count: row.n };
+    });
 
   const total = sources.length;
   const activeCount = sources.filter((s) => s.status === 'active').length;
 
-  // Shared column widths
-  const COL = '120px 1fr 140px 100px';
-
   return (
     <main style={{ maxWidth: 1040, margin: '0 auto', padding: '2rem 40px 5rem' }}>
+      {/* Back link */}
+      <Link
+        href="/"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          fontFamily: 'var(--font-mono)', fontSize: 10,
+          textTransform: 'uppercase', letterSpacing: '1px',
+          color: 'var(--fg-dim)', textDecoration: 'none',
+          marginBottom: 24,
+        }}
+      >
+        ← Dashboard
+      </Link>
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 }}>
         <div>
@@ -70,7 +61,10 @@ export default async function SourcesPage() {
             Sources
           </h1>
           <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', letterSpacing: '0.5px', margin: '4px 0 0' }}>
-            {activeCount} active · {total} total
+            {olderThan && olderThan > 0
+              ? <>{withCounts.length} stale (older than {olderThan} days) · <a href="/sources" style={{ color: 'var(--fg-dim)', textDecoration: 'underline' }}>show all</a></>
+              : <>{activeCount} active · {total} total</>
+            }
           </p>
         </div>
         <Link
@@ -96,60 +90,7 @@ export default async function SourcesPage() {
       {withCounts.length === 0 ? (
         <p style={{ color: 'var(--fg-dim)', fontFamily: 'var(--font-mono)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>No sources yet.</p>
       ) : (
-        <div style={{ background: 'var(--bg-card)' }}>
-          {/* Table header */}
-          <div style={{ display: 'grid', gridTemplateColumns: COL, background: 'var(--bg-card-hover)', padding: '0 24px' }}>
-            {['Date', 'Source', 'Status', 'Action'].map((col, i) => (
-              <div key={col} style={{ padding: '16px 0', fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 10, letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)', textAlign: i === 3 ? 'right' : 'left' }}>
-                {col}
-              </div>
-            ))}
-          </div>
-
-          {/* Rows */}
-          {withCounts.map((s) => {
-            const badge = getStatusBadge(s);
-            return (
-              <div
-                key={s.source_id}
-                style={{ display: 'grid', gridTemplateColumns: COL, padding: '0 24px', borderTop: '1px solid rgba(71,72,74,0.1)', alignItems: 'center' }}
-              >
-                <div style={{ padding: '20px 0', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-secondary)' }}>
-                  {formatDate(s.date_ingested)}
-                </div>
-                <div style={{ padding: '16px 0', minWidth: 0 }}>
-                  <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 400, fontSize: 14, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {s.title}
-                  </div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', marginTop: 2 }}>
-                    {s.source_type}
-                    {s.page_count > 0 ? ` · ${s.page_count} page${s.page_count !== 1 ? 's' : ''}` : ''}
-                  </div>
-                </div>
-                <div style={{ padding: '17px 0' }}>
-                  <span style={{
-                    display: 'inline-flex', alignItems: 'center',
-                    padding: '2px 8px',
-                    background: badge.bg, border: `1px solid ${badge.border}`,
-                    fontFamily: 'var(--font-heading)', fontWeight: 700,
-                    fontSize: 9, letterSpacing: '0.45px', textTransform: 'uppercase',
-                    color: badge.color, whiteSpace: 'nowrap',
-                  }}>
-                    {badge.label}
-                  </span>
-                </div>
-                <div style={{ padding: '20px 0', textAlign: 'right' }}>
-                  <Link
-                    href={`/source/${s.source_id}`}
-                    style={{ fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 10, letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)', textDecoration: 'none' }}
-                  >
-                    View
-                  </Link>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <SourcesTable initialSources={withCounts} />
       )}
     </main>
   );

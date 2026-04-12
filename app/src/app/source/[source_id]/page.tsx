@@ -58,15 +58,23 @@ export default async function SourcePage({ params }: PageProps) {
   return (
     <main
       style={{
-        maxWidth: 820,
+        maxWidth: 1040,
         margin: '0 auto',
         padding: '3rem 1.5rem 5rem',
       }}
     >
-      <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', alignItems: 'center' }}>
-        <Link href="/feed">← Back to feed</Link>
-        <Link href="/sources" style={{ color: 'var(--fg-muted)', fontSize: 13 }}>All sources</Link>
-      </div>
+      <Link
+        href="/sources"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          fontFamily: 'var(--font-mono)', fontSize: 10,
+          textTransform: 'uppercase', letterSpacing: '1px',
+          color: 'var(--fg-dim)', textDecoration: 'none',
+          marginBottom: 24,
+        }}
+      >
+        ← Sources
+      </Link>
 
       <header
         style={{

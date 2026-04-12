@@ -15,6 +15,7 @@ export const dynamic = 'force-dynamic';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
+import WikiPageHeader from '../../../components/WikiPageHeader';
 import {
   getDb,
   getCategoryGroups,
@@ -125,6 +126,47 @@ async function PreviousVersionPanel({ pageId, lastUpdated }: { pageId: string; l
   );
 }
 
+/** Related pages panel — embedding similarity, zero LLM cost. */
+async function RelatedPagesPanel({ pageId }: { pageId: string }) {
+  const res = await fetch(
+    `${process.env.APP_URL ?? 'http://app:3000'}/api/wiki/${pageId}/related`,
+    { cache: 'no-store' }
+  ).catch(() => null);
+
+  if (!res || !res.ok) return null;
+
+  const data = (await res.json()) as {
+    items: Array<{ page_id: string; title: string; page_type: string }>;
+    count: number;
+    enabled: boolean;
+  };
+
+  if (!data.enabled || data.count === 0) return null;
+
+  return (
+    <section style={{ marginTop: '2rem' }}>
+      <div className="meta" style={{ marginBottom: '0.5rem' }}>
+        You might also read
+      </div>
+      {data.items.map((p) => (
+        <Link
+          key={p.page_id}
+          href={`/wiki/${p.page_id}`}
+          style={{
+            display: 'block',
+            fontSize: 12,
+            color: 'var(--fg-muted)',
+            padding: '0.2em 0',
+            lineHeight: 1.4,
+          }}
+        >
+          {p.title}
+        </Link>
+      ))}
+    </section>
+  );
+}
+
 export default async function WikiPageDetail({ params }: PageProps) {
   const { page_id } = await params;
   const page: PageRow | null = getPage(page_id);
@@ -160,7 +202,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
   const badge = PAGE_TYPE_BADGE[page.page_type];
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
+    <div style={{ display: 'flex', minHeight: 'calc(100dvh / 0.9)' }}>
       <WikiSidebar
         groups={groups}
         activePageId={page_id}
@@ -169,91 +211,49 @@ export default async function WikiPageDetail({ params }: PageProps) {
 
       {/* Center: page content */}
       <main style={{ flex: 1, padding: '2rem 2.5rem', minWidth: 0 }}>
-        <div style={{ marginBottom: '1rem' }}>
-          <Link href="/wiki" style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
-            ← All pages
-          </Link>
-        </div>
+        <WikiPageHeader
+          title={page.title}
+          category={page.category}
+          lastUpdated={page.last_updated}
+          showActions
+        />
 
-        <header
-          style={{
-            borderBottom: '1px solid var(--border)',
-            paddingBottom: '1rem',
-            marginBottom: '1.75rem',
-          }}
-        >
-          <h1 style={{ margin: '0 0 0.5rem', fontSize: '1.9rem', lineHeight: 1.2 }}>
-            {page.title}
-          </h1>
-          <div
-            style={{
-              display: 'flex',
-              gap: '0.75rem',
-              flexWrap: 'wrap',
-              alignItems: 'center',
-              fontSize: 13,
-              color: 'var(--fg-muted)',
-            }}
-          >
+        {/* Sub-header: type badge, source count, summary, entities */}
+        <div style={{ marginTop: '-1rem', marginBottom: '1.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center', fontSize: 13, color: 'var(--fg-muted)', marginBottom: '0.75rem' }}>
             {badge && (
               <span
                 className="meta"
-                style={{
-                  border: `1px solid ${badge.color}`,
-                  color: badge.color,
-                  padding: '0.1em 0.55em',
-                  borderRadius: 999,
-                }}
+                style={{ border: `1px solid ${badge.color}`, color: badge.color, padding: '0.1em 0.55em', borderRadius: 999 }}
               >
                 {badge.label}
               </span>
             )}
-            {page.category && (
-              <span
-                style={{
-                  background: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  padding: '0.1em 0.55em',
-                  borderRadius: 4,
-                  fontSize: 12,
-                }}
-              >
-                {page.category}
-              </span>
-            )}
-            <span className="meta">Updated {formatDate(page.last_updated)}</span>
             <span className="meta">{page.source_count} source{page.source_count !== 1 ? 's' : ''}</span>
           </div>
 
           {page.summary && (
-            <p style={{ margin: '0.85rem 0 0', color: 'var(--fg-muted)', lineHeight: 1.6, fontSize: 15 }}>
+            <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-muted)', lineHeight: 1.6, fontSize: 15 }}>
               {page.summary}
             </p>
           )}
 
           {entities.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginTop: '0.75rem' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
               {entities.map((name) => (
                 <span
                   key={name}
-                  style={{
-                    background: 'var(--bg-card)',
-                    border: '1px solid var(--border-hover)',
-                    padding: '0.15em 0.6em',
-                    borderRadius: 4,
-                    fontSize: 12,
-                    color: 'var(--fg-muted)',
-                  }}
+                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border-hover)', padding: '0.15em 0.6em', borderRadius: 4, fontSize: 12, color: 'var(--fg-muted)' }}
                 >
                   {name}
                 </span>
               ))}
             </div>
           )}
-        </header>
+        </div>
 
         {html ? (
-          <article dangerouslySetInnerHTML={{ __html: html }} />
+          <article dangerouslySetInnerHTML={{ __html: html }} style={{ fontSize: 14 }} />
         ) : (
           <div
             style={{
@@ -317,14 +317,14 @@ export default async function WikiPageDetail({ params }: PageProps) {
       {/* Right: TOC + Backlinks */}
       <aside
         style={{
-          width: 220,
+          width: 242,
           flexShrink: 0,
           padding: '2rem 1rem',
           borderLeft: '1px solid var(--border)',
           fontSize: 13,
           position: 'sticky',
           top: 0,
-          maxHeight: '100vh',
+          maxHeight: 'calc(100dvh / 0.9)',
           overflowY: 'auto',
           alignSelf: 'flex-start',
         }}
@@ -377,6 +377,8 @@ export default async function WikiPageDetail({ params }: PageProps) {
             ))
           )}
         </section>
+
+        <RelatedPagesPanel pageId={page_id} />
       </aside>
     </div>
   );

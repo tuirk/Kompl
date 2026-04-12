@@ -74,6 +74,7 @@ function getBadge(action_type: string, action?: string | null): BadgeCfg {
     case 'page_archived':              return { ...DIM,  label: 'ARCHIVED'   };
     case 'source_recompile_triggered': return { ...DIM,  label: 'RETRYING'   };
     case 'draft_rejected':
+      return { ...RED, label: 'REJECTED' };
     case 'ingest_failed':
     case 'compile_trigger_failed':
     case 'compile_failed':
@@ -293,8 +294,27 @@ function getRowContent(ev: ActivityRow): RowContent {
       return { primary, secondary: null, action: null, isError: false };
     }
 
-    case 'lint_complete':
-      return { primary: <>Wiki lint pass complete</>, secondary: null, action: null, isError: false };
+    case 'lint_complete': {
+      const d = parseDetails(ev.details);
+      const orphans = d && typeof d['orphan_pages'] === 'number' ? d['orphan_pages'] as number : null;
+      const stale = d && typeof d['stale_pages'] === 'number' ? d['stale_pages'] as number : null;
+      const crossRefs = d && Array.isArray(d['missing_cross_refs']) ? (d['missing_cross_refs'] as unknown[]).length : null;
+      const contradictions = d && typeof d['contradiction_count'] === 'number' ? d['contradiction_count'] as number : null;
+      const hasCounts = orphans !== null || stale !== null || crossRefs !== null;
+      const secondary = hasCounts
+        ? (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-dim)' }}>
+            {[
+              orphans !== null && `${orphans} orphan${orphans !== 1 ? 's' : ''}`,
+              stale !== null && `${stale} stale`,
+              crossRefs !== null && `${crossRefs} cross-ref${crossRefs !== 1 ? 's' : ''}`,
+              contradictions !== null && `${contradictions} contradiction${contradictions !== 1 ? 's' : ''}`,
+            ].filter(Boolean).join(' · ')}
+          </span>
+        )
+        : null;
+      return { primary: <>Wiki lint pass</>, secondary, action: null, isError: false };
+    }
 
     case 'onboarding_confirmed':
       return { primary: <>Onboarding completed</>, secondary: null, action: null, isError: false };
@@ -391,11 +411,27 @@ export function ActivityTable({ pollInterval = 2000 }: ActivityTableProps) {
           </div>
 
           {/* Rows */}
-          {events.map((ev) => {
+          {(() => {
+            // Track the newest event id per source_id (events are sorted desc).
+            // Any retriable-failed row that isn't the newest for its source
+            // shows "RETRIED" instead of ↻.
+            const newestIdBySource = new Map<string, number>();
+            for (const ev of events) {
+              if (ev.source_id && !newestIdBySource.has(ev.source_id)) {
+                newestIdBySource.set(ev.source_id, ev.id);
+              }
+            }
+
+            return events.map((ev) => {
             const d = parseDetails(ev.details);
             const action = d && typeof d['action'] === 'string' ? d['action'] as string : null;
             const badge = getBadge(ev.action_type, action);
-            const { primary, secondary, action: actionNode, isError } = getRowContent(ev);
+            const { primary, secondary, action: rawAction, isError } = getRowContent(ev);
+
+            const isLatestForSource = !ev.source_id || newestIdBySource.get(ev.source_id) === ev.id;
+            const actionNode = (!isLatestForSource && RETRIABLE_TYPES.has(ev.action_type))
+              ? <span style={{ fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 10, letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)' }}>RETRIED</span>
+              : rawAction;
 
             return (
               <div
@@ -440,7 +476,8 @@ export function ActivityTable({ pollInterval = 2000 }: ActivityTableProps) {
                 </div>
               </div>
             );
-          })}
+          });
+          })()}
         </div>
       )}
     </>

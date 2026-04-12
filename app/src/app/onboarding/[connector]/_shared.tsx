@@ -15,7 +15,6 @@ export interface ConnectorProps {
   connectors: string[];
   connectorIdx: number;
   showToast: (msg: string, type?: 'error') => void;
-  mode?: string;
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -25,15 +24,13 @@ export function navigateNext(
   connectors: string[],
   connectorIdx: number,
   router: AppRouterInstance,
-  mode?: string,
 ) {
   const nextIdx = connectorIdx + 1;
-  const modeParam = mode === 'add' ? '&mode=add' : '';
   if (nextIdx >= connectors.length) {
-    router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
+    router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}`);
   } else {
     sessionStorage.setItem('kompl_connector_idx', String(nextIdx));
-    router.push(`/onboarding/${connectors[nextIdx]}?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
+    router.push(`/onboarding/${connectors[nextIdx]}?session_id=${encodeURIComponent(sessionId)}`);
   }
 }
 
@@ -42,17 +39,15 @@ export function navigateBack(
   connectors: string[],
   connectorIdx: number,
   router: AppRouterInstance,
-  mode?: string,
 ) {
-  const modeParam = mode === 'add' ? '&mode=add' : '';
   if (connectorIdx <= 0) {
     // First connector — go back to selector
-    router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`);
+    router.push('/onboarding');
   } else {
     // Go to previous connector
     const prevIdx = connectorIdx - 1;
     sessionStorage.setItem('kompl_connector_idx', String(prevIdx));
-    router.push(`/onboarding/${connectors[prevIdx]}?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
+    router.push(`/onboarding/${connectors[prevIdx]}?session_id=${encodeURIComponent(sessionId)}`);
   }
 }
 
@@ -100,7 +95,17 @@ export function BottomNav({
   onBack: () => void;
 }) {
   return (
-    <div style={{ marginTop: 48, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <div style={{
+      position: 'fixed',
+      bottom: 32, left: 0, right: 0,
+      zIndex: 50,
+      background: 'var(--bg)',
+      borderTop: '1px solid rgba(71,72,74,0.12)',
+      padding: '16px 56px',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    }}>
       {/* Left: back */}
       <button
         onClick={onBack}
@@ -138,7 +143,7 @@ export function BottomNav({
           >
             Save &amp; Continue
             <svg width="9" height="12" viewBox="0 0 9 12" fill="none">
-              <path d="M1 1L8 6L1 11" stroke="#005A44" strokeWidth="1.5" strokeLinecap="square"/>
+              <path d="M1 1L8 6L1 11" stroke="var(--accent-text)" strokeWidth="1.5" strokeLinecap="square"/>
             </svg>
           </button>
         )}
@@ -153,7 +158,7 @@ export function BottomNav({
           <button onClick={onContinue} style={BTN_PRIMARY}>
             Continue
             <svg width="9" height="12" viewBox="0 0 9 12" fill="none">
-              <path d="M1 1L8 6L1 11" stroke="#005A44" strokeWidth="1.5" strokeLinecap="square"/>
+              <path d="M1 1L8 6L1 11" stroke="var(--accent-text)" strokeWidth="1.5" strokeLinecap="square"/>
             </svg>
           </button>
         )}

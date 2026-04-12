@@ -18,6 +18,7 @@
 
 import { type ComponentType, Suspense, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 
 import { useToast } from '../../../components/Toast';
 import TwitterConnector from './twitter-connector';
@@ -110,7 +111,7 @@ function SummaryCard({ result }: { result: CollectResult }) {
 
 // ── URL Connector ─────────────────────────────────────────────────────────────
 
-function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
+function UrlConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
   const router = useRouter();
   const [urlInput, setUrlInput] = useState('');
   const [phase, setPhase] = useState<'idle' | 'loading' | 'done'>('idle');
@@ -222,9 +223,9 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: 
         phase={phase}
         hasInput={urls.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
       />
     </>
   );
@@ -232,7 +233,7 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: 
 
 // ── File Upload Connector ─────────────────────────────────────────────────────
 
-function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
+function FileConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
   const router = useRouter();
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -325,9 +326,9 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
             phase={phase}
             hasInput={selectedFiles.length > 0}
             onIngest={handleIngest}
-            onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-            onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-            onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
+            onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+            onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+            onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
           />
         </>
       ) : (
@@ -538,9 +539,9 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
             phase={phase}
             hasInput={selectedFiles.length > 0}
             onIngest={handleIngest}
-            onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-            onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-            onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
+            onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+            onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+            onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
           />
         </>
       )}
@@ -550,7 +551,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
 
 // ── Bookmarks Connector ───────────────────────────────────────────────────────
 
-function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
+function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
   const router = useRouter();
   const [bookmarkFile, setBookmarkFile] = useState<File | null>(null);
   const [parsedItems, setParsedItems] = useState<{ url: string; title: string; dateSaved: string | null }[]>([]);
@@ -681,9 +682,9 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast, mo
         phase={phase}
         hasInput={parsedItems.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
       />
     </>
   );
@@ -691,7 +692,7 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast, mo
 
 // ── Upnote Connector ──────────────────────────────────────────────────────────
 
-function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
+function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
   const router = useRouter();
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -817,9 +818,9 @@ function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast, mode 
         phase={phase}
         hasInput={selectedFiles.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
       />
     </>
   );
@@ -857,7 +858,6 @@ function ConnectorPageInner() {
 
   const connector = params.connector;
   const urlSessionId = searchParams.get('session_id') ?? '';
-  const mode = searchParams.get('mode') ?? '';
 
   const [sessionId, setSessionId] = useState('');
   const [connectors, setConnectors] = useState<string[]>([]);
@@ -884,7 +884,7 @@ function ConnectorPageInner() {
         </h2>
         <p style={{ color: 'var(--fg-muted)', fontFamily: 'var(--font-body)', fontSize: 13 }}>This connector is coming soon.</p>
         <button
-          onClick={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)}
+          onClick={() => router.push('/onboarding')}
           style={{ marginTop: '2rem', fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
         >
           ← Back
@@ -894,7 +894,21 @@ function ConnectorPageInner() {
   }
 
   return (
-    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 2.5rem' }}>
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 100px' }}>
+
+      {/* Back link */}
+      <Link
+        href="/onboarding"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          fontFamily: 'var(--font-mono)', fontSize: 10,
+          textTransform: 'uppercase', letterSpacing: '1px',
+          color: 'var(--fg-dim)', textDecoration: 'none',
+          marginBottom: 24,
+        }}
+      >
+        ← Select Sources
+      </Link>
 
       {/* Progress tracker */}
       {hasProgress && (
@@ -948,7 +962,6 @@ function ConnectorPageInner() {
         connectors={connectors}
         connectorIdx={connectorIdx}
         showToast={showToast}
-        mode={mode}
       />
 
       {toast}

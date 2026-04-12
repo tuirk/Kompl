@@ -1,20 +1,25 @@
 /**
- * Thin markdown → HTML wrapper for the /source/[source_id] renderer.
+ * Thin markdown → HTML wrapper used by wiki, source, and page renderers.
  *
- * Uses the `marked` library (lightweight, zero-dep, sync API). Commit 3
- * renders converted source markdown verbatim — no syntax highlighting,
- * no math, no wikilink expansion. The LLM-compiled wiki page in commit 4
- * will eventually go through a richer pipeline, but for now we only need
- * headings, paragraphs, lists, bold/italic, links, and code blocks.
+ * Uses the `marked` library (lightweight, zero-dep, sync API). Heading
+ * renderer is overridden to inject `id` attributes using the same slug
+ * logic as `extractHeadings()` in the wiki page, so TOC anchor links work.
  *
- * Sanitization: we set `marked` options to disable raw HTML in markdown
- * input, because n8n / Firecrawl / MarkItDown output is not guaranteed
- * to be HTML-safe. This is belt-and-braces — the feed content comes from
- * user-chosen URLs, not untrusted third parties, but we still don't want
- * a random Wikipedia <script> tag to escape into our DOM.
+ * Sanitization: raw HTML in markdown input is not rendered — n8n / Firecrawl /
+ * MarkItDown output is not guaranteed to be HTML-safe.
  */
 
-import { marked } from 'marked';
+import { marked, Renderer } from 'marked';
+
+function slugify(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
+}
+
+const renderer = new Renderer();
+renderer.heading = (text: string, level: number) => {
+  const id = slugify(text);
+  return `<h${level} id="${id}">${text}</h${level}>\n`;
+};
 
 marked.setOptions({
   gfm: true,         // GitHub-flavored markdown (tables, strikethrough)
@@ -24,5 +29,5 @@ marked.setOptions({
 
 export function renderMarkdown(md: string): string {
   // marked 12.x returns string for sync path.
-  return marked.parse(md, { async: false }) as string;
+  return marked.parse(md, { async: false, renderer }) as string;
 }

@@ -9,7 +9,21 @@ import { ActivityTable } from '@/components/ActivityTable';
 
 export default function FeedPage() {
   return (
-    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '2rem 40px 5rem' }}>
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '2rem 40px calc(5rem + 32px)' }}>
+
+      {/* Back link */}
+      <a
+        href="/"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          fontFamily: 'var(--font-mono)', fontSize: 10,
+          textTransform: 'uppercase', letterSpacing: '1px',
+          color: 'var(--fg-dim)', textDecoration: 'none',
+          marginBottom: 24,
+        }}
+      >
+        ← Dashboard
+      </a>
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 }}>

@@ -62,14 +62,23 @@ export default async function WikiPage({ params }: PageProps) {
   return (
     <main
       style={{
-        maxWidth: 820,
+        maxWidth: 1040,
         margin: '0 auto',
         padding: '3rem 1.5rem 5rem',
       }}
     >
-      <div style={{ marginBottom: '1.5rem' }}>
-        <Link href="/feed">← Back to feed</Link>
-      </div>
+      <Link
+        href="/wiki"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          fontFamily: 'var(--font-mono)', fontSize: 10,
+          textTransform: 'uppercase', letterSpacing: '1px',
+          color: 'var(--fg-dim)', textDecoration: 'none',
+          marginBottom: 24,
+        }}
+      >
+        ← Wiki
+      </Link>
 
       <header
         style={{

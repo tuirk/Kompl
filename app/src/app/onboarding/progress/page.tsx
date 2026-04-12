@@ -99,20 +99,24 @@ function ProgressPageInner() {
   const router       = useRouter();
 
   const sessionId   = searchParams.get('session_id') ?? '';
-  const sourceCount = parseInt(searchParams.get('queued') ?? '0', 10);
-  const estimateMins = sourceCount > 0 ? Math.ceil(sourceCount * 0.4) : null;
+  const sourceCount  = parseInt(searchParams.get('queued') ?? '0', 10);
+  // Overestimate: ~2 min/source, minimum 2 min — always computed from URL params, never changes
+  const estimateMins = sourceCount > 0 ? Math.max(2, sourceCount * 2) : null;
 
   const [progress,        setProgress]        = useState<ProgressResponse | null>(null);
   const [retrying,        setRetrying]        = useState(false);
   const [patienceVisible, setPatienceVisible] = useState(false);
+  const [queuedRetry,     setQueuedRetry]     = useState(false);
 
   const intervalRef      = useRef<ReturnType<typeof setInterval>  | null>(null);
   const patienceTimerRef = useRef<ReturnType<typeof setTimeout>   | null>(null);
+  const queuedTimerRef   = useRef<ReturnType<typeof setTimeout>   | null>(null);
   const isActiveRef      = useRef(true);
 
   function stopPolling() {
     if (intervalRef.current)      { clearInterval(intervalRef.current);     intervalRef.current      = null; }
     if (patienceTimerRef.current) { clearTimeout(patienceTimerRef.current); patienceTimerRef.current = null; }
+    if (queuedTimerRef.current)   { clearTimeout(queuedTimerRef.current);   queuedTimerRef.current   = null; }
   }
 
   async function fetchProgress() {
@@ -122,12 +126,36 @@ function ProgressPageInner() {
       if (!res.ok) return;
       const data = await res.json() as ProgressResponse;
       if (!isActiveRef.current) return;
+
+      // Hard timeout: if still 'running' for > 30 min, the server likely restarted
+      if (data.status === 'running' && data.started_at) {
+        const elapsed = Date.now() - new Date(data.started_at.replace(' ', 'T') + 'Z').getTime();
+        if (elapsed > 30 * 60 * 1000) {
+          stopPolling();
+          localStorage.removeItem(LS_KEY);
+          setProgress({
+            ...data,
+            status: 'failed',
+            error: 'Session timed out — the server may have restarted. Click Retry to rerun.',
+          });
+          return;
+        }
+      }
+
       setProgress(data);
 
-      if (data.status === 'running') {
+      if (data.status === 'running' || data.status === 'queued') {
         localStorage.setItem(LS_KEY, JSON.stringify({ session_id: sessionId, source_count: sourceCount }));
       } else if (data.status === 'completed' || data.status === 'failed') {
         localStorage.removeItem(LS_KEY);
+      }
+
+      // Arm a 60s timer the first time we see 'queued'; cancel it if pipeline starts.
+      if (data.status === 'queued' && !queuedTimerRef.current) {
+        queuedTimerRef.current = setTimeout(() => setQueuedRetry(true), 180_000);
+      } else if (data.status !== 'queued' && queuedTimerRef.current) {
+        clearTimeout(queuedTimerRef.current);
+        queuedTimerRef.current = null;
       }
 
       if (data.status === 'completed' || data.status === 'failed') stopPolling();
@@ -163,7 +191,6 @@ function ProgressPageInner() {
 
   // ── Derived state ────────────────────────────────────────────────────────────
 
-  const isReturning    = searchParams.get('mode') === 'add';
   const status         = progress?.status ?? 'queued';
   const steps          = progress?.steps  ?? {};
 
@@ -178,8 +205,8 @@ function ProgressPageInner() {
   const totalSteps = STEPS.length;
 
   const headingText =
-    isComplete     ? (isReturning ? 'Sources Added.' : 'Wiki Ready.') :
-    isFailedStatus ? 'Something went wrong.'                           :
+    isComplete     ? 'Wiki Ready.'           :
+    isFailedStatus ? 'Something went wrong.' :
                      'Building your wiki.';
 
   const statusLabel =
@@ -196,16 +223,15 @@ function ProgressPageInner() {
     isRunning  ? `${doneCount} / ${totalSteps}`                      :
                  `— / ${totalSteps}`;
 
-  /* Footer stats: show estimate while running/queued; show pages+sources when done */
-  const footerStats: { label: string; value: string }[] = isComplete
-    ? [
-        { label: 'PAGES',   value: committedPages   > 0 ? String(committedPages)   : '—' },
-        { label: 'SOURCES', value: committedSources > 0 ? String(committedSources) : '—' },
-      ]
-    : [
-        { label: 'SOURCES', value: sourceCount    > 0 ? String(sourceCount)                           : '—' },
-        { label: 'EST.',    value: estimateMins   !== null ? `~${estimateMins} min` : '—'              },
-      ];
+  /* Footer stats: SELECTED SOURCES + EST are fixed (from URL params, never change).
+     When complete, also show PAGES CREATED. */
+  const footerStats: { label: string; value: string }[] = [
+    { label: 'SELECTED SOURCES', value: sourceCount  > 0 ? String(sourceCount)              : '—' },
+    { label: 'EST.',              value: estimateMins !== null ? `~${estimateMins} min`      : '—' },
+    ...(isComplete && committedPages > 0
+      ? [{ label: 'PAGES CREATED', value: String(committedPages) }]
+      : []),
+  ];
 
   // ── Render ───────────────────────────────────────────────────────────────────
 
@@ -454,7 +480,7 @@ function ProgressPageInner() {
               </Link>
             )}
 
-            {isFailedStatus && (
+            {(isFailedStatus || queuedRetry) && (
               <button
                 onClick={handleRetry}
                 disabled={retrying}
@@ -472,6 +498,18 @@ function ProgressPageInner() {
             )}
           </div>
         </div>
+
+        {/* Queued timeout hint */}
+        {queuedRetry && !isFailedStatus && (
+          <pre style={{
+            fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)',
+            background: 'rgba(71,72,74,0.1)', border: '1px solid rgba(71,72,74,0.2)',
+            padding: '12px 16px', margin: 0, overflowX: 'auto',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}>
+            Pipeline hasn&apos;t started. The background worker may be unavailable — click Retry to try again.
+          </pre>
+        )}
 
         {/* Error detail */}
         {isFailedStatus && progress?.error && (

@@ -8,6 +8,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PageRow } from '../../../lib/db';
+import WikiPageHeader from '../../../components/WikiPageHeader';
 
 interface SearchResult {
   items: PageRow[];
@@ -71,15 +72,8 @@ export default function WikiSearchPage() {
   }
 
   return (
-    <main style={{ maxWidth: 760, margin: '0 auto', padding: '2.5rem 1.5rem' }}>
-      <header style={{ marginBottom: '1.5rem' }}>
-        <div style={{ marginBottom: '0.75rem' }}>
-          <Link href="/wiki" style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
-            ← All pages
-          </Link>
-        </div>
-        <h1 style={{ margin: 0, fontSize: '1.5rem' }}>Search wiki</h1>
-      </header>
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '2.5rem 1.5rem' }}>
+      <WikiPageHeader title="Search" />
 
       <input
         ref={inputRef}
