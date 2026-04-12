@@ -35,7 +35,8 @@ const PAGE_TYPE_BADGE: Record<string, { label: string; color: string }> = {
   'source-summary': { label: 'source summary', color: 'var(--fg-dim)' },
   concept: { label: 'concept', color: 'var(--accent)' },
   entity: { label: 'entity', color: 'var(--warning)' },
-  topic: { label: 'topic', color: 'var(--success)' },
+  comparison: { label: 'comparison', color: 'var(--danger)' },
+  overview: { label: 'overview', color: 'var(--success)' },
 };
 
 function formatDate(iso: string): string {
@@ -116,7 +117,7 @@ async function PreviousVersionPanel({ pageId, lastUpdated }: { pageId: string; l
         opacity: 0.75,
       }}
     >
-      <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+      <div className="meta" style={{ marginBottom: '0.5rem' }}>
         Previous version · before {formatDate(lastUpdated)}
       </div>
       <article dangerouslySetInnerHTML={{ __html: prevHtml }} style={{ fontSize: 13 }} />
@@ -196,14 +197,12 @@ export default async function WikiPageDetail({ params }: PageProps) {
           >
             {badge && (
               <span
+                className="meta"
                 style={{
                   border: `1px solid ${badge.color}`,
                   color: badge.color,
                   padding: '0.1em 0.55em',
                   borderRadius: 999,
-                  fontSize: 11,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em',
                 }}
               >
                 {badge.label}
@@ -222,8 +221,8 @@ export default async function WikiPageDetail({ params }: PageProps) {
                 {page.category}
               </span>
             )}
-            <span>Updated {formatDate(page.last_updated)}</span>
-            <span>{page.source_count} source{page.source_count !== 1 ? 's' : ''}</span>
+            <span className="meta">Updated {formatDate(page.last_updated)}</span>
+            <span className="meta">{page.source_count} source{page.source_count !== 1 ? 's' : ''}</span>
           </div>
 
           {page.summary && (
@@ -281,7 +280,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
               fontSize: 12,
             }}
           >
-            <div style={{ fontWeight: 600, marginBottom: '0.4rem', color: 'var(--fg-dim)' }}>
+            <div className="meta" style={{ fontWeight: 600, marginBottom: '0.4rem' }}>
               BUILT FROM {provRows.length} SOURCE{provRows.length !== 1 ? 'S' : ''}
             </div>
             {provRows.map((r) => (
@@ -296,7 +295,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
                     </a>
                   </>
                 )}
-                <span style={{ color: 'var(--fg-dim)', marginLeft: '0.5rem' }}>
+                <span className="meta" style={{ marginLeft: '0.5rem' }}>
                   {formatDate(r.date_compiled)}
                 </span>
               </div>
@@ -332,15 +331,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
       >
         {headings.length > 0 && (
           <section style={{ marginBottom: '2rem' }}>
-            <div
-              style={{
-                fontSize: 10,
-                textTransform: 'uppercase',
-                letterSpacing: '0.1em',
-                color: 'var(--fg-dim)',
-                marginBottom: '0.5rem',
-              }}
-            >
+            <div className="meta" style={{ marginBottom: '0.5rem' }}>
               Contents
             </div>
             {headings.map((h) => (
@@ -363,15 +354,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
         )}
 
         <section>
-          <div
-            style={{
-              fontSize: 10,
-              textTransform: 'uppercase',
-              letterSpacing: '0.1em',
-              color: 'var(--fg-dim)',
-              marginBottom: '0.5rem',
-            }}
-          >
+          <div className="meta" style={{ marginBottom: '0.5rem' }}>
             Linked from ({backlinks.length})
           </div>
           {backlinks.length === 0 ? (

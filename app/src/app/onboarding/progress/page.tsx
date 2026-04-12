@@ -1,19 +1,21 @@
 'use client';
 
 /**
- * /onboarding/progress — Part 2c-ii progress screen.
+ * /onboarding/progress — Compile pipeline progress screen.
  *
  * Polls GET /api/compile/progress?session_id=<id> every 2 seconds.
  * Stops polling when status === 'completed' or status === 'failed'.
- * Has a 15-minute patience message guard (keeps polling, just shows a note).
+ * Runs in the background — the Dashboard button is always visible so
+ * users can leave and come back. A patience note appears after 15 min.
  */
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 
-const POLL_INTERVAL_MS = 2000;
-const PATIENCE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+const POLL_INTERVAL_MS    = 2000;
+const PATIENCE_TIMEOUT_MS = 15 * 60 * 1000;
+const LS_KEY              = 'kompl_active_compile';
 
 interface StepState {
   status: string;
@@ -21,277 +23,481 @@ interface StepState {
 }
 
 interface ProgressResponse {
-  session_id: string;
-  status: string;
+  session_id:   string;
+  status:       string;
   current_step: string | null;
-  steps: Record<string, StepState>;
-  error: string | null;
-  started_at: string | null;
+  steps:        Record<string, StepState>;
+  error:        string | null;
+  started_at:   string | null;
   completed_at: string | null;
 }
 
 const STEPS = [
-  { key: 'extract',  label: 'Extracting knowledge' },
-  { key: 'resolve',  label: 'Resolving entities' },
-  { key: 'match',    label: 'Checking existing wiki' },
-  { key: 'plan',     label: 'Planning wiki structure' },
-  { key: 'draft',    label: 'Writing pages' },
-  { key: 'crossref', label: 'Cross-referencing' },
-  { key: 'commit',   label: 'Finalizing' },
-  { key: 'schema',   label: 'Setting up wiki structure' },
+  { key: 'extract',  label: 'Extracting knowledge'     },
+  { key: 'resolve',  label: 'Resolving entities'       },
+  { key: 'match',    label: 'Checking existing wiki'   },
+  { key: 'plan',     label: 'Planning wiki structure'  },
+  { key: 'draft',    label: 'Writing pages'            },
+  { key: 'crossref', label: 'Cross-referencing'        },
+  { key: 'commit',   label: 'Finalizing'               },
+  { key: 'schema',   label: 'Setting up wiki structure'},
 ];
 
 function parseCommittedCount(detail: string | undefined): { pages: number; sources: number } {
   if (!detail) return { pages: 0, sources: 0 };
-  const pagesMatch = detail.match(/(\d+)\s+pages?/i);
-  const sourcesMatch = detail.match(/(\d+)\s+sources?/i);
-  return {
-    pages: pagesMatch ? parseInt(pagesMatch[1], 10) : 0,
-    sources: sourcesMatch ? parseInt(sourcesMatch[1], 10) : 0,
-  };
+  const pM = detail.match(/(\d+)\s+pages?/i);
+  const sM = detail.match(/(\d+)\s+sources?/i);
+  return { pages: pM ? parseInt(pM[1], 10) : 0, sources: sM ? parseInt(sM[1], 10) : 0 };
 }
 
-function StepIcon({ status }: { status: string }) {
-  if (status === 'done') return <span className="text-green-500">✅</span>;
-  if (status === 'running') return <span className="text-amber-500">⏳</span>;
-  if (status === 'failed') return <span className="text-red-500">❌</span>;
-  return <span className="text-gray-400">⬜</span>;
-}
+// ── Icon components ────────────────────────────────────────────────────────────
 
-function StepRow({ stepKey, label, state }: { stepKey: string; label: string; state: StepState | undefined }) {
-  const status = state?.status ?? 'pending';
-  const detail = state?.detail;
-
+function IconDone() {
   return (
-    <div className="flex items-start gap-3 py-2">
-      <span className="mt-0.5 text-lg w-6 flex-shrink-0 text-center">
-        <StepIcon status={status} />
-      </span>
-      <div className="flex-1 min-w-0">
-        <span
-          className={
-            status === 'done'
-              ? 'text-gray-900 text-sm font-medium'
-              : status === 'running'
-              ? 'text-amber-700 text-sm font-medium'
-              : status === 'failed'
-              ? 'text-red-700 text-sm font-medium'
-              : 'text-gray-400 text-sm'
-          }
-        >
-          {label}
-        </span>
-        {detail && status === 'running' && (
-          <p className="text-xs text-amber-600 mt-0.5 animate-pulse">{detail}</p>
-        )}
-        {detail && status === 'done' && (
-          <p className="text-xs text-gray-500 mt-0.5">{detail}</p>
-        )}
-        {detail && status === 'failed' && (
-          <p className="text-xs text-red-500 mt-0.5">{detail}</p>
-        )}
-      </div>
+    <svg width="14" height="11" viewBox="0 0 14 11" fill="none">
+      <path d="M1 5.5L5 9.5L13 1.5" stroke="#89F0CB" strokeWidth="1.5" strokeLinecap="square"/>
+    </svg>
+  );
+}
+
+function IconSpinner() {
+  /* Static arc — looks like a loading indicator */
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <path
+        d="M9 1A8 8 0 1 1 1 9"
+        stroke="#005A44"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconFail() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+      <path d="M1 1L9 9M9 1L1 9" stroke="var(--danger)" strokeWidth="1.5" strokeLinecap="square"/>
+    </svg>
+  );
+}
+
+function IconPending() {
+  /* Two short horizontal bars — pending / pause indicator */
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div style={{ width: 14, height: 2, background: '#ABABAD' }} />
+      <div style={{ width: 14, height: 2, background: '#ABABAD' }} />
     </div>
   );
 }
 
+// ── Main page ──────────────────────────────────────────────────────────────────
+
 function ProgressPageInner() {
   const searchParams = useSearchParams();
-  const router = useRouter();
+  const router       = useRouter();
 
-  const sessionId = searchParams.get('session_id') ?? '';
+  const sessionId   = searchParams.get('session_id') ?? '';
+  const sourceCount = parseInt(searchParams.get('queued') ?? '0', 10);
+  const estimateMins = sourceCount > 0 ? Math.ceil(sourceCount * 0.4) : null;
 
-  const [progress, setProgress] = useState<ProgressResponse | null>(null);
-  const [retrying, setRetrying] = useState(false);
+  const [progress,        setProgress]        = useState<ProgressResponse | null>(null);
+  const [retrying,        setRetrying]        = useState(false);
   const [patienceVisible, setPatienceVisible] = useState(false);
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const patienceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isActiveRef = useRef(true);
+  const intervalRef      = useRef<ReturnType<typeof setInterval>  | null>(null);
+  const patienceTimerRef = useRef<ReturnType<typeof setTimeout>   | null>(null);
+  const isActiveRef      = useRef(true);
 
   function stopPolling() {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    if (patienceTimerRef.current) {
-      clearTimeout(patienceTimerRef.current);
-      patienceTimerRef.current = null;
-    }
+    if (intervalRef.current)      { clearInterval(intervalRef.current);     intervalRef.current      = null; }
+    if (patienceTimerRef.current) { clearTimeout(patienceTimerRef.current); patienceTimerRef.current = null; }
   }
 
   async function fetchProgress() {
     if (!sessionId || !isActiveRef.current) return;
     try {
-      const res = await fetch(`/api/compile/progress?session_id=${encodeURIComponent(sessionId)}`);
+      const res  = await fetch(`/api/compile/progress?session_id=${encodeURIComponent(sessionId)}`);
       if (!res.ok) return;
       const data = await res.json() as ProgressResponse;
       if (!isActiveRef.current) return;
       setProgress(data);
-      if (data.status === 'completed' || data.status === 'failed') {
-        stopPolling();
+
+      if (data.status === 'running') {
+        localStorage.setItem(LS_KEY, JSON.stringify({ session_id: sessionId, source_count: sourceCount }));
+      } else if (data.status === 'completed' || data.status === 'failed') {
+        localStorage.removeItem(LS_KEY);
       }
-    } catch {
-      // silent — keep polling
-    }
+
+      if (data.status === 'completed' || data.status === 'failed') stopPolling();
+    } catch { /* silent — keep polling */ }
   }
 
   useEffect(() => {
     if (!sessionId) return;
-
-    // Start polling immediately, then every 2s
     void fetchProgress();
-    intervalRef.current = setInterval(fetchProgress, POLL_INTERVAL_MS);
-
-    // Patience message after 15 min if still running/queued
-    patienceTimerRef.current = setTimeout(() => {
-      setPatienceVisible(true);
-    }, PATIENCE_TIMEOUT_MS);
-
-    return () => {
-      isActiveRef.current = false;
-      stopPolling();
-    };
+    intervalRef.current      = setInterval(fetchProgress, POLL_INTERVAL_MS);
+    patienceTimerRef.current = setTimeout(() => setPatienceVisible(true), PATIENCE_TIMEOUT_MS);
+    return () => { isActiveRef.current = false; stopPolling(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
   async function handleRetry() {
     if (!sessionId) return;
     setRetrying(true);
+    localStorage.removeItem(LS_KEY);
     try {
       await fetch('/api/compile/retry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
       });
-      // Re-enable polling
       isActiveRef.current = true;
       setProgress(null);
       setRetrying(false);
       void fetchProgress();
       intervalRef.current = setInterval(fetchProgress, POLL_INTERVAL_MS);
-    } catch {
-      setRetrying(false);
-    }
+    } catch { setRetrying(false); }
   }
 
-  const status = progress?.status ?? 'queued';
-  const steps = progress?.steps ?? {};
+  // ── Derived state ────────────────────────────────────────────────────────────
 
-  // Parse committed counts from commit step detail
-  const commitDetail = steps['commit']?.detail;
-  const { pages: committedPages, sources: committedSources } = parseCommittedCount(commitDetail);
+  const isReturning    = searchParams.get('mode') === 'add';
+  const status         = progress?.status ?? 'queued';
+  const steps          = progress?.steps  ?? {};
+
+  const isComplete     = status === 'completed';
+  const isFailedStatus = status === 'failed';
+  const isRunning      = status === 'running';
+
+  const { pages: committedPages, sources: committedSources } =
+    parseCommittedCount(steps['commit']?.detail);
+
+  const doneCount  = STEPS.filter(s => steps[s.key]?.status === 'done').length;
+  const totalSteps = STEPS.length;
+
+  const headingText =
+    isComplete     ? (isReturning ? 'Sources Added.' : 'Wiki Ready.') :
+    isFailedStatus ? 'Something went wrong.'                           :
+                     'Building your wiki.';
+
+  const statusLabel =
+    isComplete     ? 'COMPLETE' :
+    isFailedStatus ? 'FAILED'   :
+    isRunning      ? 'RUNNING'  :
+                     'QUEUED';
+
+  const statusColor = isFailedStatus ? 'var(--danger)' : 'var(--accent)';
+
+  const stepCounterLabel = isComplete ? 'PAGES' : 'STEP';
+  const stepCounterValue =
+    isComplete ? (committedPages > 0 ? String(committedPages) : '—') :
+    isRunning  ? `${doneCount} / ${totalSteps}`                      :
+                 `— / ${totalSteps}`;
+
+  /* Footer stats: show estimate while running/queued; show pages+sources when done */
+  const footerStats: { label: string; value: string }[] = isComplete
+    ? [
+        { label: 'PAGES',   value: committedPages   > 0 ? String(committedPages)   : '—' },
+        { label: 'SOURCES', value: committedSources > 0 ? String(committedSources) : '—' },
+      ]
+    : [
+        { label: 'SOURCES', value: sourceCount    > 0 ? String(sourceCount)                           : '—' },
+        { label: 'EST.',    value: estimateMins   !== null ? `~${estimateMins} min` : '—'              },
+      ];
+
+  // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
-    <main className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
-      <div className="w-full max-w-lg bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
+    /* Same outer shell as every other page */
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 2.5rem' }}>
 
-        {/* Completed state */}
-        {status === 'completed' && (
-          <>
-            <div className="text-center mb-8">
-              <div className="text-4xl mb-3">✅</div>
-              <h1 className="text-2xl font-semibold text-gray-900 mb-2">Your wiki is ready!</h1>
-              {(committedPages > 0 || committedSources > 0) && (
-                <p className="text-gray-500 text-sm">
-                  {committedPages > 0 ? `${committedPages} page${committedPages !== 1 ? 's' : ''}` : ''}
-                  {committedPages > 0 && committedSources > 0 ? ' created from ' : ''}
-                  {committedSources > 0 ? `${committedSources} source${committedSources !== 1 ? 's' : ''}` : ''}
-                </p>
-              )}
+      {/* Card — centered within the shell */}
+      <div style={{
+        maxWidth: 624,
+        margin: '0 auto',
+        background: 'var(--bg-card)',
+        border: '1px solid rgba(71,72,74,0.1)',
+        boxShadow: '0 0 50px rgba(137,240,203,0.03)',
+        padding: 32,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 48,
+        position: 'relative',
+        overflow: 'hidden',
+      }}>
+
+        {/* Background flourish */}
+        <span style={{
+          position: 'absolute', right: -300, top: '50%',
+          transform: 'rotate(90deg)',
+          fontFamily: 'var(--font-mono)', fontSize: 8,
+          letterSpacing: '8px', textTransform: 'uppercase',
+          color: 'var(--accent)', opacity: 0.15,
+          whiteSpace: 'nowrap', pointerEvents: 'none', userSelect: 'none',
+        }}>
+          SESSION · {sessionId.slice(0, 8).toUpperCase()} · COMPILE PIPELINE · {totalSteps} STEPS
+        </span>
+
+        {/* ── Header ────────────────────────────────────────────────────────── */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+
+          {/* Left: status dot + heading */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ width: 8, height: 8, background: statusColor, flexShrink: 0 }} />
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: 10,
+                lineHeight: '15px', letterSpacing: '2px', textTransform: 'uppercase',
+                color: statusColor,
+              }}>
+                {statusLabel}
+              </span>
             </div>
-            <div className="flex flex-col gap-3">
+            <h1 style={{
+              fontFamily: 'var(--font-heading)', fontWeight: 700,
+              fontSize: 36, lineHeight: '36px', letterSpacing: '-0.9px',
+              color: 'var(--fg)', margin: 0,
+            }}>
+              {headingText}
+            </h1>
+          </div>
+
+          {/* Right: step counter */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+              letterSpacing: '1px', textTransform: 'uppercase', color: '#757578',
+            }}>
+              {stepCounterLabel}
+            </span>
+            <span style={{
+              fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 16,
+              lineHeight: '24px', letterSpacing: '-0.8px', color: 'var(--accent)',
+              textShadow: '0 0 12px rgba(137,240,203,0.4)',
+            }}>
+              {stepCounterValue}
+            </span>
+          </div>
+        </div>
+
+        {/* ── Pipeline steps ─────────────────────────────────────────────────── */}
+        <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+          {/* Vertical connector line between icon boxes */}
+          <div style={{
+            position: 'absolute', width: 1, left: 19.5,
+            top: 40, bottom: 40,
+            background: '#47484A', opacity: 0.2, pointerEvents: 'none',
+          }} />
+
+          {STEPS.map(step => {
+            const stepState  = steps[step.key];
+            const stepStatus = isComplete ? 'done' : (stepState?.status ?? 'pending');
+            const detail     = stepState?.detail;
+
+            const isStepDone    = stepStatus === 'done';
+            const isStepActive  = stepStatus === 'running';
+            const isStepFailed  = stepStatus === 'failed';
+            const isStepPending = !isStepDone && !isStepActive && !isStepFailed;
+
+            const iconBg =
+              isStepDone   ? 'rgba(74,178,144,0.2)' :
+              isStepActive ? 'var(--accent)'         :
+              isStepFailed ? 'rgba(255,113,108,0.15)' :
+                             '#242629';
+
+            return (
+              <div
+                key={step.key}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: isStepActive ? 'flex-start' : 'center',
+                  gap: 24,
+                  opacity: isStepPending ? 0.3 : 1,
+                }}
+              >
+                {/* Icon box */}
+                <div style={{
+                  width: 40, height: 40, flexShrink: 0,
+                  background: iconBg,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  position: 'relative', zIndex: 1,
+                }}>
+                  {isStepDone    && <IconDone />}
+                  {isStepActive  && <IconSpinner />}
+                  {isStepFailed  && <IconFail />}
+                  {isStepPending && <IconPending />}
+                </div>
+
+                {/* Text content */}
+                {isStepActive ? (
+                  /* Active — tall with detail row + micro bar */
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                      <span style={{
+                        fontFamily: 'var(--font-heading)', fontWeight: 700,
+                        fontSize: 18, lineHeight: '28px', color: 'var(--fg)',
+                      }}>
+                        {step.label}
+                      </span>
+                      <span style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                        letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--accent)',
+                        flexShrink: 0,
+                      }}>
+                        Processing
+                      </span>
+                    </div>
+                    {detail && (
+                      <span style={{
+                        fontFamily: 'var(--font-heading)', fontSize: 14,
+                        lineHeight: '20px', color: '#757578',
+                      }}>
+                        {detail}
+                      </span>
+                    )}
+                    {/* Micro progress bar */}
+                    <div style={{ height: 4, background: '#242629', position: 'relative', overflow: 'hidden', marginTop: 4 }}>
+                      <div style={{
+                        position: 'absolute', top: 0, left: 0, bottom: 0, width: '50%',
+                        background: 'var(--accent)',
+                        boxShadow: '0 0 10px var(--accent)',
+                      }} />
+                    </div>
+                  </div>
+                ) : (
+                  /* Done / failed / pending — single line */
+                  <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{
+                      fontFamily: 'var(--font-heading)', fontWeight: 500,
+                      fontSize: isStepDone ? 16 : 14,
+                      lineHeight: isStepDone ? '24px' : '20px',
+                      color: isStepFailed ? 'var(--danger)' : 'var(--fg)',
+                      opacity: isStepDone ? 0.6 : 1,
+                    }}>
+                      {step.label}
+                    </span>
+                    {isStepDone && (
+                      <span style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                        letterSpacing: '-0.5px', textTransform: 'uppercase', color: '#757578',
+                        flexShrink: 0,
+                      }}>
+                        Done
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ── Footer ─────────────────────────────────────────────────────────── */}
+        <div style={{
+          borderTop: '1px solid rgba(71,72,74,0.1)',
+          paddingTop: 24,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
+        }}>
+
+          {/* Left: stats */}
+          <div style={{ display: 'flex', flexDirection: 'row', gap: 32 }}>
+            {footerStats.map(({ label, value }) => (
+              <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 8, lineHeight: '12px',
+                  letterSpacing: '0.8px', textTransform: 'uppercase', color: '#757578',
+                }}>
+                  {label}
+                </span>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                  color: 'var(--fg)',
+                }}>
+                  {value}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Right: buttons */}
+          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            {/* Dashboard — always visible so the user can leave */}
+            <button
+              onClick={() => router.push('/')}
+              style={{
+                background: '#242629', border: 'none', cursor: 'pointer',
+                padding: '8px 24px',
+                fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--fg)',
+              }}
+            >
+              Dashboard
+            </button>
+
+            {isComplete && (
               <Link
                 href="/wiki"
-                className="w-full text-center bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg transition-colors"
+                style={{
+                  textDecoration: 'none',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  padding: '8px 24px',
+                  border: '1px solid var(--accent)',
+                  fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                  letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--accent)',
+                }}
               >
-                View your wiki →
+                View Wiki
               </Link>
-              <button
-                onClick={() => router.push('/')}
-                className="w-full text-center bg-white hover:bg-gray-50 text-gray-700 font-medium py-3 px-6 rounded-lg border border-gray-200 transition-colors"
-              >
-                ← Back to dashboard
-              </button>
-            </div>
-          </>
-        )}
+            )}
 
-        {/* Failed state */}
-        {status === 'failed' && (
-          <>
-            <div className="text-center mb-8">
-              <div className="text-4xl mb-3">❌</div>
-              <h1 className="text-2xl font-semibold text-gray-900 mb-2">Something went wrong</h1>
-              {progress?.error && (
-                <p className="text-red-600 text-sm mt-2 bg-red-50 rounded-lg p-3 text-left font-mono break-words">
-                  {progress.error}
-                </p>
-              )}
-            </div>
-            <div className="flex flex-col gap-3">
+            {isFailedStatus && (
               <button
                 onClick={handleRetry}
                 disabled={retrying}
-                className="w-full text-center bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium py-3 px-6 rounded-lg transition-colors"
+                style={{
+                  background: 'transparent', border: '1px solid var(--accent)',
+                  cursor: retrying ? 'not-allowed' : 'pointer',
+                  padding: '8px 24px',
+                  fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                  letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--accent)',
+                  opacity: retrying ? 0.5 : 1,
+                }}
               >
                 {retrying ? 'Retrying…' : 'Retry'}
               </button>
-              <button
-                onClick={() => router.push('/')}
-                className="w-full text-center bg-white hover:bg-gray-50 text-gray-700 font-medium py-3 px-6 rounded-lg border border-gray-200 transition-colors"
-              >
-                ← Back to dashboard
-              </button>
-            </div>
-          </>
-        )}
+            )}
+          </div>
+        </div>
 
-        {/* Queued state */}
-        {status === 'queued' && (
-          <>
-            <div className="mb-6">
-              <h1 className="text-xl font-semibold text-gray-900 mb-1">Preparing your wiki…</h1>
-              <p className="text-gray-500 text-sm">Waiting for the compile pipeline to start.</p>
-            </div>
-            <div className="divide-y divide-gray-100">
-              {STEPS.map(step => (
-                <StepRow key={step.key} stepKey={step.key} label={step.label} state={undefined} />
-              ))}
-            </div>
-          </>
+        {/* Error detail */}
+        {isFailedStatus && progress?.error && (
+          <pre style={{
+            fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--danger)',
+            background: 'rgba(255,113,108,0.08)', border: '1px solid rgba(255,113,108,0.2)',
+            padding: '12px 16px', margin: 0, overflowX: 'auto',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}>
+            {progress.error}
+          </pre>
         )}
-
-        {/* Running state */}
-        {status === 'running' && (
-          <>
-            <div className="mb-6">
-              <h1 className="text-xl font-semibold text-gray-900 mb-1">Building your wiki</h1>
-              <p className="text-gray-500 text-sm">This page updates automatically every few seconds.</p>
-            </div>
-            <div className="divide-y divide-gray-100">
-              {STEPS.map(step => (
-                <StepRow key={step.key} stepKey={step.key} label={step.label} state={steps[step.key]} />
-              ))}
-            </div>
-          </>
-        )}
-
-        {/* Patience message (15 min guard — shown for queued or running) */}
-        {patienceVisible && (status === 'queued' || status === 'running') && (
-          <p className="mt-6 text-xs text-gray-400 text-center leading-relaxed">
-            This is taking longer than expected. The process is still running — you can close this page and come back later.
-          </p>
-        )}
-
-        {/* Active polling hint for non-terminal states */}
-        {(status === 'queued' || status === 'running') && !patienceVisible && (
-          <p className="mt-6 text-xs text-gray-400 text-center">
-            Updates automatically every few seconds.
-          </p>
-        )}
-
       </div>
+
+      {/* Background hint — below the card, always visible while in-flight */}
+      {!isComplete && !isFailedStatus && (
+        <p style={{
+          maxWidth: 624, margin: '12px auto 0',
+          fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+          letterSpacing: '0.5px', color: '#757578', textAlign: 'center',
+        }}>
+          {patienceVisible
+            ? 'Taking longer than expected — still running. You can close this tab and come back later.'
+            : 'Runs in the background — you can go to the dashboard and come back any time.'}
+        </p>
+      )}
     </main>
   );
 }
@@ -300,9 +506,15 @@ export default function ProgressPage() {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen flex items-center justify-center">
-          <p className="text-gray-500">Loading…</p>
-        </div>
+        <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 2.5rem' }}>
+          <p style={{
+            maxWidth: 624, margin: '0 auto',
+            fontFamily: 'var(--font-mono)', fontSize: 10,
+            textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--fg-dim)',
+          }}>
+            Loading…
+          </p>
+        </main>
       }
     >
       <ProgressPageInner />

@@ -168,7 +168,7 @@ function ReviewPageInner() {
   const groups = Object.entries(data.sources);
 
   return (
-    <main style={{ maxWidth: 760, margin: '0 auto', padding: '3.5rem 1.5rem 8rem' }}>
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 2.5rem' }}>
 
       <header style={{ marginBottom: '2rem' }}>
         <h1 style={{ margin: 0, fontSize: '1.8rem' }}>Review your sources</h1>
@@ -296,35 +296,49 @@ function ReviewPageInner() {
           ← Add more sources
         </a>
       </p>
-      <p style={{ color: 'var(--fg-dim)', fontSize: '0.85rem', marginBottom: '3rem' }}>
+      <p style={{ color: 'var(--fg-dim)', fontSize: '0.85rem', marginBottom: '1rem' }}>
         You can always add more sources later.
       </p>
 
-      {/* Sticky footer */}
-      <div
-        style={{
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          padding: '1rem 1.5rem',
-          background: 'var(--bg)',
-          borderTop: '1px solid var(--border)',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          zIndex: 10,
-        }}
-      >
-        <span style={{ color: 'var(--fg-muted)', fontSize: '0.95rem' }}>
-          {selectedCount} of {data.total} selected
-        </span>
+      {/* Inline footer nav */}
+      <div style={{
+        marginTop: 48,
+        display: 'flex',
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+      }}>
+        {/* Left: back link */}
+        <a
+          href={`/onboarding${sessionId ? `?session_id=${sessionId}` : ''}${isReturning ? (sessionId ? '&' : '?') + 'mode=add' : ''}`}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            fontFamily: 'var(--font-mono)', fontSize: 10,
+            lineHeight: '15px', letterSpacing: '1px', textTransform: 'uppercase',
+            color: 'var(--fg-dim)', textDecoration: 'none',
+          }}
+        >
+          <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M8 4.5H1M1 4.5L4.5 1M1 4.5L4.5 8" stroke="#ABABAD" strokeWidth="1.2" strokeLinecap="square"/></svg>
+          Back
+        </a>
+
+        {/* Right: primary button */}
         <button
           onClick={handleConfirm}
           disabled={confirming || selectedCount === 0}
-          style={{ padding: '0.7rem 2rem', fontSize: '1rem', fontWeight: 600 }}
+          style={{
+            display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+            gap: 8, padding: '16px 32px',
+            background: confirming || selectedCount === 0 ? 'rgba(137,240,203,0.2)' : 'var(--accent)',
+            border: 'none',
+            cursor: confirming || selectedCount === 0 ? 'not-allowed' : 'pointer',
+            fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 10,
+            lineHeight: '15px', letterSpacing: '1px', textTransform: 'uppercase',
+            color: 'var(--accent-text)',
+          }}
         >
-          {confirming ? 'Queuing…' : isReturning ? 'Add to wiki →' : 'Build your wiki →'}
+          {confirming ? 'Queuing…' : isReturning ? 'Add to Wiki' : 'Build Your Wiki'}
+          {!confirming && <svg width="9" height="12" viewBox="0 0 9 12" fill="none"><path d="M1 1L8 6L1 11" stroke="#005A44" strokeWidth="1.5" strokeLinecap="square"/></svg>}
         </button>
       </div>
 

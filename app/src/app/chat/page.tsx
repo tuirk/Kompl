@@ -70,7 +70,7 @@ function TypingIndicator() {
             width: 7,
             height: 7,
             borderRadius: '50%',
-            background: 'var(--fg-muted, #888)',
+            background: 'var(--fg-muted)',
             animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
             display: 'inline-block',
           }}
@@ -225,13 +225,13 @@ export default function ChatPage() {
           alignItems: 'center',
           justifyContent: 'space-between',
           padding: '1.25rem 0 1rem',
-          borderBottom: '1px solid var(--border, #e5e7eb)',
+          borderBottom: '1px solid var(--border)',
           flexShrink: 0,
         }}
       >
         <Link
           href="/"
-          style={{ color: 'var(--fg-muted, #888)', textDecoration: 'none', fontSize: '0.9rem' }}
+          style={{ color: 'var(--fg-muted)', textDecoration: 'none', fontSize: '0.9rem' }}
         >
           ← Dashboard
         </Link>
@@ -240,12 +240,12 @@ export default function ChatPage() {
           onClick={newConversation}
           style={{
             background: 'none',
-            border: '1px solid var(--border, #e5e7eb)',
+            border: '1px solid var(--border)',
             borderRadius: 6,
             padding: '0.3rem 0.75rem',
             fontSize: '0.85rem',
             cursor: 'pointer',
-            color: 'var(--fg-muted, #888)',
+            color: 'var(--fg-muted)',
           }}
         >
           New conversation
@@ -275,7 +275,7 @@ export default function ChatPage() {
               paddingTop: '3rem',
             }}
           >
-            <p style={{ color: 'var(--fg-muted, #888)', fontSize: '1rem', margin: 0 }}>
+            <p style={{ color: 'var(--fg-muted)', fontSize: '1rem', margin: 0 }}>
               Ask anything about your compiled wiki.
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%' }}>
@@ -285,13 +285,13 @@ export default function ChatPage() {
                   onClick={() => void sendMessage(q)}
                   style={{
                     textAlign: 'left',
-                    background: 'var(--bg-subtle, #f9fafb)',
-                    border: '1px solid var(--border, #e5e7eb)',
+                    background: 'var(--bg-card)',
+                    border: '1px solid var(--border)',
                     borderRadius: 8,
                     padding: '0.65rem 1rem',
                     cursor: 'pointer',
                     fontSize: '0.9rem',
-                    color: 'var(--fg, #111)',
+                    color: 'var(--fg-muted)',
                   }}
                 >
                   {q}
@@ -317,10 +317,10 @@ export default function ChatPage() {
                 borderRadius: msg.role === 'user' ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
                 background:
                   msg.role === 'user'
-                    ? 'var(--accent, #0070f3)'
-                    : 'var(--bg-subtle, #f9fafb)',
-                color: msg.role === 'user' ? '#fff' : 'var(--fg, #111)',
-                border: msg.role === 'assistant' ? '1px solid var(--border, #e5e7eb)' : 'none',
+                    ? 'var(--accent)'
+                    : 'var(--bg-card)',
+                color: msg.role === 'user' ? '#fff' : 'var(--fg)',
+                border: msg.role === 'assistant' ? '1px solid var(--border)' : 'none',
                 fontSize: '0.95rem',
                 lineHeight: 1.6,
                 whiteSpace: 'pre-wrap',
@@ -341,7 +341,7 @@ export default function ChatPage() {
                   border: 'none',
                   cursor: savedDrafts.has(msg.id) ? 'default' : 'pointer',
                   fontSize: '0.75rem',
-                  color: savedDrafts.has(msg.id) ? 'var(--success, #059669)' : 'var(--fg-dim, #aaa)',
+                  color: savedDrafts.has(msg.id) ? 'var(--success)' : 'var(--fg-dim)',
                   padding: '0.1rem 0.2rem',
                 }}
               >
@@ -355,9 +355,9 @@ export default function ChatPage() {
           <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
             <div
               style={{
-                border: '1px solid var(--border, #e5e7eb)',
+                border: '1px solid var(--border)',
                 borderRadius: '18px 18px 18px 4px',
-                background: 'var(--bg-subtle, #f9fafb)',
+                background: 'var(--bg-card)',
               }}
             >
               <TypingIndicator />
@@ -371,7 +371,7 @@ export default function ChatPage() {
       {/* Input */}
       <div
         style={{
-          borderTop: '1px solid var(--border, #e5e7eb)',
+          borderTop: '1px solid var(--border)',
           padding: '1rem 0 1.5rem',
           flexShrink: 0,
         }}
@@ -381,10 +381,10 @@ export default function ChatPage() {
             display: 'flex',
             gap: '0.5rem',
             alignItems: 'flex-end',
-            border: '1px solid var(--border, #e5e7eb)',
+            border: '1px solid var(--border)',
             borderRadius: 12,
             padding: '0.5rem 0.5rem 0.5rem 1rem',
-            background: '#fff',
+            background: 'var(--bg-card)',
           }}
         >
           <textarea
@@ -403,7 +403,7 @@ export default function ChatPage() {
               fontSize: '0.95rem',
               lineHeight: '24px',
               background: 'transparent',
-              color: 'var(--fg, #111)',
+              color: 'var(--fg)',
               fontFamily: 'inherit',
               overflowY: 'hidden',
             }}
@@ -412,15 +412,16 @@ export default function ChatPage() {
             onClick={() => void sendMessage(input)}
             disabled={!input.trim() || isLoading}
             style={{
-              background: 'var(--accent, #0070f3)',
-              color: '#fff',
-              border: 'none',
+              background: input.trim() && !isLoading ? 'var(--accent)' : 'var(--bg-card-hover)',
+              color: input.trim() && !isLoading ? '#fff' : 'var(--fg-dim)',
+              border: '1px solid var(--border)',
               borderRadius: 8,
-              padding: '0.45rem 1rem',
+              padding: '0.5rem 1.1rem',
               fontSize: '0.9rem',
-              cursor: input.trim() && !isLoading ? 'pointer' : 'not-allowed',
-              opacity: input.trim() && !isLoading ? 1 : 0.5,
+              fontWeight: 600,
+              cursor: input.trim() && !isLoading ? 'pointer' : 'default',
               flexShrink: 0,
+              transition: 'background 0.15s, color 0.15s',
             }}
           >
             Send

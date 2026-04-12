@@ -33,6 +33,7 @@ import {
   getExtraction,
   getPageCount,
   getSource,
+  insertActivity,
   insertExtraction,
   markSourceExtracted,
   readRawMarkdown,
@@ -179,6 +180,11 @@ export async function POST(request: Request) {
   // Read source markdown
   const markdown = readRawMarkdown(source_id);
   if (!markdown) {
+    insertActivity({
+      action_type: 'extraction_failed',
+      source_id,
+      details: { error: 'raw_markdown_not_found', title: source.title },
+    });
     return NextResponse.json({ error: 'markdown_not_found' }, { status: 500 });
   }
 
@@ -254,6 +260,18 @@ export async function POST(request: Request) {
       llm_output: llmOutput,
     });
     markSourceExtracted(source_id);
+
+    insertActivity({
+      action_type: 'extraction_complete',
+      source_id,
+      details: {
+        title: source.title,
+        entity_count:       ((llmOutput as Record<string, unknown[]>).entities       ?? []).length,
+        concept_count:      ((llmOutput as Record<string, unknown[]>).concepts        ?? []).length,
+        claim_count:        ((llmOutput as Record<string, unknown[]>).claims          ?? []).length,
+        relationship_count: ((llmOutput as Record<string, unknown[]>).relationships   ?? []).length,
+      },
+    });
 
     return NextResponse.json({
       source_id,

@@ -13,10 +13,16 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { AppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 import { detectAndParse, formatTweetMarkdown, isTwitterUrl, type ParsedTweet } from '../../../lib/twitter-parser';
+import {
+  type ConnectorProps,
+  navigateNext,
+  navigateBack,
+  BTN_PRIMARY, BTN_PRIMARY_DISABLED, BTN_GHOST,
+  BottomNav,
+} from './_shared';
 
-// ── Bookmarklet ───────────────────────────────────────────────────────────────
+// ── Bookmarklet (DOM scraper for twitter.com/i/bookmarks) ─────────────────────
 // DOM scraper that runs on twitter.com/i/bookmarks. Uses stable data-testid
 // selectors, scrolls automatically, downloads a JSON file, then prompts the
 // user to come back and upload it. Output shape matches parseSiftly() in
@@ -65,30 +71,6 @@ const BOOKMARKLET = `(function(){
   setTimeout(scroll,200);
 })()`;
 
-interface ConnectorProps {
-  sessionId: string;
-  connectors: string[];
-  connectorIdx: number;
-  showToast: (msg: string, type?: 'error') => void;
-  mode?: string;
-}
-
-function navigateNext(
-  sessionId: string,
-  connectors: string[],
-  connectorIdx: number,
-  router: AppRouterInstance,
-  mode?: string
-) {
-  const nextIdx = connectorIdx + 1;
-  const modeParam = mode === 'add' ? '&mode=add' : '';
-  if (nextIdx >= connectors.length) {
-    router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
-  } else {
-    sessionStorage.setItem('kompl_connector_idx', String(nextIdx));
-    router.push(`/onboarding/${connectors[nextIdx]}?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
-  }
-}
 
 // ── Export Guide ──────────────────────────────────────────────────────────────
 
@@ -406,7 +388,7 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
   }
 
   function handleBack() {
-    router.back();
+    navigateBack(sessionId, connectors, connectorIdx, router, mode);
   }
 
   // ── Done state ───────────────────────────────────────────────────────────────
@@ -431,11 +413,14 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
             {' '}queued for compilation.
           </p>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button onClick={handleContinue} style={{ padding: '0.5rem 1.3rem' }}>
-            Continue →
-          </button>
-        </div>
+        <BottomNav
+          phase="done"
+          hasInput={false}
+          onIngest={() => {}}
+          onSkip={() => {}}
+          onContinue={handleContinue}
+          onBack={handleBack}
+        />
       </div>
     );
   }
@@ -616,39 +601,14 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
         </div>
       )}
 
-      {/* Nav */}
-      <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <button
-          onClick={handleBack}
-          style={{ background: 'none', border: 'none', color: 'var(--fg-muted)', cursor: 'pointer', padding: 0 }}
-        >
-          ← Back
-        </button>
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
-          <button
-            onClick={handleSkip}
-            style={{
-              background: 'none',
-              border: '1px solid var(--border)',
-              color: 'var(--fg-muted)',
-              cursor: 'pointer',
-              padding: '0.5rem 1.1rem',
-              borderRadius: 6,
-            }}
-          >
-            Skip for now
-          </button>
-          {phase === 'preview' && (
-            <button
-              onClick={handleIngest}
-              disabled={tweets.length === 0}
-              style={{ padding: '0.5rem 1.3rem' }}
-            >
-              Ingest &amp; continue →
-            </button>
-          )}
-        </div>
-      </div>
+      <BottomNav
+        phase="idle"
+        hasInput={phase === 'preview' && tweets.length > 0}
+        onIngest={handleIngest}
+        onSkip={handleSkip}
+        onContinue={handleContinue}
+        onBack={handleBack}
+      />
     </div>
   );
 }

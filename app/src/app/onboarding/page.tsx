@@ -7,38 +7,38 @@
  * For mode=add (returning users), always generates a fresh session_id.
  * User checks active connectors → "Next →" navigates to the first
  * connector screen, passing session_id + mode as URL search params.
- *
- * Coming-soon connectors show a toast on click; iPhone Notes is always
- * disabled. Active connectors: URL, file-upload, bookmarks, upnote, twitter.
  */
 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-
-import { SourceCard } from '../../components/SourceCard';
+import {
+  Globe, FileUp, Bookmark, BookOpen, AtSign,
+  Smartphone, HardDrive, Book, ArrowRight,
+} from 'lucide-react';
 import { useToast } from '../../components/Toast';
 
-const ACTIVE_CONNECTORS = ['url', 'file-upload', 'bookmarks', 'twitter', 'upnote'] as const;
-type ActiveConnector = (typeof ACTIVE_CONNECTORS)[number];
+type ConnectorStatus = 'active' | 'coming-soon';
 
 interface ConnectorDef {
   id: string;
-  icon: string;
+  Icon: React.ElementType;
   title: string;
-  description: string;
-  status: 'active' | 'coming-soon' | 'disabled';
+  subtitle: string;
+  status: ConnectorStatus;
 }
 
 const CONNECTORS: ConnectorDef[] = [
-  { id: 'url', icon: '🔗', title: 'URLs', description: 'Articles, blogs, YouTube links, docs.', status: 'active' },
-  { id: 'file-upload', icon: '📄', title: 'Files', description: 'PDF, DOCX, PPTX, images, audio.', status: 'active' },
-  { id: 'bookmarks', icon: '🔖', title: 'Browser Bookmarks', description: 'Upload your Chrome / Firefox bookmarks HTML export.', status: 'active' },
-  { id: 'upnote', icon: '📔', title: 'Upnote', description: 'Upload your Upnote markdown export.', status: 'active' },
-  { id: 'twitter', icon: '𝕏', title: 'Twitter / X Bookmarks', description: 'Upload a JSON export from any Twitter bookmark tool.', status: 'active' },
-  { id: 'google-drive', icon: '🗂️', title: 'Google Drive', description: 'Browse and select Drive documents.', status: 'coming-soon' },
-  { id: 'notion', icon: '📓', title: 'Notion', description: 'Export from Notion → upload as files.', status: 'coming-soon' },
-  { id: 'iphone-notes', icon: '📱', title: 'iPhone Notes', description: 'Coming soon.', status: 'disabled' },
+  { id: 'url',          Icon: Globe,      title: 'URL',               subtitle: 'Live Web Indexing',    status: 'active' },
+  { id: 'file-upload',  Icon: FileUp,     title: 'File Upload',       subtitle: 'PDF, Markdown, JSON',  status: 'active' },
+  { id: 'bookmarks',    Icon: Bookmark,   title: 'Browser Bookmarks', subtitle: 'Browser Sync',         status: 'active' },
+  { id: 'twitter',      Icon: AtSign,     title: 'Twitter / X',       subtitle: 'Social Intelligence',  status: 'active' },
+  { id: 'apple-notes',  Icon: Smartphone, title: 'Apple Notes',       subtitle: 'Native Notes',         status: 'active' },
+  { id: 'upnote',       Icon: BookOpen,   title: 'Upnote',            subtitle: 'Knowledge Management', status: 'active' },
+  { id: 'google-drive', Icon: HardDrive,  title: 'Google Drive',      subtitle: 'Cloud Storage',        status: 'coming-soon' },
+  { id: 'notion',       Icon: Book,       title: 'Notion',            subtitle: 'Workspace',            status: 'coming-soon' },
 ];
+
+const ACTIVE_IDS = new Set(CONNECTORS.filter(c => c.status === 'active').map(c => c.id));
 
 function OnboardingPageInner() {
   const router = useRouter();
@@ -51,7 +51,6 @@ function OnboardingPageInner() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    // Returning users always get a fresh session to avoid mixing with prior runs.
     const id =
       isReturning || !sessionStorage.getItem('kompl_session_id')
         ? crypto.randomUUID()
@@ -63,18 +62,14 @@ function OnboardingPageInner() {
   function toggleConnector(id: string) {
     setSelected(prev => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   }
 
-  const activeSelected = [...selected].filter(id =>
-    ACTIVE_CONNECTORS.includes(id as ActiveConnector)
-  );
+  const activeSelected = CONNECTORS
+    .map(c => c.id)
+    .filter(id => selected.has(id) && ACTIVE_IDS.has(id));
 
   function handleNext() {
     if (activeSelected.length === 0 || !sessionId) return;
@@ -84,118 +79,233 @@ function OnboardingPageInner() {
     router.push(`/onboarding/${activeSelected[0]}?session_id=${sessionId}${modeParam}`);
   }
 
-  return (
-    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '3.5rem 1.5rem 5rem' }}>
-      <header style={{ marginBottom: '2.5rem' }}>
-        <h1 style={{ margin: 0, fontSize: '2.2rem', lineHeight: 1.15 }}>
-          {isReturning ? 'What do you want to add?' : 'Where\u2019s your knowledge scattered?'}
-        </h1>
-        <p style={{ color: 'var(--fg-muted)', fontSize: '1.05rem', marginTop: '0.75rem', maxWidth: 640 }}>
-          {isReturning
-            ? 'Select where your new sources are.'
-            : 'Select all the places you\u2019d like to pull from. You\u2019ll walk through each one.'}
-        </p>
-      </header>
+  const heading = isReturning ? 'Add More Sources.' : 'Select Your Data Sources.';
+  const subtitle = isReturning
+    ? 'Select where your new sources are coming from.'
+    : "Pick all the places your knowledge lives. You'll walk through each connector.";
 
-      <div
-        style={{
+  return (
+    <>
+      <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 2.5rem' }}>
+
+        {/* Header */}
+        <section style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 32 }}>
+          <h1 style={{
+            fontFamily: 'var(--font-heading)',
+            fontWeight: 700,
+            fontSize: 52,
+            lineHeight: '54px',
+            letterSpacing: '-2.6px',
+            color: 'var(--fg)',
+            margin: 0,
+          }}>
+            {heading}
+          </h1>
+          <p style={{
+            fontFamily: 'var(--font-body)',
+            fontWeight: 400,
+            fontSize: 13,
+            lineHeight: '20px',
+            letterSpacing: '0.2px',
+            color: 'var(--fg-dim)',
+            margin: 0,
+            maxWidth: 460,
+          }}>
+            {subtitle}
+          </p>
+        </section>
+
+        {/* Connector grid — 4 cols × 2 rows */}
+        <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-          gap: '1.1rem',
-        }}
-      >
-        {CONNECTORS.map(c => {
-          if (c.status === 'active') {
+          gridTemplateColumns: 'repeat(4, 1fr)',
+          columnGap: 12,
+          rowGap: 16,
+        }}>
+          {CONNECTORS.map(c => {
             const checked = selected.has(c.id);
+
+            if (c.status === 'active') {
+              return (
+                <div
+                  key={c.id}
+                  onClick={() => toggleConnector(c.id)}
+                  style={{
+                    background: 'var(--bg-card)',
+                    padding: 24,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 32,
+                    cursor: 'pointer',
+                    boxSizing: 'border-box',
+                    outline: checked ? '1px solid rgba(137,240,203,0.25)' : '1px solid transparent',
+                    transition: 'outline 0.1s',
+                  }}
+                >
+                  {/* Top row: connector icon + selection indicator */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <c.Icon size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                    {/* Square radio indicator */}
+                    <div style={{
+                      width: 16,
+                      height: 16,
+                      border: '1px solid var(--accent)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}>
+                      <div style={{
+                        width: 9,
+                        height: 9,
+                        background: 'var(--accent)',
+                        opacity: checked ? 1 : 0,
+                        transition: 'opacity 0.1s',
+                      }} />
+                    </div>
+                  </div>
+
+                  {/* Title + subtitle */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{
+                      fontFamily: 'var(--font-heading)',
+                      fontWeight: 700,
+                      fontSize: 16,
+                      lineHeight: '22px',
+                      color: 'var(--fg)',
+                    }}>
+                      {c.title}
+                    </span>
+                    <span style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 9,
+                      lineHeight: '14px',
+                      letterSpacing: '0.8px',
+                      textTransform: 'uppercase',
+                      color: 'var(--fg-dim)',
+                    }}>
+                      {c.subtitle}
+                    </span>
+                  </div>
+                </div>
+              );
+            }
+
+            // coming-soon
             return (
               <div
                 key={c.id}
-                onClick={() => toggleConnector(c.id)}
-                style={{ cursor: 'pointer', position: 'relative' }}
+                onClick={() => showToast(`${c.title} — coming soon.`)}
+                style={{
+                  background: 'var(--bg)',
+                  padding: 24,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 32,
+                  opacity: 0.6,
+                  cursor: 'pointer',
+                  boxSizing: 'border-box',
+                }}
               >
-                {/* Checkbox badge */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 12,
-                    right: 12,
-                    zIndex: 1,
-                    width: 20,
-                    height: 20,
-                    borderRadius: 4,
-                    border: checked ? '2px solid var(--accent)' : '2px solid var(--border)',
-                    background: checked ? 'var(--accent)' : 'transparent',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 12,
-                    color: '#fff',
-                    pointerEvents: 'none',
-                  }}
-                >
-                  {checked ? '✓' : ''}
+                {/* Top row: icon + SOON badge */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <c.Icon size={16} style={{ color: 'var(--fg-dim)', flexShrink: 0 }} />
+                  <span style={{
+                    border: '1px solid rgba(171,171,173,0.3)',
+                    padding: '4px 8px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 8,
+                    lineHeight: '12px',
+                    letterSpacing: '0.8px',
+                    textTransform: 'uppercase',
+                    color: 'var(--fg)',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                  }}>
+                    Soon
+                  </span>
                 </div>
-                <SourceCard
-                  icon={c.icon}
-                  title={c.title}
-                  description={c.description}
-                  status="active"
-                />
+
+                {/* Title + subtitle */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{
+                    fontFamily: 'var(--font-heading)',
+                    fontWeight: 700,
+                    fontSize: 16,
+                    lineHeight: '22px',
+                    color: 'var(--fg-dim)',
+                  }}>
+                    {c.title}
+                  </span>
+                  <span style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 9,
+                    lineHeight: '14px',
+                    letterSpacing: '0.8px',
+                    textTransform: 'uppercase',
+                    color: 'rgba(171,171,173,0.5)',
+                  }}>
+                    {c.subtitle}
+                  </span>
+                </div>
               </div>
             );
-          }
+          })}
+        </div>
 
-          if (c.status === 'disabled') {
-            return (
-              <SourceCard
-                key={c.id}
-                icon={c.icon}
-                title={c.title}
-                description={c.description}
-                status="coming-soon"
-              />
-            );
-          }
-
-          // coming-soon
-          return (
-            <SourceCard
-              key={c.id}
-              icon={c.icon}
-              title={c.title}
-              description={c.description}
-              status="coming-soon"
-              onClick={() => showToast(`${c.title} — coming soon.`)}
-            />
-          );
-        })}
-      </div>
-
-      <div
-        style={{
-          marginTop: '2.5rem',
+        {/* Inline footer nav */}
+        <div style={{
+          marginTop: 48,
           display: 'flex',
-          justifyContent: 'flex-end',
+          flexDirection: 'row',
+          justifyContent: 'space-between',
           alignItems: 'center',
-          gap: '1rem',
-        }}
-      >
-        {activeSelected.length > 0 && (
-          <span style={{ color: 'var(--fg-muted)', fontSize: '0.9rem' }}>
-            {activeSelected.length} connector{activeSelected.length !== 1 ? 's' : ''} selected
+        }}>
+          {/* Left: selection count */}
+          <span style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 10,
+            lineHeight: '15px',
+            letterSpacing: '1px',
+            textTransform: 'uppercase',
+            color: 'var(--fg-dim)',
+          }}>
+            {activeSelected.length > 0
+              ? `${activeSelected.length} Source${activeSelected.length !== 1 ? 's' : ''} Selected`
+              : 'None Selected'}
           </span>
-        )}
-        <button
-          onClick={handleNext}
-          disabled={activeSelected.length === 0}
-          style={{ padding: '0.6rem 1.5rem', fontSize: '1rem' }}
-        >
-          Next →
-        </button>
-      </div>
+
+          {/* Right: primary button */}
+          <button
+            onClick={handleNext}
+            disabled={activeSelected.length === 0}
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              padding: '16px 32px',
+              background: activeSelected.length === 0 ? 'rgba(137,240,203,0.2)' : 'var(--accent)',
+              border: 'none',
+              cursor: activeSelected.length === 0 ? 'not-allowed' : 'pointer',
+              fontFamily: 'var(--font-mono)',
+              fontWeight: 700,
+              fontSize: 10,
+              lineHeight: '15px',
+              letterSpacing: '1px',
+              textTransform: 'uppercase',
+              color: 'var(--accent-text)',
+            }}
+          >
+            Next
+            <ArrowRight size={9} style={{ color: 'var(--accent-text)', flexShrink: 0 }} />
+          </button>
+        </div>
+      </main>
 
       {toast}
-    </main>
+    </>
   );
 }
 

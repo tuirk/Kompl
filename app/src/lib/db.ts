@@ -151,7 +151,8 @@ export interface ActivityRow {
   timestamp: string;
   action_type: string;
   source_id: string | null;
-  details: string | null; // JSON TEXT
+  details: string | null;    // JSON TEXT
+  source_title: string | null; // joined from sources — always resolved, never an ID
 }
 
 // ============================================================================
@@ -649,9 +650,16 @@ export interface CategoryGroup {
   pages: PageRow[];
 }
 
-/** Pages grouped by category, each group sorted newest-first. */
+/** Pages grouped by category, sorted alphabetically by category then title. */
 export function getCategoryGroups(): CategoryGroup[] {
-  const rows = getAllPages();
+  const rows = openDb()
+    .prepare(
+      `SELECT page_id, title, page_type, category, summary, content_path,
+              previous_content_path, last_updated, source_count, created_at
+         FROM pages
+        ORDER BY COALESCE(category, 'Uncategorized'), title`
+    )
+    .all() as PageRow[];
   const map = new Map<string, PageRow[]>();
   for (const row of rows) {
     const cat = row.category ?? 'Uncategorized';
@@ -722,6 +730,8 @@ export interface GraphNode {
   group: string;    // page_type
   category: string;
   source_count: number;
+  summary?: string | null;
+  last_updated?: string;
 }
 
 export interface GraphLink {
@@ -740,7 +750,8 @@ export function getWikiGraph(): GraphData {
   const nodes = db
     .prepare(
       `SELECT page_id AS id, title AS label, page_type AS "group",
-              COALESCE(category, 'Uncategorized') AS category, source_count
+              COALESCE(category, 'Uncategorized') AS category,
+              source_count, summary, last_updated
          FROM pages`
     )
     .all() as GraphNode[];
@@ -768,19 +779,23 @@ export function getRecentActivity(since: string | null, limit = 100): ActivityRo
   if (since) {
     return db
       .prepare(
-        `SELECT id, timestamp, action_type, source_id, details
-           FROM activity_log
-           WHERE datetime(timestamp) > datetime(?)
-           ORDER BY id DESC
+        `SELECT a.id, a.timestamp, a.action_type, a.source_id, a.details,
+                s.title AS source_title
+           FROM activity_log a
+           LEFT JOIN sources s ON a.source_id = s.source_id
+           WHERE datetime(a.timestamp) > datetime(?)
+           ORDER BY a.id DESC
            LIMIT ?`
       )
       .all(since, limit) as ActivityRow[];
   }
   return db
     .prepare(
-      `SELECT id, timestamp, action_type, source_id, details
-         FROM activity_log
-         ORDER BY id DESC
+      `SELECT a.id, a.timestamp, a.action_type, a.source_id, a.details,
+              s.title AS source_title
+         FROM activity_log a
+         LEFT JOIN sources s ON a.source_id = s.source_id
+         ORDER BY a.id DESC
          LIMIT ?`
     )
     .all(limit) as ActivityRow[];
@@ -858,8 +873,9 @@ export function getExtractionsBySession(sessionId: string): ExtractionRow[] {
 
 /**
  * Set compile_status = 'extracted' for a source after successful extraction.
- * Only updates rows that are in 'pending' or 'in_progress' status — safe to
- * call idempotently.
+ * Includes 'collected' so onboarding-path sources (which enter with that
+ * status) actually transition — without it the UPDATE is a silent no-op for
+ * every onboarding source.
  */
 export function markSourceExtracted(sourceId: string): void {
   openDb()
@@ -867,7 +883,24 @@ export function markSourceExtracted(sourceId: string): void {
       `UPDATE sources
           SET compile_status = 'extracted'
         WHERE source_id = ?
-          AND compile_status IN ('pending', 'in_progress')`
+          AND compile_status IN ('pending', 'in_progress', 'collected')`
+    )
+    .run(sourceId);
+}
+
+/**
+ * Reset a source back to 'pending' so the compile pipeline will re-process it.
+ * Clears attempt counter and backoff timestamp. Used by the manual recompile
+ * endpoint and the UI retry flow.
+ */
+export function resetSourceForRecompile(sourceId: string): void {
+  openDb()
+    .prepare(
+      `UPDATE sources
+          SET compile_status = 'pending',
+              compile_attempts = 0,
+              compile_next_eligible_at = NULL
+        WHERE source_id = ?`
     )
     .run(sourceId);
 }
@@ -1083,21 +1116,22 @@ export interface CompileProgressRow {
  * Insert a compile_progress row for a session, or reset it if one already
  * exists (for retry). All steps start as 'pending', status as 'queued'.
  */
-export function createCompileProgress(sessionId: string): void {
+export function createCompileProgress(sessionId: string, sourceCount = 0): void {
   openDb()
     .prepare(
       `INSERT INTO compile_progress
-         (session_id, status, current_step, steps, error, started_at, completed_at)
-       VALUES (?, 'queued', NULL, ?, NULL, NULL, NULL)
+         (session_id, status, current_step, steps, error, started_at, completed_at, source_count)
+       VALUES (?, 'queued', NULL, ?, NULL, NULL, NULL, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          status       = 'queued',
          current_step = NULL,
          steps        = excluded.steps,
          error        = NULL,
          started_at   = NULL,
-         completed_at = NULL`
+         completed_at = NULL,
+         source_count = CASE WHEN excluded.source_count > 0 THEN excluded.source_count ELSE compile_progress.source_count END`
     )
-    .run(sessionId, JSON.stringify(DEFAULT_STEPS()));
+    .run(sessionId, JSON.stringify(DEFAULT_STEPS()), sourceCount);
 }
 
 /**
@@ -1193,7 +1227,8 @@ export function getSourcesBySession(sessionId: string): SourceRow[] {
   return openDb()
     .prepare(
       `SELECT source_id, title, source_type, source_url, content_hash,
-              file_path, status, date_ingested, metadata, onboarding_session_id
+              file_path, status, date_ingested, metadata, compile_status,
+              compile_attempts, onboarding_session_id
          FROM sources
         WHERE onboarding_session_id = ?
           AND compile_status != 'active'
@@ -1372,21 +1407,80 @@ export function getAllSources(options?: {
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const sortCol = options?.sort_by ?? 'date_ingested';
-  const sortDir = options?.sort_order ?? 'desc';
+  // Runtime allowlist guards against SQL injection — TypeScript types are compile-time only.
+  const SORT_COLS: Record<string, string> = {
+    date_ingested: 'date_ingested',
+    title: 'title',
+    source_type: 'source_type',
+  };
+  const SORT_DIRS: Record<string, string> = { asc: 'ASC', desc: 'DESC' };
+  const sortCol = SORT_COLS[options?.sort_by ?? 'date_ingested'] ?? 'date_ingested';
+  const sortDir = SORT_DIRS[options?.sort_order ?? 'desc'] ?? 'DESC';
   const limit = options?.limit ?? 200;
   const offset = options?.offset ?? 0;
 
   return openDb()
     .prepare(
       `SELECT source_id, title, source_type, source_url, content_hash,
-              file_path, status, date_ingested, metadata, onboarding_session_id
+              file_path, status, date_ingested, metadata, compile_status,
+              compile_attempts, onboarding_session_id
          FROM sources
          ${where}
          ORDER BY ${sortCol} ${sortDir}
          LIMIT ? OFFSET ?`
     )
     .all(...params, limit, offset) as SourceRow[];
+}
+
+export interface SourceWithPageCount extends SourceRow {
+  page_count: number;
+}
+
+/**
+ * Same as getAllSources but LEFT JOINs provenance to include page_count per source
+ * in a single query, eliminating the N+1 pattern in GET /api/sources.
+ */
+export function getAllSourcesWithPageCounts(
+  options?: Parameters<typeof getAllSources>[0]
+): SourceWithPageCount[] {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options?.status) {
+    conditions.push('s.status = ?');
+    params.push(options.status);
+  }
+  if (options?.source_type) {
+    conditions.push('s.source_type = ?');
+    params.push(options.source_type);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const SORT_COLS: Record<string, string> = {
+    date_ingested: 's.date_ingested',
+    title: 's.title',
+    source_type: 's.source_type',
+  };
+  const SORT_DIRS: Record<string, string> = { asc: 'ASC', desc: 'DESC' };
+  const sortCol = SORT_COLS[options?.sort_by ?? 'date_ingested'] ?? 's.date_ingested';
+  const sortDir = SORT_DIRS[options?.sort_order ?? 'desc'] ?? 'DESC';
+  const limit = options?.limit ?? 200;
+  const offset = options?.offset ?? 0;
+
+  return openDb()
+    .prepare(
+      `SELECT s.source_id, s.title, s.source_type, s.source_url, s.content_hash,
+              s.file_path, s.status, s.date_ingested, s.metadata, s.compile_status,
+              s.compile_attempts, s.onboarding_session_id,
+              COUNT(DISTINCT p.page_id) AS page_count
+         FROM sources s
+         LEFT JOIN provenance p ON p.source_id = s.source_id
+         ${where}
+         GROUP BY s.source_id
+         ORDER BY ${sortCol} ${sortDir}
+         LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset) as SourceWithPageCount[];
 }
 
 /**
@@ -1492,6 +1586,23 @@ export function getAutoApprove(): boolean {
  */
 export function setAutoApprove(value: boolean): void {
   setSetting('auto_approve', value ? '1' : '0');
+}
+
+/**
+ * Get the chat provider setting. Defaults to 'gemini' if not set.
+ * 'gemini' uses Gemini 2.5 Flash (API key required, ~$0.001/turn).
+ * 'ollama' uses local llama3.2:3b via Ollama (free, CPU-only, ~10 tok/s).
+ */
+export function getChatProvider(): 'gemini' | 'ollama' {
+  if (getSetting('chat_provider') === 'ollama') return 'ollama';
+  return 'gemini';
+}
+
+/**
+ * Set the chat provider toggle.
+ */
+export function setChatProvider(value: 'gemini' | 'ollama'): void {
+  setSetting('chat_provider', value);
 }
 
 // ============================================================================

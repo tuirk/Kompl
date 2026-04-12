@@ -3,8 +3,9 @@
 /**
  * /settings — App settings page.
  *
- * Currently: auto-approve toggle.
- * Future: LLM provider, entity expansion, schema preferences.
+ * Settings:
+ *   - auto_approve   — commit wiki changes immediately vs. queue as drafts
+ *   - chat_provider  — 'gemini' (API key, ~$0.001/turn) or 'ollama' (local, free)
  */
 
 import { useEffect, useState } from 'react';
@@ -15,10 +16,17 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
+  const [chatProvider, setChatProviderState] = useState<'gemini' | 'ollama' | null>(null);
+  const [providerSaving, setProviderSaving] = useState(false);
+  const [providerSaved, setProviderSaved] = useState(false);
+
   useEffect(() => {
     void fetch('/api/settings')
       .then((r) => r.json())
-      .then((data: { auto_approve: boolean }) => setAutoApprove(data.auto_approve));
+      .then((data: { auto_approve: boolean; chat_provider: 'gemini' | 'ollama' }) => {
+        setAutoApprove(data.auto_approve);
+        setChatProviderState(data.chat_provider);
+      });
   }, []);
 
   async function toggle() {
@@ -35,6 +43,21 @@ export default function SettingsPage() {
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  }
+
+  async function toggleProvider(next: 'gemini' | 'ollama') {
+    if (chatProvider === null || providerSaving || chatProvider === next) return;
+    setProviderSaving(true);
+    setProviderSaved(false);
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_provider: next }),
+    });
+    setChatProviderState(next);
+    setProviderSaving(false);
+    setProviderSaved(true);
+    setTimeout(() => setProviderSaved(false), 2000);
   }
 
   return (
@@ -107,24 +130,75 @@ export default function SettingsPage() {
         )}
       </section>
 
-      <section style={{ marginTop: '2rem' }}>
+      <section
+        style={{
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          overflow: 'hidden',
+          marginTop: '1rem',
+        }}
+      >
         <div
           style={{
             padding: '1.25rem 1.5rem',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            background: 'var(--bg-card)',
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '1.5rem',
           }}
         >
-          <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem', color: 'var(--fg-muted)' }}>
-            Entity expansion
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
+              Chat agent provider
+            </div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+              <strong>Gemini</strong> (default) uses Gemini 2.5 Flash — requires an API key,
+              costs ~$0.001 per chat turn.{' '}
+              <strong>Ollama</strong> runs llama3.2:3b locally — free, CPU-only, ~10 tok/s
+              (first boot downloads ~2 GB). Compile-time LLM calls always use Gemini.
+            </div>
           </div>
-          <div style={{ fontSize: '0.85rem', color: 'var(--fg-dim)', lineHeight: 1.5 }}>
-            Automatic entity stub generation during compile. Configured via the{' '}
-            <code>entity_expansion_enabled</code> settings key.
-            Toggle via the database directly or the admin panel (coming in commit 10).
+          <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
+            {(['gemini', 'ollama'] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => void toggleProvider(p)}
+                disabled={chatProvider === null || providerSaving}
+                style={{
+                  padding: '0.45rem 1rem',
+                  borderRadius: 20,
+                  border: chatProvider === p ? 'none' : '1px solid var(--border)',
+                  cursor:
+                    chatProvider === null || providerSaving || chatProvider === p
+                      ? 'not-allowed'
+                      : 'pointer',
+                  background: chatProvider === p ? 'var(--accent, #0070f3)' : 'var(--bg-card)',
+                  color: chatProvider === p ? '#fff' : 'var(--fg-muted)',
+                  fontWeight: 600,
+                  fontSize: '0.85rem',
+                  opacity: chatProvider === null ? 0.5 : 1,
+                  transition: 'background 0.15s',
+                  textTransform: 'capitalize',
+                }}
+              >
+                {chatProvider === null ? '…' : p}
+              </button>
+            ))}
           </div>
         </div>
+        {providerSaved && (
+          <div
+            style={{
+              padding: '0.6rem 1.5rem',
+              background: 'var(--success-bg, #ecfdf5)',
+              borderTop: '1px solid var(--success-border, #a7f3d0)',
+              color: 'var(--success, #059669)',
+              fontSize: 13,
+            }}
+          >
+            Saved.
+          </div>
+        )}
       </section>
     </main>
   );

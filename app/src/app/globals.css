@@ -1,21 +1,83 @@
-/* Kompl v2 — minimal dark-friendly base styles. Karpathy-gist vibe. */
+/* =============================================================================
+   Obsidian Kinetic — Design System v1.0
+   Theme: Post-Cyber Editorial / The Kinetic Archive
+   =============================================================================
+
+   TOKEN LEGEND
+   ─────────────────────────────────────────────────────────────────────────────
+   Backgrounds:
+     --bg           Primary deep obsidian background          (#0d0e10)
+     --bg-card      Secondary surface (sidebars, cards)       (#121316)
+     --bg-card-hover  Hover state for interactive surfaces    (#1e2022)
+
+   Foreground:
+     --fg           High-contrast primary text                (#ffffff)
+     --fg-secondary Primary body text (slightly softer)       (#e2e2e5)
+     --fg-muted     Labels, metadata, secondary icons         (#a1a1aa)
+     --fg-dim       Timestamps, breadcrumbs, inactive nav     (#52525b)
+
+   Borders:
+     --border       Default subtle border                     (#1e2022)
+     --border-hover Elevated border (hover states)            (#2a2d31)
+     --border-accent Accent border for selected/active        (#98FFD9)
+
+   Accent (Mint — CTAs, success, focus):
+     --accent       Mint green primary                        (#98FFD9)
+     --accent-dim   Mint green pressed/hover                  (#6ee8bf)
+
+   Semantic:
+     --success      Positive states, done badges              (#10b981)
+     --danger       Errors, failed badges                     (#ef4444)
+     --warning      Warnings, in-progress badges              (#f59e0b)
+
+   Typography (exposed as vars from next/font, applied below):
+     --font-heading  Space Grotesk — headers, primary labels
+     --font-body     Inter — body text, markdown
+     --font-mono     JetBrains Mono — timestamps, IDs, paths
+
+   Transitions (The "Kinetic" feel):
+     All transitions use cubic-bezier(0.4, 0, 0.2, 1)
+     --transition-fast   150ms — UI feedback (buttons, hovers)
+     --transition-slow   300ms — structural (sidebar expansion)
+   ============================================================================= */
 
 :root {
-  color-scheme: dark light;
-  --bg: #0b0f14;
-  --bg-card: #131a22;
-  --bg-card-hover: #1a232e;
-  --fg: #e6edf3;
-  --fg-muted: #8899a6;
-  --fg-dim: #5b6a78;
-  --border: #1f2937;
-  --border-hover: #2a3947;
-  --accent: #58a6ff;
-  --accent-dim: #3b7dd8;
-  --success: #3fb950;
-  --danger: #f85149;
-  --warning: #d29922;
+  color-scheme: dark;
+
+  /* --- Backgrounds --- */
+  --bg:            #0d0e10;
+  --bg-card:       #121316;
+  --bg-card-hover: #1e2022;
+
+  /* --- Foreground --- */
+  --fg:            #ffffff;
+  --fg-secondary:  #e2e2e5;
+  --fg-muted:      #a1a1aa;
+  --fg-dim:        #52525b;
+
+  /* --- Borders --- */
+  --border:        #1e2022;
+  --border-hover:  #2a2d31;
+  --border-accent: #98FFD9;
+
+  /* --- Accent (mint green) --- */
+  --accent:        #98FFD9;
+  --accent-dim:    #6ee8bf;
+  --accent-text:   #00291D;   /* dark text for use ON the accent background */
+
+  /* --- Semantic --- */
+  --success:       #10b981;
+  --danger:        #ef4444;
+  --warning:       #f59e0b;
+
+  /* --- Kinetic transitions --- */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+/* =============================================================================
+   Base reset
+   ============================================================================= */
 
 * {
   box-sizing: border-box;
@@ -24,82 +86,214 @@
 html,
 body {
   background: var(--bg);
-  color: var(--fg);
+  color: var(--fg-secondary);
   margin: 0;
   padding: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Inter for body; falls back to system-ui if font var not loaded */
+  font-family: var(--font-body, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif);
   font-size: 16px;
   line-height: 1.5;
 }
 
+/* =============================================================================
+   Typography utilities
+   ============================================================================= */
+
+/* Heading style — Space Grotesk, uppercase, tight tracking */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading, var(--font-body, system-ui));
+  color: var(--fg);
+  margin: 0;
+}
+
+/* Metadata label — used on timestamps, IDs, breadcrumbs, section labels */
+.meta {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-dim);
+}
+
+/* Monospace — technical values */
+.mono {
+  font-family: var(--font-mono, ui-monospace, 'JetBrains Mono', 'Cascadia Code', Consolas, monospace);
+}
+
+/* =============================================================================
+   Links
+   ============================================================================= */
+
 a {
   color: var(--accent);
   text-decoration: none;
+  transition: color var(--transition-fast);
 }
 a:hover {
+  color: var(--accent-dim);
   text-decoration: underline;
 }
+
+/* =============================================================================
+   Buttons — Kinetic feel: snappy transitions + scale-down on active
+   ============================================================================= */
 
 button {
   cursor: pointer;
   font: inherit;
+  font-family: var(--font-heading, inherit);
   background: var(--accent);
-  color: #ffffff;
+  /* Mint on dark bg needs dark text for contrast */
+  color: #0d0e10;
   border: none;
   padding: 0.55em 1.1em;
   border-radius: 6px;
-  font-weight: 500;
+  font-weight: 600;
+  transition: background var(--transition-fast), transform var(--transition-fast);
 }
 button:hover {
   background: var(--accent-dim);
 }
-button:disabled {
-  background: var(--fg-dim);
-  cursor: not-allowed;
+button:active {
+  transform: scale(0.98);
 }
+button:disabled {
+  background: var(--bg-card-hover);
+  color: var(--fg-dim);
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Outlined variant — used for secondary actions */
+button.btn-outline {
+  background: transparent;
+  color: var(--fg-secondary);
+  border: 1px solid var(--border);
+}
+button.btn-outline:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-hover);
+  color: var(--fg);
+}
+button.btn-outline:active {
+  transform: scale(0.98);
+}
+
+/* Ghost variant — minimal, for nav-level actions */
+button.btn-ghost {
+  background: transparent;
+  color: var(--fg-muted);
+  border: none;
+  padding: 0.4em 0.75em;
+}
+button.btn-ghost:hover {
+  background: var(--bg-card-hover);
+  color: var(--fg);
+}
+
+/* =============================================================================
+   Form inputs
+   ============================================================================= */
 
 textarea,
 input[type='text'],
-input[type='file'] {
+input[type='file'],
+input[type='search'] {
   font: inherit;
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--bg-card);
+  color: var(--fg-secondary);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.55em 0.75em;
   width: 100%;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 textarea:focus,
 input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
+
+/* Connector textarea — faint placeholder, no default browser border */
+textarea.connector-textarea {
+  background: var(--bg-card-hover);
+  border: none;
+  outline: none;
+  resize: none;
+  caret-color: var(--accent);
+}
+textarea.connector-textarea:focus {
+  border: none;
+  box-shadow: none;
+}
+textarea.connector-textarea::placeholder {
+  color: rgba(171, 171, 173, 0.3);
+  font-family: var(--font-mono);
+}
+
+/* =============================================================================
+   Glassmorphism — overlay headers, sticky panels
+   ============================================================================= */
+
+.glass {
+  backdrop-filter: blur(8px);
+  background: rgba(18, 19, 22, 0.8);
+}
+
+/* =============================================================================
+   Type badges — pill-shaped, 1px border (Concept / Entity / Topic)
+   Use BADGE_COLORS from design-tokens.ts for the color values.
+   ============================================================================= */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15em 0.6em;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-family: var(--font-heading, inherit);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+/* =============================================================================
+   Article / markdown content
+   ============================================================================= */
 
 article {
   max-width: 760px;
+  font-family: var(--font-body, inherit);
+  color: var(--fg-secondary);
 }
 article h1 {
   font-size: 2em;
   margin-top: 0;
   line-height: 1.2;
+  color: var(--fg);
 }
 article h2,
 article h3 {
   line-height: 1.3;
   margin-top: 1.5em;
+  color: var(--fg);
 }
 article p {
   line-height: 1.65;
 }
 article code {
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
   background: var(--bg-card);
   padding: 0.1em 0.3em;
   border-radius: 3px;
   font-size: 0.92em;
-  font-family: ui-monospace, 'Cascadia Code', 'Fira Code', Consolas, monospace;
 }
 article pre {
   background: var(--bg-card);
+  border: 1px solid var(--border);
   padding: 1em;
   border-radius: 6px;
   overflow-x: auto;
@@ -116,12 +310,28 @@ article blockquote {
 }
 article table {
   border-collapse: collapse;
+  width: 100%;
 }
 article th,
 article td {
   border: 1px solid var(--border);
   padding: 0.4em 0.7em;
 }
+article th {
+  background: var(--bg-card);
+  color: var(--fg);
+  font-family: var(--font-heading, inherit);
+}
 article img {
   max-width: 100%;
+}
+
+/* =============================================================================
+   TopNav search input
+   ============================================================================= */
+
+.topnav-search::placeholder {
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
 }

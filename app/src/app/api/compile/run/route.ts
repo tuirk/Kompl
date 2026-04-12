@@ -30,6 +30,7 @@ import {
   completeCompileProgress,
   failCompileProgress,
   getSourcesBySession,
+  insertActivity,
 } from '@/lib/db';
 
 const APP_URL = process.env.APP_URL ?? 'http://app:3000';
@@ -129,14 +130,35 @@ async function callSchema(sessionId: string): Promise<unknown> {
 }
 
 async function runCompilePipeline(sessionId: string): Promise<void> {
-  // Step 1: extract — sequential per source
+  // Step 1: extract — sequential per source, isolated per failure so one bad
+  // source doesn't abort the entire session. Only abort when ALL fail.
   updateCompileStep(sessionId, 'extract', 'running');
   const sources = getSourcesBySession(sessionId);
+  let extractSucceeded = 0;
   for (let i = 0; i < sources.length; i++) {
-    await callExtract(sources[i].source_id);
-    updateCompileStep(sessionId, 'extract', 'running', `${i + 1}/${sources.length} sources extracted`);
+    try {
+      await callExtract(sources[i].source_id);
+      extractSucceeded++;
+    } catch (err) {
+      insertActivity({
+        action_type: 'extraction_failed',
+        source_id: sources[i].source_id,
+        details: { error: err instanceof Error ? err.message : String(err) },
+      });
+    }
+    updateCompileStep(
+      sessionId,
+      'extract',
+      'running',
+      `${Math.min(extractSucceeded + (i - extractSucceeded + 1), sources.length)}/${sources.length} sources extracted`
+    );
   }
-  updateCompileStep(sessionId, 'extract', 'done', `${sources.length}/${sources.length} sources extracted`);
+  if (extractSucceeded === 0) {
+    updateCompileStep(sessionId, 'extract', 'failed', `0/${sources.length} sources extracted`);
+    failCompileProgress(sessionId, 'All sources failed extraction');
+    return;
+  }
+  updateCompileStep(sessionId, 'extract', 'done', `${extractSucceeded}/${sources.length} sources extracted`);
 
   // Step 2: resolve
   updateCompileStep(sessionId, 'resolve', 'running');

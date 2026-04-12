@@ -36,6 +36,7 @@ import {
   bulkInsertAliases,
   getAliases,
   getExtractionsBySession,
+  insertActivity,
 } from '../../../../lib/db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -267,6 +268,17 @@ export async function POST(request: Request) {
     if (aliasesToInsert.length > 0) {
       bulkInsertAliases(aliasesToInsert);
     }
+
+    insertActivity({
+      action_type: 'resolution_complete',
+      source_id: null,
+      details: {
+        session_id,
+        merged_count:   allEntities.length - canonicalEntities.length,
+        resolved_count: canonicalEntities.length,
+        total_raw:      allEntities.length,
+      },
+    });
 
     return NextResponse.json({
       session_id,

@@ -88,13 +88,11 @@ export default async function SourcePage({ params }: PageProps) {
           }}
         >
           <span
+            className="meta"
             style={{
               border: '1px solid var(--border-hover)',
               padding: '0.1em 0.55em',
               borderRadius: 999,
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              fontSize: 11,
             }}
           >
             {source.source_type}
@@ -158,11 +156,11 @@ export default async function SourcePage({ params }: PageProps) {
               >
                 <span>
                   <span style={{ color: 'var(--fg)' }}>{p.title}</span>
-                  <span style={{ color: 'var(--fg-muted)', marginLeft: '0.5rem', fontSize: 11 }}>
+                  <span className="meta" style={{ marginLeft: '0.5rem' }}>
                     {p.page_type}
                   </span>
                 </span>
-                <span style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
+                <span className="meta">
                   {p.contribution_type} · {formatDate(p.date_compiled)}
                 </span>
               </Link>
@@ -172,7 +170,12 @@ export default async function SourcePage({ params }: PageProps) {
       )}
 
       {/* Actions */}
-      <SourceActions sourceId={source_id} currentStatus={source.status} />
+      <SourceActions
+        sourceId={source_id}
+        currentStatus={source.status}
+        compileStatus={source.compile_status ?? null}
+        sessionId={source.onboarding_session_id ?? null}
+      />
 
       <footer
         style={{

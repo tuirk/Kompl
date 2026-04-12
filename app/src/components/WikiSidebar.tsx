@@ -16,7 +16,8 @@ const PAGE_TYPE_COLORS: Record<string, string> = {
   'source-summary': 'var(--fg-dim)',
   concept: 'var(--accent)',
   entity: 'var(--warning)',
-  topic: 'var(--success)',
+  comparison: 'var(--danger)',
+  overview: 'var(--success)',
 };
 
 export default function WikiSidebar({ groups, activePageId, activeCategory }: WikiSidebarProps) {
@@ -33,9 +34,9 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
         borderRight: '1px solid var(--border)',
         padding: '1.5rem 1rem',
         overflowY: 'auto',
-        maxHeight: 'calc(100vh - 60px)',
+        maxHeight: 'calc(100vh - 65px)',
         position: 'sticky',
-        top: 60,
+        top: 65,
         alignSelf: 'flex-start',
       }}
     >
@@ -77,15 +78,7 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
 
       {recentPages.length > 0 && (
         <section style={{ marginBottom: '1.5rem' }}>
-          <div
-            style={{
-              fontSize: 10,
-              textTransform: 'uppercase',
-              letterSpacing: '0.1em',
-              color: 'var(--fg-dim)',
-              marginBottom: '0.5rem',
-            }}
-          >
+          <div className="meta" style={{ marginBottom: '0.5rem' }}>
             Recently compiled
           </div>
           {recentPages.map((p) => (
@@ -112,15 +105,7 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
       )}
 
       <section>
-        <div
-          style={{
-            fontSize: 10,
-            textTransform: 'uppercase',
-            letterSpacing: '0.1em',
-            color: 'var(--fg-dim)',
-            marginBottom: '0.5rem',
-          }}
-        >
+        <div className="meta" style={{ marginBottom: '0.5rem' }}>
           Categories
         </div>
         {groups.map((group) => {

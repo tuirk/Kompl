@@ -2,26 +2,42 @@
 export const dynamic = 'force-dynamic';
 
 /**
- * /sources — Browse all ingested sources with filtering and sorting.
- * SERVER component.
+ * /sources — Browse all ingested sources.
+ * SERVER component — badge styles are inlined (no client imports).
  */
 
 import Link from 'next/link';
 import { getAllSources, getDb, type SourceRow } from '../../lib/db';
 
-const SOURCE_TYPE_ICON: Record<string, string> = {
-  url: '🔗',
-  file: '📄',
-  tweet: '🐦',
-  text: '📝',
-  bookmarks: '🔖',
-  upnote: '📓',
-};
-
 function formatDate(iso: string): string {
   const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
+interface BadgeCfg {
+  bg: string;
+  border: string;
+  color: string;
+  label: string;
+}
+
+function getStatusBadge(source: SourceRow): BadgeCfg {
+  if (source.status === 'archived') {
+    return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg-dim)', label: 'ARCHIVED' };
+  }
+  switch (source.compile_status) {
+    case 'compiled':
+      return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg)', label: 'COMPILED' };
+    case 'failed':
+      return { bg: 'rgba(255,113,108,0.1)', border: 'rgba(255,113,108,0.2)', color: 'var(--danger)', label: 'FAILED' };
+    case 'in_progress':
+    case 'extracted':
+      return { bg: 'rgba(137,240,203,0.1)', border: 'rgba(137,240,203,0.2)', color: 'var(--accent)', label: 'INDEXING' };
+    default:
+      return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg-dim)', label: 'PENDING' };
+  }
 }
 
 interface SourceWithCount extends SourceRow {
@@ -42,122 +58,97 @@ export default async function SourcesPage() {
   const total = sources.length;
   const activeCount = sources.filter((s) => s.status === 'active').length;
 
+  // Shared column widths
+  const COL = '120px 1fr 140px 100px';
+
   return (
-    <main style={{ maxWidth: 900, margin: '0 auto', padding: '3rem 1.5rem 5rem' }}>
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'baseline',
-          justifyContent: 'space-between',
-          marginBottom: '2rem',
-        }}
-      >
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '2rem 40px 5rem' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 }}>
         <div>
-          <Link href="/" style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
-            ← Dashboard
-          </Link>
-          <h1 style={{ margin: '0.5rem 0 0', fontSize: '1.6rem' }}>
-            Sources{' '}
-            <span style={{ fontSize: '1rem', fontWeight: 400, color: 'var(--fg-muted)' }}>
-              ({activeCount} active, {total} total)
-            </span>
+          <h1 style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 24, letterSpacing: '1.8px', textTransform: 'uppercase', color: 'var(--fg)', margin: 0 }}>
+            Sources
           </h1>
+          <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', letterSpacing: '0.5px', margin: '4px 0 0' }}>
+            {activeCount} active · {total} total
+          </p>
         </div>
         <Link
           href="/onboarding?mode=add"
           style={{
             display: 'inline-flex',
             alignItems: 'center',
-            gap: '0.4rem',
-            padding: '0.55rem 1.2rem',
-            borderRadius: 6,
+            padding: '10px 20px',
             background: 'var(--accent)',
-            color: '#fff',
-            fontWeight: 600,
-            fontSize: '0.9rem',
+            fontFamily: 'var(--font-heading)',
+            fontWeight: 700,
+            fontSize: 12,
+            letterSpacing: '1px',
+            textTransform: 'uppercase',
+            color: 'var(--accent-text)',
             textDecoration: 'none',
           }}
         >
           + Add Sources
         </Link>
-      </header>
+      </div>
 
       {withCounts.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '4rem 0', color: 'var(--fg-muted)' }}>
-          <p style={{ fontSize: '1rem', marginBottom: '1rem' }}>No sources ingested yet.</p>
-          <Link href="/onboarding" style={{ color: 'var(--accent)' }}>
-            Add your first source →
-          </Link>
-        </div>
+        <p style={{ color: 'var(--fg-dim)', fontFamily: 'var(--font-mono)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>No sources yet.</p>
       ) : (
-        <div
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-          }}
-        >
-          {withCounts.map((s, i) => (
-            <Link
-              key={s.source_id}
-              href={`/source/${s.source_id}`}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.75rem',
-                padding: '0.9rem 1.25rem',
-                borderTop: i > 0 ? '1px solid var(--border)' : 'none',
-                background: 'transparent',
-                textDecoration: 'none',
-                color: 'inherit',
-              }}
-            >
-              <span style={{ fontSize: 18, flexShrink: 0, width: 24, textAlign: 'center' }}>
-                {SOURCE_TYPE_ICON[s.source_type] ?? '📄'}
-              </span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  style={{
-                    fontWeight: 500,
-                    fontSize: '0.9rem',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    color: 'var(--fg)',
-                  }}
-                >
-                  {s.title}
+        <div style={{ background: 'var(--bg-card)' }}>
+          {/* Table header */}
+          <div style={{ display: 'grid', gridTemplateColumns: COL, background: 'var(--bg-card-hover)', padding: '0 24px' }}>
+            {['Date', 'Source', 'Status', 'Action'].map((col, i) => (
+              <div key={col} style={{ padding: '16px 0', fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 10, letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)', textAlign: i === 3 ? 'right' : 'left' }}>
+                {col}
+              </div>
+            ))}
+          </div>
+
+          {/* Rows */}
+          {withCounts.map((s) => {
+            const badge = getStatusBadge(s);
+            return (
+              <div
+                key={s.source_id}
+                style={{ display: 'grid', gridTemplateColumns: COL, padding: '0 24px', borderTop: '1px solid rgba(71,72,74,0.1)', alignItems: 'center' }}
+              >
+                <div style={{ padding: '20px 0', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-secondary)' }}>
+                  {formatDate(s.date_ingested)}
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 2 }}>
-                  {s.page_count > 0 ? `→ ${s.page_count} page${s.page_count !== 1 ? 's' : ''}` : 'not compiled'}
-                  {' · '}
-                  <span
-                    style={{
-                      padding: '0.1em 0.4em',
-                      borderRadius: 3,
-                      fontSize: 11,
-                      background: s.status === 'active' ? 'var(--success-bg, #ecfdf5)' : 'var(--bg-card)',
-                      color: s.status === 'active' ? 'var(--success, #059669)' : 'var(--fg-dim)',
-                      border: `1px solid ${s.status === 'active' ? 'var(--success-border, #a7f3d0)' : 'var(--border)'}`,
-                    }}
-                  >
-                    {s.status}
+                <div style={{ padding: '16px 0', minWidth: 0 }}>
+                  <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 400, fontSize: 14, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {s.title}
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', marginTop: 2 }}>
+                    {s.source_type}
+                    {s.page_count > 0 ? ` · ${s.page_count} page${s.page_count !== 1 ? 's' : ''}` : ''}
+                  </div>
+                </div>
+                <div style={{ padding: '17px 0' }}>
+                  <span style={{
+                    display: 'inline-flex', alignItems: 'center',
+                    padding: '2px 8px',
+                    background: badge.bg, border: `1px solid ${badge.border}`,
+                    fontFamily: 'var(--font-heading)', fontWeight: 700,
+                    fontSize: 9, letterSpacing: '0.45px', textTransform: 'uppercase',
+                    color: badge.color, whiteSpace: 'nowrap',
+                  }}>
+                    {badge.label}
                   </span>
                 </div>
+                <div style={{ padding: '20px 0', textAlign: 'right' }}>
+                  <Link
+                    href={`/source/${s.source_id}`}
+                    style={{ fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 10, letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)', textDecoration: 'none' }}
+                  >
+                    View
+                  </Link>
+                </div>
               </div>
-              <div
-                style={{
-                  flexShrink: 0,
-                  fontSize: 12,
-                  color: 'var(--fg-dim)',
-                  textAlign: 'right',
-                }}
-              >
-                <div>{s.source_type}</div>
-                <div>{formatDate(s.date_ingested)}</div>
-              </div>
-            </Link>
-          ))}
+            );
+          })}
         </div>
       )}
     </main>

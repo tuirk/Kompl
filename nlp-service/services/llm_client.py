@@ -8,8 +8,11 @@ Responsibilities:
 
 Architecture notes (docs/research/2026-04-09-llm-compile.md):
   - google-genai SDK (NOT deprecated google-generativeai). Client reads GEMINI_API_KEY.
-  - thinking_budget=-1 → model default (thinking enabled, budget auto). "Perfection
-    over speed" rule applies — do NOT set thinking_budget=0 to save latency.
+  - thinking_budget by task type (researched against Gemini 2.5 Flash docs):
+      0    — mechanical text manipulation or binary classification (crossref, triage)
+      1024 — selection/ranking or contradiction scan (select_pages, lint_scan)
+      2048 — structured creative, one-off (generate_schema)
+      -1   — dynamic/unlimited for deep reasoning tasks (extract, disambiguate, draft, synthesize, compile)
   - response_schema accepts Pydantic BaseModel directly; parse via model_validate_json.
   - SINGLE uvicorn worker required: InMemoryBucket is process-local. Running
     --workers 2 would give 2×RPM effective, exceeding tier-1 cap. See research
@@ -29,6 +32,7 @@ from typing import Any
 
 from google import genai
 from google.genai import types
+from openai import OpenAI as _OpenAI
 from pydantic import BaseModel
 from pyrate_limiter import Duration, InMemoryBucket, Limiter, Rate
 
@@ -38,6 +42,10 @@ from pyrate_limiter import Duration, InMemoryBucket, Limiter, Rate
 
 _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 _GEMINI_RPM = int(os.environ.get("GEMINI_RPM", "800"))
+
+# Ollama provider (chat toggle). Defaults to the internal Docker DNS name.
+_OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434/v1")
+_OLLAMA_MODEL = "llama3.2:3b"
 # Rough char budget: 1 token ≈ 4 chars for English. 32,000 tokens → 128,000 chars.
 _GEMINI_INPUT_TOKEN_CAP = int(os.environ.get("GEMINI_INPUT_TOKEN_CAP", "128000"))
 _GEMINI_DAILY_USD_CAP = float(os.environ.get("GEMINI_DAILY_USD_CAP", "5.00"))
@@ -63,6 +71,10 @@ class CostCeilingError(Exception):
 
 class LLMCompileError(Exception):
     """Raised when the LLM call succeeds but the response cannot be parsed."""
+
+
+class OllamaUnavailableError(Exception):
+    """Raised when the Ollama server is unreachable or the model is not yet pulled."""
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +157,23 @@ def get_client() -> genai.Client:
             raise RuntimeError("GEMINI_API_KEY not set")
         _client = genai.Client(api_key=_GEMINI_API_KEY)
     return _client
+
+
+# ---------------------------------------------------------------------------
+# Ollama client (lazy init — only created when chat_provider='ollama')
+# ---------------------------------------------------------------------------
+
+_ollama_client: _OpenAI | None = None
+
+
+def _get_ollama_client() -> _OpenAI:
+    global _ollama_client
+    if _ollama_client is None:
+        _ollama_client = _OpenAI(
+            base_url=_OLLAMA_BASE_URL,
+            api_key="ollama",  # required by the SDK but ignored by Ollama
+        )
+    return _ollama_client
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +330,7 @@ def lint_scan(pages: list[str]) -> LintScanResponse:
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 max_output_tokens=4096,  # lint responses are short
             ),
         )
@@ -938,7 +967,7 @@ def crossref_pages(pages: list[dict[str, Any]]) -> CrossrefResponse:
                 system_instruction=_CROSSREF_SYSTEM_PROMPT,
                 response_mime_type="application/json",
                 response_schema=CrossrefResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
                 max_output_tokens=32768,
                 temperature=0.0,
             ),
@@ -1045,7 +1074,7 @@ def triage_page_update(
                     },
                     "required": ["decision", "reason"],
                 },
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
                 max_output_tokens=512,
                 temperature=0.0,
             ),
@@ -1106,7 +1135,7 @@ def generate_schema(pages_summary: list[dict[str, Any]]) -> str:
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=_SCHEMA_SYSTEM_PROMPT,
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=2048),
                 max_output_tokens=8192,
                 temperature=0.0,
             ),
@@ -1195,7 +1224,7 @@ def select_pages_for_query(
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=SelectPagesResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 max_output_tokens=1024,
                 temperature=0.0,
             ),
@@ -1255,10 +1284,112 @@ Return JSON with two fields:
 """
 
 
+def _synthesize_with_ollama(
+    question: str,
+    pages: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+) -> SynthesizeResponse:
+    """Synthesize a wiki-grounded answer using Ollama llama3.2:3b (CPU, free).
+
+    Uses OpenAI-compatible JSON mode + explicit schema instructions.
+    Ollama guarantees valid JSON but not field presence — parsed manually.
+
+    Raises:
+        OllamaUnavailableError  — server not running or model still pulling
+        LLMCompileError         — response received but JSON missing required fields
+    """
+    import json as _json
+
+    # Build page context (same assembly as the Gemini path)
+    page_sections: list[str] = []
+    for p in pages:
+        content = p.get("markdown", "")
+        page_sections.append(
+            f"=== [{p['page_id']}] {p['title']} (type: {p.get('page_type', '')}) ===\n{content}"
+        )
+    pages_text = "\n\n".join(page_sections)
+
+    history_text = ""
+    if history:
+        history_lines = [
+            f"{h['role'].upper()}: {h['content']}" for h in history[-10:]
+        ]
+        history_text = "Conversation history:\n" + "\n".join(history_lines) + "\n\n"
+
+    user_content = (
+        f"{history_text}"
+        f"Wiki pages:\n\n{pages_text}\n\n"
+        f"---\n\n"
+        f"Question: {question}"
+    )
+
+    if len(user_content) > _GEMINI_INPUT_TOKEN_CAP:
+        user_content = user_content[:_GEMINI_INPUT_TOKEN_CAP]
+
+    # Extend the system prompt with explicit JSON schema instructions.
+    # json_object mode guarantees parseable JSON but NOT field presence.
+    system_prompt = (
+        _SYNTHESIZE_SYSTEM_PROMPT
+        + '\nYou MUST return valid JSON with EXACTLY these two top-level fields:\n'
+        + '{"answer": "<markdown string>", "citations": [{"page_id": "<id>", "page_title": "<title>"}, ...]}\n'
+        + 'Do not add extra fields. The citations array may be empty if you used no specific pages.'
+    )
+
+    client = _get_ollama_client()
+    try:
+        completion = client.chat.completions.create(
+            model=_OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            max_tokens=4096,
+        )
+    except Exception as e:
+        err_str = str(e).lower()
+        if any(kw in err_str for kw in ("connection", "refused", "not found", "404", "pull")):
+            raise OllamaUnavailableError(f"ollama_unavailable: {e}") from e
+        raise LLMCompileError(f"ollama_call_failed: {e}") from e
+
+    raw_text = completion.choices[0].message.content if completion.choices else ""
+    if not raw_text:
+        raise LLMCompileError("ollama_error: empty response content")
+
+    try:
+        data = _json.loads(raw_text)
+    except _json.JSONDecodeError as e:
+        raise LLMCompileError(f"ollama_parse_failed: invalid JSON: {e}") from e
+
+    if not isinstance(data, dict):
+        raise LLMCompileError(f"ollama_parse_failed: expected object, got {type(data).__name__}")
+
+    answer = data.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        raise LLMCompileError(
+            f"ollama_parse_failed: 'answer' field missing or empty. Keys present: {list(data.keys())}"
+        )
+
+    # Citations are best-effort — skip malformed entries, return empty list if absent.
+    raw_citations = data.get("citations", [])
+    citations: list[SynthesisCitation] = []
+    if isinstance(raw_citations, list):
+        for c in raw_citations:
+            if isinstance(c, dict):
+                pid = c.get("page_id", "")
+                ptitle = c.get("page_title", "")
+                if isinstance(pid, str) and isinstance(ptitle, str) and pid:
+                    citations.append(SynthesisCitation(page_id=pid, page_title=ptitle))
+
+    return SynthesizeResponse(answer=answer.strip(), citations=citations)
+
+
 def synthesize_answer(
     question: str,
     pages: list[dict[str, Any]],
     history: list[dict[str, Any]],
+    provider: str = "gemini",
 ) -> SynthesizeResponse:
     """Synthesize a wiki-grounded answer to a question.
 
@@ -1266,14 +1397,20 @@ def synthesize_answer(
         question: The user's question.
         pages:    List of {page_id, title, page_type, markdown} dicts.
         history:  List of {role, content} dicts (conversation history).
+        provider: 'gemini' (default, uses Gemini 2.5 Flash) or 'ollama'
+                  (uses local llama3.2:3b via Ollama — free, CPU-only).
 
     Returns SynthesizeResponse with answer markdown and citations.
 
     Raises:
-        LLMRateLimitedError  — bucket exhausted
-        CostCeilingError     — daily $ cap exceeded
-        LLMCompileError      — parse failure
+        OllamaUnavailableError — Ollama server down or model not yet pulled (provider='ollama')
+        LLMRateLimitedError    — bucket exhausted (provider='gemini')
+        CostCeilingError       — daily $ cap exceeded (provider='gemini')
+        LLMCompileError        — parse failure (both providers)
     """
+    if provider == "ollama":
+        return _synthesize_with_ollama(question, pages, history)
+
     import json as _json
 
     limiter = _get_limiter()

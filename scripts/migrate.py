@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -299,6 +299,17 @@ def migrate():
     if current < 10:
         print("  applying migration v10 (ensure provenance source index)...")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_provenance_source ON provenance(source_id)")
+
+    if current < 11:
+        print("  applying migration v11 (compile_progress.source_count column)...")
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(compile_progress)").fetchall()
+        }
+        if "source_count" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE compile_progress ADD COLUMN source_count INTEGER DEFAULT 0"
+            )
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

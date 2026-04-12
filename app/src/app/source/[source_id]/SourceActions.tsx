@@ -1,7 +1,16 @@
 'use client';
 
 /**
- * Client component for archive/unarchive and delete actions on a source page.
+ * Client component for archive/unarchive, delete, and re-compile actions on a
+ * source page.
+ *
+ * Re-compile button is visible for any source not yet fully active:
+ *   - enabled:  compile_status IN (failed, pending, in_progress, extracted, collected)
+ *   - disabled: compile_status IN (compiled, active)  — shown as "Compiled ✓"
+ *   - hidden:   compile_status is null (source never entered compile pipeline)
+ *
+ * On success, stores session_id in localStorage (triggers ActiveCompileBanner
+ * on the dashboard) and redirects to the progress page.
  */
 
 import { useRouter } from 'next/navigation';
@@ -10,31 +19,76 @@ import { useState } from 'react';
 interface SourceActionsProps {
   sourceId: string;
   currentStatus: string;
+  compileStatus: string | null;
+  sessionId: string | null;
 }
 
-export default function SourceActions({ sourceId, currentStatus }: SourceActionsProps) {
+const BTN: React.CSSProperties = {
+  padding: '0.45rem 1rem',
+  borderRadius: 6,
+  fontSize: '0.875rem',
+  cursor: 'pointer',
+};
+
+export default function SourceActions({
+  sourceId,
+  currentStatus,
+  compileStatus,
+  sessionId,
+}: SourceActionsProps) {
   const router = useRouter();
   const [status, setStatus] = useState(currentStatus);
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [recompileState, setRecompileState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
 
   async function handleArchiveToggle() {
     setBusy(true);
     const newStatus = status === 'active' ? 'archived' : 'active';
-    await fetch(`/api/sources/${sourceId}`, {
+    const res = await fetch(`/api/sources/${sourceId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: newStatus }),
     });
-    setStatus(newStatus);
+    if (res.ok) setStatus(newStatus);
     setBusy(false);
   }
 
   async function handleDelete() {
     setBusy(true);
-    await fetch(`/api/sources/${sourceId}`, { method: 'DELETE' });
-    router.push('/sources');
+    const res = await fetch(`/api/sources/${sourceId}`, { method: 'DELETE' });
+    if (res.ok) {
+      router.push('/sources');
+    } else {
+      setBusy(false);
+    }
   }
+
+  async function handleRecompile() {
+    setRecompileState('loading');
+    try {
+      const res = await fetch(`/api/sources/${sourceId}/recompile`, { method: 'POST' });
+      if (!res.ok && res.status !== 409) throw new Error(`${res.status}`);
+      const body = (await res.json()) as { session_id?: string | null; status?: string };
+      const sid = body.session_id ?? sessionId;
+      if (sid) {
+        localStorage.setItem('kompl_active_compile', JSON.stringify({ session_id: sid, source_count: 0 }));
+        setRecompileState('done');
+        router.push(`/onboarding/progress?session_id=${encodeURIComponent(sid)}`);
+      } else {
+        // Standalone source (no session) — stay on page, show confirmation
+        setRecompileState('done');
+        setTimeout(() => setRecompileState('idle'), 3000);
+      }
+    } catch {
+      setRecompileState('error');
+      setTimeout(() => setRecompileState('idle'), 3000);
+    }
+  }
+
+  // Determine re-compile button visibility and state
+  const showRecompile = compileStatus !== null;
+  const recompileDisabled = compileStatus === 'compiled' || compileStatus === 'active';
 
   return (
     <div
@@ -48,33 +102,69 @@ export default function SourceActions({ sourceId, currentStatus }: SourceActions
         alignItems: 'center',
       }}
     >
+      {/* Re-compile button */}
+      {showRecompile && (
+        recompileDisabled ? (
+          <button
+            disabled
+            style={{
+              ...BTN,
+              border: '1px solid var(--border)',
+              background: 'var(--bg-card)',
+              color: 'var(--fg-dim)',
+              cursor: 'not-allowed',
+              opacity: 0.5,
+            }}
+          >
+            Compiled ✓
+          </button>
+        ) : (
+          <button
+            onClick={() => void handleRecompile()}
+            disabled={recompileState === 'loading' || recompileState === 'done'}
+            style={{
+              ...BTN,
+              border: '1px solid rgba(152,255,217,0.4)',
+              background: 'rgba(152,255,217,0.07)',
+              color: recompileState === 'error' ? 'var(--danger)' : 'var(--accent)',
+              cursor: recompileState === 'loading' || recompileState === 'done' ? 'default' : 'pointer',
+              opacity: recompileState === 'loading' ? 0.6 : 1,
+              transition: 'var(--transition-fast)',
+            }}
+          >
+            {recompileState === 'loading' ? 'Queuing…'
+              : recompileState === 'done'  ? 'Queued ✓'
+              : recompileState === 'error' ? 'Failed — try again'
+              : '↻ Re-compile'}
+          </button>
+        )
+      )}
+
+      {/* Archive / Unarchive */}
       <button
         onClick={() => void handleArchiveToggle()}
         disabled={busy}
         style={{
-          padding: '0.45rem 1rem',
-          borderRadius: 6,
+          ...BTN,
           border: '1px solid var(--border)',
           background: 'var(--bg-card)',
           cursor: busy ? 'not-allowed' : 'pointer',
-          fontSize: '0.875rem',
           color: 'var(--fg-muted)',
         }}
       >
         {status === 'active' ? 'Archive' : 'Unarchive'}
       </button>
 
+      {/* Delete */}
       {!confirmDelete ? (
         <button
           onClick={() => setConfirmDelete(true)}
           disabled={busy}
           style={{
-            padding: '0.45rem 1rem',
-            borderRadius: 6,
+            ...BTN,
             border: '1px solid var(--danger, #ef4444)',
             background: 'transparent',
             cursor: busy ? 'not-allowed' : 'pointer',
-            fontSize: '0.875rem',
             color: 'var(--danger, #ef4444)',
           }}
         >
@@ -89,12 +179,10 @@ export default function SourceActions({ sourceId, currentStatus }: SourceActions
             onClick={() => void handleDelete()}
             disabled={busy}
             style={{
-              padding: '0.45rem 1rem',
-              borderRadius: 6,
+              ...BTN,
               border: 'none',
               background: 'var(--danger, #ef4444)',
               cursor: busy ? 'not-allowed' : 'pointer',
-              fontSize: '0.875rem',
               color: '#fff',
               fontWeight: 600,
             }}
@@ -104,12 +192,10 @@ export default function SourceActions({ sourceId, currentStatus }: SourceActions
           <button
             onClick={() => setConfirmDelete(false)}
             style={{
-              padding: '0.45rem 1rem',
-              borderRadius: 6,
+              ...BTN,
               border: '1px solid var(--border)',
               background: 'transparent',
               cursor: 'pointer',
-              fontSize: '0.875rem',
               color: 'var(--fg-muted)',
             }}
           >

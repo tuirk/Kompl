@@ -71,6 +71,11 @@ services:
       GEMINI_INPUT_TOKEN_CAP: ${GEMINI_INPUT_TOKEN_CAP:-128000}
       # Daily $ cost ceiling. nlp-service raises CostCeilingError when exceeded.
       GEMINI_DAILY_USD_CAP: ${GEMINI_DAILY_USD_CAP:-5.00}
+      # Ollama provider (chat toggle). Points to the ollama service on the internal network.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434/v1}
+    depends_on:
+      ollama:
+        condition: service_started
     volumes:
       # Shared file access to /data/raw so MarkItDown can read uploads
       # that Next.js wrote. Does NOT include write access to /data/db/kompl.db
@@ -123,6 +128,26 @@ services:
     image: alpine:latest
     # Placeholder — becomes real in commit 11 (Docusaurus static wiki).
 
+  ollama:
+    image: ollama/ollama:latest
+    # CPU-only: no GPU reservation block — omitting deploy.resources.reservations.devices
+    # is sufficient. The official ollama/ollama image auto-detects and uses CPU.
+    volumes:
+      - ollama-data:/root/.ollama
+    # Internal only — nlp-service reaches it at http://ollama:11434/v1.
+    # No host port exposure needed (Ollama UI is not required).
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+    # Start the server, wait for it to be ready, then pull llama3.2:3b.
+    # The server is ready in ~2s; the first-boot model pull takes 2-4 minutes.
+    # nlp-service handles the "model not yet pulled" 404 as OllamaUnavailableError (503).
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull llama3.2:3b && wait"]
+
 volumes:
   kompl-data:
   n8n-data:
+  ollama-data:

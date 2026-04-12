@@ -15,7 +15,7 @@
 #
 # Stage state at commit 8:
 #   Stage 0  — REAL (cold start)
-#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=10)
+#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=11)
 #   Stage 4  — REAL (live URL ingest + compile end-to-end, failure-path canary)
 #   Stage 11 — REAL (onboarding API canary)
 #   Stage 12 — REAL (text connector canary)
@@ -98,9 +98,9 @@ stage_0_cold_start() {
         return 1
     fi
 
-    echo "  waiting for app /api/health to return 200 (up to 120s)..."
-    if ! wait_for_http_200 "http://localhost:3000/api/health" 120; then
-        echo "  FAIL: app /api/health not ready within 120s"
+    echo "  waiting for app /api/health to return 200 (up to 240s)..."
+    if ! wait_for_http_200 "http://localhost:3000/api/health" 240; then
+        echo "  FAIL: app /api/health not ready within 240s"
         $COMPOSE logs app 2>&1 | tail -30
         record_stage 0 REAL FAIL
         return 1
@@ -181,8 +181,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":10'; then
-        echo "  FAIL: schema_version != 10"
+    if ! echo "$response" | grep -q '"schema_version":11'; then
+        echo "  FAIL: schema_version != 11"
         record_stage 1 REAL FAIL
         return 1
     fi

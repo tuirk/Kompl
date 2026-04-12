@@ -119,7 +119,7 @@ export async function POST(request: Request) {
   void Promise.allSettled(filePaths.map((fp) => fsPromises.unlink(fp)));
 
   // Create compile progress record (INSERT OR REPLACE — safe on retry)
-  createCompileProgress(session_id);
+  createCompileProgress(session_id, selectedIds.length);
 
   // Trigger n8n session-compile workflow (fire-and-forget)
   const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL ?? 'http://n8n:5678/webhook';

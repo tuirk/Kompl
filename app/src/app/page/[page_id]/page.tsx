@@ -26,7 +26,8 @@ const PAGE_TYPE_LABELS: Record<string, string> = {
   'source-summary': 'source summary',
   concept: 'concept',
   entity: 'entity',
-  topic: 'topic',
+  comparison: 'comparison',
+  overview: 'overview',
 };
 
 function formatDate(iso: string): string {
@@ -81,35 +82,32 @@ export default async function WikiPage({ params }: PageProps) {
           {page.title}
         </h1>
         <div
+          className="meta"
           style={{
             display: 'flex',
             gap: '0.85rem',
-            color: 'var(--fg-muted)',
-            fontSize: 13,
             flexWrap: 'wrap',
             alignItems: 'center',
           }}
         >
           <span
+            className="meta"
             style={{
               border: '1px solid var(--border-hover)',
               padding: '0.1em 0.55em',
               borderRadius: 999,
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              fontSize: 11,
             }}
           >
             {PAGE_TYPE_LABELS[page.page_type] ?? page.page_type}
           </span>
           {page.category && (
             <span
+              className="meta"
               style={{
                 background: 'var(--bg-card)',
                 border: '1px solid var(--border)',
                 padding: '0.1em 0.55em',
                 borderRadius: 4,
-                fontSize: 12,
               }}
             >
               {page.category}
@@ -149,12 +147,11 @@ export default async function WikiPage({ params }: PageProps) {
       )}
 
       <footer
+        className="meta"
         style={{
           marginTop: '3rem',
           paddingTop: '1.5rem',
           borderTop: '1px solid var(--border)',
-          color: 'var(--fg-muted)',
-          fontSize: 12,
         }}
       >
         {provRow && (

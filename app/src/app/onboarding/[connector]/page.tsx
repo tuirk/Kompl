@@ -18,10 +18,17 @@
 
 import { type ComponentType, Suspense, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import type { AppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 
 import { useToast } from '../../../components/Toast';
 import TwitterConnector from './twitter-connector';
+import AppleNotesConnector from './apple-notes-connector';
+import {
+  type ConnectorProps,
+  navigateNext,
+  navigateBack,
+  BTN_PRIMARY, BTN_PRIMARY_DISABLED, BTN_GHOST,
+  BottomNav,
+} from './_shared';
 
 const CONNECTOR_LABELS: Record<string, string> = {
   url: 'URLs',
@@ -32,6 +39,7 @@ const CONNECTOR_LABELS: Record<string, string> = {
   twitter: 'Twitter / X Bookmarks',
   upnote: 'Upnote',
   'iphone-notes': 'iPhone Notes',
+  'apple-notes': 'Apple Notes',
 };
 
 const FILE_ACCEPT =
@@ -68,31 +76,6 @@ interface UploadedFile {
   filename: string;
 }
 
-interface ConnectorProps {
-  sessionId: string;
-  connectors: string[];
-  connectorIdx: number;
-  showToast: (msg: string, type?: 'error') => void;
-  mode?: string;
-}
-
-function navigateNext(
-  sessionId: string,
-  connectors: string[],
-  connectorIdx: number,
-  router: AppRouterInstance,
-  mode?: string
-) {
-  const nextIdx = connectorIdx + 1;
-  const modeParam = mode === 'add' ? '&mode=add' : '';
-  if (nextIdx >= connectors.length) {
-    router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
-  } else {
-    sessionStorage.setItem('kompl_connector_idx', String(nextIdx));
-    router.push(`/onboarding/${connectors[nextIdx]}?session_id=${encodeURIComponent(sessionId)}${modeParam}`);
-  }
-}
-
 // ── Shared sub-components ─────────────────────────────────────────────────────
 
 function SummaryCard({ result }: { result: CollectResult }) {
@@ -121,64 +104,6 @@ function SummaryCard({ result }: { result: CollectResult }) {
           Failed sources were skipped. You can add them again later.
         </p>
       )}
-    </div>
-  );
-}
-
-function BottomNav({
-  phase,
-  hasInput,
-  onIngest,
-  onSkip,
-  onContinue,
-  onBack,
-}: {
-  phase: 'idle' | 'loading' | 'done';
-  hasInput: boolean;
-  onIngest: () => void;
-  onSkip: () => void;
-  onContinue: () => void;
-  onBack: () => void;
-}) {
-  return (
-    <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-      <button
-        onClick={onBack}
-        style={{ background: 'none', border: 'none', color: 'var(--fg-muted)', cursor: 'pointer', padding: 0 }}
-      >
-        ← Back
-      </button>
-
-      <div style={{ display: 'flex', gap: '0.75rem' }}>
-        {phase !== 'done' && (
-          <button
-            onClick={onSkip}
-            disabled={phase === 'loading'}
-            style={{
-              background: 'none',
-              border: '1px solid var(--border)',
-              color: 'var(--fg-muted)',
-              cursor: 'pointer',
-              padding: '0.5rem 1.1rem',
-              borderRadius: 6,
-            }}
-          >
-            Skip for now
-          </button>
-        )}
-
-        {phase === 'idle' && (
-          <button onClick={onIngest} disabled={!hasInput} style={{ padding: '0.5rem 1.3rem' }}>
-            Ingest &amp; continue →
-          </button>
-        )}
-
-        {phase === 'done' && (
-          <button onClick={onContinue} style={{ padding: '0.5rem 1.3rem' }}>
-            Continue →
-          </button>
-        )}
-      </div>
     </div>
   );
 }
@@ -225,36 +150,73 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: 
 
   return (
     <>
-      <header style={{ marginBottom: '1.5rem' }}>
-        <h1 style={{ margin: 0, fontSize: '1.8rem' }}>🔗 Add URLs</h1>
-        <p style={{ color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
-          Paste any links — articles, blogs, YouTube videos. One URL per line.
-        </p>
-      </header>
+      {phase === 'done' && result && <SummaryCard result={result} />}
 
       {phase !== 'done' && (
         <>
-          <textarea
-            rows={10}
-            placeholder={`https://paulgraham.com/read.html\nhttps://www.youtube.com/watch?v=dQw4w9WgXcQ`}
-            value={urlInput}
-            onChange={e => setUrlInput(e.target.value)}
-            disabled={phase === 'loading'}
-            style={{ width: '100%', resize: 'vertical', fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13, boxSizing: 'border-box' }}
-          />
-          <p style={{ fontSize: '0.85rem', color: 'var(--fg-dim)', marginTop: '0.4rem' }}>
-            YouTube videos are supported — transcripts extracted automatically when available.
-          </p>
+          {phase === 'loading' ? (
+            <div style={{
+              padding: '2rem 0', fontFamily: 'var(--font-mono)', fontSize: 12,
+              textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--fg-muted)',
+            }}>
+              Processing {urls.length} URL{urls.length !== 1 ? 's' : ''}…
+            </div>
+          ) : (
+            <div style={{ position: 'relative', background: 'var(--bg-card)', padding: 32, isolation: 'isolate' }}>
+              {/* Top-right ghost badge */}
+              <span style={{
+                position: 'absolute', top: 16, right: 16,
+                fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '1.8px',
+                textTransform: 'uppercase', color: 'rgba(137, 240, 203, 0.3)',
+              }}>URL IMPORT</span>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {/* Label row */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{
+                    fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 10,
+                    letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--accent)',
+                  }}>URLS</span>
+                  <span style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
+                    textTransform: 'uppercase', color: 'var(--fg-dim)', opacity: 0.5,
+                  }}>
+                    {urls.length > 0 ? `${urls.length} URL${urls.length !== 1 ? 's' : ''} detected` : 'one per line'}
+                  </span>
+                </div>
+
+                {/* Textarea wrapper */}
+                <div style={{ position: 'relative' }}>
+                  <textarea
+                    className="connector-textarea"
+                    placeholder={`https://paulgraham.com/read.html\nhttps://www.youtube.com/watch?v=dQw4w9WgXcQ`}
+                    value={urlInput}
+                    onChange={e => setUrlInput(e.target.value)}
+                    style={{ height: 192, padding: '16px 16px 116px', fontFamily: 'var(--font-mono)', fontSize: 14, width: '100%', boxSizing: 'border-box' }}
+                  />
+                  {/* Paste icon — decorative, bottom-right */}
+                  <svg
+                    width="32" height="32" viewBox="0 0 32 32" fill="none"
+                    style={{ position: 'absolute', bottom: 16, right: 16, opacity: 0.2, pointerEvents: 'none' }}
+                  >
+                    <rect x="8" y="4" width="16" height="4" rx="1" stroke="white" strokeWidth="1.5"/>
+                    <rect x="4" y="8" width="24" height="20" rx="2" stroke="white" strokeWidth="1.5"/>
+                    <path d="M10 16H22M10 21H18" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                  </svg>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Hint row */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+            <div style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: '50%', flexShrink: 0 }} />
+            <span style={{ fontFamily: 'var(--font-heading)', fontSize: 12, color: 'var(--fg-dim)' }}>
+              YouTube videos are supported — transcripts extracted automatically when available.
+            </span>
+          </div>
         </>
       )}
-
-      {phase === 'loading' && (
-        <div style={{ padding: '2rem 0', color: 'var(--fg-muted)' }}>
-          ⏳ Processing {urls.length} URL{urls.length !== 1 ? 's' : ''}…
-        </div>
-      )}
-
-      {phase === 'done' && result && <SummaryCard result={result} />}
 
       <BottomNav
         phase={phase}
@@ -262,7 +224,7 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: 
         onIngest={handleIngest}
         onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
         onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onBack={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
       />
     </>
   );
@@ -346,81 +308,242 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
 
   return (
     <>
-      <header style={{ marginBottom: '1.5rem' }}>
-        <h1 style={{ margin: 0, fontSize: '1.8rem' }}>📄 Upload Files</h1>
-        <p style={{ color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
-          PDF, DOCX, PPTX, XLSX, HTML, images, audio. Up to 20 files at a time.
-        </p>
-      </header>
+      {/* Hidden file input — must remain */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept={FILE_ACCEPT}
+        style={{ display: 'none' }}
+        onChange={e => addFiles(e.target.files)}
+      />
 
-      {phase !== 'done' && (
+      {phase === 'done' && result ? (
         <>
-          <div
-            onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={e => { e.preventDefault(); setIsDragging(false); addFiles(e.dataTransfer.files); }}
-            onClick={() => fileInputRef.current?.click()}
-            style={{
-              border: `2px dashed ${isDragging ? 'var(--accent)' : 'var(--border)'}`,
-              borderRadius: 8, padding: '2rem', textAlign: 'center', cursor: 'pointer',
-              background: isDragging ? 'var(--bg-card-hover)' : 'var(--bg-card)',
-              color: 'var(--fg-muted)', marginBottom: '1rem',
-            }}
-          >
-            <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>📂</div>
-            <div>Drag files here or <span style={{ color: 'var(--accent)' }}>click to browse</span></div>
-            <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: 'var(--fg-dim)' }}>
-              PDF, DOCX, PPTX, XLSX, TXT, MD, HTML, CSV, images, audio · max 50 MB each
-            </div>
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept={FILE_ACCEPT}
-            style={{ display: 'none' }}
-            onChange={e => addFiles(e.target.files)}
+          <SummaryCard result={result} />
+          <BottomNav
+            phase={phase}
+            hasInput={selectedFiles.length > 0}
+            onIngest={handleIngest}
+            onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+            onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+            onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
           />
+        </>
+      ) : (
+        <>
+          {/* Two-column asymmetric layout */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 408px', gap: 32, alignItems: 'flex-start' }}>
 
-          {selectedFiles.length > 0 && (
-            <div style={{ marginBottom: '1rem' }}>
-              <p style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
-                {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} selected
-                {selectedFiles.length >= 20 && ' (max 20)'}
-              </p>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-                {selectedFiles.map((f, i) => (
-                  <span
-                    key={i}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0.6rem', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 999, fontSize: '0.8rem' }}
-                  >
-                    {f.name.slice(0, 40)}{f.name.length > 40 ? '…' : ''}
-                    <button
-                      onClick={e => { e.stopPropagation(); removeFile(i); }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-dim)', padding: 0, lineHeight: 1, fontSize: '0.9rem' }}
-                    >×</button>
-                  </span>
+            {/* LEFT COL — Drop zone */}
+            <div>
+              <div style={{ background: 'var(--bg-card)', padding: 4 }}>
+                <div
+                  onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={e => { e.preventDefault(); setIsDragging(false); addFiles(e.dataTransfer.files); }}
+                  onClick={() => phase !== 'loading' && fileInputRef.current?.click()}
+                  style={{
+                    background: '#000000',
+                    border: `2px dashed ${isDragging ? 'var(--accent)' : '#47484A'}`,
+                    padding: '88px 48px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 0,
+                    position: 'relative',
+                    isolation: 'isolate',
+                    boxSizing: 'border-box',
+                    minHeight: 400,
+                    cursor: phase === 'loading' ? 'default' : 'pointer',
+                  }}
+                >
+                  {/* Top-left decor */}
+                  <span style={{
+                    position: 'absolute', top: 12, left: 12,
+                    fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.9px',
+                    textTransform: 'uppercase', color: '#47484A',
+                  }}>DROP.ZONE / v2</span>
+
+                  {/* Bottom-right decor */}
+                  <span style={{
+                    position: 'absolute', bottom: 12, right: 12,
+                    fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.9px',
+                    textTransform: 'uppercase', color: '#47484A',
+                  }}>MAX 50 MB / FILE</span>
+
+                  {phase === 'loading' ? (
+                    /* Loading state — drop zone shows processing text */
+                    <p style={{
+                      fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg-dim)',
+                      margin: 0, position: 'relative', zIndex: 1,
+                    }}>
+                      Processing {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''}…
+                    </p>
+                  ) : (
+                    /* Idle state — drop zone content */
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 32, position: 'relative', zIndex: 1 }}>
+                      {/* Icon row */}
+                      <div style={{ display: 'flex', gap: 16 }}>
+                        {/* Document icon */}
+                        <div style={{ width: 64, height: 64, background: 'var(--bg-card-hover)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <svg width="19" height="24" viewBox="0 0 19 24" fill="none">
+                            <path d="M11 1H3C1.9 1 1 1.9 1 3V21C1 22.1 1.9 23 3 23H16C17.1 23 18 22.1 18 21V8L11 1Z" stroke="white" strokeWidth="1.5"/>
+                            <path d="M11 1V8H18" stroke="white" strokeWidth="1.5"/>
+                          </svg>
+                        </div>
+                        {/* Image icon */}
+                        <div style={{ width: 64, height: 64, background: 'var(--bg-card-hover)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <svg width="24" height="19" viewBox="0 0 24 19" fill="none">
+                            <rect x="1" y="1" width="22" height="17" rx="1" stroke="white" strokeWidth="1.5"/>
+                            <circle cx="7" cy="7" r="2" stroke="white" strokeWidth="1.5"/>
+                            <path d="M1 13L8 8L13 12L17 9L23 14" stroke="white" strokeWidth="1.5"/>
+                          </svg>
+                        </div>
+                        {/* Audio/wave icon */}
+                        <div style={{ width: 64, height: 64, background: 'var(--bg-card-hover)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+                            <path d="M11 3V19M7 6V16M3 9V13M15 6V16M19 9V13" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                          </svg>
+                        </div>
+                      </div>
+
+                      {/* Heading */}
+                      <h2 style={{
+                        fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 20,
+                        letterSpacing: '-0.5px', textTransform: 'uppercase',
+                        color: 'var(--fg)', textAlign: 'center', margin: 0,
+                      }}>Drop Files Here</h2>
+
+                      {/* Subtitle */}
+                      <p style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.6px',
+                        textTransform: 'uppercase', color: 'var(--fg-dim)',
+                        textAlign: 'center', margin: 0,
+                      }}>PDF · Markdown · Word · Audio</p>
+
+                      {/* Browse button */}
+                      <button
+                        onClick={e => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                        style={{
+                          background: 'var(--accent)', color: 'var(--accent-text)',
+                          padding: '12px 32px', border: 'none', cursor: 'pointer',
+                          fontFamily: 'var(--font-heading)', fontWeight: 700,
+                          fontSize: 12, letterSpacing: '1.2px', textTransform: 'uppercase',
+                        }}
+                      >Browse Files</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* File count below drop zone */}
+              {selectedFiles.length > 0 && (
+                <p style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
+                  textTransform: 'uppercase', color: 'var(--accent)', marginTop: 8,
+                }}>
+                  {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} selected{selectedFiles.length >= 20 ? ' (max 20)' : ''}
+                </p>
+              )}
+            </div>
+
+            {/* RIGHT COL — Queue panel */}
+            <div style={{
+              background: 'var(--bg-card-hover)', padding: 24,
+              display: 'flex', flexDirection: 'column', gap: 0,
+              justifyContent: 'space-between', height: '100%',
+            }}>
+              {/* Header row */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '2px',
+                  textTransform: 'uppercase', color: 'var(--accent)',
+                }}>INGESTION QUEUE</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#757578' }}>
+                  {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+
+              {/* File list */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: 1 }}>
+                {selectedFiles.map((f, i) => {
+                  const ext = f.name.includes('.') ? f.name.split('.').pop()?.toUpperCase() ?? '' : '';
+                  const displayName = f.name.length > 20 ? f.name.slice(0, 20) + '…' : f.name;
+                  return (
+                    <div key={i} style={{
+                      background: 'var(--bg-card)', borderLeft: '2px solid var(--accent)',
+                      padding: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                        <div style={{ width: 18, height: 18, background: 'var(--accent)', flexShrink: 0 }} />
+                        <div>
+                          <div style={{
+                            fontFamily: 'var(--font-heading)', fontWeight: 500, fontSize: 14,
+                            letterSpacing: '-0.35px', color: 'var(--fg)',
+                          }}>{displayName}</div>
+                          <div style={{
+                            fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase',
+                            color: '#757578',
+                          }}>{ext}</div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={e => { e.stopPropagation(); removeFile(i); }}
+                        style={{
+                          background: 'none', border: 'none', cursor: 'pointer',
+                          color: '#757578', fontSize: 13, padding: 0, lineHeight: 1,
+                        }}
+                      >×</button>
+                    </div>
+                  );
+                })}
+
+                {/* Empty slot rows to fill space when fewer than 3 files */}
+                {Array.from({ length: Math.max(0, 3 - selectedFiles.length) }).map((_, i) => (
+                  <div key={`empty-${i}`} style={{
+                    background: '#000000', opacity: 0.3,
+                    border: '1px solid rgba(71,72,74,0.1)',
+                    padding: 16, display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', height: 64, boxSizing: 'border-box',
+                  }}>
+                    <span style={{
+                      fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
+                      textTransform: 'uppercase', color: '#757578',
+                    }}>WAITING FOR FILES</span>
+                  </div>
                 ))}
               </div>
+
+              {/* Hint box */}
+              <div style={{ marginTop: 32, background: 'rgba(74,178,144,0.1)', border: '1px solid rgba(137,240,203,0.2)', padding: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                  <div style={{
+                    width: 11, height: 11, background: 'var(--accent)',
+                    borderRadius: '50%', flexShrink: 0, marginTop: 2,
+                  }} />
+                  <span style={{
+                    fontFamily: 'var(--font-body)', fontSize: 11, letterSpacing: '0.275px',
+                    textTransform: 'uppercase', color: '#7BE2BD',
+                  }}>
+                    Max 50 MB per file · PDF, DOCX, PPTX, XLSX, TXT, MD, HTML, CSV, images, audio supported
+                  </span>
+                </div>
+              </div>
             </div>
-          )}
+          </div>
+
+          <BottomNav
+            phase={phase}
+            hasInput={selectedFiles.length > 0}
+            onIngest={handleIngest}
+            onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+            onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+            onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
+          />
         </>
       )}
-
-      {phase === 'loading' && (
-        <div style={{ padding: '2rem 0', color: 'var(--fg-muted)' }}>⏳ {loadingMsg}</div>
-      )}
-
-      {phase === 'done' && result && <SummaryCard result={result} />}
-
-      <BottomNav
-        phase={phase}
-        hasInput={selectedFiles.length > 0}
-        onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onBack={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)}
-      />
     </>
   );
 }
@@ -502,13 +625,6 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast, mo
 
   return (
     <>
-      <header style={{ marginBottom: '1.5rem' }}>
-        <h1 style={{ margin: 0, fontSize: '1.8rem' }}>🔖 Browser Bookmarks</h1>
-        <p style={{ color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
-          Export your bookmarks from Chrome, Firefox, or Safari as an HTML file, then upload it here.
-        </p>
-      </header>
-
       {phase !== 'done' && (
         <>
           <div
@@ -567,7 +683,7 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast, mo
         onIngest={handleIngest}
         onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
         onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onBack={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
       />
     </>
   );
@@ -636,13 +752,6 @@ function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast, mode 
 
   return (
     <>
-      <header style={{ marginBottom: '1.5rem' }}>
-        <h1 style={{ margin: 0, fontSize: '1.8rem' }}>📔 Upnote Export</h1>
-        <p style={{ color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
-          Export your notes from Upnote as markdown files, then upload them here.
-        </p>
-      </header>
-
       {phase !== 'done' && (
         <>
           <div
@@ -710,11 +819,22 @@ function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast, mode 
         onIngest={handleIngest}
         onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
         onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
-        onBack={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
       />
     </>
   );
 }
+
+// ── Connector metadata (title + subtitle rendered by the page shell) ──────────
+
+const CONNECTOR_META: Record<string, { title: string; subtitle: string }> = {
+  url:           { title: 'Add URLs',          subtitle: 'Paste web pages, articles, or YouTube links — one per line.' },
+  'file-upload': { title: 'Upload Files',      subtitle: 'PDF, Markdown, Word, Excel, audio — all formats supported.' },
+  bookmarks:     { title: 'Browser Bookmarks', subtitle: 'Export your bookmarks from Chrome, Firefox, or Safari.' },
+  twitter:       { title: 'Twitter / X',       subtitle: 'Upload your exported Twitter bookmarks file.' },
+  upnote:        { title: 'Upnote',            subtitle: 'Export your notes from Upnote and upload as Markdown.' },
+  'apple-notes': { title: 'Apple Notes',       subtitle: 'Export and upload your Apple Notes as files.' },
+};
 
 // ── Dispatch map ──────────────────────────────────────────────────────────────
 
@@ -724,6 +844,7 @@ const CONNECTOR_COMPONENTS: Record<string, ComponentType<ConnectorProps>> = {
   'bookmarks': BookmarksConnector,
   'twitter': TwitterConnector,
   'upnote': UpnoteConnector,
+  'apple-notes': AppleNotesConnector,
 };
 
 // ── Page shell ────────────────────────────────────────────────────────────────
@@ -751,39 +872,74 @@ function ConnectorPageInner() {
     setConnectorIdx(idx);
   }, [urlSessionId]);
 
-  const progressLabel =
-    connectors.length > 0 && connectorIdx < connectors.length
-      ? `Step ${connectorIdx + 1} of ${connectors.length}: ${CONNECTOR_LABELS[connector] ?? connector}`
-      : null;
-
   const Component = CONNECTOR_COMPONENTS[connector];
+  const meta = CONNECTOR_META[connector];
+  const hasProgress = connectors.length > 0 && connectorIdx < connectors.length;
 
   if (!Component) {
     return (
-      <main style={{ maxWidth: 640, margin: '8rem auto', padding: '0 1.5rem', textAlign: 'center' }}>
-        <p style={{ fontSize: '2rem', marginBottom: '1rem' }}>🚧</p>
-        <h2 style={{ marginBottom: '0.5rem' }}>{CONNECTOR_LABELS[connector] ?? connector}</h2>
-        <p style={{ color: 'var(--fg-muted)' }}>This connector is coming soon.</p>
-        <button onClick={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)} style={{ marginTop: '2rem' }}>
-          ← Back to connector selection
+      <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 2.5rem' }}>
+        <h2 style={{ fontFamily: 'var(--font-heading)', color: 'var(--fg-dim)', marginBottom: '0.5rem' }}>
+          {CONNECTOR_LABELS[connector] ?? connector}
+        </h2>
+        <p style={{ color: 'var(--fg-muted)', fontFamily: 'var(--font-body)', fontSize: 13 }}>This connector is coming soon.</p>
+        <button
+          onClick={() => router.push(`/onboarding${mode === 'add' ? '?mode=add' : ''}`)}
+          style={{ marginTop: '2rem', fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+        >
+          ← Back
         </button>
       </main>
     );
   }
 
   return (
-    <main style={{ maxWidth: 760, margin: '0 auto', padding: '3.5rem 1.5rem 5rem' }}>
-      {progressLabel && (
-        <div style={{ marginBottom: '2rem' }}>
-          <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.6rem' }}>
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 2.5rem' }}>
+
+      {/* Progress tracker */}
+      {hasProgress && (
+        <div style={{ paddingBottom: 48 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+              letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--accent)',
+            }}>
+              {CONNECTOR_LABELS[connector] ?? connector}
+            </span>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+              letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)',
+            }}>
+              Step {connectorIdx + 1} of {connectors.length}
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'row', gap: 8 }}>
             {connectors.map((_, i) => (
-              <div
-                key={i}
-                style={{ height: 4, flex: 1, borderRadius: 2, background: i <= connectorIdx ? 'var(--accent)' : 'var(--border)' }}
-              />
+              <div key={i} style={{
+                flex: 1, height: 4,
+                background: i <= connectorIdx ? 'var(--accent)' : '#242629',
+              }} />
             ))}
           </div>
-          <span style={{ fontSize: '0.85rem', color: 'var(--fg-muted)' }}>{progressLabel}</span>
+        </div>
+      )}
+
+      {/* Connector header — left accent border + title + subtitle */}
+      {meta && (
+        <div style={{ borderLeft: '2px solid var(--accent)', paddingLeft: 24, marginBottom: 32 }}>
+          <h1 style={{
+            fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 48,
+            lineHeight: '48px', letterSpacing: '-2.4px', color: 'var(--fg)', margin: 0,
+          }}>
+            {meta.title}
+          </h1>
+          <p style={{
+            fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+            letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)',
+            margin: '8px 0 0',
+          }}>
+            {meta.subtitle}
+          </p>
         </div>
       )}
 

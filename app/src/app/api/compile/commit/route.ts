@@ -51,6 +51,7 @@ import {
   markCompileFailed,
   markCompileSuccess,
   markSourcesActive,
+  getCompileProgress,
   getPagePlansByStatus,
   getPageTitleMap,
   updatePlanStatus,
@@ -267,6 +268,10 @@ async function expandEntities(
 
 async function commitSession(session_id: string): Promise<Response> {
   const db = getDb();
+  const progress = getCompileProgress(session_id);
+  if (!progress) {
+    return NextResponse.json({ error: 'session_not_found' }, { status: 404 });
+  }
   const plans = getPagePlansByStatus(session_id, 'crossreffed');
 
   if (plans.length === 0) {
@@ -281,6 +286,12 @@ async function commitSession(session_id: string): Promise<Response> {
   let pagesCreated = 0;
   let pagesUpdated = 0;
   const allSourceIds = new Set<string>();
+
+  // Build source title map once before the loop — used to enrich page_compiled events.
+  const sourceTitleMap = new Map<string, string>(
+    (db.prepare('SELECT source_id, title FROM sources').all() as Array<{ source_id: string; title: string }>)
+      .map((r) => [r.source_id, r.title])
+  );
 
   for (const plan of plans) {
     const sourceIds: string[] = JSON.parse(plan.source_ids);
@@ -395,7 +406,14 @@ async function commitSession(session_id: string): Promise<Response> {
         insertActivity({
           action_type: 'page_compiled',
           source_id: sourceIds[0] ?? null,
-          details: { page_id, title: plan.title, page_type: plan.page_type, session_id },
+          details: {
+            page_id,
+            title: plan.title,
+            page_type: plan.page_type,
+            session_id,
+            source_title: sourceTitleMap.get(sourceIds[0] ?? '') ?? null,
+            action: plan.action,
+          },
         });
       })();
 
@@ -629,9 +647,16 @@ export async function POST(request: Request) {
       markCompileSuccess(source_id, page_id);
 
       insertActivity({
-        action_type: 'source_compiled',
+        action_type: 'page_compiled',
         source_id,
-        details: { page_id, title: compileResult.title },
+        details: {
+          page_id,
+          title: compileResult.title,
+          page_type: compileResult.page_type,
+          source_title: source.title,
+          action: 'create',
+          session_id: null,
+        },
       });
     });
     txn();
