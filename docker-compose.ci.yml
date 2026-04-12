@@ -23,3 +23,17 @@ services:
         - type=gha,scope=nlp-service
       cache_to:
         - type=gha,mode=max,scope=nlp-service
+  # Stub out ollama in CI: ollama/ollama:latest (~8GB) + llama3.2:3b model pull
+  # consume the entire GHA runner disk before nlp-service can build.
+  # The integration test does not exercise the Ollama chat path, so a no-op
+  # alpine container satisfies the depends_on condition_started check and
+  # keeps disk usage near zero.
+  ollama:
+    image: alpine:latest
+    entrypoint: ["/bin/sh", "-c", "sleep infinity"]
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
