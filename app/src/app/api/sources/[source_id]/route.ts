@@ -26,6 +26,7 @@ import {
   setSourceStatus,
   insertActivity,
 } from '../../../../lib/db';
+import { recompilePage } from '../../../../lib/recompile';
 
 interface RouteContext {
   params: Promise<{ source_id: string }>;
@@ -105,20 +106,54 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: 'not_found' }, { status: 404 });
   }
 
-  // Cascade: find affected pages, remove provenance, archive orphans or decrement count.
+  // Cascade: find affected pages, remove provenance, then archive orphans or
+  // recompile pages with remaining sources.
   const affectedPages = getPagesBySourceId(source_id);
+
+  // Remove provenance FIRST so recompilePage sees only remaining sources.
   removeProvenanceForSource(source_id);
+
+  const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
+  let recompiled = 0;
+  let recompileFailed = 0;
 
   for (const page of affectedPages) {
     if (page.source_count <= 1) {
+      // No remaining sources — archive.
       archivePage(page.page_id);
       insertActivity({
         action_type: 'page_archived',
         source_id: null,
         details: { page_id: page.page_id, reason: 'source_deleted' },
       });
+
+      // Remove from vector store (fire-and-forget).
+      void fetch(`${NLP_SERVICE_URL}/vectors/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ page_id: page.page_id }),
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => {});
     } else {
-      decrementPageSourceCount(page.page_id);
+      // Has remaining sources — re-draft from those sources.
+      try {
+        await recompilePage(page.page_id, source_id);
+        recompiled++;
+        insertActivity({
+          action_type: 'page_recompiled',
+          source_id: null,
+          details: { page_id: page.page_id, reason: 'source_deleted', removed_source_id: source_id },
+        });
+      } catch (err) {
+        // Recompile failed — fall back to decrement so the delete still completes.
+        recompileFailed++;
+        decrementPageSourceCount(page.page_id);
+        insertActivity({
+          action_type: 'page_recompile_failed',
+          source_id: null,
+          details: { page_id: page.page_id, removed_source_id: source_id, error: String(err) },
+        });
+      }
     }
   }
 
@@ -127,23 +162,14 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     void fsPromises.unlink(filePath).catch(() => undefined);
   }
 
-  // Fire-and-forget: delete from vector store (non-fatal).
-  const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
-  for (const page of affectedPages) {
-    if (page.source_count <= 1) {
-      void fetch(`${NLP_SERVICE_URL}/vectors/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ page_id: page.page_id }),
-        signal: AbortSignal.timeout(10_000),
-      }).catch(() => {});
-    }
-  }
-
   insertActivity({
     action_type: 'source_deleted',
     source_id,
-    details: { pages_affected: affectedPages.length },
+    details: {
+      pages_affected: affectedPages.length,
+      pages_recompiled: recompiled,
+      pages_recompile_failed: recompileFailed,
+    },
   });
 
   return new NextResponse(null, { status: 204 });

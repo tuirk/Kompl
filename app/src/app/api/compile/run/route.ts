@@ -31,6 +31,7 @@ import {
   failCompileProgress,
   getSourcesBySession,
   insertActivity,
+  markStaleSessionsFailed,
 } from '@/lib/db';
 
 const APP_URL = process.env.APP_URL ?? 'http://app:3000';
@@ -220,7 +221,17 @@ export async function POST(request: Request) {
 
   const progress = getCompileProgress(session_id);
   if (!progress) return NextResponse.json({ error: 'no_progress_record' }, { status: 404 });
-  if (progress.status === 'completed') return NextResponse.json({ session_id, status: 'already_completed' });
+  if (progress.status === 'completed') return NextResponse.json({ session_id, status: 'already_completed' }, { status: 409 });
+
+  if (progress.status === 'running') {
+    // Stale detection: if it's been running > 30 min the pipeline is dead — clean it up inline
+    markStaleSessionsFailed(30);
+    const refreshed = getCompileProgress(session_id);
+    if (refreshed?.status === 'running') {
+      return NextResponse.json({ error: 'already_running' }, { status: 409 });
+    }
+    // Fell through: it was stale and is now 'failed' — fall through to start fresh
+  }
 
   // Fire and forget — return immediately so n8n doesn't timeout
   runCompilePipeline(session_id).catch((err: unknown) => {

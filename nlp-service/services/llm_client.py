@@ -366,86 +366,6 @@ def lint_scan(pages: list[str]) -> LintScanResponse:
 
 
 # ---------------------------------------------------------------------------
-# Entity stub compiler — lightweight page creation (commit 12/Tier-2 bridge)
-# ---------------------------------------------------------------------------
-
-class EntityStubResponse(BaseModel):
-    """Minimal wiki stub for a single entity/concept.
-
-    No extra='forbid' — google-genai rejects additionalProperties=false
-    in response_schema (same reason as CompileResponse / LintScanResponse).
-    """
-    summary: str
-    body: str
-
-
-_ENTITY_STUB_SYSTEM_PROMPT = """\
-You are a wiki editor writing a stub page for a single named entity or concept.
-Return JSON with exactly two fields:
-  summary — 1 to 2 factual sentences about this entity. Do NOT hallucinate.
-             If you are uncertain, write a minimal placeholder like
-             "{{name}} is a notable entity in the domain of {{type}}."
-  body    — 1 short paragraph of plain markdown (no headings, no bullet lists).
-             Must be factual. Cite nothing you do not know for certain.
-"""
-
-
-def compile_entity_stub(name: str, entity_type: str) -> EntityStubResponse:
-    """Write a minimal stub page for an entity/concept extracted during compile.
-
-    Uses max_output_tokens=1024 and thinking_budget=0 (no chain-of-thought
-    needed for a 2-sentence stub) to reduce token spend vs compile_source.
-    Same rate limiter bucket and daily cost ceiling apply.
-
-    Raises:
-        LLMRateLimitedError  — bucket exhausted (caller should fall back to empty stub)
-        CostCeilingError     — daily $ cap exceeded
-        LLMCompileError      — response parse failed
-    """
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-
-    prompt = (
-        f"Entity name: {name}\n"
-        f"Entity type: {entity_type}\n"
-        "Write a brief wiki stub (summary + body) as instructed."
-    )
-
-    client = get_client()
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=_ENTITY_STUB_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=EntityStubResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-                max_output_tokens=1024,
-            ),
-        )
-    except Exception as e:
-        raise LLMCompileError(f"entity_stub_llm_failed: {e}") from e
-
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
-
-    raw_text = response.text
-    if not raw_text:
-        raise LLMCompileError("entity_stub_error: empty response text")
-
-    try:
-        return EntityStubResponse.model_validate_json(raw_text)
-    except Exception as e:
-        raise LLMCompileError(f"entity_stub_parse_failed: {e}") from e
-
-
-# ---------------------------------------------------------------------------
 # Source extraction — structured knowledge extraction (Part 2a)
 # ---------------------------------------------------------------------------
 
@@ -585,7 +505,7 @@ def extract_source(
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=LLMExtractionResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=512),
                 max_output_tokens=8192,
                 temperature=0.0,
             ),
@@ -688,7 +608,7 @@ def disambiguate_entities(pairs: list[dict[str, Any]]) -> DisambiguationResponse
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=DisambiguationResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=512),
                 max_output_tokens=2048,
                 temperature=0.0,
             ),
@@ -721,7 +641,7 @@ _DRAFT_PAGE_PROMPTS: dict[str, str] = {
 Write a source summary wiki page for the following source document.
 
 The page should include:
-- YAML frontmatter: title, page_type: source-summary, sources (list with source_id and title), last_updated
+- YAML frontmatter: title, page_type: source-summary, summary (1-2 sentences describing what this source is about), sources (list with source_id and title), last_updated
 - ## Key Takeaways (3-5 bullet points)
 - ## Summary (2-4 paragraphs)
 - ## Entities Mentioned (bullet list of key people, companies, tools)
@@ -757,7 +677,7 @@ Synthesize across sources. Attribute specific claims to their source.""",
 Write a comparison wiki page comparing two entities or concepts.
 
 The page should include:
-- YAML frontmatter: title, page_type: comparison, sources (list), last_updated
+- YAML frontmatter: title, page_type: comparison, summary (1-2 sentences describing what is being compared), sources (list), last_updated
 - A brief intro paragraph explaining what is being compared and why
 - A structured comparison (use a table or parallel sections)
 - ## Summary: which is better suited for different use cases (if applicable)
@@ -768,7 +688,7 @@ Be objective and factual.""",
 Write an overview wiki page summarizing all pages in a category.
 
 The page should include:
-- YAML frontmatter: title, page_type: overview, category, sources (list), last_updated
+- YAML frontmatter: title, page_type: overview, category, summary (1-2 sentences describing this category), sources (list), last_updated
 - A high-level summary paragraph of the category
 - Brief descriptions of each entity/concept in the category (with [[wikilink]] references)
 - ## Common Themes
@@ -851,7 +771,7 @@ def draft_page(
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 max_output_tokens=16384,
                 temperature=0.3,
             ),
@@ -1323,8 +1243,11 @@ def _synthesize_with_ollama(
         f"Question: {question}"
     )
 
-    if len(user_content) > _GEMINI_INPUT_TOKEN_CAP:
-        user_content = user_content[:_GEMINI_INPUT_TOKEN_CAP]
+    # Ollama (3b CPU): cap input aggressively — 3b models can't reason over long context
+    # and processing 128k chars is slow on CPU. 8k chars ≈ 2-3 wiki pages, enough for grounded answers.
+    _OLLAMA_INPUT_CAP = 8000
+    if len(user_content) > _OLLAMA_INPUT_CAP:
+        user_content = user_content[:_OLLAMA_INPUT_CAP]
 
     # Extend the system prompt with explicit JSON schema instructions.
     # json_object mode guarantees parseable JSON but NOT field presence.
@@ -1345,7 +1268,8 @@ def _synthesize_with_ollama(
             ],
             response_format={"type": "json_object"},
             temperature=0.2,
-            max_tokens=4096,
+            max_tokens=512,
+            extra_body={"options": {"num_ctx": 1024}},
         )
     except Exception as e:
         err_str = str(e).lower()
@@ -1454,7 +1378,7 @@ def synthesize_answer(
                 system_instruction=_SYNTHESIZE_SYSTEM_PROMPT,
                 response_mime_type="application/json",
                 response_schema=SynthesizeResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=512),
                 max_output_tokens=4096,
                 temperature=0.2,
             ),
@@ -1476,3 +1400,70 @@ def synthesize_answer(
         return SynthesizeResponse.model_validate_json(raw_text)
     except Exception as e:
         raise LLMCompileError(f"synthesize_parse_failed: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Weekly Digest — summary generation
+# ---------------------------------------------------------------------------
+
+
+def generate_digest(data: Any) -> str:
+    """Generate a brief weekly digest summary via Gemini 2.5 Flash.
+
+    Args:
+        data: Object with fields matching DigestRequest in pipeline.py
+              (sources_ingested, pages_created, pages_updated, new_page_titles,
+               updated_page_titles, drafts_created, drafts_approved).
+
+    Returns plain-text summary string under ~150 words.
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted
+        CostCeilingError     — daily $ cap exceeded
+        LLMCompileError      — empty or failed response
+    """
+    limiter = _get_limiter()
+    acquired = limiter.try_acquire("digest")
+    if not acquired:
+        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+
+    new_titles = ", ".join(data.new_page_titles[:10]) if data.new_page_titles else "none"
+    updated_titles = ", ".join(data.updated_page_titles[:10]) if data.updated_page_titles else "none"
+
+    prompt = f"""Write a brief weekly digest for a personal knowledge wiki. Be concise, warm, and highlight what's interesting.
+
+This week:
+- {data.sources_ingested} new source{"s" if data.sources_ingested != 1 else ""} ingested
+- {data.pages_created} new page{"s" if data.pages_created != 1 else ""} created: {new_titles}
+- {data.pages_updated} page{"s" if data.pages_updated != 1 else ""} updated: {updated_titles}
+- {data.drafts_created} draft{"s" if data.drafts_created != 1 else ""} created, {data.drafts_approved} approved
+
+Summarize what grew this week and what's notable. If nothing happened, say so briefly.
+Suggest 1-2 areas that could use more sources based on the page titles.
+Keep it under 150 words. No markdown formatting — plain text with line breaks."""
+
+    client = get_client()
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                max_output_tokens=2048,
+                temperature=0.3,
+            ),
+        )
+    except Exception as e:
+        raise LLMCompileError(f"digest_llm_failed: {e}") from e
+
+    usage: Any = response.usage_metadata
+    if usage is not None:
+        input_tok = getattr(usage, "prompt_token_count", 0) or 0
+        output_tok = getattr(usage, "candidates_token_count", 0) or 0
+        _record_spend(int(input_tok), int(output_tok))
+
+    raw_text = response.text
+    if not raw_text:
+        raise LLMCompileError("digest_error: empty response text")
+
+    return raw_text.strip()

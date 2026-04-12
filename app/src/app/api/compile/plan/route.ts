@@ -22,6 +22,7 @@ import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 
 import {
+  clearStagedPagePlans,
   getDb,
   getExtractionsBySession,
   getPageByTitle,
@@ -145,6 +146,11 @@ export async function POST(request: Request) {
     );
   }
 
+  // Clear any stale page_plans from a prior failed run before rebuilding.
+  // Makes this step idempotent on retry — draft step only sees plans from
+  // the current run.
+  clearStagedPagePlans(session_id);
+
   // Get extractions for concepts and relationships
   const extractions = getExtractionsBySession(session_id);
   const extractionMap = new Map<string, { concepts: Array<{ name: string }>; relationships: Array<{ from_entity: string; to: string; type: string }> }>();
@@ -190,9 +196,26 @@ export async function POST(request: Request) {
     if (!entity.canonical || entity.source_ids.length === 0) continue;
     if (entity.source_ids.length < entityThreshold) continue;
 
+    const canonicalKey = entity.canonical.toLowerCase();
+
+    // Within-session dedup: same canonical name seen again → merge source_ids
+    // instead of creating a second plan entry. Mirrors the concept loop pattern.
+    if (entityPlansByCanonical.has(canonicalKey)) {
+      const existingPlanId = entityPlansByCanonical.get(canonicalKey)!;
+      const existingPlan = plans.find((p) => p.plan_id === existingPlanId);
+      if (existingPlan) {
+        for (const sid of entity.source_ids) {
+          if (!existingPlan.source_ids.includes(sid)) {
+            existingPlan.source_ids.push(sid);
+          }
+        }
+      }
+      continue;
+    }
+
     const existing = getPageByTitle(entity.canonical);
     const plan_id = randomUUID();
-    entityPlansByCanonical.set(entity.canonical.toLowerCase(), plan_id);
+    entityPlansByCanonical.set(canonicalKey, plan_id);
 
     plans.push({
       plan_id,

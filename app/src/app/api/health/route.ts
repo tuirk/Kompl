@@ -5,6 +5,7 @@ import {
   getPageCount,
   getSchemaVersion,
   listUserTables,
+  markStaleSessionsFailed,
   EXPECTED_TABLES,
 } from '@/lib/db';
 
@@ -17,6 +18,10 @@ import {
  */
 export async function GET() {
   try {
+    // Clean up any sessions left 'running' by a server restart or crash.
+    // This runs on every health probe so stale sessions are fixed automatically on startup.
+    const staleSessionsFixed = markStaleSessionsFailed(30);
+
     const db = getDb();
     const tables = listUserTables();
     const tableCount = tables.length;
@@ -25,7 +30,7 @@ export async function GET() {
 
     const allExpectedPresent = EXPECTED_TABLES.every((t) => tables.includes(t));
 
-    const status = dbWritable && allExpectedPresent && schemaVersion === 11
+    const status = dbWritable && allExpectedPresent && schemaVersion === 12
       ? 'ok'
       : 'degraded';
 
@@ -40,6 +45,7 @@ export async function GET() {
         tables,
         db_path: dbPath(),
         page_count: pageCount,
+        stale_sessions_fixed: staleSessionsFixed,
       },
       { status: status === 'ok' ? 200 : 500 }
     );

@@ -24,7 +24,8 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 
-import { getDb, insertActivity } from '../../../../lib/db';
+import { getDb, insertActivity, insertIngestFailure } from '../../../../lib/db';
+import { regenerateSavedLinksPage } from '../../../../lib/saved-links';
 
 const N8N_URL = process.env.N8N_URL ?? 'http://n8n:5678';
 const N8N_INGEST_WEBHOOK_PATH = '/webhook/ingest';
@@ -123,6 +124,15 @@ export async function POST(request: Request) {
         details: { node: 'next_ingest_url', error },
       });
       failed_urls.push({ url, error });
+      // Persist the URL so it appears on the Saved Links wiki page.
+      // No title or date known at this point — just the URL.
+      insertIngestFailure({
+        failure_id: randomUUID(),
+        source_url: url,
+        source_type: 'url',
+        error,
+      });
+      void regenerateSavedLinksPage().catch(() => {});
     }
   }
 

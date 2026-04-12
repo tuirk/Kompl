@@ -38,9 +38,11 @@ import {
   insertActivity,
   insertSource,
   rawFilePath,
+  resolveIngestFailures,
   sourceExists,
   storeRawMarkdown,
 } from '../../../../lib/db';
+import { regenerateSavedLinksPage } from '../../../../lib/saved-links';
 
 interface StoreRequestMetadata {
   language: string | null;
@@ -179,6 +181,13 @@ export async function POST(request: Request) {
   }
 
   // ---- Phase 3: fire-and-forget ----
+  // If this URL was previously saved as a failed ingest, mark it resolved and
+  // regenerate the Saved Links wiki page so it drops off cleanly.
+  if (validated.source_url) {
+    resolveIngestFailures(validated.source_url, validated.source_id);
+    void regenerateSavedLinksPage().catch(() => {});
+  }
+
   // Trigger compile via n8n webhook. Non-blocking — if n8n is unreachable,
   // log the failure and continue. The compile-drain poller (every 10s) will
   // pick up sources that slipped through here. Belt-and-suspenders.

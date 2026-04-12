@@ -15,7 +15,7 @@
 #
 # Stage state at commit 8:
 #   Stage 0  — REAL (cold start)
-#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=11)
+#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=12)
 #   Stage 4  — REAL (live URL ingest + compile end-to-end, failure-path canary)
 #   Stage 11 — REAL (onboarding API canary)
 #   Stage 12 — REAL (text connector canary)
@@ -181,37 +181,24 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":11'; then
-        echo "  FAIL: schema_version != 11"
+    if ! echo "$response" | grep -q '"schema_version":12'; then
+        echo "  FAIL: schema_version != 12"
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"table_count":13'; then
-        echo "  FAIL: table_count != 13"
+    if ! echo "$response" | grep -q '"table_count":14'; then
+        echo "  FAIL: table_count != 14"
+        record_stage 1 REAL FAIL
+        return 1
+    fi
+    if ! echo "$response" | grep -q '"ingest_failures"'; then
+        echo "  FAIL: ingest_failures table missing from /api/health tables list"
         record_stage 1 REAL FAIL
         return 1
     fi
 
     echo "  PASS"
     record_stage 1 REAL PASS
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-# Stage 2 — Single-writer enforcement canary
-# ---------------------------------------------------------------------------
-stage_2_single_writer_canary() {
-    echo "[STAGE 2] TODO: single-writer enforcement canary (no silent divergence)"
-    record_stage 2 TODO SKIPPED
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-# Stage 3 — Demo seed via HTTP
-# ---------------------------------------------------------------------------
-stage_3_demo_seed_http() {
-    echo "[STAGE 3] TODO: demo seed via HTTP (no sqlite3.connect, vector count == page count)"
-    record_stage 3 TODO SKIPPED
     return 0
 }
 
@@ -494,62 +481,46 @@ stage_4_live_ingest() {
     fi
 
     echo "  canary PASS"
+
+    # -----------------------------------------------------------------------
+    # Sub-test: ingest_failures persistence canary
+    # -----------------------------------------------------------------------
+    # POST a bad URL directly to /api/ingest/url (not via the n8n sync webhook)
+    # so the Next.js path that calls insertIngestFailure is exercised.
+    # We kill n8n reachability by using a non-routable n8n URL via a one-shot
+    # env override — simplest approach without docker network manipulation.
+    # Instead, POST with the stack running normally: n8n will return an error
+    # for an unresolvable URL, but the /api/ingest/url route will still write
+    # the ingest_failed activity row. The insertIngestFailure call fires when
+    # the n8n webhook itself fails, so we use a URL that n8n cannot parse as
+    # valid (same .invalid TLD). The ingest_failed activity row (already
+    # verified above via the sync webhook) proves the error path fires.
+    #
+    # For the insertIngestFailure path specifically: POST directly to
+    # /api/ingest/url and verify a row appears in /api/sources/failures.
+    echo "  ingest_failures canary: POSTing .invalid URL to /api/ingest/url..."
+    local if_canary_response
+    if_canary_response=$(curl -s -X POST \
+        -H "content-type: application/json" \
+        -d '{"urls":["https://this-domain-does-not-exist-kompl-if-canary.invalid"]}' \
+        "http://localhost:3000/api/ingest/url" 2>&1 || echo "")
+    echo "  ingest_failures canary response: $if_canary_response"
+
+    # The route returns 202 for partial success or 502 if all n8n calls failed.
+    # Either way, the insertIngestFailure call must have run. Check via the
+    # /api/sources/failures endpoint.
+    local failures_response
+    failures_response=$(curl -sf "http://localhost:3000/api/sources/failures" 2>/dev/null || echo "")
+    if ! echo "$failures_response" | grep -q 'does-not-exist-kompl-if-canary'; then
+        echo "  FAIL: ingest_failures row not found in /api/sources/failures after failed ingest"
+        echo "  failures_response: $failures_response"
+        record_stage 4 REAL FAIL
+        return 1
+    fi
+    echo "  ingest_failures persistence canary PASS"
+
     echo "  PASS"
     record_stage 4 REAL PASS
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-# Stage 5 — Persistence across restart
-# ---------------------------------------------------------------------------
-stage_5_persistence() {
-    echo "[STAGE 5] TODO: persistence across restart (counts identical after restart)"
-    record_stage 5 TODO SKIPPED
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-# Stage 6 — Chat with citations
-# ---------------------------------------------------------------------------
-stage_6_chat_citations() {
-    echo "[STAGE 6] TODO: chat with citations (5 questions, regression guard for FIX-013)"
-    record_stage 6 TODO SKIPPED
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-# Stage 7 — Wiki rebuild
-# ---------------------------------------------------------------------------
-stage_7_wiki_rebuild() {
-    echo "[STAGE 7] TODO: wiki rebuild (plural directory names, frontmatter present, wikilinks converted)"
-    record_stage 7 TODO SKIPPED
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-# Stage 8 — Version history
-# ---------------------------------------------------------------------------
-stage_8_version_history() {
-    echo "[STAGE 8] TODO: version history (previous_content_path non-null, files differ)"
-    record_stage 8 TODO SKIPPED
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-# Stage 9 — Contract drift canary
-# ---------------------------------------------------------------------------
-stage_9_contract_drift_canary() {
-    echo "[STAGE 9] TODO: contract drift canary (Pydantic rename -> npm run build fails)"
-    record_stage 9 TODO SKIPPED
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-# Stage 10 — Concurrency / rate-limit
-# ---------------------------------------------------------------------------
-stage_10_concurrency() {
-    echo "[STAGE 10] TODO: concurrency / rate-limit (7 parallel ingests, all reach compiled)"
-    record_stage 10 TODO SKIPPED
     return 0
 }
 
@@ -1523,15 +1494,7 @@ main() {
 
     stage_0_cold_start
     stage_1_migration_schema
-    stage_2_single_writer_canary
-    stage_3_demo_seed_http
     stage_4_live_ingest
-    stage_5_persistence
-    stage_6_chat_citations
-    stage_7_wiki_rebuild
-    stage_8_version_history
-    stage_9_contract_drift_canary
-    stage_10_concurrency
     stage_11_onboarding_api
     stage_12_text_connector
     stage_13_twitter_connector
@@ -1549,7 +1512,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All stages 0–20 executed, all passed ==="
+    echo "=== All 13 stages (0, 1, 4, 11–20) executed, all passed ==="
     exit 0
 }
 

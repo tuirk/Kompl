@@ -2,40 +2,65 @@
  * POST /api/wiki/lint-pass
  *
  * The lint engine. Called by n8n lint-wiki.json (Schedule: every 6h + manual webhook).
- * Runs health checks on the wiki and logs results as a 'lint_complete' activity event.
+ * Also callable directly from /settings "Run Now" button.
  *
  * Checks performed:
  *   1. Orphan pages — no inbound page_links rows
  *   2. Stale source-summaries — source_count==1 AND last_updated > 30 days ago
- *   3. Missing entity pages — entity names mentioned on 3+ pages but no entity page
+ *   3. Missing cross-refs — entity names in extractions.ner_output mentioned across
+ *      3+ sources but with no entity page in pages and no alias in aliases
  *   4. Dead provenance — provenance rows referencing deleted sources
+ *   5. Contradiction detection (LLM-assisted, best-effort) via nlp-service
  *
- * Contradiction detection (LLM-assisted) is intentionally deferred to
- * when nlp-service /pipeline/lint-scan is called. This route only does
- * the DB-side checks and logs results.
+ * Scheduled runs (from n8n) respect the lint_enabled setting.
+ * Pass { manual: true } in the request body to bypass that guard.
  *
- * Request: {} (empty body ok — no required fields)
- * Response: {orphan_pages, stale_pages, dead_provenance, run_duration_ms}
+ * Request: {} | { manual?: boolean }
+ * Response: {
+ *   orphan_pages: string[],
+ *   stale_pages: string[],
+ *   missing_cross_refs: Array<{entity_text: string, mention_count: number}>,
+ *   dead_provenance: number,
+ *   contradictions?: ...,
+ *   run_duration_ms: number,
+ *   skipped?: true   ← present when lint_enabled=false and manual≠true
+ * }
  */
 
 import { NextResponse } from 'next/server';
-import { getDb, insertActivity } from '../../../../lib/db';
+import { getDb, insertActivity, getLintEnabled } from '../../../../lib/db';
+import { regenerateSavedLinksPage } from '../../../../lib/saved-links';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
+
+interface MissingCrossRef {
+  entity_text: string;
+  mention_count: number;
+}
 
 interface LintResults {
   orphan_pages: string[];
   stale_pages: string[];
+  missing_cross_refs: MissingCrossRef[];
   dead_provenance: number;
   run_duration_ms: number;
   contradictions?: Array<{ page_a: string; page_b: string; claim: string; severity: string }>;
+  skipped?: true;
 }
 
-export async function POST() {
+export async function POST(request: Request) {
+  const body = await request.json().catch(() => ({})) as { manual?: boolean };
+  const isManual = body.manual === true;
+
+  // Scheduled callers respect the lint_enabled flag; manual trigger always runs.
+  if (!isManual && !getLintEnabled()) {
+    return NextResponse.json({ skipped: true } satisfies Partial<LintResults>);
+  }
+
   const start = Date.now();
   const db = getDb();
 
-  // 1. Orphan pages: pages with no inbound page_links AND no outbound (isolated)
+  // 1. Orphan pages: no inbound OR outbound page_links (completely isolated)
   const orphanRows = db
     .prepare(
       `SELECT page_id FROM pages
@@ -56,7 +81,29 @@ export async function POST() {
     .all() as { page_id: string }[];
   const stale_pages = staleRows.map((r) => r.page_id);
 
-  // 3. Dead provenance: provenance rows whose source_id no longer exists
+  // 3. Missing cross-refs: entity names appearing in 3+ source extractions
+  //    that have no entity page and no alias covering them.
+  //    json_each walks the ner_output.entities array stored in extractions.
+  const crossRefRows = db
+    .prepare(
+      `SELECT json_extract(value, '$.text') AS entity_text,
+              COUNT(DISTINCT e.source_id) AS mention_count
+         FROM extractions e, json_each(json_extract(e.ner_output, '$.entities'))
+        WHERE json_extract(value, '$.text') NOT IN (
+                SELECT title FROM pages WHERE page_type = 'entity'
+              )
+          AND json_extract(value, '$.text') NOT IN (
+                SELECT alias FROM aliases WHERE canonical_page_id IS NOT NULL
+              )
+        GROUP BY entity_text
+       HAVING COUNT(DISTINCT e.source_id) >= 3
+        ORDER BY mention_count DESC
+        LIMIT 50`
+    )
+    .all() as MissingCrossRef[];
+  const missing_cross_refs = crossRefRows;
+
+  // 4. Dead provenance: provenance rows whose source_id no longer exists
   const deadProv = db
     .prepare(
       `SELECT COUNT(*) AS n FROM provenance
@@ -65,10 +112,9 @@ export async function POST() {
     .get() as { n: number };
   const dead_provenance = deadProv.n;
 
-  // 4. Contradiction scan via nlp-service (lightweight, sample up to 10 page pairs)
+  // 5. Contradiction scan via nlp-service (lightweight, sample up to 10 page pairs)
   let contradictions: LintResults['contradictions'] = [];
   try {
-    // Fetch summary pairs from pages that share a category (most likely to contradict)
     const pagePairs = db
       .prepare(
         `SELECT a.page_id AS id_a, a.title AS title_a, a.summary AS summary_a,
@@ -110,23 +156,29 @@ export async function POST() {
   const results: LintResults = {
     orphan_pages,
     stale_pages,
+    missing_cross_refs,
     dead_provenance,
     run_duration_ms,
     contradictions,
   };
 
-  // Log to activity_log (details visible in feed + /wiki)
+  // Log to activity_log — full missing_cross_refs list stored so settings page
+  // can show names + links without a second query.
   insertActivity({
     action_type: 'lint_complete',
     source_id: null,
     details: {
       orphan_pages: orphan_pages.length,
       stale_pages: stale_pages.length,
+      missing_cross_refs,
       dead_provenance,
       contradiction_count: contradictions.length,
       run_duration_ms,
     },
   });
+
+  // Refresh Saved Links wiki page — fire-and-forget, never blocks lint results.
+  void regenerateSavedLinksPage().catch(() => {});
 
   return NextResponse.json(results);
 }

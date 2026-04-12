@@ -10,12 +10,6 @@ Endpoints:
     Best-effort — rate limit / cost ceiling errors return empty results
     rather than HTTP errors, so the lint pass never fails because of LLM budget.
 
-  POST /pipeline/compile-entity-stub  (commit 12/Tier-2 bridge)
-    Lightweight LLM call: write a minimal stub page for a single entity/concept.
-    Called by Phase 3 of /api/compile/commit for each entity extracted during compile.
-    Uses max_output_tokens=1024 and thinking_budget=0 (no chain-of-thought needed).
-    Replaced at commit 10 when the full multi-layer NLP pipeline lands.
-
   POST /pipeline/extract-llm  (Part 2a)
     Gemini 2.5 Flash structured extraction: entities, concepts, claims,
     relationships, contradictions, summary. Called by /api/compile/extract
@@ -35,16 +29,15 @@ from services.llm_client import (
     Contradiction,
     CostCeilingError,
     CrossrefResponse,
-    EntityStubResponse,
     LintScanResponse,
     LLMCompileError,
     LLMExtractionResponse,
     LLMRateLimitedError,
-    compile_entity_stub,
     compile_source,
     crossref_pages,
     draft_page,
     extract_source,
+    generate_digest,
     generate_schema,
     lint_scan,
     triage_page_update,
@@ -70,34 +63,6 @@ def pipeline_compile_simple(req: CompileSimpleRequest) -> CompileResponse:
     """
     try:
         return compile_source(req.source_id, req.markdown)
-    except LLMRateLimitedError as e:
-        raise HTTPException(status_code=429, detail="llm_rate_limited") from e
-    except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
-    except LLMCompileError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-class EntityStubRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-
-    name: str
-    entity_type: str
-
-
-@router.post("/pipeline/compile-entity-stub", response_model=EntityStubResponse)
-def pipeline_compile_entity_stub(req: EntityStubRequest) -> EntityStubResponse:
-    """Write a minimal stub page for a single entity/concept extracted during compile.
-
-    Cheaper than compile-simple: max_output_tokens=1024, thinking_budget=0.
-    Called by Phase 3 of /api/compile/commit for each entity in compileResult.entities.
-
-    HTTP 429 when rate limit bucket is full (caller falls back to empty stub).
-    HTTP 503 when daily cost ceiling is exceeded.
-    HTTP 500 when the LLM call fails or the JSON response cannot be parsed.
-    """
-    try:
-        return compile_entity_stub(req.name, req.entity_type)
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
@@ -339,6 +304,51 @@ def pipeline_generate_schema(req: GenerateSchemaRequest) -> GenerateSchemaRespon
     try:
         markdown = generate_schema([p.model_dump() for p in req.pages])
         return GenerateSchemaResponse(markdown=markdown)
+    except LLMRateLimitedError as e:
+        raise HTTPException(status_code=429, detail="llm_rate_limited") from e
+    except CostCeilingError as e:
+        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+    except LLMCompileError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# Weekly Digest
+# ---------------------------------------------------------------------------
+
+
+class DigestRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    sources_ingested: int
+    pages_created: int
+    pages_updated: int
+    new_page_titles: list[str]
+    updated_page_titles: list[str]
+    drafts_created: int
+    drafts_approved: int
+
+
+class DigestResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    summary: str
+
+
+@router.post("/pipeline/digest-summary", response_model=DigestResponse)
+def pipeline_digest_summary(req: DigestRequest) -> DigestResponse:
+    """Generate a short weekly digest summary via Gemini.
+
+    Called by POST /api/digest/generate (Next.js) every Sunday.
+    temp=0.3, thinking_budget=1024, max_output_tokens=2048.
+
+    HTTP 429 when rate limit bucket is full.
+    HTTP 503 when daily cost ceiling is exceeded.
+    HTTP 500 when the LLM call fails.
+    """
+    try:
+        summary = generate_digest(req)
+        return DigestResponse(summary=summary)
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
