@@ -63,6 +63,45 @@ kompl update     # pull latest version and restart
 
 ---
 
+## Use with Claude Code or Claude Desktop
+
+Kompl ships an MCP server that lets AI assistants search and read your wiki while you work. Once set up, you can ask Claude "what does my wiki say about X?" and it will query your compiled knowledge directly.
+
+**Claude Code** — the `.mcp.json` in the repo root auto-registers it. Build once, then it's available in every Claude Code session:
+
+```bash
+cd mcp-server && npm install && npm run build
+```
+
+**Claude Desktop (Windows)** — add the server to `%APPDATA%\Claude\claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "kompl-wiki": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["C:/path/to/kompl/mcp-server/dist/index.js"],
+      "env": { "KOMPL_URL": "http://localhost:3000" }
+    }
+  }
+}
+```
+
+**Claude Desktop (Mac)** — same config at `~/Library/Application Support/Claude/claude_desktop_config.json`.
+
+Kompl must be running (`kompl start`) for the MCP tools to respond. The server exposes four tools: `search_wiki`, `read_page`, `list_pages`, `wiki_stats`.
+
+---
+
 ## Your data
 
 Everything is stored in Docker volumes on your machine — nothing is sent anywhere except the two API calls (Gemini for wiki compilation, Firecrawl for scraping URLs). Chat can run fully locally via the built-in Ollama model with no API key.
+
+---
+
+## Backup and restore
+
+Go to **Settings → Kompl Backup** to download a `.kompl.zip` that contains your entire wiki: all sources, compiled pages, provenance, extractions, and settings (Telegram credentials excluded). No LLM calls needed to restore.
+
+To restore on a fresh instance: run setup, skip onboarding, go to **Settings → Import Wiki**, upload the `.kompl.zip`. All pages are immediately browsable and searchable.
