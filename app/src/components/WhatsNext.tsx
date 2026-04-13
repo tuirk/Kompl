@@ -20,6 +20,10 @@ const NOTES = [
     title: 'Twitter automated sync',
     body: 'Right now the user manually exports bookmarks (runs the bookmarklet, downloads JSON, uploads to Kompl). Twitter automated sync would use bird CLI or the X API v2 to fetch bookmarks automatically on a schedule — no manual export, no JSON upload. The user connects once (OAuth or cookie auth), and new bookmarks sync incrementally. This is v3 because Twitter\'s API is rate-limited, requires a developer account, and the auth surface is fragile.',
   },
+  {
+    title: 'Extraction aggregation',
+    body: 'YAKE is dead code — its outputs are never merged into the extraction profiles alongside RAKE/KeyBERT/spaCy. Gemini reads the separate blobs fine, so nothing is broken. If this is ever needed: wire YAKE into the profiles dict (one line each) and pass real page IDs to TF-IDF instead of []. Two small fixes, no pipeline restructuring required.',
+  },
 ];
 
 export default function WhatsNext() {

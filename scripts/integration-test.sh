@@ -1505,6 +1505,7 @@ main() {
     stage_18_wiki_aware_update
     stage_19_chat_canary
     stage_20_source_mgmt_canary
+    stage_21_wiki_data_canary
 
     echo
     echo "=== Stage summary ==="
@@ -1512,7 +1513,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 13 stages (0, 1, 4, 11–20) executed, all passed ==="
+    echo "=== All 14 stages (0, 1, 4, 11–21) executed, all passed ==="
     exit 0
 }
 
@@ -1639,6 +1640,112 @@ stage_20_source_mgmt_canary() {
 
     echo "  stage 20 PASS — sources list, settings, and drafts endpoints OK"
     record_stage 20 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 21 — Wiki data canary (REAL — no API keys needed)
+#
+# 1. GET /api/wiki/index       → assert pages (array), total_pages (number), categories (object)
+# 2. If total_pages > 0:       → GET /api/wiki/{page_id}/data for first page
+#                                 assert page_id, title, content (string), sources (array)
+# 3. GET /api/pages/search     → assert items (array), count (number)
+# 4. If wiki empty:            → skip /data assertion, still PASS
+# ---------------------------------------------------------------------------
+stage_21_wiki_data_canary() {
+    echo "--- stage 21: wiki data canary ---"
+
+    # ── 1. GET /api/wiki/index ──────────────────────────────────────────────
+    INDEX_RESP=$(curl -sf "http://localhost:3000/api/wiki/index" 2>/dev/null || echo "")
+    if [[ -z "$INDEX_RESP" ]]; then
+        echo "  FAIL: GET /api/wiki/index returned empty"
+        record_stage 21 REAL FAIL
+        return 1
+    fi
+
+    PAGES_OK=$(echo "$INDEX_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if isinstance(d.get('pages'), list) else 'no')" 2>/dev/null || echo "no")
+    if [[ "$PAGES_OK" != "yes" ]]; then
+        echo "  FAIL: /api/wiki/index missing pages array"
+        record_stage 21 REAL FAIL
+        return 1
+    fi
+
+    TOTAL_PAGES=$(echo "$INDEX_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_pages', -1))" 2>/dev/null || echo "-1")
+    if [[ "$TOTAL_PAGES" == "-1" ]]; then
+        echo "  FAIL: /api/wiki/index missing total_pages"
+        record_stage 21 REAL FAIL
+        return 1
+    fi
+
+    CATEGORIES_OK=$(echo "$INDEX_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if isinstance(d.get('categories'), dict) else 'no')" 2>/dev/null || echo "no")
+    if [[ "$CATEGORIES_OK" != "yes" ]]; then
+        echo "  FAIL: /api/wiki/index missing categories object"
+        record_stage 21 REAL FAIL
+        return 1
+    fi
+
+    echo "  wiki/index OK (total_pages=$TOTAL_PAGES)"
+
+    # ── 2. GET /api/wiki/{page_id}/data (conditional) ───────────────────────
+    if [[ "$TOTAL_PAGES" -gt 0 ]]; then
+        PAGE_ID=$(echo "$INDEX_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['pages'][0]['page_id'] if d.get('pages') else '')" 2>/dev/null || echo "")
+        if [[ -z "$PAGE_ID" ]]; then
+            echo "  FAIL: could not extract page_id from wiki/index pages[0]"
+            record_stage 21 REAL FAIL
+            return 1
+        fi
+
+        DATA_RESP=$(curl -sf "http://localhost:3000/api/wiki/$PAGE_ID/data" 2>/dev/null || echo "")
+        if [[ -z "$DATA_RESP" ]]; then
+            echo "  FAIL: GET /api/wiki/$PAGE_ID/data returned empty"
+            record_stage 21 REAL FAIL
+            return 1
+        fi
+
+        DATA_FIELDS_OK=$(echo "$DATA_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if all(k in d for k in ['page_id','title','content','sources']) else 'no')" 2>/dev/null || echo "no")
+        if [[ "$DATA_FIELDS_OK" != "yes" ]]; then
+            echo "  FAIL: /api/wiki/$PAGE_ID/data missing page_id, title, content, or sources"
+            record_stage 21 REAL FAIL
+            return 1
+        fi
+
+        CONTENT_OK=$(echo "$DATA_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if isinstance(d.get('content'), str) else 'no')" 2>/dev/null || echo "no")
+        if [[ "$CONTENT_OK" != "yes" ]]; then
+            echo "  FAIL: content field is not a string"
+            record_stage 21 REAL FAIL
+            return 1
+        fi
+
+        SOURCES_OK=$(echo "$DATA_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if isinstance(d.get('sources'), list) else 'no')" 2>/dev/null || echo "no")
+        if [[ "$SOURCES_OK" != "yes" ]]; then
+            echo "  FAIL: sources field is not an array"
+            record_stage 21 REAL FAIL
+            return 1
+        fi
+
+        echo "  wiki/$PAGE_ID/data OK"
+    else
+        echo "  SKIP: wiki is empty (total_pages=0), skipping /data assertion"
+    fi
+
+    # ── 3. GET /api/pages/search ────────────────────────────────────────────
+    SEARCH_RESP=$(curl -sf "http://localhost:3000/api/pages/search?q=test&limit=5" 2>/dev/null || echo "")
+    if [[ -z "$SEARCH_RESP" ]]; then
+        echo "  FAIL: GET /api/pages/search returned empty"
+        record_stage 21 REAL FAIL
+        return 1
+    fi
+
+    SEARCH_OK=$(echo "$SEARCH_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if isinstance(d.get('items'), list) and isinstance(d.get('count'), int) else 'no')" 2>/dev/null || echo "no")
+    if [[ "$SEARCH_OK" != "yes" ]]; then
+        echo "  FAIL: /api/pages/search missing items (array) or count (number)"
+        record_stage 21 REAL FAIL
+        return 1
+    fi
+
+    echo "  pages/search OK"
+    echo "  stage 21 PASS — wiki index, data, and search endpoints OK"
+    record_stage 21 REAL PASS
     return 0
 }
 
