@@ -22,6 +22,7 @@
 import { NextResponse } from 'next/server';
 
 import {
+  getAllPages,
   getExtractionsBySession,
   getPagePlansByStatus,
   readRawMarkdown,
@@ -53,7 +54,9 @@ async function callDraftPage(
   sourceContents: SourceContent[],
   relatedPages?: RelatedPage[],
   existingContent?: string,
-  schema?: string
+  schema?: string,
+  existingPageTitles?: string[],
+  extractionDossier?: string
 ): Promise<string> {
   const res = await fetch(`${NLP_SERVICE_URL}/pipeline/draft-page`, {
     method: 'POST',
@@ -65,6 +68,8 @@ async function callDraftPage(
       related_pages: relatedPages ?? [],
       existing_content: existingContent ?? null,
       schema: schema ?? null,
+      existing_page_titles: existingPageTitles ?? [],
+      extraction_dossier: extractionDossier ?? '',
     }),
     signal: AbortSignal.timeout(180_000), // 3 min — Gemini thinking can be slow
   });
@@ -99,6 +104,112 @@ async function pLimit<T>(
   }
   await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
   return results;
+}
+
+// ── Dossier builder ───────────────────────────────────────────────────────────
+
+function buildDossier(
+  plan: { page_type: string; title: string; source_ids: string },
+  extractionsBySource: Map<string, Record<string, unknown>>
+): string {
+  if (!['entity', 'concept', 'comparison'].includes(plan.page_type)) return '';
+
+  let sourceIds: string[];
+  try {
+    sourceIds = JSON.parse(plan.source_ids) as string[];
+  } catch {
+    return '';
+  }
+
+  const nameLower = plan.title.toLowerCase();
+  const parts: string[] = [];
+
+  if (plan.page_type === 'entity') {
+    for (const sid of sourceIds) {
+      const ext = extractionsBySource.get(sid);
+      if (!ext) continue;
+      const lines: string[] = [];
+
+      const entityData = ((ext.entities as Array<Record<string, unknown>>) ?? []).find(
+        (e) => typeof e.name === 'string' && e.name.toLowerCase() === nameLower
+      );
+      if (entityData) {
+        lines.push(`From source ${sid}:`);
+        if (entityData.type) lines.push(`  Type: ${entityData.type}`);
+        if (entityData.mentions) lines.push(`  Mentions: ${entityData.mentions}`);
+        if (entityData.context) lines.push(`  Context: ${entityData.context}`);
+      }
+
+      const rels = ((ext.relationships as Array<Record<string, unknown>>) ?? []).filter(
+        (r) =>
+          typeof r.source === 'string' && r.source.toLowerCase() === nameLower ||
+          typeof r.target === 'string' && r.target.toLowerCase() === nameLower
+      );
+      for (const rel of rels) {
+        lines.push(`  Relationship: ${rel.source} —[${rel.type}]→ ${rel.target}`);
+      }
+
+      const claims = ((ext.claims as Array<Record<string, unknown>>) ?? []).filter(
+        (c) => typeof c.claim === 'string' && c.claim.toLowerCase().includes(nameLower)
+      );
+      for (const claim of claims) {
+        lines.push(`  Claim: ${claim.claim}`);
+      }
+
+      const contras = ((ext.contradictions as Array<Record<string, unknown>>) ?? []).filter(
+        (c) => typeof c.description === 'string' && c.description.toLowerCase().includes(nameLower)
+      );
+      for (const contra of contras) {
+        lines.push(`  ⚠️ Contradiction: ${contra.description}`);
+      }
+
+      if (lines.length > 0) parts.push(lines.join('\n'));
+    }
+  }
+
+  if (plan.page_type === 'concept') {
+    for (const sid of sourceIds) {
+      const ext = extractionsBySource.get(sid);
+      if (!ext) continue;
+      const lines: string[] = [];
+
+      const conceptData = ((ext.concepts as Array<Record<string, unknown>>) ?? []).find(
+        (c) => typeof c.name === 'string' && c.name.toLowerCase() === nameLower
+      );
+      if (conceptData) {
+        lines.push(`From source ${sid}:`);
+        if (conceptData.definition) lines.push(`  Definition: ${conceptData.definition}`);
+        if (conceptData.context) lines.push(`  Context: ${conceptData.context}`);
+      }
+
+      const claims = ((ext.claims as Array<Record<string, unknown>>) ?? []).filter(
+        (c) => typeof c.claim === 'string' && c.claim.toLowerCase().includes(nameLower)
+      );
+      for (const claim of claims) {
+        lines.push(`  Claim: ${claim.claim}`);
+      }
+
+      if (lines.length > 0) parts.push(lines.join('\n'));
+    }
+  }
+
+  if (plan.page_type === 'comparison') {
+    for (const sid of sourceIds) {
+      const ext = extractionsBySource.get(sid);
+      if (!ext) continue;
+
+      const rels = ((ext.relationships as Array<Record<string, unknown>>) ?? []).filter(
+        (r) => r.type === 'competes_with' || r.type === 'contradicts'
+      );
+      for (const rel of rels) {
+        const lines = [`Comparison: ${rel.source} vs ${rel.target} (${rel.type})`];
+        if (rel.context) lines.push(`  Context: ${rel.context}`);
+        parts.push(lines.join('\n'));
+      }
+    }
+  }
+
+  return parts.join('\n\n');
 }
 
 // ── Route handler ─────────────────────────────────────────────────────────────
@@ -147,6 +258,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ session_id, drafted: 0, failed: 0, by_type: {} }, { status: 200 });
   }
 
+  // Load extractions for dossier building (entity/concept/comparison pages only)
+  const rawExtractions = getExtractionsBySession(session_id);
+  const extractionsBySource = new Map<string, Record<string, unknown>>();
+  for (const row of rawExtractions) {
+    if (!row.llm_output) continue;
+    try {
+      extractionsBySource.set(row.source_id, JSON.parse(row.llm_output) as Record<string, unknown>);
+    } catch {
+      // skip unparseable extraction rows
+    }
+  }
+
   // Load the schema if it exists (for context)
   let schema: string | undefined;
   try {
@@ -163,6 +286,18 @@ export async function POST(request: Request) {
   } catch {
     // schema is optional — first compile won't have it
   }
+
+  // Build title list for cross-session wikilink injection.
+  // Session plan titles go first (being created now, most relevant).
+  // Existing pages sorted by source_count DESC so the 200-cap keeps most-cited pages.
+  const sessionTitles = plans.map((p) => p.title);
+  const sessionTitleSet = new Set(sessionTitles);
+  const existingPages = getAllPages();
+  const sortedExistingTitles = [...existingPages]
+    .sort((a, b) => (b.source_count ?? 0) - (a.source_count ?? 0))
+    .map((p) => p.title)
+    .filter((t) => !sessionTitleSet.has(t));
+  const allKnownTitles = [...sessionTitles, ...sortedExistingTitles].slice(0, 200);
 
   // Layer order for drafting
   const LAYER_ORDER = ['source-summary', 'entity', 'concept', 'comparison', 'overview'] as const;
@@ -228,13 +363,17 @@ export async function POST(request: Request) {
             });
       });
 
+      const dossier = buildDossier(plan, extractionsBySource);
+
       const markdown = await callDraftPage(
         plan.page_type,
         plan.title,
         sourceContents,
         relatedPages.length > 0 ? relatedPages : undefined,
         plan.draft_content ?? undefined, // existing content for 'update' action
-        schema
+        schema,
+        allKnownTitles,
+        dossier || undefined
       );
 
       updatePlanDraft(plan.plan_id, markdown);

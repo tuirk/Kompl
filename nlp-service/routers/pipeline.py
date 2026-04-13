@@ -163,6 +163,8 @@ class DraftPageRequest(BaseModel):
     related_pages: list[RelatedPage] = []
     existing_content: str | None = None
     schema: str | None = None
+    existing_page_titles: list[str] = []
+    extraction_dossier: str = ""
 
 
 class DraftPageResponse(BaseModel):
@@ -186,6 +188,8 @@ def pipeline_draft_page(req: DraftPageRequest) -> DraftPageResponse:
             related_pages=[rp.model_dump() for rp in req.related_pages] if req.related_pages else None,
             existing_content=req.existing_content,
             schema=req.schema,
+            existing_page_titles=req.existing_page_titles if req.existing_page_titles else None,
+            extraction_dossier=req.extraction_dossier,
         )
         return DraftPageResponse(markdown=markdown)
     except LLMRateLimitedError as e:

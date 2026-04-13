@@ -647,7 +647,8 @@ The page should include:
 - ## Entities Mentioned (bullet list of key people, companies, tools)
 - ## Concepts (bullet list of key ideas)
 
-Write clean markdown. Be concise and factual. Do not add information not in the source.""",
+Write clean markdown. Be concise and factual. Do not add information not in the source.
+Use [[wikilinks]] for any entities, people, tools, or concepts that have their own wiki pages.""",
 
     "entity": """\
 Write an entity wiki page synthesizing information from multiple sources.
@@ -659,7 +660,8 @@ The page should include:
 - ## Sources (list of contributing source titles)
 
 Synthesize across all sources. If sources provide complementary information, merge coherently.
-If sources contradict each other, note the contradiction with citations to both sources.""",
+If sources contradict each other, note the contradiction with citations to both sources.
+Use [[wikilinks]] when referencing related entities or concepts that have wiki pages.""",
 
     "concept": """\
 Write a concept wiki page synthesizing information from multiple sources.
@@ -669,9 +671,10 @@ The page should include:
 - A definition/description paragraph
 - ## Key Claims (from sources, attributed with source title)
 - ## Contradictions section (only if sources disagree — cite both)
-- ## Related Concepts
+- ## Related Concepts (use [[wikilinks]] for concepts that have wiki pages)
 
-Synthesize across sources. Attribute specific claims to their source.""",
+Synthesize across sources. Attribute specific claims to their source.
+Use [[wikilinks]] when referencing related concepts or entities that have wiki pages.""",
 
     "comparison": """\
 Write a comparison wiki page comparing two entities or concepts.
@@ -682,7 +685,8 @@ The page should include:
 - A structured comparison (use a table or parallel sections)
 - ## Summary: which is better suited for different use cases (if applicable)
 
-Be objective and factual.""",
+Be objective and factual.
+Use [[wikilinks]] when naming the entities being compared and any related concepts that have wiki pages.""",
 
     "overview": """\
 Write an overview wiki page summarizing all pages in a category.
@@ -690,7 +694,7 @@ Write an overview wiki page summarizing all pages in a category.
 The page should include:
 - YAML frontmatter: title, page_type: overview, category, summary (1-2 sentences describing this category), sources (list), last_updated
 - A high-level summary paragraph of the category
-- Brief descriptions of each entity/concept in the category (with [[wikilink]] references)
+- Brief descriptions of each entity/concept in the category (with [[wikilinks]] from the provided list)
 - ## Common Themes
 - ## Open Questions (gaps in coverage, if any)""",
 }
@@ -703,6 +707,8 @@ def draft_page(
     related_pages: list[dict[str, Any]] | None = None,
     existing_content: str | None = None,
     schema: str | None = None,
+    existing_page_titles: list[str] | None = None,
+    extraction_dossier: str = "",
 ) -> str:
     """Draft a wiki page using Gemini 2.5 Flash.
 
@@ -742,6 +748,34 @@ def draft_page(
         for rp in related_pages:
             parts.append(f"  - {rp.get('title', '')} ({rp.get('type', '')}): {rp.get('summary', '')}")
         parts.append("")
+
+    if existing_page_titles:
+        titles_str = ", ".join(existing_page_titles)
+        parts.append(
+            f"Existing wiki pages (for [[wikilinks]]): {titles_str}\n\n"
+            "When your text mentions any of these topics, wrap the FIRST occurrence "
+            "in [[double brackets]] to create a wikilink. Do NOT link subsequent "
+            "occurrences of the same topic. Only link topics that appear in the list "
+            "above — do NOT invent links to pages not listed."
+        )
+        parts.append("")
+
+    if extraction_dossier.strip() and page_type in ("entity", "concept", "comparison"):
+        parts += [
+            f'## Pre-extracted knowledge about "{title}"',
+            "",
+            "The following structured data was extracted from the source documents by NLP "
+            "analysis. Use this as your primary factual reference. The source documents "
+            "below provide additional context and detail.",
+            "",
+            extraction_dossier,
+            "",
+            "IMPORTANT: Prefer the pre-extracted data above for key facts, types, "
+            "relationships, and claims. If the source documents contain additional "
+            "information not in the dossier, include it. If the source documents "
+            "contradict the dossier, present both with a contradiction note.",
+            "",
+        ]
 
     parts.append("Source documents:")
     for sc in source_contents:
