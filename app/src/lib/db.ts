@@ -34,7 +34,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 
 const DB_PATH = process.env.DB_PATH ?? '/data/db/kompl.db';
-const DATA_ROOT = path.dirname(path.dirname(DB_PATH)); // /data
+export const DATA_ROOT = path.dirname(path.dirname(DB_PATH)); // /data
 const RAW_DIR = path.join(DATA_ROOT, 'raw');
 const PAGES_DIR = path.join(DATA_ROOT, 'pages');
 
@@ -885,6 +885,28 @@ export function getExtractionsBySession(sessionId: string): ExtractionRow[] {
     .all(sessionId) as ExtractionRow[];
 }
 
+/** Fetch all extraction rows — used for kompl backup export. */
+export function getAllExtractions(): ExtractionRow[] {
+  return openDb()
+    .prepare(
+      `SELECT source_id, ner_output, profile, keyphrase_output, tfidf_output,
+              llm_output, created_at
+         FROM extractions
+        ORDER BY created_at ASC`
+    )
+    .all() as ExtractionRow[];
+}
+
+/** All settings rows except sensitive keys (Telegram token/chat_id). */
+export function getExportableSettings(): Array<{ key: string; value: string }> {
+  return openDb()
+    .prepare(
+      `SELECT key, value FROM settings
+        WHERE key NOT IN ('digest_telegram_token', 'digest_telegram_chat_id')`
+    )
+    .all() as Array<{ key: string; value: string }>;
+}
+
 /**
  * Set compile_status = 'extracted' for a source after successful extraction.
  * Includes 'collected' so onboarding-path sources (which enter with that
@@ -962,6 +984,13 @@ export function getAliases(): Array<{ alias: string; canonical_name: string }> {
       'SELECT alias, canonical_name FROM aliases WHERE canonical_name IS NOT NULL'
     )
     .all() as Array<{ alias: string; canonical_name: string }>;
+}
+
+/** All alias rows including canonical_page_id — used for kompl backup export. */
+export function getAllAliases(): Array<{ alias: string; canonical_name: string; canonical_page_id: string | null }> {
+  return openDb()
+    .prepare('SELECT alias, canonical_name, canonical_page_id FROM aliases')
+    .all() as Array<{ alias: string; canonical_name: string; canonical_page_id: string | null }>;
 }
 
 /**

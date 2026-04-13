@@ -1,12 +1,21 @@
 export const dynamic = 'force-dynamic';
 
 import JSZip from 'jszip';
+import fs from 'fs/promises';
+import path from 'path';
 import { NextResponse } from 'next/server';
 
 import {
+  getAllAliases,
+  getAllExtractions,
   getAllPages,
   getAllProvenance,
   getAllSources,
+  getExportableSettings,
+  getSchemaVersion,
+  pagesFilePath,
+  rawFilePath,
+  DATA_ROOT,
   readPageMarkdown,
 } from '@/lib/db';
 
@@ -210,5 +219,62 @@ export async function GET(request: Request) {
     });
   }
 
-  return NextResponse.json({ error: 'Invalid format. Use: markdown, obsidian, json' }, { status: 400 });
+  if (format === 'kompl') {
+    const zip = new JSZip();
+    const sources = getAllSources();
+    const pages = getAllPages();
+
+    zip.file(
+      'manifest.json',
+      JSON.stringify(
+        {
+          format: 'kompl',
+          version: 1,
+          exported_at: new Date().toISOString(),
+          schema_version: getSchemaVersion(),
+          source_count: sources.length,
+          page_count: pages.length,
+          app_version: '2.0.0',
+        },
+        null,
+        2
+      )
+    );
+
+    const dbFolder = zip.folder('db')!;
+    dbFolder.file('sources.json', JSON.stringify(sources, null, 2));
+    dbFolder.file('pages.json', JSON.stringify(pages, null, 2));
+    dbFolder.file('provenance.json', JSON.stringify(getAllProvenance(), null, 2));
+    dbFolder.file('aliases.json', JSON.stringify(getAllAliases(), null, 2));
+    dbFolder.file('extractions.json', JSON.stringify(getAllExtractions(), null, 2));
+    dbFolder.file('settings.json', JSON.stringify(getExportableSettings(), null, 2));
+
+    const rawFolder = zip.folder('raw')!;
+    for (const s of sources) {
+      try {
+        rawFolder.file(`${s.source_id}.md.gz`, await fs.readFile(rawFilePath(s.source_id)));
+      } catch { /* skip missing source file */ }
+    }
+
+    const pagesFolder = zip.folder('pages')!;
+    for (const p of pages) {
+      try {
+        pagesFolder.file(`${p.page_id}.md.gz`, await fs.readFile(pagesFilePath(p.page_id)));
+      } catch { /* skip missing page file */ }
+    }
+
+    try {
+      zip.file('schema.md', await fs.readFile(path.join(DATA_ROOT, 'schema.md'), 'utf-8'));
+    } catch { /* no schema.md yet */ }
+
+    const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+    return new NextResponse(new Uint8Array(buffer), {
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': 'attachment; filename="kompl-export.kompl.zip"',
+      },
+    });
+  }
+
+  return NextResponse.json({ error: 'Invalid format. Use: markdown, obsidian, json, kompl' }, { status: 400 });
 }

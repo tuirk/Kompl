@@ -122,6 +122,15 @@ function OnboardingPageInner() {
           </p>
         </section>
 
+        <div style={{ textAlign: 'center', marginBottom: '0.75rem' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>
+            Have a Kompl export?{' '}
+            <Link href="/settings#import" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+              Import it here →
+            </Link>
+          </span>
+        </div>
+
         {/* Connector grid — 4 cols × 2 rows */}
         <div style={{
           display: 'grid',

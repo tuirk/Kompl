@@ -12,9 +12,12 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
 export default function SettingsPage() {
+  const router = useRouter();
+
   const [autoApprove, setAutoApprove] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -27,7 +30,12 @@ export default function SettingsPage() {
   const [relatedSaving, setRelatedSaving] = useState(false);
   const [relatedSaved, setRelatedSaved] = useState(false);
 
-  const [exportLoading, setExportLoading] = useState<'markdown' | 'obsidian' | 'json' | null>(null);
+  const [exportLoading, setExportLoading] = useState<'markdown' | 'obsidian' | 'json' | 'kompl' | null>(null);
+
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importSuccess, setImportSuccess] = useState(false);
 
   const [staleThreshold, setStaleThreshold] = useState<number | null>(null);
   const [staleSaving, setStaleSaving] = useState(false);
@@ -132,7 +140,7 @@ export default function SettingsPage() {
     setTimeout(() => setStaleSaved(false), 2000);
   }
 
-  async function handleExport(format: 'markdown' | 'obsidian' | 'json') {
+  async function handleExport(format: 'markdown' | 'obsidian' | 'json' | 'kompl') {
     setExportLoading(format);
     try {
       const res = await fetch(`/api/export?format=${format}`);
@@ -140,13 +148,42 @@ export default function SettingsPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = format === 'json' ? 'kompl-wiki-export.json' : `kompl-wiki-${format}.zip`;
+      a.download =
+        format === 'json'
+          ? 'kompl-wiki-export.json'
+          : format === 'kompl'
+          ? 'kompl-export.kompl.zip'
+          : `kompl-wiki-${format}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } finally {
       setExportLoading(null);
+    }
+  }
+
+  async function handleImport() {
+    if (!importFile) return;
+    setImportLoading(true);
+    setImportError(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', importFile);
+      const res = await fetch('/api/import', { method: 'POST', body: fd });
+      if (res.status === 409) {
+        setImportError('Wiki is not empty. Delete all data before importing.');
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.json() as { error?: string };
+        setImportError(body.error ?? 'Import failed');
+        return;
+      }
+      setImportSuccess(true);
+      setTimeout(() => { router.push('/wiki'); }, 1500);
+    } finally {
+      setImportLoading(false);
     }
   }
 
@@ -993,7 +1030,7 @@ export default function SettingsPage() {
             Download your entire wiki for backup or use in other tools.
           </div>
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-            {(['markdown', 'obsidian', 'json'] as const).map((fmt) => (
+            {(['markdown', 'obsidian', 'json', 'kompl'] as const).map((fmt) => (
               <button
                 key={fmt}
                 onClick={() => void handleExport(fmt)}
@@ -1010,10 +1047,61 @@ export default function SettingsPage() {
                   ? '↓ Markdown (.zip)'
                   : fmt === 'obsidian'
                   ? '↓ Obsidian (.zip)'
+                  : fmt === 'kompl'
+                  ? '↓ Kompl Backup'
                   : '↓ JSON'}
               </button>
             ))}
           </div>
+        </div>
+      </section>
+
+      {/* Import Wiki */}
+      <section
+        id="import"
+        style={{
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          overflow: 'hidden',
+          marginTop: '1rem',
+        }}
+      >
+        <div style={{ padding: '1.25rem 1.5rem' }}>
+          <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
+            Import Wiki
+          </div>
+          <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '1.25rem' }}>
+            Restore from a .kompl.zip backup. Only works on an empty wiki.
+          </div>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              type="file"
+              accept=".zip"
+              onChange={(e) => { setImportFile(e.target.files?.[0] ?? null); }}
+              style={{ fontSize: '0.85rem', color: 'var(--fg)' }}
+            />
+            <button
+              onClick={() => { void handleImport(); }}
+              disabled={!importFile || importLoading}
+              style={{
+                padding: '0.45rem 1rem',
+                fontSize: '0.85rem',
+                opacity: !importFile || importLoading ? 0.6 : 1,
+              }}
+            >
+              {importLoading ? 'Importing…' : 'Import'}
+            </button>
+          </div>
+          {importError && (
+            <div style={{ color: 'var(--danger)', marginTop: '0.75rem', fontSize: '0.85rem' }}>
+              {importError}
+            </div>
+          )}
+          {importSuccess && (
+            <div style={{ color: 'var(--accent)', marginTop: '0.75rem', fontSize: '0.85rem' }}>
+              Imported — redirecting…
+            </div>
+          )}
         </div>
       </section>
     </main>
