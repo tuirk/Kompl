@@ -41,6 +41,12 @@ export default function SettingsPage() {
   const [staleSaving, setStaleSaving] = useState(false);
   const [staleSaved, setStaleSaved] = useState(false);
 
+  const [deploymentMode, setDeploymentModeState] = useState<'personal-device' | 'always-on' | null>(null);
+  const [deploymentSaving, setDeploymentSaving] = useState(false);
+  const [deploymentSaved, setDeploymentSaved] = useState(false);
+  const [lastLintAt, setLastLintAt] = useState<string | null>(null);
+  const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
+
   const [lintEnabled, setLintEnabledState] = useState<boolean | null>(null);
   const [lintSaving, setLintSaving] = useState(false);
   const [lintSaved, setLintSaved] = useState(false);
@@ -83,6 +89,9 @@ export default function SettingsPage() {
         digest_telegram_chat_id: string | null;
         lint_enabled: boolean;
         lint_last_result: LintLastResult | null;
+        deployment_mode: 'personal-device' | 'always-on';
+        last_lint_at: string | null;
+        last_backup_at: string | null;
       }) => {
         setAutoApprove(data.auto_approve);
         setChatProviderState(data.chat_provider);
@@ -93,6 +102,9 @@ export default function SettingsPage() {
         setDigestChatId(data.digest_telegram_chat_id ?? '');
         setLintEnabledState(data.lint_enabled);
         setLintLastResult(data.lint_last_result);
+        setDeploymentModeState(data.deployment_mode);
+        setLastLintAt(data.last_lint_at);
+        setLastBackupAt(data.last_backup_at);
       });
   }, []);
 
@@ -158,6 +170,7 @@ export default function SettingsPage() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      if (format === 'kompl') setLastBackupAt(new Date().toISOString());
     } finally {
       setExportLoading(null);
     }
@@ -234,6 +247,33 @@ export default function SettingsPage() {
     setTimeout(() => setDigestChatIdSaved(false), 2000);
   }
 
+  async function toggleDeploymentMode() {
+    if (deploymentMode === null || deploymentSaving) return;
+    const newVal = deploymentMode === 'personal-device' ? 'always-on' : 'personal-device';
+    setDeploymentSaving(true);
+    setDeploymentSaved(false);
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deployment_mode: newVal }),
+    });
+    setDeploymentModeState(newVal);
+    setDeploymentSaving(false);
+    setDeploymentSaved(true);
+    setTimeout(() => setDeploymentSaved(false), 2000);
+  }
+
+  function formatRelativeTime(iso: string | null): string {
+    if (!iso) return 'Never';
+    const diff = Date.now() - new Date(iso).getTime();
+    if (diff < 0) return 'Just now';
+    const h = Math.floor(diff / 3_600_000);
+    if (h < 1) return 'Less than an hour ago';
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    return d === 1 ? '1 day ago' : `${d} days ago`;
+  }
+
   async function toggleLint() {
     if (lintEnabled === null || lintSaving) return;
     const newVal = !lintEnabled;
@@ -278,6 +318,7 @@ export default function SettingsPage() {
           contradiction_count: data.contradictions?.length ?? 0,
           run_duration_ms: data.run_duration_ms,
         });
+        setLastLintAt(new Date().toISOString());
       }
     } finally {
       setLintRunning(false);
@@ -757,6 +798,70 @@ export default function SettingsPage() {
         </div>
 
         {digestSaved && (
+          <div
+            style={{
+              padding: '0.6rem 1.5rem',
+              background: 'var(--success-bg, #ecfdf5)',
+              borderTop: '1px solid var(--success-border, #a7f3d0)',
+              color: 'var(--success, #059669)',
+              fontSize: 13,
+            }}
+          >
+            Saved.
+          </div>
+        )}
+      </section>
+
+      {/* Deployment Mode */}
+      <section
+        style={{
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          overflow: 'hidden',
+          marginTop: '1rem',
+        }}
+      >
+        <div
+          style={{
+            padding: '1.25rem 1.5rem',
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '1.5rem',
+          }}
+        >
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
+              Deployment
+            </div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+              {deploymentMode === 'always-on'
+                ? 'Always-on server — lint and backup run on n8n\'s Monday 11:30 schedule.'
+                : 'Personal device — lint and backup run automatically when Kompl starts (at most every 36 hours).'}
+            </div>
+            <div style={{ marginTop: '0.75rem', display: 'flex', gap: '1.5rem', fontSize: '0.8rem', color: 'var(--fg-dim)' }}>
+              <span>Last lint: <span style={{ color: 'var(--fg-secondary)' }}>{formatRelativeTime(lastLintAt)}</span></span>
+              <span>Last backup: <span style={{ color: 'var(--fg-secondary)' }}>{formatRelativeTime(lastBackupAt)}</span></span>
+            </div>
+          </div>
+          <button
+            className={deploymentMode === 'personal-device' ? undefined : 'btn-outline'}
+            onClick={() => void toggleDeploymentMode()}
+            disabled={deploymentMode === null || deploymentSaving}
+            style={{
+              flexShrink: 0,
+              padding: '0.45rem 1rem',
+              borderRadius: 20,
+              fontSize: '0.85rem',
+              opacity: deploymentMode === null ? 0.5 : 1,
+              minWidth: 120,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {deploymentMode === null ? '…' : deploymentMode === 'personal-device' ? 'Personal device' : 'Always-on server'}
+          </button>
+        </div>
+        {deploymentSaved && (
           <div
             style={{
               padding: '0.6rem 1.5rem',

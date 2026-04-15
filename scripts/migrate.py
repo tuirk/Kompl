@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 14
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -231,6 +231,24 @@ CREATE INDEX IF NOT EXISTS idx_ingest_failures_url ON ingest_failures(source_url
 CREATE INDEX IF NOT EXISTS idx_ingest_failures_resolved ON ingest_failures(resolved_source_id);
 """
 
+MIGRATION_V13_SQL = """
+CREATE TABLE IF NOT EXISTS vector_backfill_queue (
+  page_id TEXT PRIMARY KEY,
+  queued_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+# V14: outbox column for crash-safe file writes.
+# pending_content IS NOT NULL means the DB row is committed but the .md.gz file
+# on disk has not yet been written (or the write failed). The boot reconciler
+# and each Phase 3a flush check this column and re-attempt the file write.
+MIGRATION_V14_SQL = "ALTER TABLE pages ADD COLUMN pending_content TEXT"
+
+MIGRATION_V14_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_pages_pending_flush ON pages(page_id)
+  WHERE pending_content IS NOT NULL;
+"""
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -330,6 +348,20 @@ def migrate():
     if current < 12:
         print("  applying migration v12 (ingest_failures table)...")
         conn.executescript(MIGRATION_V12_SQL)
+
+    if current < 13:
+        print("  applying migration v13 (vector_backfill_queue table)...")
+        conn.executescript(MIGRATION_V13_SQL)
+
+    if current < 14:
+        print("  applying migration v14 (pages.pending_content outbox column)...")
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(pages)").fetchall()
+        }
+        if "pending_content" not in existing_cols:
+            conn.execute(MIGRATION_V14_SQL)
+        conn.executescript(MIGRATION_V14_INDEX_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

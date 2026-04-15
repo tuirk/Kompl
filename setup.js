@@ -101,11 +101,31 @@ async function main() {
   console.log(green('  kompl CLI installed'))
 
   // ── 5. Write ~/.kompl/config.json ──────────────────────────────────────────
+  const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout })
+  console.log('\n  How is this Kompl instance running?')
+  console.log('    1. Personal device  (laptop/desktop — may be off)  ' + dim('[default]'))
+  console.log('    2. Always-on server (VPS, Railway, Raspberry Pi)')
+  const modeAnswer = (await ask(rl2, '  Enter 1 or 2 [1]: ')).trim()
+  rl2.close()
+  const deploymentMode = modeAnswer === '2' ? 'always-on' : 'personal-device'
+
   const configDir  = path.join(os.homedir(), '.kompl')
   const configFile = path.join(configDir, 'config.json')
   fs.mkdirSync(configDir, { recursive: true })
-  fs.writeFileSync(configFile, JSON.stringify({ projectDir: ROOT, port: 3000 }, null, 2), 'utf8')
+  fs.writeFileSync(configFile, JSON.stringify({ projectDir: ROOT, port: 3000, deploymentMode }, null, 2), 'utf8')
   console.log('  CLI configured → ' + dim(configFile))
+
+  // ── 5b. Write KOMPL_TIMEZONE to .env ───────────────────────────────────────
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  let envContent = fs.readFileSync(envDest, 'utf8')
+  if (envContent.includes('KOMPL_TIMEZONE=')) {
+    envContent = envContent.replace(/KOMPL_TIMEZONE=.*/, `KOMPL_TIMEZONE=${timezone}`)
+  } else {
+    const prefix = envContent.length > 0 && !envContent.endsWith('\n') ? '\n' : ''
+    envContent += `${prefix}KOMPL_TIMEZONE=${timezone}\n`
+  }
+  fs.writeFileSync(envDest, envContent, 'utf8')
+  console.log('  Timezone → ' + dim(timezone))
 
   // ── 6. Start stack ─────────────────────────────────────────────────────────
   console.log('\n  Starting Kompl stack...')

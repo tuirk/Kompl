@@ -205,13 +205,44 @@ export async function POST(request: Request) {
   })();
 
   // -------------------------------------------------------------------------
-  // Phase 3: Fire-and-forget vector backfill + activity log
+  // Phase 3: Vector restore or backfill + activity log
   // -------------------------------------------------------------------------
 
-  void fetch(`${process.env.APP_URL ?? 'http://app:3000'}/api/compile/backfill-vectors`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(300_000),
-  }).catch(() => {});
+  // If the zip contains pre-computed embeddings, restore them directly
+  // (no re-embedding needed). Otherwise fall back to the backfill endpoint.
+  const vectorsJson = await zip.file('vectors.json')?.async('string');
+  const NLP_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
+  if (vectorsJson) {
+    try {
+      const vData = JSON.parse(vectorsJson) as { items: unknown[] };
+      if (Array.isArray(vData.items) && vData.items.length > 0) {
+        void fetch(`${NLP_URL}/vectors/restore`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: vData.items }),
+          signal: AbortSignal.timeout(120_000),
+        }).catch((e: unknown) => {
+          console.error('[import] vectors/restore failed, falling back to backfill:', e instanceof Error ? e.message : e);
+          void fetch(`${process.env.APP_URL ?? 'http://app:3000'}/api/compile/backfill-vectors`, {
+            method: 'POST',
+            signal: AbortSignal.timeout(300_000),
+          }).catch(() => {});
+        });
+      }
+    } catch {
+      // JSON parse error — fall through to backfill
+      void fetch(`${process.env.APP_URL ?? 'http://app:3000'}/api/compile/backfill-vectors`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(300_000),
+      }).catch(() => {});
+    }
+  } else {
+    // No vectors in zip — trigger standard re-embed backfill
+    void fetch(`${process.env.APP_URL ?? 'http://app:3000'}/api/compile/backfill-vectors`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(300_000),
+    }).catch(() => {});
+  }
 
   insertActivity({
     action_type: 'wiki_imported',

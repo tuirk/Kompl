@@ -17,6 +17,7 @@ import {
   rawFilePath,
   DATA_ROOT,
   readPageMarkdown,
+  setLastBackupAt,
 } from '@/lib/db';
 
 // ---------------------------------------------------------------------------
@@ -220,9 +221,30 @@ export async function GET(request: Request) {
   }
 
   if (format === 'kompl') {
+    const includeVectors = searchParams.get('include_vectors') === 'true';
     const zip = new JSZip();
     const sources = getAllSources();
     const pages = getAllPages();
+
+    // Fetch vectors from nlp-service if requested (before building zip)
+    let vectorCount = 0;
+    if (includeVectors) {
+      try {
+        const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
+        const vRes = await fetch(`${NLP_SERVICE_URL}/vectors/export`, {
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (vRes.ok) {
+          const vData = await vRes.json() as { count: number; items: unknown[] };
+          vectorCount = vData.count;
+          zip.file('vectors.json', JSON.stringify(vData, null, 2));
+        } else {
+          console.warn(`[export] vectors/export returned ${vRes.status}, skipping vectors`);
+        }
+      } catch (e) {
+        console.warn('[export] could not fetch vectors:', e instanceof Error ? e.message : e);
+      }
+    }
 
     zip.file(
       'manifest.json',
@@ -234,6 +256,7 @@ export async function GET(request: Request) {
           schema_version: getSchemaVersion(),
           source_count: sources.length,
           page_count: pages.length,
+          vector_count: vectorCount,
           app_version: '2.0.0',
         },
         null,
@@ -268,6 +291,7 @@ export async function GET(request: Request) {
     } catch { /* no schema.md yet */ }
 
     const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+    setLastBackupAt(new Date().toISOString());
     return new NextResponse(new Uint8Array(buffer), {
       headers: {
         'Content-Type': 'application/zip',

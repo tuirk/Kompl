@@ -15,7 +15,7 @@
 #
 # Stage state at commit 8:
 #   Stage 0  — REAL (cold start)
-#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=12)
+#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=14)
 #   Stage 4  — REAL (live URL ingest + compile end-to-end, failure-path canary)
 #   Stage 11 — REAL (onboarding API canary)
 #   Stage 12 — REAL (text connector canary)
@@ -171,28 +171,41 @@ stage_1_migration_schema() {
     echo "  response: $response"
 
     # Parse the JSON response with simple grep checks (avoid jq dep in CI)
-    if ! echo "$response" | grep -q '"status":"ok"'; then
-        echo "  FAIL: status != ok"
+    # Stage 1 starts app only — nlp-service is NOT started yet.
+    # status:degraded + nlp_ok:false is the correct expected state here.
+    if ! echo "$response" | grep -q '"status":"degraded"'; then
+        echo "  FAIL: expected status:degraded in stage 1 (NLP not started), got: $response"
         record_stage 1 REAL FAIL
         return 1
     fi
+    if ! echo "$response" | grep -q '"nlp_ok":false'; then
+        echo "  FAIL: expected nlp_ok:false in stage 1 (NLP not started), got: $response"
+        record_stage 1 REAL FAIL
+        return 1
+    fi
+
     if ! echo "$response" | grep -q '"db_writable":true'; then
         echo "  FAIL: db_writable != true"
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":12'; then
-        echo "  FAIL: schema_version != 12"
+    if ! echo "$response" | grep -q '"schema_version":14'; then
+        echo "  FAIL: schema_version != 14"
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"table_count":14'; then
-        echo "  FAIL: table_count != 14"
+    if ! echo "$response" | grep -q '"table_count":15'; then
+        echo "  FAIL: table_count != 15"
         record_stage 1 REAL FAIL
         return 1
     fi
     if ! echo "$response" | grep -q '"ingest_failures"'; then
         echo "  FAIL: ingest_failures table missing from /api/health tables list"
+        record_stage 1 REAL FAIL
+        return 1
+    fi
+    if ! echo "$response" | grep -q '"vector_backfill_queue"'; then
+        echo "  FAIL: vector_backfill_queue table missing from /api/health tables list"
         record_stage 1 REAL FAIL
         return 1
     fi

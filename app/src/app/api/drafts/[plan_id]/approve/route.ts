@@ -2,7 +2,12 @@
  * POST /api/drafts/[plan_id]/approve
  *
  * Commits a pending_approval draft to the wiki.
- * Implements the Phase 1 → Phase 2 → Phase 3 commit pattern (CLAUDE.md rule #5).
+ * Implements the outbox commit pattern (CLAUDE.md rule #5):
+ *   Phase 2 (sync db.transaction): insertPage + setPendingContent + FTS + provenance +
+ *     insertActivity + updatePlanStatus('committed') — all atomic.
+ *   Phase 3a (awaited): flush pending_content to disk via /storage/write-page →
+ *     clearPendingContent. Idempotent: re-approval after a prior crash re-runs Phase 3a.
+ *   Phase 3b (fire-and-forget): vector upsert.
  * Only operates on plans with draft_status = 'pending_approval'.
  */
 
@@ -13,6 +18,8 @@ import {
   insertProvenance,
   insertActivity,
   updatePlanStatus,
+  setPendingContent,
+  clearPendingContent,
 } from '@/lib/db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -72,65 +79,97 @@ export async function POST(_request: Request, { params }: RouteContext) {
     page_id = `${base || 'page'}-${suffix}`;
   }
 
-  // Phase 1: write page file via nlp-service
-  let writeResult: { current_path: string; previous_path: string | null };
-  try {
-    const res = await fetch(`${NLP_SERVICE_URL}/storage/write-page`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ page_id, markdown }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) throw new Error(`write_page_failed: ${res.status}`);
-    writeResult = (await res.json()) as typeof writeResult;
-  } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 502 });
-  }
-
   // Extract frontmatter fields
   const categoryMatch = markdown.match(/^category:\s*["']?(.+?)["']?\s*$/m);
   const summaryMatch = markdown.match(/^summary:\s*["']?(.+?)["']?\s*$/m);
   const category = categoryMatch?.[1]?.trim() ?? null;
   const summary = summaryMatch?.[1]?.trim() ?? null;
 
-  // Phase 2: sync transaction
-  db.transaction(() => {
-    insertPage({
-      page_id,
-      title: plan.title,
-      page_type: plan.page_type,
-      category,
-      summary,
-      content_path: writeResult.current_path,
-      previous_content_path: writeResult.previous_path,
-    });
+  // Deterministic path — known before the file is written (page_id is fixed).
+  const expectedPath = `/data/pages/${page_id}.md.gz`;
 
-    if (sourceIds.length > 0) {
-      db.prepare('UPDATE pages SET source_count = ? WHERE page_id = ?').run(sourceIds.length, page_id);
-      const contribType = plan.action === 'update' ? 'updated' : 'created';
-      for (const sid of sourceIds) {
-        insertProvenance({ source_id: sid, page_id, content_hash: '', contribution_type: contribType });
+  // Phase 2: sync transaction — all writes atomic, including plan status.
+  // Idempotency guard at the top handles re-approval after a prior crash
+  // that committed the transaction but died before returning the response.
+  // File is NOT written yet — pending_content stores markdown for Phase 3a.
+  try {
+    db.transaction(() => {
+      const current = db
+        .prepare(`SELECT draft_status FROM page_plans WHERE plan_id = ?`)
+        .get(plan_id) as { draft_status: string } | undefined;
+      if (current?.draft_status === 'committed') return;
+
+      insertPage({
+        page_id,
+        title: plan.title,
+        page_type: plan.page_type,
+        category,
+        summary,
+        content_path: expectedPath,
+        previous_content_path: null, // set by clearPendingContent after Phase 3a
+      });
+
+      // Outbox: store markdown for Phase 3a flush + crash recovery.
+      setPendingContent(page_id, markdown);
+
+      if (sourceIds.length > 0) {
+        db.prepare('UPDATE pages SET source_count = ? WHERE page_id = ?').run(sourceIds.length, page_id);
+        const contribType = plan.action === 'update' ? 'updated' : 'created';
+        for (const sid of sourceIds) {
+          insertProvenance({ source_id: sid, page_id, content_hash: '', contribution_type: contribType });
+        }
       }
+
+      // FTS5 upsert
+      db.prepare('DELETE FROM pages_fts WHERE page_id = ?').run(page_id);
+      db.prepare('INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)').run(
+        page_id,
+        plan.title,
+        markdown.replace(/^---[\s\S]*?---\n*/m, '')
+      );
+
+      insertActivity({
+        action_type: 'draft_approved',
+        source_id: sourceIds[0] ?? null,
+        details: { page_id, title: plan.title, plan_id },
+      });
+
+      // updatePlanStatus inside transaction — crash between commit and response
+      // can never leave the plan stuck as pending_approval.
+      updatePlanStatus(plan_id, 'committed');
+    })();
+  } catch (txErr) {
+    const msg = txErr instanceof Error ? txErr.message : String(txErr);
+    console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'db_transaction_error', context: 'draft_approve', plan_id, page_id, error: msg }));
+    return NextResponse.json({ error: `commit_failed: ${msg}` }, { status: 500 });
+  }
+
+  // Phase 3a (awaited): flush pending_content to disk via nlp-service.
+  // Handles both the normal path and the idempotency-guard path (re-approval
+  // after a prior crash where Phase 2 committed but Phase 3a did not).
+  const pageRow = db
+    .prepare('SELECT pending_content FROM pages WHERE page_id = ?')
+    .get(page_id) as { pending_content: string | null } | undefined;
+
+  if (pageRow?.pending_content) {
+    try {
+      const res = await fetch(`${NLP_SERVICE_URL}/storage/write-page`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ page_id, markdown: pageRow.pending_content }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) throw new Error(`write_page_failed: ${res.status}`);
+      const wr = (await res.json()) as { current_path: string; previous_path: string | null };
+      clearPendingContent(page_id, wr.previous_path);
+    } catch (flushErr) {
+      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+      console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'file_flush_failed', context: 'draft_approve', plan_id, page_id, error: msg }));
+      // DB commit succeeded. pending_content stays for boot reconciler.
     }
+  }
 
-    // FTS5 upsert
-    db.prepare('DELETE FROM pages_fts WHERE page_id = ?').run(page_id);
-    db.prepare('INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)').run(
-      page_id,
-      plan.title,
-      markdown.replace(/^---[\s\S]*?---\n*/m, '')
-    );
-
-    insertActivity({
-      action_type: 'draft_approved',
-      source_id: sourceIds[0] ?? null,
-      details: { page_id, title: plan.title, plan_id },
-    });
-  })();
-
-  updatePlanStatus(plan_id, 'committed');
-
-  // Phase 3: fire-and-forget vector upsert
+  // Phase 3b: fire-and-forget vector upsert
   void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

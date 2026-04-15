@@ -1,10 +1,19 @@
+import fs from 'fs'
+import path from 'path'
 import pc from 'picocolors'
 import { readConfig } from '../config.js'
 import { dockerRunning, upAll } from '../compose.js'
 import { pollHealth } from '../health.js'
+import { runStartupTasks } from '../startup-tasks.js'
 
 export async function startCommand(): Promise<void> {
   const config = readConfig()
+
+  const envPath = path.join(config.projectDir, '.env')
+  const envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
+  if (!envContent.includes('KOMPL_TIMEZONE=')) {
+    console.log(pc.yellow(`⚠ KOMPL_TIMEZONE not set — n8n schedules will run in UTC. Run ${pc.bold('kompl init')} to fix.`))
+  }
 
   console.log(pc.dim('Checking Docker...'))
   if (!await dockerRunning()) {
@@ -36,4 +45,7 @@ export async function startCommand(): Promise<void> {
 
   console.log(pc.green(`✓ Kompl is running at ${pc.bold(`http://localhost:${config.port}`)}`))
   console.log(pc.dim(`  DB: schema v${health.schema_version}, ${health.page_count} pages`))
+
+  // Fire-and-forget — does not block the prompt returning.
+  runStartupTasks(config).catch(() => { /* startup tasks are best-effort */ })
 }

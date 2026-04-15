@@ -7,6 +7,7 @@ import { statusCommand } from './commands/status.js'
 import { openCommand } from './commands/open.js'
 import { logsCommand } from './commands/logs.js'
 import { updateCommand } from './commands/update.js'
+import { backupCommand } from './commands/backup.js'
 
 const program = new Command()
 
@@ -55,6 +56,13 @@ program
   .command('update')
   .description('Pull latest images and restart the stack')
   .action(() => updateCommand().catch(die))
+
+program
+  .command('backup')
+  .description('Download a full Kompl export to the host filesystem')
+  .option('--output <path>', 'Save path (default: ~/.kompl/backups/kompl-backup.kompl.zip)')
+  .option('--schedule', 'Register a weekly Windows Task Scheduler entry (requires admin)')
+  .action((opts) => backupCommand(opts).catch(die))
 
 program.parse()
 

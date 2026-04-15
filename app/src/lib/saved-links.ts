@@ -15,6 +15,8 @@ import {
   getUnresolvedLinks,
   insertPage,
   updatePageContent,
+  setPendingContent,
+  clearPendingContent,
   type SavedLinkRow,
 } from './db';
 
@@ -71,11 +73,14 @@ export async function regenerateSavedLinksPage(): Promise<void> {
   const links = getUnresolvedLinks();
   const markdown = buildMarkdown(links);
 
-  const writeResult = await callWritePage(markdown);
+  // Deterministic path — known before the file is written.
+  const expectedPath = `/data/pages/${PAGE_ID}.md.gz`;
 
   const db = getDb();
   const existing = getPage(PAGE_ID);
 
+  // Phase 2 (sync transaction): DB upsert + FTS + outbox.
+  // File is NOT written yet — pending_content stores markdown for Phase 3a flush.
   db.transaction(() => {
     const summary =
       links.length === 0
@@ -83,8 +88,7 @@ export async function regenerateSavedLinksPage(): Promise<void> {
         : `${links.length} link${links.length === 1 ? '' : 's'} saved but not yet imported.`;
 
     if (existing) {
-      updatePageContent(PAGE_ID, writeResult.current_path, writeResult.previous_path, 0);
-      // Update summary in pages row too
+      updatePageContent(PAGE_ID, expectedPath, null, 0);
       db.prepare(`UPDATE pages SET summary = ? WHERE page_id = ?`).run(summary, PAGE_ID);
     } else {
       insertPage({
@@ -93,10 +97,13 @@ export async function regenerateSavedLinksPage(): Promise<void> {
         page_type: 'overview',
         category: null,
         summary,
-        content_path: writeResult.current_path,
-        previous_content_path: writeResult.previous_path,
+        content_path: expectedPath,
+        previous_content_path: null,
       });
     }
+
+    // Outbox: store markdown for Phase 3a flush + crash recovery.
+    setPendingContent(PAGE_ID, markdown);
 
     // FTS upsert so the page is searchable in the wiki
     db.prepare('DELETE FROM pages_fts WHERE page_id = ?').run(PAGE_ID);
@@ -106,4 +113,14 @@ export async function regenerateSavedLinksPage(): Promise<void> {
       markdown
     );
   })();
+
+  // Phase 3a (awaited): flush pending_content to disk via nlp-service.
+  // Errors are swallowed — callers are fire-and-forget; boot reconciler handles orphans.
+  try {
+    const writeResult = await callWritePage(markdown);
+    clearPendingContent(PAGE_ID, writeResult.previous_path);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'file_flush_failed', context: 'saved_links_regenerate', page_id: PAGE_ID, error: msg }));
+  }
 }

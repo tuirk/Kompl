@@ -116,6 +116,83 @@ def delete_page(page_id: str) -> None:
         logger.warning("vector delete failed for %s: %s", page_id, e)
 
 
+def export_all() -> list[dict[str, Any]]:
+    """Return all stored embeddings as a list of dicts for backup/export.
+
+    Each item: {page_id, embedding, metadata, document}.
+    Returns [] if the collection is empty. Paginates in batches of 500 to
+    avoid OOM on large collections.
+    """
+    collection = _get_collection()
+    try:
+        total = collection.count()
+        if total == 0:
+            return []
+        items: list[dict[str, Any]] = []
+        batch_size = 500
+        offset = 0
+        while offset < total:
+            batch = collection.get(
+                limit=batch_size,
+                offset=offset,
+                include=["embeddings", "metadatas", "documents"],
+            )
+            ids = batch.get("ids") or []
+            if not ids:
+                break  # stale count() — collection shrank during export; avoid infinite loop
+            embeddings = batch.get("embeddings") or []
+            metadatas = batch.get("metadatas") or []
+            documents = batch.get("documents") or []
+            for i, page_id in enumerate(ids):
+                items.append({
+                    "page_id": page_id,
+                    "embedding": embeddings[i] if i < len(embeddings) else [],
+                    "metadata": metadatas[i] if i < len(metadatas) else {},
+                    "document": documents[i] if i < len(documents) else "",
+                })
+            offset += len(ids)  # use actual returned count for the last (partial) batch
+        return items
+    except Exception as e:
+        logger.error("export_all failed: %s", e)
+        return []
+
+
+def restore_bulk(items: list[dict[str, Any]]) -> int:
+    """Bulk-restore pre-computed embeddings without re-embedding.
+
+    Each item must have: page_id (str), embedding (list[float]),
+    metadata (dict), document (str). Returns count of items restored.
+    Skips items with missing/empty embeddings.
+    """
+    if not items:
+        return 0
+    collection = _get_collection()
+    ids, embeddings, metadatas, documents = [], [], [], []
+    for item in items:
+        emb = item.get("embedding")
+        if not emb:
+            continue
+        ids.append(str(item["page_id"]))
+        embeddings.append(emb)
+        safe_meta: dict[str, Any] = {
+            "title": str(item.get("metadata", {}).get("title", "")),
+            "page_type": str(item.get("metadata", {}).get("page_type", "")),
+            "category": str(item.get("metadata", {}).get("category", "")),
+            "source_count": int(item.get("metadata", {}).get("source_count", 0)),
+        }
+        metadatas.append(safe_meta)
+        documents.append(str(item.get("document", ""))[:_MAX_EMBED_CHARS])
+    if not ids:
+        return 0
+    try:
+        collection.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
+        logger.info("restore_bulk: restored %d embeddings", len(ids))
+    except Exception as e:
+        logger.error("restore_bulk upsert failed: %s", e)
+        raise
+    return len(ids)
+
+
 def get_indexed_ids(page_ids: list[str]) -> set[str]:
     """Return the subset of page_ids that are already in Chroma.
 

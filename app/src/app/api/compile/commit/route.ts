@@ -58,9 +58,47 @@ import {
   readRawMarkdown,
   getCurrentPageHash,
   incrementPageSourceCount,
+  setPendingContent,
+  clearPendingContent,
 } from '../../../../lib/db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
+
+/**
+ * Upsert a page into the vector store with up to 3 attempts and 500ms backoff.
+ * On final failure the page_id is written to vector_backfill_queue so it can
+ * be recovered via POST /api/compile/backfill-vectors without re-compiling.
+ * Never throws — vector failures must not fail the compile response.
+ */
+async function upsertVectorWithRetry(
+  page_id: string,
+  metadata: Record<string, unknown>,
+  retries = 3
+): Promise<void> {
+  const db = getDb();
+  const payload = JSON.stringify({ page_id, metadata });
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const res = await fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (res.ok) return;
+      throw new Error(`status ${res.status}`);
+    } catch (err) {
+      if (attempt < retries - 1) {
+        await new Promise((r) => setTimeout(r, 500));
+      } else {
+        console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'vector_upsert_failed', page_id, error: err instanceof Error ? err.message : String(err) }));
+        try {
+          db.prepare('INSERT OR IGNORE INTO vector_backfill_queue (page_id) VALUES (?)').run(page_id);
+        } catch { /* non-fatal */ }
+      }
+    }
+  }
+}
 
 // Slugify a title into a URL-safe page_id.
 // e.g. "Bitcoin: A Peer-to-Peer System" → "bitcoin-a-peer-to-peer-system"
@@ -281,6 +319,22 @@ async function commitSession(session_id: string): Promise<Response> {
     );
   }
 
+  // Guard: block commit if any non-provenance-only plan has null draft_content.
+  // A page with NULL content would be committed as an empty wiki entry.
+  const nullDraftPlans = plans.filter(
+    (p) => p.action !== 'provenance-only' && !p.draft_content
+  );
+  if (nullDraftPlans.length > 0) {
+    return NextResponse.json(
+      {
+        error: 'commit_blocked_null_drafts',
+        count: nullDraftPlans.length,
+        pages: nullDraftPlans.map((p) => p.plan_id),
+      },
+      { status: 422 }
+    );
+  }
+
   let committed = 0;
   let failed = 0;
   let pagesCreated = 0;
@@ -312,10 +366,14 @@ async function commitSession(session_id: string): Promise<Response> {
             });
           }
           incrementPageSourceCount(existingPageId, sourceIds.length);
+          // Inside transaction — crash between commit and this call previously
+          // left plan stuck as 'crossreffed'. Now atomic with the provenance write.
+          updatePlanStatus(plan.plan_id, 'committed');
         })();
-        updatePlanStatus(plan.plan_id, 'committed');
         committed++;
-      } catch {
+      } catch (txErr) {
+        const txMsg = txErr instanceof Error ? txErr.message : String(txErr);
+        console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'db_transaction_error', context: 'provenance_only_commit', plan_id: plan.plan_id, session_id, error: txMsg }));
         updatePlanStatus(plan.plan_id, 'failed');
         failed++;
       }
@@ -329,8 +387,6 @@ async function commitSession(session_id: string): Promise<Response> {
       continue;
     }
 
-    // Phase 1 async: write gzip file via nlp-service (before sync transaction)
-    let writeResult: { current_path: string; previous_path: string | null };
     let page_id: string;
 
     if (plan.action === 'update' && plan.existing_page_id) {
@@ -348,28 +404,19 @@ async function commitSession(session_id: string): Promise<Response> {
       page_id = `${base || 'page'}-${suffix}`;
     }
 
-    try {
-      const res = await fetch(`${NLP_SERVICE_URL}/storage/write-page`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ page_id, markdown }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) throw new Error(`write_page_failed: ${res.status}`);
-      writeResult = await res.json() as typeof writeResult;
-    } catch {
-      updatePlanStatus(plan.plan_id, 'failed');
-      failed++;
-      continue;
-    }
-
     // Extract frontmatter fields (category, summary) from YAML
     const categoryMatch = markdown.match(/^category:\s*["']?(.+?)["']?\s*$/m);
     const summaryMatch = markdown.match(/^summary:\s*["']?(.+?)["']?\s*$/m);
     const category = categoryMatch?.[1]?.trim() ?? null;
     const summary = summaryMatch?.[1]?.trim() ?? null;
 
-    // Phase 2: sync transaction — insertPage + insertProvenance + FTS5
+    // Deterministic path — known before the file is written (page_id is fixed).
+    const expectedPath = `/data/pages/${page_id}.md.gz`;
+
+    // Phase 2: sync transaction — insertPage + setPendingContent + insertProvenance + FTS5
+    // File is NOT written yet. pending_content stores the markdown so the boot
+    // reconciler can re-attempt the flush if Phase 3a crashes.
+    // updatePlanStatus('committed') is inside the transaction (Gap 3 fix).
     try {
       db.transaction(() => {
         insertPage({
@@ -378,13 +425,16 @@ async function commitSession(session_id: string): Promise<Response> {
           page_type: plan.page_type,
           category,
           summary,
-          content_path: writeResult.current_path,
-          previous_content_path: writeResult.previous_path,
+          content_path: expectedPath,
+          previous_content_path: null, // set by clearPendingContent after Phase 3a
         });
 
         // Fix source_count to actual number of contributing sources
         db.prepare(`UPDATE pages SET source_count = ? WHERE page_id = ?`)
           .run(sourceIds.length, page_id);
+
+        // Outbox: store markdown for Phase 3a flush + crash recovery.
+        setPendingContent(page_id, markdown);
 
         const contribType = plan.action === 'update' ? 'updated' : 'created';
         for (const sid of sourceIds) {
@@ -415,48 +465,66 @@ async function commitSession(session_id: string): Promise<Response> {
             action: plan.action,
           },
         });
+
+        // Plan status inside transaction — crash between txn commit and here
+        // previously left plan stuck as 'crossreffed'. Now atomic with the page write.
+        updatePlanStatus(plan.plan_id, 'committed');
       })();
-
-      // Phase 3: backfill alias canonical_page_id for entity pages (fire-and-forget)
-      if (plan.page_type === 'entity') {
-        try {
-          db.prepare(
-            `UPDATE aliases SET canonical_page_id = ? WHERE canonical_name = ? COLLATE NOCASE`
-          ).run(page_id, plan.title);
-        } catch {
-          // non-critical
-        }
-      }
-
-      // Phase 3: vector upsert — non-fatal, backfillable via /api/compile/backfill-vectors
-      void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          page_id,
-          metadata: {
-            title: plan.title,
-            page_type: plan.page_type,
-            category: category ?? '',
-            source_count: sourceIds.length,
-          },
-        }),
-        signal: AbortSignal.timeout(30_000),
-      }).catch(() => {});
-
-      updatePlanStatus(plan.plan_id, 'committed');
-      committed++;
-      if (plan.action === 'update') pagesUpdated++; else pagesCreated++;
-    } catch {
+    } catch (txErr) {
+      const txMsg = txErr instanceof Error ? txErr.message : String(txErr);
+      console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'db_transaction_error', context: 'session_commit', plan_id: plan.plan_id, page_id, session_id, error: txMsg }));
       updatePlanStatus(plan.plan_id, 'failed');
       failed++;
+      continue;
     }
+
+    // Phase 3a (awaited): flush pending_content to disk via nlp-service.
+    // pending_content stays populated until this succeeds, so the boot reconciler
+    // can re-attempt if Phase 3a crashes before clearPendingContent runs.
+    try {
+      const res = await fetch(`${NLP_SERVICE_URL}/storage/write-page`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ page_id, markdown }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) throw new Error(`write_page_failed: ${res.status}`);
+      const wr = await res.json() as { current_path: string; previous_path: string | null };
+      clearPendingContent(page_id, wr.previous_path);
+    } catch (flushErr) {
+      const flushMsg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+      console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'file_flush_failed', context: 'session_commit', plan_id: plan.plan_id, page_id, session_id, error: flushMsg }));
+      // Plan is already committed in DB. pending_content stays for reconciler.
+      // Do not mark as failed — the page row is durable; only the file is missing.
+    }
+
+    // Phase 3b: backfill alias canonical_page_id for entity pages (fire-and-forget)
+    if (plan.page_type === 'entity') {
+      try {
+        db.prepare(
+          `UPDATE aliases SET canonical_page_id = ? WHERE canonical_name = ? COLLATE NOCASE`
+        ).run(page_id, plan.title);
+      } catch {
+        // non-critical
+      }
+    }
+
+    // Phase 3b: vector upsert — retried 3× before queuing for backfill.
+    void upsertVectorWithRetry(page_id, {
+      title: plan.title,
+      page_type: plan.page_type,
+      category: category ?? '',
+      source_count: sourceIds.length,
+    });
+
+    committed++;
+    if (plan.action === 'update') pagesUpdated++; else pagesCreated++;
   }
 
   // ── Wikilink → page_links pass ───────────────────────────────────────────────
   // Parse [[Page Title]] from every committed page's markdown and insert
   // page_links rows. Done after the loop so all page_ids exist in the DB.
-  // Fire-and-forget — a failure here doesn't fail the commit response.
+  let wikilinkWarnings = 0;
   try {
     const titleMap = getPageTitleMap(); // title.toLowerCase() → page_id
     const committedPlans = plans.filter((p) => p.draft_content && p.action !== 'provenance-only');
@@ -479,8 +547,9 @@ async function commitSession(session_id: string): Promise<Response> {
         }
       }
     }
-  } catch {
-    // non-critical — graph edges can be rebuilt on next compile
+  } catch (wikiErr) {
+    wikilinkWarnings++;
+    console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'wikilink_edge_failed', session_id, error: wikiErr instanceof Error ? wikiErr.message : String(wikiErr) }));
   }
 
   // Mark all session sources as active
@@ -490,7 +559,7 @@ async function commitSession(session_id: string): Promise<Response> {
   }
 
   return NextResponse.json(
-    { session_id, committed, failed, pages_created: pagesCreated, pages_updated: pagesUpdated, sources_activated: sourcesActivated },
+    { session_id, committed, failed, pages_created: pagesCreated, pages_updated: pagesUpdated, sources_activated: sourcesActivated, wikilink_warnings: wikilinkWarnings },
     { status: 200 }
   );
 }
@@ -605,19 +674,12 @@ export async function POST(request: Request) {
     compileResult.body,
   ].join('\n');
 
-  // Write page file via nlp-service storage endpoint (Phase 1 file write,
-  // before the sync transaction — orphan is harmless, overwritten on retry).
-  let writeResult: WritePageResult;
-  try {
-    writeResult = await callWritePage(page_id, pageMarkdown);
-  } catch (e) {
-    markCompileFailed(source_id);
-    const msg = e instanceof Error ? e.message : 'unknown';
-    return NextResponse.json({ error: `page_write_failed: ${msg}` }, { status: 500 });
-  }
+  // Deterministic path — known before the file is written (page_id is fixed).
+  const expectedPath = `/data/pages/${page_id}.md.gz`;
 
   // ---- Phase 2: synchronous db.transaction callback ----
-  // NO await inside. File write is already done above (Phase 1).
+  // File is NOT written yet. pending_content stores markdown so the boot
+  // reconciler can re-attempt the flush if Phase 3a crashes.
   try {
     const txn = db.transaction(() => {
       insertPage({
@@ -626,9 +688,12 @@ export async function POST(request: Request) {
         page_type: compileResult.page_type,
         category: compileResult.category,
         summary: compileResult.summary,
-        content_path: writeResult.current_path,
-        previous_content_path: writeResult.previous_path,
+        content_path: expectedPath,
+        previous_content_path: null, // set by clearPendingContent after Phase 3a
       });
+
+      // Outbox: store markdown for Phase 3a flush + crash recovery.
+      setPendingContent(page_id, pageMarkdown);
 
       insertProvenance({
         source_id,
@@ -643,8 +708,6 @@ export async function POST(request: Request) {
         `INSERT INTO pages_fts (page_id, title, content)
          VALUES (?, ?, ?)`
       ).run(page_id, compileResult.title, compileResult.body);
-
-      markCompileSuccess(source_id, page_id);
 
       insertActivity({
         action_type: 'page_compiled',
@@ -662,29 +725,36 @@ export async function POST(request: Request) {
     txn();
   } catch (e) {
     const message = e instanceof Error ? e.message : 'unknown';
+    console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'db_transaction_error', context: 'single_source_commit', source_id, page_id, error: message }));
     return NextResponse.json({ error: `commit_failed: ${message}` }, { status: 500 });
   }
 
-  // ---- Phase 3: fire-and-forget ----
+  // ---- Phase 3a (awaited): flush pending_content to disk via nlp-service ----
+  // markCompileSuccess is here (not in Phase 2) so compile_status = 'compiled'
+  // only flips when the file is durably on disk. If flush fails, the source
+  // stays non-compiled and n8n can retry naturally instead of hitting 409.
+  try {
+    const writeResult = await callWritePage(page_id, pageMarkdown);
+    clearPendingContent(page_id, writeResult.previous_path);
+    markCompileSuccess(source_id, page_id);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'unknown';
+    console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'file_flush_failed', context: 'single_source_commit', source_id, page_id, error: msg }));
+    // pending_content stays set for boot reconciler. compile_status stays
+    // non-compiled so n8n will retry and the reconciler will flush the file.
+  }
+
+  // ---- Phase 3b: fire-and-forget ----
   // Entity stub pages — does not block the HTTP response.
   void expandEntities(page_id, compileResult.category, compileResult.entities);
 
-  // Vector upsert — non-fatal; missing pages can be backfilled via
-  // POST /api/compile/backfill-vectors anytime.
-  void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      page_id,
-      metadata: {
-        title: compileResult.title,
-        page_type: compileResult.page_type,
-        category: compileResult.category ?? '',
-        source_count: 1,
-      },
-    }),
-    signal: AbortSignal.timeout(30_000),
-  }).catch(() => {});
+  // Vector upsert — retried 3× before queuing for backfill.
+  void upsertVectorWithRetry(page_id, {
+    title: compileResult.title,
+    page_type: compileResult.page_type,
+    category: compileResult.category ?? '',
+    source_count: 1,
+  });
 
   return NextResponse.json({ source_id, page_id, status: 'compiled' }, { status: 200 });
 }

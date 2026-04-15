@@ -4,6 +4,9 @@ export interface HealthResponse {
   schema_version: number
   table_count: number
   page_count: number
+  nlp_ok?: boolean
+  vector_backlog?: number
+  stale_sessions_fixed?: number
 }
 
 export async function checkHealth(port: number): Promise<HealthResponse | null> {

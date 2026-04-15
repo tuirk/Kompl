@@ -31,6 +31,7 @@ services:
     build:
       context: .
       dockerfile: app/Dockerfile
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
@@ -42,24 +43,31 @@ services:
       - kompl-data:/data
     depends_on:
       n8n:
-        condition: service_started
+        condition: service_healthy
       nlp-service:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       # node is always present in node:20-slim; wget/curl are not.
-      # JSON array form avoids shell escaping. Exits 0 only on HTTP 200
-      # + {"status":"ok"} body; exits 1 on non-200, parse error, socket
-      # error, or 3s socket timeout. Docker's own timeout: 5s (outer kill).
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health',r=>{if(r.statusCode!==200)process.exit(1);let d='';r.on('data',c=>d+=c);r.on('end',()=>{try{if(JSON.parse(d).status==='ok')process.exit(0);process.exit(1)}catch{process.exit(1)}})}).on('error',()=>process.exit(1)).setTimeout(3000,()=>process.exit(1))"]
+      # Checks HTTP status only (not JSON body): exits 0 on HTTP 200, exits 1
+      # on non-200, socket error, or 3s timeout. Both status:'ok' and
+      # status:'degraded' return HTTP 200 — the container stays healthy while
+      # NLP is temporarily unreachable. Only status:'error' returns HTTP 500.
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1)).setTimeout(3000,()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: '1.0'
 
   nlp-service:
     build:
       context: ./nlp-service
       dockerfile: Dockerfile
+    restart: unless-stopped
     environment:
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
       PYTHONUNBUFFERED: "1"
@@ -75,7 +83,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434/v1}
     depends_on:
       ollama:
-        condition: service_started
+        condition: service_healthy
     volumes:
       # Shared file access to /data/raw so MarkItDown can read uploads
       # that Next.js wrote. Does NOT include write access to /data/db/kompl.db
@@ -89,14 +97,20 @@ services:
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      test: ["CMD", "python", "-c", "import urllib.request, sys; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read(); sys.exit(0)"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: '2.0'
 
   n8n:
     image: n8nio/n8n:2.15.0
+    restart: unless-stopped
     entrypoint: ["/auto-import.sh"]
     environment:
       # Task runner — both timeouts MUST be set explicitly in n8n 2.x
@@ -111,7 +125,7 @@ services:
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
       # Binary data on the shared volume so nlp-service can read uploads.
       N8N_DEFAULT_BINARY_DATA_MODE: "filesystem"
-      GENERIC_TIMEZONE: "UTC"
+      GENERIC_TIMEZONE: ${KOMPL_TIMEZONE:-UTC}
       # Pass the Firecrawl key in case future workflows need it via
       # credentials files (commit 3 uses nlp-service for Firecrawl).
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
@@ -123,6 +137,20 @@ services:
     # Dev-only: n8n UI accessible on host at 127.0.0.1:5678. Bound to loopback — not internet-accessible. Remove for production.
     ports:
       - "127.0.0.1:5678:5678"
+    # n8n exposes /healthz. n8n is a Node.js app so `node` is always present;
+    # wget and curl are NOT in the n8n image. Use the same node HTTP pattern as
+    # the app healthcheck. Give 45s start_period for auto-import.sh to finish.
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5678/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1)).setTimeout(3000,()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: '0.5'
 
   wiki:
     image: alpine:latest
@@ -130,6 +158,8 @@ services:
 
   ollama:
     image: ollama/ollama:latest
+    init: true
+    restart: unless-stopped
     # CPU-only: no GPU reservation block — omitting deploy.resources.reservations.devices
     # is sufficient. The official ollama/ollama image auto-detects and uses CPU.
     environment:
@@ -152,9 +182,18 @@ services:
       timeout: 5s
       retries: 8
       start_period: 60s
-    # Start the server, wait for it to be ready, then pull llama3.2:3b and
-    # warm it into RAM so the first user request has no cold-start delay.
-    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull llama3.2:3b && ollama run llama3.2:3b '' && wait"]
+    # Run ollama serve as a background process, pull the model, warm it into RAM,
+    # then wait. SIGTERM is trapped and forwarded to ollama serve so graceful
+    # shutdown works correctly. init:true injects tini as PID 1 for zombie reaping.
+    # Trap is set BEFORE backgrounding to eliminate the race window where SIGTERM
+    # arrives during the slow ollama pull/warmup phase. Handler calls wait after
+    # kill so the shell waits for ollama to finish cleanup before exiting.
+    entrypoint: ["/bin/sh", "-c", "trap 'kill -TERM \"$OLLAMA_PID\"; wait \"$OLLAMA_PID\"' TERM INT; ollama serve & OLLAMA_PID=$!; sleep 5 && ollama pull llama3.2:3b && ollama run llama3.2:3b ''; wait \"$OLLAMA_PID\""]
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+          cpus: '4.0'
 
 volumes:
   kompl-data:

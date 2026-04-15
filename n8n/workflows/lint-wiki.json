@@ -9,13 +9,13 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "0 22 * * 6"
+              "expression": "30 11 * * 1"
             }
           ]
         }
       },
       "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "name": "Schedule: Sat 22:00 UTC (Pre-Digest)",
+      "name": "Schedule: Mon 11:30 Local",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [240, 300]
@@ -84,7 +84,7 @@
     }
   ],
   "connections": {
-    "Schedule: Sat 22:00 UTC (Pre-Digest)": {
+    "Schedule: Mon 11:30 Local": {
       "main": [
         [
           {

@@ -9,13 +9,13 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "0 0 * * 0"
+              "expression": "40 11 * * 1"
             }
           ]
         }
       },
       "id": "e5f6a7b8-c9d0-1234-efab-345678901234",
-      "name": "Schedule: Sunday 00:00 UTC",
+      "name": "Schedule: Mon 11:40 Local",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [240, 300]
@@ -70,7 +70,7 @@
     }
   ],
   "connections": {
-    "Schedule: Sunday 00:00 UTC": {
+    "Schedule: Mon 11:40 Local": {
       "main": [
         [
           {
@@ -95,8 +95,7 @@
     }
   },
   "settings": {
-    "executionOrder": "v1",
-    "timezone": "UTC"
+    "executionOrder": "v1"
   },
   "tags": []
 }

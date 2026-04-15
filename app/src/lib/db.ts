@@ -47,7 +47,18 @@ function openDb(): Database.Database {
   // by the time Next.js starts (single-container entrypoint sequence).
   _db = new Database(DB_PATH, { fileMustExist: true });
   _db.pragma('journal_mode = WAL');
+  // Retry for up to 5 s on SQLITE_BUSY before throwing — handles concurrent
+  // reads during heavy compile loads without failing the transaction.
+  _db.pragma('busy_timeout = 5000');
+  // NORMAL is safe with WAL mode and faster than FULL (the WAL journal already
+  // guarantees durability at the OS level). Note: recent transactions may be
+  // lost on OS/power crash (not app crash) — acceptable for a web app.
+  _db.pragma('synchronous = NORMAL');
   _db.pragma('foreign_keys = ON');
+  // 64 MB in-memory page cache — reduces disk I/O on repeated reads.
+  _db.pragma('cache_size = -64000');
+  // 256 MB memory-mapped I/O — fewer syscalls for sequential scans.
+  _db.pragma('mmap_size = 268435456');
   return _db;
 }
 
@@ -113,6 +124,7 @@ const EXPECTED_TABLES = [
   'compile_progress',
   'chat_messages',
   'ingest_failures',
+  'vector_backfill_queue',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -457,13 +469,15 @@ export interface PageRow {
   last_updated: string;
   source_count: number;
   created_at: string;
+  pending_content: string | null;
 }
 
 export function getPage(pageId: string): PageRow | null {
   const row = openDb()
     .prepare(
       `SELECT page_id, title, page_type, category, summary, content_path,
-              previous_content_path, last_updated, source_count, created_at
+              previous_content_path, last_updated, source_count, created_at,
+              pending_content
          FROM pages WHERE page_id = ?`
     )
     .get(pageId) as PageRow | undefined;
@@ -515,13 +529,20 @@ export function pagesFilePath(pageId: string): string {
 
 /**
  * Read and decompress a compiled wiki page. Used by /page/[page_id] server
- * component. Returns null if the file is missing.
+ * component. Returns null if both the file and pending_content are missing.
+ *
+ * Falls back to pages.pending_content (raw TEXT) when the gzip file has not yet
+ * been flushed to disk — covers the Phase 2→3a window and boot-reconciler lag.
  */
 export function readPageMarkdown(pageId: string): string | null {
   const filePath = pagesFilePath(pageId);
-  if (!fs.existsSync(filePath)) return null;
-  const gzipped = fs.readFileSync(filePath);
-  return zlib.gunzipSync(gzipped).toString('utf-8');
+  if (fs.existsSync(filePath)) {
+    const gzipped = fs.readFileSync(filePath);
+    return zlib.gunzipSync(gzipped).toString('utf-8');
+  }
+  // File not yet flushed — return in-flight content if available.
+  const page = getPage(pageId);
+  return page?.pending_content ?? null;
 }
 
 // ============================================================================
@@ -784,6 +805,14 @@ export function getWikiGraph(): GraphData {
 export function getPageCount(): number {
   const row = openDb()
     .prepare('SELECT COUNT(*) AS n FROM pages')
+    .get() as { n: number };
+  return row.n;
+}
+
+/** Count of pages waiting for vector re-indexing (failed upsert). */
+export function getVectorBacklogCount(): number {
+  const row = openDb()
+    .prepare('SELECT COUNT(*) AS n FROM vector_backfill_queue')
     .get() as { n: number };
   return row.n;
 }
@@ -1873,6 +1902,39 @@ export function setLintEnabled(value: boolean): void {
   setSetting('lint_enabled', value ? '1' : '0');
 }
 
+// ---------------------------------------------------------------------------
+// Deployment mode
+// ---------------------------------------------------------------------------
+
+export function getDeploymentMode(): 'personal-device' | 'always-on' {
+  const v = getSetting('deployment_mode');
+  return v === 'always-on' ? 'always-on' : 'personal-device';
+}
+
+export function setDeploymentMode(v: 'personal-device' | 'always-on'): void {
+  setSetting('deployment_mode', v);
+}
+
+// ---------------------------------------------------------------------------
+// Startup task timestamps
+// ---------------------------------------------------------------------------
+
+export function getLastLintAt(): string | null {
+  return getSetting('last_lint_at');
+}
+
+export function setLastLintAt(ts: string): void {
+  setSetting('last_lint_at', ts);
+}
+
+export function getLastBackupAt(): string | null {
+  return getSetting('last_backup_at');
+}
+
+export function setLastBackupAt(ts: string): void {
+  setSetting('last_backup_at', ts);
+}
+
 /**
  * Fetch the details JSON from the most recent lint_complete activity row.
  * Returns null if no lint has ever run.
@@ -2047,6 +2109,49 @@ export function updatePageContent(
         WHERE page_id = ?`
     )
     .run(contentPath, previousContentPath, sourceCount, pageId);
+}
+
+// ── Outbox helpers (crash-safe file writes, CLAUDE.md Gap 2) ─────────────────
+//
+// Phase 2 stores markdown in pending_content alongside the expected content_path.
+// Phase 3a flushes to disk then calls clearPendingContent. If Phase 3a crashes,
+// pending_content IS NOT NULL acts as a reconciler signal on next boot/request.
+
+/** Mark a page as needing a file flush. Called inside db.transaction() in Phase 2. */
+export function setPendingContent(pageId: string, content: string): void {
+  openDb()
+    .prepare('UPDATE pages SET pending_content = ? WHERE page_id = ?')
+    .run(content, pageId);
+}
+
+/**
+ * Clear the outbox buffer after a successful file flush. Also stores the
+ * previous_content_path returned by write_page (the archive path for the
+ * prior version, determined at flush time).
+ * Called OUTSIDE any transaction — it is a separate statement after Phase 3a.
+ */
+export function clearPendingContent(pageId: string, previousContentPath: string | null): void {
+  openDb()
+    .prepare(
+      'UPDATE pages SET pending_content = NULL, previous_content_path = ? WHERE page_id = ?'
+    )
+    .run(previousContentPath, pageId);
+}
+
+/**
+ * Return all pages that have a pending file flush. Used by the boot reconciler
+ * and the /api/health endpoint to detect and recover unflushed pages.
+ */
+export function getPendingFlushPages(): Array<{
+  page_id: string;
+  content_path: string;
+  pending_content: string;
+}> {
+  return openDb()
+    .prepare(
+      'SELECT page_id, content_path, pending_content FROM pages WHERE pending_content IS NOT NULL'
+    )
+    .all() as Array<{ page_id: string; content_path: string; pending_content: string }>;
 }
 
 /**

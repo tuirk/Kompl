@@ -24,6 +24,8 @@ import {
   readRawMarkdown,
   archivePage,
   updatePageContent,
+  setPendingContent,
+  clearPendingContent,
 } from './db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -132,20 +134,23 @@ export async function recompilePage(pageId: string, removedSourceId: string): Pr
   // ── Phase 1: call Gemini via NLP service ─────────────────────────────────
   const newMarkdown = await callDraftPage(page.page_type, page.title, sourceContents);
 
-  // ── Phase 1: write file (before sync transaction — orphan is harmless) ───
-  const writeResult = await callWritePage(pageId, newMarkdown);
-
-  // ── Phase 2: sync transaction — update pages + FTS5 ──────────────────────
+  // ── Phase 2: sync transaction — update pages + setPendingContent + FTS5 ──
+  // File is NOT written yet. pending_content stores markdown so the boot
+  // reconciler can re-attempt the flush if Phase 3a crashes.
   const db = getDb();
   const newSourceCount = sourceContents.length;
+  const expectedPath = `/data/pages/${pageId}.md.gz`;
 
   db.transaction(() => {
     updatePageContent(
       pageId,
-      writeResult.current_path,
-      writeResult.previous_path,
+      expectedPath,
+      null, // previous_content_path set by clearPendingContent after Phase 3a
       newSourceCount
     );
+
+    // Outbox: store markdown for Phase 3a flush + crash recovery.
+    setPendingContent(pageId, newMarkdown);
 
     // FTS5 upsert: strip frontmatter before indexing
     const bodyForFts = newMarkdown.replace(/^---[\s\S]*?---\n*/m, '');
@@ -155,7 +160,12 @@ export async function recompilePage(pageId: string, removedSourceId: string): Pr
     ).run(pageId, page.title, bodyForFts);
   })();
 
-  // ── Phase 3: vector upsert — fire-and-forget ─────────────────────────────
+  // ── Phase 3a (awaited): flush pending_content to disk via nlp-service ────
+  // Throws on failure — caller catches and falls back to decrementPageSourceCount.
+  const writeResult = await callWritePage(pageId, newMarkdown);
+  clearPendingContent(pageId, writeResult.previous_path);
+
+  // ── Phase 3b: vector upsert — fire-and-forget ────────────────────────────
   void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

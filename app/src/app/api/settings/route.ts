@@ -16,6 +16,8 @@ import {
   getDigestSettings, setDigestSettings,
   getLintEnabled, setLintEnabled, getLastLintResult,
   getStaleThresholdDays, setStaleThresholdDays,
+  getDeploymentMode, setDeploymentMode,
+  getLastLintAt, getLastBackupAt,
 } from '../../../lib/db';
 
 function buildResponse() {
@@ -30,6 +32,9 @@ function buildResponse() {
     digest_telegram_chat_id: digest.telegram_chat_id,
     lint_enabled: getLintEnabled(),
     lint_last_result: getLastLintResult(),
+    deployment_mode: getDeploymentMode(),
+    last_lint_at: getLastLintAt(),
+    last_backup_at: getLastBackupAt(),
   };
 }
 
@@ -47,13 +52,14 @@ export async function POST(request: Request) {
     digest_telegram_token?: string;
     digest_telegram_chat_id?: string;
     lint_enabled?: boolean;
+    deployment_mode?: 'personal-device' | 'always-on';
   };
 
   const knownFields = [
     'auto_approve', 'chat_provider', 'related_pages_min_sources',
     'stale_threshold_days',
     'digest_enabled', 'digest_telegram_token', 'digest_telegram_chat_id',
-    'lint_enabled',
+    'lint_enabled', 'deployment_mode',
   ];
   if (!knownFields.some((f) => f in body)) {
     return NextResponse.json({ error: 'no recognized setting field in request body' }, { status: 422 });
@@ -122,6 +128,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'lint_enabled must be a boolean' }, { status: 422 });
     }
     setLintEnabled(body.lint_enabled);
+  }
+
+  if (body.deployment_mode !== undefined) {
+    if (body.deployment_mode !== 'personal-device' && body.deployment_mode !== 'always-on') {
+      return NextResponse.json(
+        { error: "deployment_mode must be 'personal-device' or 'always-on'" },
+        { status: 422 },
+      );
+    }
+    setDeploymentMode(body.deployment_mode);
   }
 
   return NextResponse.json(buildResponse());

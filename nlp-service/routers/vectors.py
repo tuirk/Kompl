@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from services.file_store import read_page
-from services.vector_store import get_indexed_ids, search_pages, upsert_page
+from services.vector_store import export_all, get_indexed_ids, restore_bulk, search_pages, upsert_page
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,34 @@ class VectorSearchResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     matches: list[VectorMatch]
+
+
+class VectorExportItem(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    page_id: str
+    embedding: list[float]
+    metadata: dict
+    document: str
+
+
+class VectorExportResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    count: int
+    items: list[VectorExportItem]
+
+
+class VectorRestoreRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    items: list[VectorExportItem]
+
+
+class VectorRestoreResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    restored: int
 
 
 class BackfillRequest(BaseModel):
@@ -122,6 +150,45 @@ def vectors_search(req: VectorSearchRequest) -> VectorSearchResponse:
 
     matches = [VectorMatch(page_id=m["page_id"], similarity=m["similarity"]) for m in raw_matches]
     return VectorSearchResponse(matches=matches)
+
+
+@router.get("/vectors/export", response_model=VectorExportResponse)
+def vectors_export() -> VectorExportResponse:
+    """Export all stored embeddings for backup purposes.
+
+    Called by GET /api/export?format=kompl&include_vectors=true.
+    Returns all page embeddings so they can be restored without re-embedding.
+    """
+    try:
+        raw = export_all()
+    except Exception as e:
+        logger.error("vectors export failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"vectors_export_failed: {e}") from e
+    items = [
+        VectorExportItem(
+            page_id=item["page_id"],
+            embedding=item["embedding"],
+            metadata=item["metadata"],
+            document=item["document"],
+        )
+        for item in raw
+    ]
+    return VectorExportResponse(count=len(items), items=items)
+
+
+@router.post("/vectors/restore", response_model=VectorRestoreResponse)
+def vectors_restore(req: VectorRestoreRequest) -> VectorRestoreResponse:
+    """Restore pre-computed embeddings directly into Chroma without re-embedding.
+
+    Called by POST /api/import when vectors.json is present in the zip.
+    Skips items with empty embeddings gracefully.
+    """
+    try:
+        restored = restore_bulk([item.model_dump() for item in req.items])
+    except Exception as e:
+        logger.error("vectors restore failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"vectors_restore_failed: {e}") from e
+    return VectorRestoreResponse(restored=restored)
 
 
 @router.post("/vectors/backfill", response_model=BackfillResponse)

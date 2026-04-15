@@ -28,7 +28,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getDb, insertActivity, getLintEnabled } from '../../../../lib/db';
+import { getDb, insertActivity, getLintEnabled, setLastLintAt } from '../../../../lib/db';
 import { regenerateSavedLinksPage } from '../../../../lib/saved-links';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -176,6 +176,8 @@ export async function POST(request: Request) {
       run_duration_ms,
     },
   });
+
+  setLastLintAt(new Date().toISOString());
 
   // Refresh Saved Links wiki page — fire-and-forget, never blocks lint results.
   void regenerateSavedLinksPage().catch(() => {});

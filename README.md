@@ -26,7 +26,9 @@ cd kompl
 node setup.js
 ```
 
-The script handles everything: creates your config, asks for the two API keys, installs the `kompl` CLI, and starts the stack. No other steps needed.
+The script handles everything: creates your config, asks for the two API keys, installs the `kompl` CLI, and starts the stack. No other steps needed. Your system timezone is detected and written to `.env` as `KOMPL_TIMEZONE` automatically.
+
+During setup you'll be asked how this instance is running: **personal device** (laptop/desktop that may be off) or **always-on server** (VPS, Railway, Raspberry Pi). This controls how scheduled jobs — lint, digest, and local backup — are triggered. Personal-device mode fires them on `kompl start` so nothing is skipped if your machine was off at the scheduled time; always-on mode relies on n8n's built-in cron schedule.
 
 > **First start takes 5–10 minutes** — Docker is building images and downloading the local AI model. Make a coffee. Subsequent starts take ~15 seconds.
 
@@ -56,9 +58,10 @@ The onboarding wizard will walk you through connecting your first sources.
 kompl start      # start Kompl
 kompl stop       # stop it
 kompl open       # open in browser
-kompl status     # health check + page count
+kompl status     # health check: page count, NLP service, vector backlog
 kompl logs       # stream logs if something looks wrong
 kompl update     # pull latest version and restart
+kompl backup     # download a full backup to ~/.kompl/backups/kompl-backup.kompl.zip
 ```
 
 ---
@@ -104,4 +107,18 @@ Everything is stored in Docker volumes on your machine — nothing is sent anywh
 
 Go to **Settings → Kompl Backup** to download a `.kompl.zip` that contains your entire wiki: all sources, compiled pages, provenance, extractions, and settings (Telegram credentials excluded). No LLM calls needed to restore.
 
-To restore on a fresh instance: run setup, skip onboarding, go to **Settings → Import Wiki**, upload the `.kompl.zip`. All pages are immediately browsable and searchable.
+To include your search index (embeddings) in the backup — so related-pages works immediately after restore without any re-processing — enable **Include vectors** before downloading. This adds ~a few MB to the ZIP depending on wiki size.
+
+To restore on a fresh instance: run setup, skip onboarding, go to **Settings → Import Wiki**, upload the `.kompl.zip`. All pages are immediately browsable and searchable. If the ZIP includes vectors, they are restored directly; otherwise the search index is rebuilt automatically in the background.
+
+**Automatic backup (personal-device mode)** — if you chose personal-device mode during setup, `kompl start` automatically saves a local backup to `~/.kompl/backups/kompl-backup.kompl.zip` (at most once every 36 hours, so it won't run on every start if you restart frequently). The Settings page shows when the last backup ran.
+
+**CLI backup** — `kompl backup` downloads the same export without opening a browser:
+
+```bash
+kompl backup                        # save to ~/.kompl/backups/kompl-backup.kompl.zip (overwrites)
+kompl backup --output ~/Desktop/my-wiki.kompl.zip   # save to a custom path
+kompl backup --schedule             # register a Windows Task Scheduler entry (Monday 11:30, local timezone)
+```
+
+`--schedule` is idempotent and requires admin. The task uses `StartWhenAvailable`, so if your laptop was off at 11:30 it runs on the next login instead of being skipped.

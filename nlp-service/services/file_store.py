@@ -7,8 +7,13 @@ canonical implementation of that rule for wiki pages.
 write_page(page_id, markdown) contract:
   - If /data/pages/{page_id}.md.gz exists: move it to
     /data/pages/{page_id}.{timestamp}.md.gz before writing the new content.
-  - Write new gzip-compressed content to /data/pages/{page_id}.md.gz.
+  - Write new gzip-compressed content to /data/pages/{page_id}.md.gz atomically
+    (write to .tmp.gz in same directory, then os.replace onto final path).
   - Returns (current_path, previous_path | None).
+
+Atomic write guarantee: the tmp file lives in _PAGES_DIR (same filesystem as
+the target) so os.replace() is a single rename(2) syscall — never a partial
+write is visible at the final path. The tmp file is cleaned up on any error.
 
 This module NEVER opens kompl.db. rule #1 in CLAUDE.md: kompl.db is held by
 the Next.js process exclusively.
@@ -18,7 +23,8 @@ from __future__ import annotations
 
 import gzip
 import os
-import shutil
+import tempfile
+import time
 from pathlib import Path
 
 _DATA_ROOT = "/data"
@@ -27,6 +33,11 @@ _PAGES_DIR = os.path.join(_DATA_ROOT, "pages")
 
 def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
     """Write a wiki page to gzip-compressed storage with version preservation.
+
+    The write is atomic: content is written to a sibling .tmp.gz file in the
+    same directory, then os.replace() renames it onto the final path. A crash
+    mid-write leaves only the .tmp.gz (which is cleaned up), never a corrupt
+    or truncated final file.
 
     Args:
         page_id:  URL-safe page identifier (e.g. "bitcoin-abc12345")
@@ -46,20 +57,31 @@ def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
     current_path = os.path.join(_PAGES_DIR, f"{page_id}.md.gz")
     previous_path: str | None = None
 
-    # Version archive — move existing file before overwriting.
+    # Version archive — atomically move existing file before overwriting.
+    # os.replace() is used instead of shutil.move() for clarity; both are
+    # atomic on POSIX when source and dest are on the same filesystem.
     if os.path.exists(current_path):
-        stat = os.stat(current_path)
-        # Use mtime (integer seconds) for the version timestamp so filenames
-        # are deterministic across time zones. Format: YYYYMMDD-HHMMSS in UTC.
-        import time
-        ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime(stat.st_mtime))
+        ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime(os.stat(current_path).st_mtime))
         previous_path = os.path.join(_PAGES_DIR, f"{page_id}.{ts}.md.gz")
-        shutil.move(current_path, previous_path)
+        os.replace(current_path, previous_path)
 
-    # Write new gzip-compressed content.
+    # Atomic write: write to .tmp.gz in the same directory (same filesystem),
+    # then os.replace() onto the final path. dir=_PAGES_DIR is required —
+    # /tmp is a separate tmpfs in Docker and would cause EXDEV on rename.
     content_bytes = markdown.encode("utf-8")
-    with gzip.open(current_path, "wb") as f:
-        f.write(content_bytes)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=_PAGES_DIR, suffix=".tmp.gz")
+    try:
+        with os.fdopen(tmp_fd, "wb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb") as gz:
+                gz.write(content_bytes)
+        # Both handles fully closed above — gzip trailer is flushed.
+        os.replace(tmp_path, current_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     return current_path, previous_path
 
