@@ -12,7 +12,7 @@ export type DockerStatus =
   | { ok: true }
   | { ok: false; reason: 'not-running' | 'permission-denied' | 'unknown' }
 
-export async function dockerRunning(): Promise<DockerStatus> {
+export function dockerRunning(): DockerStatus {
   try {
     execSync('docker info', { stdio: 'pipe' })
     return { ok: true }
@@ -62,6 +62,6 @@ export function streamLogs(projectDir: string, service?: string): void {
   process.on('SIGINT', () => child.kill('SIGINT'))
 }
 
-export async function psServices(projectDir: string): Promise<compose.DockerComposePsResult> {
+export function psServices(projectDir: string): ReturnType<typeof compose.ps> {
   return compose.ps(composeOpts(projectDir))
 }

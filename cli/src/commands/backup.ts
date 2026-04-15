@@ -93,7 +93,7 @@ function registerWindowsScheduledTask(): void {
   const result = spawnSync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tmp,
   ], { encoding: 'utf8', stdio: 'pipe' })
-  if (fs.existsSync(tmp)) fs.unlinkSync(tmp)
+  try { fs.unlinkSync(tmp) } catch { /* temp cleanup is best-effort */ }
 
   if (result.error) {
     const code = (result.error as NodeJS.ErrnoException).code
@@ -106,7 +106,7 @@ function registerWindowsScheduledTask(): void {
   }
 
   if (result.status !== 0) {
-    const stderr = (result.stderr ?? '').toString()
+    const stderr = result.stderr ?? ''
     const lower = stderr.toLowerCase()
     if (lower.includes('elevation') || lower.includes('access is denied') || lower.includes('access denied')) {
       console.error(`  Schedule     ${pc.red('●')} Run ${pc.bold('kompl backup --schedule')} as Administrator to register the scheduled task`)

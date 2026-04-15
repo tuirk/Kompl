@@ -19,6 +19,6 @@ export async function openCommand(): Promise<void> {
     console.log(pc.green(`✓ Opened ${url}`))
   } catch {
     // xdg-open fails on headless Linux servers (no DISPLAY) — just print the URL
-    console.log(pc.green(`✓ ${url}`))
+    console.log(pc.dim(`  Open ${url} in your browser.`))
   }
 }

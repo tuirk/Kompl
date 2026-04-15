@@ -13,6 +13,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "test": "jest",
     "prepublishOnly": "npm run build"
   },
   "engines": {
@@ -26,8 +27,11 @@
     "prompts": "^2.4.2"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.14",
     "@types/node": "^20.0.0",
     "@types/prompts": "^2.4.9",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.4.9",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0"
   }

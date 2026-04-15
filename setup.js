@@ -151,7 +151,7 @@ async function main() {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
   let envContent = fs.readFileSync(envDest, 'utf8')
   if (envContent.includes('KOMPL_TIMEZONE=')) {
-    envContent = envContent.replace(/KOMPL_TIMEZONE=.*/, `KOMPL_TIMEZONE=${timezone}`)
+    envContent = envContent.replace(/^KOMPL_TIMEZONE=.*/m, `KOMPL_TIMEZONE=${timezone}`)
   } else {
     const prefix = envContent.length > 0 && !envContent.endsWith('\n') ? '\n' : ''
     envContent += `${prefix}KOMPL_TIMEZONE=${timezone}\n`

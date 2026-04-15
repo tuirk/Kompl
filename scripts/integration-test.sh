@@ -460,7 +460,7 @@ stage_4_live_ingest() {
         powershell -Command "[guid]::NewGuid().ToString()" 2>/dev/null || \
         python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || \
         cat /proc/sys/kernel/random/uuid 2>/dev/null || \
-        echo "canary-$(date +%s)")
+        date +%s | sha256sum | awk '{print substr($1,1,8)"-"substr($1,9,4)"-4"substr($1,14,3)"-"substr($1,17,4)"-"substr($1,21,12)}')
     echo "  canary source_id: $canary_source_id"
 
     local canary_since
@@ -1409,6 +1409,9 @@ stage_18_wiki_aware_update() {
         return 0
     fi
 
+    local HEALTH PAGE_COUNT_BEFORE SESSION_ID COLLECT_RESP REVIEW SOURCE_IDS_JSON
+    local CONFIRM TIMEOUT ELAPSED STATUS PROG MATCH_DETAIL HEALTH_AFTER PAGE_COUNT_AFTER error_msg
+
     # Check that at least one page exists (stage 16/17 must have run first)
     HEALTH=$(curl -sf "http://localhost:3000/api/health" 2>/dev/null || echo "")
     PAGE_COUNT_BEFORE=$(echo "$HEALTH" | grep -o '"page_count":[0-9]*' | grep -o '[0-9]*' || echo "0")
@@ -1553,6 +1556,9 @@ stage_19_chat_canary() {
         return 0
     fi
 
+    local HEALTH PAGE_COUNT CHAT_SESSION CHAT_RESP ANSWER CITATIONS_PRESENT
+    local HISTORY_RESP MSG_COUNT
+
     HEALTH=$(curl -sf "http://localhost:3000/api/health" 2>/dev/null || echo "")
     PAGE_COUNT=$(echo "$HEALTH" | grep -o '"page_count":[0-9]*' | grep -o '[0-9]*' || echo "0")
     if [[ "$PAGE_COUNT" -lt 1 ]]; then
@@ -1612,6 +1618,9 @@ stage_19_chat_canary() {
 # ---------------------------------------------------------------------------
 stage_20_source_mgmt_canary() {
     echo "--- stage 20: source management + settings canary ---"
+
+    local SOURCES_RESP SOURCES_OK TOTAL SETTINGS_RESP SETTINGS_OK
+    local PATCH_RESP PATCH_OK DRAFTS_RESP DRAFTS_OK
 
     # Check GET /api/sources
     SOURCES_RESP=$(curl -sf "http://localhost:3000/api/sources" 2>/dev/null || echo "")
@@ -1674,6 +1683,9 @@ stage_20_source_mgmt_canary() {
 # ---------------------------------------------------------------------------
 stage_21_wiki_data_canary() {
     echo "--- stage 21: wiki data canary ---"
+
+    local INDEX_RESP PAGES_OK TOTAL_PAGES CATEGORIES_OK PAGE_ID
+    local DATA_RESP DATA_FIELDS_OK CONTENT_OK SOURCES_OK SEARCH_RESP SEARCH_OK
 
     # ── 1. GET /api/wiki/index ──────────────────────────────────────────────
     INDEX_RESP=$(curl -sf "http://localhost:3000/api/wiki/index" 2>/dev/null || echo "")

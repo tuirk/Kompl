@@ -49,11 +49,15 @@ export async function runStartupTasks(config: KomplConfig): Promise<void> {
         body: JSON.stringify({}),
         signal: AbortSignal.timeout(120_000),
       })
-      const result = await r.json() as { skipped?: boolean; run_duration_ms?: number }
-      if (result.skipped) {
-        process.stdout.write('\r' + pc.dim('  Scheduled lint      ') + pc.dim('● skipped (lint disabled)\n'))
+      if (!r.ok) {
+        process.stdout.write('\r' + pc.dim('  Scheduled lint      ') + pc.red(`● failed (${r.status})\n`))
       } else {
-        process.stdout.write('\r' + pc.dim('  Scheduled lint      ') + pc.green('●') + pc.dim(` done (${result.run_duration_ms}ms)\n`))
+        const result = await r.json() as { skipped?: boolean; run_duration_ms?: number }
+        if (result.skipped) {
+          process.stdout.write('\r' + pc.dim('  Scheduled lint      ') + pc.dim('● skipped (lint disabled)\n'))
+        } else {
+          process.stdout.write('\r' + pc.dim('  Scheduled lint      ') + pc.green('●') + pc.dim(` done (${result.run_duration_ms}ms)\n`))
+        }
       }
     } catch {
       process.stdout.write('\r' + pc.dim('  Scheduled lint      ') + pc.yellow('● timed out — will retry next start\n'))

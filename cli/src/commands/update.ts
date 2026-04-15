@@ -2,6 +2,7 @@ import pc from 'picocolors'
 import { readConfig } from '../config.js'
 import { pull, upAll } from '../compose.js'
 import { pollHealth } from '../health.js'
+import type { HealthResponse } from '../health.js'
 
 export async function updateCommand(): Promise<void> {
   const config = readConfig()
@@ -26,9 +27,13 @@ export async function updateCommand(): Promise<void> {
 
   process.stdout.write(pc.dim('Waiting for app to be ready'))
   const timer = setInterval(() => process.stdout.write('.'), 1000)
-  const health = await pollHealth(config.port, 60_000)
-  clearInterval(timer)
-  process.stdout.write('\n')
+  let health: import('../health.js').HealthResponse | null = null
+  try {
+    health = await pollHealth(config.port, 60_000)
+  } finally {
+    clearInterval(timer)
+    process.stdout.write('\n')
+  }
 
   if (!health) {
     console.log(pc.yellow('⚠ Update applied but health check timed out.'))

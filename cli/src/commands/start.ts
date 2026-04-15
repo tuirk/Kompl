@@ -4,6 +4,7 @@ import pc from 'picocolors'
 import { readConfig } from '../config.js'
 import { dockerRunning, upAll } from '../compose.js'
 import { pollHealth } from '../health.js'
+import type { HealthResponse } from '../health.js'
 import { runStartupTasks } from '../startup-tasks.js'
 
 export async function startCommand(): Promise<void> {
@@ -16,7 +17,7 @@ export async function startCommand(): Promise<void> {
   }
 
   console.log(pc.dim('Checking Docker...'))
-  const docker = await dockerRunning()
+  const docker = dockerRunning()
   if (!docker.ok) {
     if (docker.reason === 'permission-denied') {
       console.error(pc.red('✗ Docker permission denied.'))
@@ -39,10 +40,13 @@ export async function startCommand(): Promise<void> {
 
   process.stdout.write(pc.dim('Waiting for app to be ready'))
   const timer = setInterval(() => process.stdout.write('.'), 1000)
-
-  const health = await pollHealth(config.port, 60_000)
-  clearInterval(timer)
-  process.stdout.write('\n')
+  let health: HealthResponse | null = null
+  try {
+    health = await pollHealth(config.port, 60_000)
+  } finally {
+    clearInterval(timer)
+    process.stdout.write('\n')
+  }
 
   if (!health) {
     console.log(pc.yellow(`⚠ Stack started but health check timed out.`))
@@ -54,5 +58,8 @@ export async function startCommand(): Promise<void> {
   console.log(pc.dim(`  DB: schema v${health.schema_version}, ${health.page_count} pages`))
 
   // Fire-and-forget — does not block the prompt returning.
-  runStartupTasks(config).catch(() => { /* startup tasks are best-effort */ })
+  runStartupTasks(config).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(pc.dim(`\n  [startup] unexpected error: ${msg}`))
+  })
 }
