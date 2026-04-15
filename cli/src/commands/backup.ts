@@ -66,6 +66,14 @@ export async function backupCommand(opts: BackupOptions = {}): Promise<void> {
 }
 
 function registerScheduledTask(): void {
+  if (process.platform === 'linux') {
+    registerLinuxCron()
+  } else {
+    registerWindowsScheduledTask()
+  }
+}
+
+function registerWindowsScheduledTask(): void {
   const line = '─'.repeat(44)
   console.log(pc.bold('\nKompl backup scheduler'))
   console.log(pc.dim(line))
@@ -113,5 +121,58 @@ function registerScheduledTask(): void {
   console.log(`  Schedule     ${pc.green('●')} registered — kompl backup will run every Monday at 11:30`)
   console.log(pc.dim(`  Task name    \\Kompl\\WeeklyBackup`))
   console.log(pc.dim(`  Note         runs on next login if laptop was off at scheduled time`))
+  console.log(pc.dim(line + '\n'))
+}
+
+function registerLinuxCron(): void {
+  const line = '─'.repeat(44)
+  console.log(pc.bold('\nKompl backup scheduler'))
+  console.log(pc.dim(line))
+
+  const CRON_ENTRY = '30 11 * * 1 kompl backup'
+  const CRON_MARKER = '# kompl-weekly-backup'
+  const FULL_LINE = `${CRON_ENTRY} ${CRON_MARKER}`
+
+  // exit code 1 + empty stdout = "no crontab for this user" — that is NOT an error
+  const existing = spawnSync('crontab', ['-l'], { encoding: 'utf8', stdio: 'pipe' })
+
+  if (existing.error) {
+    const code = (existing.error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') {
+      console.error(`  Schedule     ${pc.red('●')} crontab not found — install cron (e.g. apt install cron)`)
+    } else {
+      console.error(`  Schedule     ${pc.red('●')} failed to read crontab: ${existing.error.message}`)
+    }
+    process.exit(1)
+  }
+
+  const currentCrontab = existing.stdout ?? ''
+
+  // Idempotency — bail if already registered
+  if (currentCrontab.includes(CRON_MARKER)) {
+    console.log(`  Schedule     ${pc.green('●')} already registered — no changes made`)
+    console.log(pc.dim(`  Cron entry   ${CRON_ENTRY}`))
+    console.log(pc.dim(line + '\n'))
+    return
+  }
+
+  // Append without disturbing existing lines
+  const separator = (currentCrontab === '' || currentCrontab.endsWith('\n')) ? '' : '\n'
+  const newCrontab = currentCrontab + separator + FULL_LINE + '\n'
+
+  const write = spawnSync('crontab', ['-'], { input: newCrontab, encoding: 'utf8', stdio: 'pipe' })
+
+  if (write.error) {
+    console.error(`  Schedule     ${pc.red('●')} failed to write crontab: ${write.error.message}`)
+    process.exit(1)
+  }
+  if (write.status !== 0) {
+    console.error(`  Schedule     ${pc.red('●')} crontab write failed: ${(write.stderr ?? '').trim()}`)
+    process.exit(1)
+  }
+
+  console.log(`  Schedule     ${pc.green('●')} registered — kompl backup will run every Monday at 11:30`)
+  console.log(pc.dim(`  Cron entry   ${CRON_ENTRY}`))
+  console.log(pc.dim(`  Note         cron does not catch up if machine was off at scheduled time`))
   console.log(pc.dim(line + '\n'))
 }

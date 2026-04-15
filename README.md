@@ -6,7 +6,7 @@ Turn scattered bookmarks, docs, and articles into a living wiki — automaticall
 
 Install these two things:
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — download, install, and make sure it's **running** before setup
+- **Docker** — [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/Mac) or [Docker Engine + Compose plugin](https://docs.docker.com/engine/install/) (Linux). Make sure it's **running** before setup.
 - [Node.js](https://nodejs.org/) ≥ 18
 
 You'll also need two API keys — both are free to get:
@@ -93,6 +93,8 @@ cd mcp-server && npm install && npm run build
 
 **Claude Desktop (Mac)** — same config at `~/Library/Application Support/Claude/claude_desktop_config.json`.
 
+**Claude Desktop (Linux)** — there is no official Linux release. If a Linux build is available, the config file is typically at `~/.config/Claude/claude_desktop_config.json`. Use the same JSON block as above with the correct absolute path.
+
 Kompl must be running (`kompl start`) for the MCP tools to respond. The server exposes four tools: `search_wiki`, `read_page`, `list_pages`, `wiki_stats`.
 
 ---
@@ -118,7 +120,7 @@ To restore on a fresh instance: run setup, skip onboarding, go to **Settings →
 ```bash
 kompl backup                        # save to ~/.kompl/backups/kompl-backup.kompl.zip (overwrites)
 kompl backup --output ~/Desktop/my-wiki.kompl.zip   # save to a custom path
-kompl backup --schedule             # register a Windows Task Scheduler entry (Monday 11:30, local timezone)
+kompl backup --schedule             # register a weekly backup schedule (Monday 11:30)
 ```
 
-`--schedule` is idempotent and requires admin. The task uses `StartWhenAvailable`, so if your laptop was off at 11:30 it runs on the next login instead of being skipped.
+`--schedule` is idempotent. On **Windows** it registers a Task Scheduler entry (requires admin); `StartWhenAvailable` means it runs on next login if the laptop was off at 11:30. On **Linux** it appends a crontab entry (`30 11 * * 1 kompl backup`) for the current user; standard cron does not catch up if the machine was off.

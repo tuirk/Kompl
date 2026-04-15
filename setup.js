@@ -42,12 +42,19 @@ async function main() {
   // ── 1. Check Docker ────────────────────────────────────────────────────────
   process.stdout.write('  Checking Docker... ')
   try {
-    execSync('docker info', { stdio: 'ignore' })
+    execSync('docker info', { stdio: 'pipe' })
     console.log(green('running'))
-  } catch {
+  } catch (err) {
     console.log('')
-    console.error('  Error: Docker Desktop is not running.')
-    console.error('  Start Docker Desktop and run this script again.\n')
+    const stderr = (err && err.stderr) ? err.stderr.toString() : ''
+    if (stderr.includes('permission denied')) {
+      console.error('  Error: Docker daemon is running but you do not have permission to use it.')
+      console.error('  Fix: add your user to the docker group, then log out and back in:')
+      console.error('    sudo usermod -aG docker $USER\n')
+    } else {
+      console.error('  Error: Docker is not running.')
+      console.error('  Start Docker (Docker Desktop on Windows/Mac, or the Docker daemon on Linux) and run this script again.\n')
+    }
     process.exit(1)
   }
 
@@ -97,8 +104,33 @@ async function main() {
   console.log('\n  Installing kompl CLI...')
   const cliDir = path.join(ROOT, 'cli')
   run('npm install', cliDir)
-  run('npm link', cliDir)
-  console.log(green('  kompl CLI installed'))
+  try {
+    run('npm link', cliDir)
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : String(err)
+    if (msg.includes('EACCES') || msg.includes('permission denied')) {
+      console.error('\n  Error: npm link failed — permission denied.')
+      console.error('  Your npm global prefix requires elevated access. Fix with:')
+      console.error('    mkdir -p ~/.npm-global')
+      console.error('    npm config set prefix ~/.npm-global')
+      console.error('    echo \'export PATH="$HOME/.npm-global/bin:$PATH"\' >> ~/.bashrc  # or ~/.zshrc')
+      console.error('    source ~/.bashrc')
+      console.error('  Then re-run: node setup.js\n')
+    } else {
+      console.error('\n  Error: npm link failed:', msg)
+    }
+    process.exit(1)
+  }
+
+  // Verify the binary is reachable in PATH
+  try {
+    execSync('kompl --version', { stdio: 'ignore' })
+    console.log(green('  kompl CLI installed'))
+  } catch {
+    console.log(yellow('  kompl CLI installed but not in PATH.'))
+    console.log(dim('  You may need to open a new terminal, or add the npm global bin to your PATH.'))
+    console.log(dim('  Run: npm config get prefix  → then add <prefix>/bin to PATH.\n'))
+  }
 
   // ── 5. Write ~/.kompl/config.json ──────────────────────────────────────────
   const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -131,7 +163,12 @@ async function main() {
   console.log('\n  Starting Kompl stack...')
   console.log(dim('  (First run builds Docker images and downloads the Ollama model — ~5–10 min)'))
   console.log(dim('  Subsequent starts take ~15 seconds.\n'))
-  run('docker compose up --build -d')
+
+  // Prefer docker compose v2 plugin; fall back to v1 standalone binary
+  let compose = 'docker compose'
+  try { execSync('docker compose version', { stdio: 'ignore' }) }
+  catch { compose = 'docker-compose' }
+  run(`${compose} up --build -d`)
 
   console.log(bold(green('\n  Kompl is starting!')))
   console.log('\n  Check when it\'s ready:    ' + bold('kompl status'))

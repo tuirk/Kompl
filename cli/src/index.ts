@@ -61,7 +61,7 @@ program
   .command('backup')
   .description('Download a full Kompl export to the host filesystem')
   .option('--output <path>', 'Save path (default: ~/.kompl/backups/kompl-backup.kompl.zip)')
-  .option('--schedule', 'Register a weekly Windows Task Scheduler entry (requires admin)')
+  .option('--schedule', 'Register a weekly backup schedule (Windows: Task Scheduler, requires admin; Linux: crontab entry, Monday 11:30)')
   .action((opts) => backupCommand(opts).catch(die))
 
 program.parse()

@@ -16,8 +16,15 @@ export async function startCommand(): Promise<void> {
   }
 
   console.log(pc.dim('Checking Docker...'))
-  if (!await dockerRunning()) {
-    console.error(pc.red('✗ Docker is not running. Start Docker Desktop and try again.'))
+  const docker = await dockerRunning()
+  if (!docker.ok) {
+    if (docker.reason === 'permission-denied') {
+      console.error(pc.red('✗ Docker permission denied.'))
+      console.error(pc.dim('  Add your user to the docker group and re-login:'))
+      console.error(pc.dim('    sudo usermod -aG docker $USER'))
+    } else {
+      console.error(pc.red('✗ Docker is not running. Start Docker and try again.'))
+    }
     process.exit(1)
   }
 

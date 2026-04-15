@@ -50,8 +50,15 @@ if ! python3 --version 2>&1 | grep -q "Python 3"; then
     export -f python3
 fi
 
-# Compose command (some environments use `docker-compose`, newer use `docker compose`)
-COMPOSE="docker compose"
+# Compose command: prefer v2 plugin (`docker compose`), fall back to v1 standalone (`docker-compose`)
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE="docker-compose"
+else
+    echo "ERROR: neither 'docker compose' nor 'docker-compose' found" >&2
+    exit 1
+fi
 
 # Track which stages ran and their outcomes, printed as a summary at the end.
 STAGE_RESULTS=()

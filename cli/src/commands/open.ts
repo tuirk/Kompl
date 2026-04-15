@@ -14,6 +14,11 @@ export async function openCommand(): Promise<void> {
 
   // Dynamic import required — open@9 is CJS-compatible but we use dynamic import for safety
   const { default: open } = await import('open')
-  await open(url)
-  console.log(pc.green(`✓ Opened ${url}`))
+  try {
+    await open(url)
+    console.log(pc.green(`✓ Opened ${url}`))
+  } catch {
+    // xdg-open fails on headless Linux servers (no DISPLAY) — just print the URL
+    console.log(pc.green(`✓ ${url}`))
+  }
 }
