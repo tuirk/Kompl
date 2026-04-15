@@ -53,6 +53,11 @@ async function flushPendingPage(
 }
 
 async function reconcilePendingFlushes(): Promise<void> {
+  // Guard here (in addition to register()) so Turbopack's edge-bundle static
+  // analysis can dead-code-eliminate the dynamic import below and suppress the
+  // node-module-in-edge-runtime warnings for node:crypto/fs/path/zlib in db.ts.
+  if (process.env.NEXT_RUNTIME === 'edge') return;
+
   // Dynamically import so the module only resolves in Node runtime.
   const { getPendingFlushPages, clearPendingContent } = await import('./src/lib/db');
 

@@ -31,6 +31,11 @@ services:
   ollama:
     image: alpine:latest
     entrypoint: ["/bin/sh", "-c", "sleep infinity"]
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 64m
     healthcheck:
       test: ["CMD", "true"]
       interval: 10s
