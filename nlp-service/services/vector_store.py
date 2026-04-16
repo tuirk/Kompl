@@ -107,15 +107,6 @@ def search_pages(query_text: str, n_results: int = 20) -> list[dict[str, Any]]:
     return sorted(matches, key=lambda m: m["similarity"], reverse=True)
 
 
-def delete_page(page_id: str) -> None:
-    """Remove a page's embedding from the collection."""
-    collection = _get_collection()
-    try:
-        collection.delete(ids=[page_id])
-    except Exception as e:
-        logger.warning("vector delete failed for %s: %s", page_id, e)
-
-
 def export_all() -> list[dict[str, Any]]:
     """Return all stored embeddings as a list of dicts for backup/export.
 

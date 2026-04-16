@@ -2,7 +2,7 @@ import pc from 'picocolors'
 import { readConfig } from '../config.js'
 import { streamLogs } from '../compose.js'
 
-const VALID_SERVICES = ['app', 'nlp-service', 'n8n', 'ollama']
+const VALID_SERVICES = ['app', 'nlp-service', 'n8n']
 
 export function logsCommand(service?: string): void {
   const config = readConfig()

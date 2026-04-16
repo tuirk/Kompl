@@ -161,7 +161,7 @@ async function main() {
 
   // ── 6. Start stack ─────────────────────────────────────────────────────────
   console.log('\n  Starting Kompl stack...')
-  console.log(dim('  (First run builds Docker images and downloads the Ollama model — ~5–10 min)'))
+  console.log(dim('  (First run builds Docker images — ~5–10 min)'))
   console.log(dim('  Subsequent starts take ~15 seconds.\n'))
 
   // Prefer docker compose v2 plugin; fall back to v1 standalone binary

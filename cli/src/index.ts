@@ -49,7 +49,7 @@ program
 
 program
   .command('logs [service]')
-  .description('Stream container logs (app | nlp-service | n8n | ollama)')
+  .description('Stream container logs (app | nlp-service | n8n)')
   .action((service?: string) => { logsCommand(service) })
 
 program

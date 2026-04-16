@@ -51,11 +51,10 @@ if ! python3 --version 2>&1 | grep -q "Python 3"; then
 fi
 
 # Compose command: prefer v2 plugin (`docker compose`), fall back to v1 standalone (`docker-compose`)
-# In CI, COMPOSE_FILE is set by the workflow (docker-compose.yml:docker-compose.ci.yml) and
-# handles the ollama stub — do NOT pass --file flags or they will override COMPOSE_FILE.
-# Locally, if docker-compose.test.yml exists (gitignored), pass it via --file to stub ollama
-# so the suite doesn't pull llama3.2:3b (~2GB) on every cold start. --file is used instead
-# of COMPOSE_FILE to avoid Windows path-separator issues (Docker is a Windows binary, uses ';').
+# In CI, COMPOSE_FILE is set by the workflow (docker-compose.yml:docker-compose.ci.yml) —
+# do NOT pass --file flags or they will override COMPOSE_FILE.
+# Locally, if docker-compose.test.yml exists (gitignored), pass it via --file. --file is used
+# instead of COMPOSE_FILE to avoid Windows path-separator issues (Docker is a Windows binary, uses ';').
 if [ -n "${CI:-}" ]; then
     _COMPOSE_FILES=""
 else

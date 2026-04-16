@@ -101,7 +101,7 @@ Kompl must be running (`kompl start`) for the MCP tools to respond. The server e
 
 ## Your data
 
-Everything is stored in Docker volumes on your machine — nothing is sent anywhere except the two API calls (Gemini for wiki compilation, Firecrawl for scraping URLs). Chat can run fully locally via the built-in Ollama model with no API key.
+Everything is stored in Docker volumes on your machine — nothing is sent anywhere except the two API calls (Gemini for wiki compilation, Firecrawl for scraping URLs).
 
 ---
 

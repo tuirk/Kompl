@@ -406,44 +406,6 @@ export function insertPage(args: InsertPageArgs): void {
     .run(args);
 }
 
-export interface InsertEntityStubArgs {
-  page_id: string;
-  title: string;
-  page_type: string;
-  category: string;
-  summary: string;
-  content_path: string;
-}
-
-/**
- * Insert an entity/concept stub page created by Phase 3 entity expansion.
- *
- * Differs from insertPage():
- *   - Uses ON CONFLICT DO NOTHING (never overwrites a real compiled page).
- *   - Does NOT increment source_count (entity stubs start at 0; source_count
- *     rises when the full pipeline compiles a dedicated entity page later).
- *   - Also upserts pages_fts for the stub title so search finds it immediately.
- *
- * Safe to call outside a db.transaction() — Phase 3 is fire-and-forget.
- */
-export function insertEntityStubPage(args: InsertEntityStubArgs): void {
-  const db = openDb();
-  db.prepare(
-    `INSERT INTO pages (page_id, title, page_type, category, summary, content_path, source_count)
-     VALUES (@page_id, @title, @page_type, @category, @summary, @content_path, 0)
-     ON CONFLICT(page_id) DO NOTHING`
-  ).run(args);
-
-  // FTS index — only index if the row was actually inserted (changes() > 0).
-  // Avoids overwriting a richer FTS entry if a real compiled page already existed.
-  const changesRow = db.prepare('SELECT changes() AS n').get() as { n: number } | null;
-  if ((changesRow?.n ?? 0) > 0) {
-    db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(args.page_id);
-    db.prepare(`INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)`).run(
-      args.page_id, args.title, args.summary
-    );
-  }
-}
 
 /**
  * Fetch one page row by id. Used by /wiki/[page_id] server component.
@@ -900,18 +862,6 @@ export function getAllAliases(): Array<{ alias: string; canonical_name: string; 
     .all() as Array<{ alias: string; canonical_name: string; canonical_page_id: string | null }>;
 }
 
-/**
- * Look up the canonical name for a given alias string (case-insensitive).
- * Returns null if the alias is not known.
- */
-export function findAliasByName(name: string): string | null {
-  const row = openDb()
-    .prepare(
-      'SELECT canonical_name FROM aliases WHERE alias = ? COLLATE NOCASE LIMIT 1'
-    )
-    .get(name) as { canonical_name: string } | undefined;
-  return row?.canonical_name ?? null;
-}
 
 // ============================================================================
 // Page plan helpers (Part 2c-i)
@@ -981,18 +931,6 @@ export function clearStagedPagePlans(sessionId: string): void {
     .run(sessionId);
 }
 
-export function getPagePlansBySession(sessionId: string): PagePlanRow[] {
-  return openDb()
-    .prepare(
-      `SELECT plan_id, session_id, title, page_type, action,
-              source_ids, existing_page_id, related_plan_ids,
-              draft_content, draft_status, created_at
-         FROM page_plans
-        WHERE session_id = ?
-        ORDER BY created_at ASC`
-    )
-    .all(sessionId) as PagePlanRow[];
-}
 
 export function getPagePlansByStatus(sessionId: string, status: string): PagePlanRow[] {
   return openDb()

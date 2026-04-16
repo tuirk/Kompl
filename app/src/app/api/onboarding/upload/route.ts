@@ -5,9 +5,6 @@
  * triggering n8n or inserting any DB records. Returns file paths so the
  * caller can pass them to POST /api/onboarding/collect.
  *
- * Mirrors /api/ingest/upload but with n8n call and activity logging removed —
- * collect generates the source_id and inserts the DB record.
- *
  * Request:  FormData with one or more "files" keys
  * Response: { files: Array<{ file_path: string; filename: string }>;
  *             failed: Array<{ filename: string; error: string }> }

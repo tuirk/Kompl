@@ -34,7 +34,7 @@ data/sources.db
 # Test fixtures (local-only sample files for commit 3 file-upload verification)
 test-fixtures/
 
-# Local integration test compose override (stubs ollama — not needed in CI)
+# Local integration test compose override
 docker-compose.test.yml
 
 # IDE
