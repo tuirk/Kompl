@@ -15,8 +15,8 @@
 #
 # Stage state at commit 8:
 #   Stage 0  — REAL (cold start)
-#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=14)
-#   Stage 4  — REAL (live URL ingest + compile end-to-end, failure-path canary)
+#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=15)
+#   Stage 4  — REAL (text connector collect end-to-end + failure-path canary, no API key needed)
 #   Stage 11 — REAL (onboarding API canary)
 #   Stage 12 — REAL (text connector canary)
 #   Stage 13 — REAL (twitter connector canary)
@@ -200,8 +200,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":14'; then
-        echo "  FAIL: schema_version != 14"
+    if ! echo "$response" | grep -q '"schema_version":15'; then
+        echo "  FAIL: schema_version != 15"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -227,21 +227,21 @@ stage_1_migration_schema() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage 4 -- Live collect end-to-end (REAL -- no API key needed)
+# Stage 4 -- Collect end-to-end, no external dependencies (REAL -- no API key needed)
 # ---------------------------------------------------------------------------
-# Brings up nlp-service (app already running from stage 1). POSTs a Wikipedia
-# URL to /api/onboarding/collect and synchronously receives a stored source_id.
-# Then GETs /api/sources/<id> and asserts the title is present.
+# Brings up nlp-service (app already running from stage 1). POSTs a text note
+# via connector='text' to /api/onboarding/collect and verifies the source is
+# stored with the correct title.
 #
-# Uses MarkItDown for Wikipedia (free, local -- no Firecrawl key needed).
-# nlp-service's convert_url tries MarkItDown first; Wikipedia articles always
-# return >=500 chars so Firecrawl is never reached.
+# Text connector stores markdown directly -- no markitdown, no Firecrawl, no
+# network. This makes Stage 4 reliably runnable in CI without any secrets.
+# URL collect is tested by Stage 11 (gated on FIRECRAWL_API_KEY).
 #
-# Also runs a failure-path canary: POSTs an RFC 2606 .invalid URL via collect.
+# Also runs a failure-path canary: POSTs a RFC 2606 .invalid URL via collect.
 # nlp-service short-circuits immediately (< 1s) and collect writes an
 # ingest_failures row. Verified via /api/sources/failures.
 stage_4_live_ingest() {
-    echo "[STAGE 4] REAL: live collect end-to-end (collect -> store -> verify)"
+    echo "[STAGE 4] REAL: collect end-to-end via text connector (collect -> store -> verify)"
 
     echo "  starting nlp-service..."
     if ! $COMPOSE up -d --build nlp-service; then
@@ -269,20 +269,22 @@ stage_4_live_ingest() {
     echo "  session_id: $SESSION_ID"
 
     # -----------------------------------------------------------------------
-    # Sub-test: happy path -- URL collect via /api/onboarding/collect
+    # Sub-test: happy path -- text note collect via /api/onboarding/collect
     # -----------------------------------------------------------------------
-    echo "  POSTing Wikipedia URL to /api/onboarding/collect..."
+    echo "  POSTing text note to /api/onboarding/collect..."
+    local NOTE_TITLE="Integration Test Note"
+    local NOTE_MD
+    NOTE_MD=$(printf '# Integration Test Note\n\nThis note is seeded by the integration test suite to verify the text connector collect path end-to-end.\n\nIt contains enough content to clear the min_source_chars gate (default 500 characters). The collect endpoint should store this note synchronously and return a source_id in the stored array.\n\nThe quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump. The five boxing wizards jump quickly.')
+
     local collect_response
     collect_response=$(curl -sf -X POST \
         -H "content-type: application/json" \
-        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"url\",\"items\":[{\"url\":\"https://en.wikipedia.org/wiki/Bitcoin\"}]}" \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"text\",\"items\":[{\"markdown\":\"$NOTE_MD\",\"title_hint\":\"$NOTE_TITLE\",\"source_type_hint\":\"note\"}]}" \
         "http://localhost:3000/api/onboarding/collect" 2>&1)
     if [ -z "$collect_response" ]; then
         echo "  FAIL: /api/onboarding/collect returned empty response"
         echo "  --- app logs ---"
         $COMPOSE logs app 2>&1 | tail -20
-        echo "  --- nlp-service logs ---"
-        $COMPOSE logs nlp-service 2>&1 | tail -20
         record_stage 4 REAL FAIL
         return 1
     fi
@@ -290,7 +292,7 @@ stage_4_live_ingest() {
 
     # Verify the stored array is non-empty. Shape: {"stored":[{"source_id":"uuid",...}],...}
     if ! echo "$collect_response" | grep -q '"stored":\[{'; then
-        echo "  FAIL: collect response 'stored' array is empty -- URL conversion failed"
+        echo "  FAIL: collect response 'stored' array is empty"
         echo "  $collect_response"
         record_stage 4 REAL FAIL
         return 1
@@ -315,14 +317,14 @@ stage_4_live_ingest() {
         record_stage 4 REAL FAIL
         return 1
     fi
-    if ! echo "$source_response" | grep -qi 'bitcoin'; then
-        echo "  FAIL: source title does not contain 'bitcoin' (case insensitive)"
+    if ! echo "$source_response" | grep -qi 'Integration Test Note'; then
+        echo "  FAIL: source title does not match 'Integration Test Note'"
         echo "  $source_response"
         record_stage 4 REAL FAIL
         return 1
     fi
 
-    echo "  happy path: collect stored PASS"
+    echo "  happy path: text collect stored PASS"
 
     # -----------------------------------------------------------------------
     # Sub-test: failure-path canary
