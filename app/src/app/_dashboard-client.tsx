@@ -307,8 +307,7 @@ const DIM_DOT   = <div style={{ width: 9, height: 9, borderRadius: '50%', backgr
 
 function getStatusCfg(status: string) {
   switch (status) {
-    case 'active':      // legacy corrupt value — treat as compiled
-    case 'compiled':
+    case 'active':
     case 'extracted':
     case 'in_progress':
       return { border: 'rgba(137,240,203,0.4)', icon: GREEN_DOT, fillColor: 'rgba(137,240,203,0.3)', progress: 100, dim: false };

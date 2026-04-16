@@ -5,7 +5,6 @@ import { useState, useRef, useEffect } from 'react';
 const DEFERRED = [
   'Google Drive connector',
   'Notion connector',
-  'Twitter automated sync',
   'Image support via LLM vision',
   'Custom LLM provider support',
   'Tauri tray app — one-click Start/Stop/Open from the system tray',
@@ -21,8 +20,8 @@ const NOTES = [
     body: 'Right now the user manually exports bookmarks (runs the bookmarklet, downloads JSON, uploads to Kompl). Twitter automated sync would use bird CLI or the X API v2 to fetch bookmarks automatically on a schedule — no manual export, no JSON upload. The user connects once (OAuth or cookie auth), and new bookmarks sync incrementally. This is v3 because Twitter\'s API is rate-limited, requires a developer account, and the auth surface is fragile.',
   },
   {
-    title: 'Extraction aggregation',
-    body: 'YAKE is dead code — its outputs are never merged into the extraction profiles alongside RAKE/KeyBERT/spaCy. Gemini reads the separate blobs fine, so nothing is broken. If this is ever needed: wire YAKE into the profiles dict (one line each) and pass real page IDs to TF-IDF instead of []. Two small fixes, no pipeline restructuring required.',
+    title: 'Merge import',
+    body: 'Import currently only works on an empty wiki — it returns 409 if any pages already exist. Merge import would dedup sources by URL and content hash, skip pages that already exist, import only net-new data, and merge provenance records across the two instances. The tricky edge cases are conflicting page content (two instances compiled the same source differently) and divergent entity resolution (entity "React" resolved to the JS framework in one export but to a chemistry concept in another). Deferred for now. The workaround is to re-ingest sources through onboarding — you get the same end result because compilation is deterministic per source.',
   },
 ];
 

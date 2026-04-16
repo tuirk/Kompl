@@ -33,7 +33,7 @@ import {
 
 const NAV_ITEMS = [
   { href: '/',     label: 'Home', isActive: (p: string) => p === '/' },
-  { href: '/wiki', label: 'Wiki', isActive: (p: string) => p.startsWith('/wiki') || p.startsWith('/page/') },
+  { href: '/wiki', label: 'Wiki', isActive: (p: string) => p.startsWith('/wiki') },
   { href: '/chat', label: 'Chat', isActive: (p: string) => p.startsWith('/chat') },
 ] as const;
 

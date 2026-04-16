@@ -6,7 +6,7 @@
  *
  * Re-compile button is visible for any source not yet fully active:
  *   - enabled:  compile_status IN (failed, pending, in_progress, extracted, collected)
- *   - disabled: compile_status IN (compiled, active)  — shown as "Compiled ✓"
+ *   - disabled: compile_status = 'active'  — shown as "Active ✓"
  *   - hidden:   compile_status is null (source never entered compile pipeline)
  *
  * On success, stores session_id in localStorage (triggers ActiveCompileBanner
@@ -88,7 +88,7 @@ export default function SourceActions({
 
   // Determine re-compile button visibility and state
   const showRecompile = compileStatus !== null;
-  const recompileDisabled = compileStatus === 'compiled' || compileStatus === 'active';
+  const recompileDisabled = compileStatus === 'active';
 
   return (
     <div
@@ -116,7 +116,7 @@ export default function SourceActions({
               opacity: 0.5,
             }}
           >
-            Compiled ✓
+            Active ✓
           </button>
         ) : (
           <button

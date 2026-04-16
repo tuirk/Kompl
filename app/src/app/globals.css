@@ -264,7 +264,8 @@ textarea.connector-textarea::placeholder {
 
 /* =============================================================================
    Type badges — pill-shaped, 1px border (Concept / Entity / Topic)
-   Use BADGE_COLORS from design-tokens.ts for the color values.
+   Canonical hex values live in wiki/page.tsx (BADGE_STYLES) and
+   wiki/graph/page.tsx (NODE_COLORS — canvas can't use CSS vars).
    ============================================================================= */
 
 .badge {
@@ -286,7 +287,6 @@ textarea.connector-textarea::placeholder {
    ============================================================================= */
 
 article {
-  max-width: 760px;
   font-family: var(--font-body, inherit);
   color: var(--fg-secondary);
 }

@@ -58,14 +58,16 @@ export default function RootLayout({
           zIndex: 50,
         }}>
           <WhatsNext />
-          <span style={{ fontSize: 14 }}>🥞</span>
-          <span style={{
-            fontFamily: 'var(--font-heading)',
-            fontSize: 12,
-            color: 'var(--accent)',
-            letterSpacing: '0.04em',
-          }}>
-            Tuirk &amp; Ahjinsolo
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 14 }}>🥞</span>
+            <span style={{
+              fontFamily: 'var(--font-heading)',
+              fontSize: 12,
+              color: 'var(--accent)',
+              letterSpacing: '0.04em',
+            }}>
+              Tuirk &amp; Ahjinsolo
+            </span>
           </span>
         </footer>
       </body>

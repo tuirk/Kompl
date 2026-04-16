@@ -13,7 +13,8 @@ import { getCategoryGroups } from '../../lib/db';
 import WikiSidebar from '../../components/WikiSidebar';
 import WikiPageHeader, { formatHeaderDatetime } from '../../components/WikiPageHeader';
 
-// Tinted badge pill styles per page_type — derived from design-tokens BADGE_COLORS
+// Tinted badge pill styles per page_type. Canonical hex values — keep in sync with
+// NODE_COLORS in wiki/graph/page.tsx (canvas can't use CSS vars).
 const BADGE_STYLES: Record<string, { bg: string; border: string; text: string }> = {
   concept:          { bg: 'rgba(59,130,246,0.1)',   border: 'rgba(59,130,246,0.2)',   text: '#60A5FA' },
   entity:           { bg: 'rgba(245,158,11,0.1)',   border: 'rgba(245,158,11,0.2)',   text: '#f59e0b' },

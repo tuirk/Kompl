@@ -37,8 +37,7 @@ function getStatusBadge(source: SourceRow): BadgeCfg {
   }
   switch (source.compile_status) {
     case 'active':
-    case 'compiled':
-      return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg)', label: 'COMPILED' };
+      return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg)', label: 'ACTIVE' };
     case 'failed':
       return { bg: 'rgba(255,113,108,0.1)', border: 'rgba(255,113,108,0.2)', color: 'var(--danger)', label: 'FAILED' };
     case 'in_progress':

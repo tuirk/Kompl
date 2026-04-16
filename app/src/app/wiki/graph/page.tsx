@@ -57,11 +57,11 @@ interface GraphData {
 }
 
 const NODE_COLORS: Record<string, string> = {
-  'source-summary': '#6B7280',
-  concept:          '#3B82F6',
-  entity:           '#F97316',
-  comparison:       '#db6d28',
-  overview:         '#22C55E',
+  'source-summary': '#6b7280',
+  concept:          '#3b82f6',
+  entity:           '#f59e0b',
+  comparison:       '#8b5cf6',
+  overview:         '#10b981',
 };
 
 const NODE_COLOR_DEFAULT = '#8899a6';

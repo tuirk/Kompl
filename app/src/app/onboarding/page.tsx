@@ -128,6 +128,8 @@ function OnboardingPageInner() {
             <Link href="/settings#import" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
               Import it here →
             </Link>
+            {' '}
+            <span style={{ color: 'var(--fg-dim)', fontSize: '0.75rem' }}>(empty wiki only)</span>
           </span>
         </div>
 
