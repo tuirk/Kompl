@@ -124,8 +124,8 @@ export default function SourceActions({
             disabled={recompileState === 'loading' || recompileState === 'done'}
             style={{
               ...BTN,
-              border: '1px solid rgba(152,255,217,0.4)',
-              background: 'rgba(152,255,217,0.07)',
+              border: '1px solid rgba(var(--accent-rgb),0.4)',
+              background: 'rgba(var(--accent-rgb),0.07)',
               color: recompileState === 'error' ? 'var(--danger)' : 'var(--accent)',
               cursor: recompileState === 'loading' || recompileState === 'done' ? 'default' : 'pointer',
               opacity: recompileState === 'loading' ? 0.6 : 1,
@@ -183,7 +183,7 @@ export default function SourceActions({
               border: 'none',
               background: 'var(--danger, #ef4444)',
               cursor: busy ? 'not-allowed' : 'pointer',
-              color: '#fff',
+              color: 'var(--fg)',
               fontWeight: 600,
             }}
           >

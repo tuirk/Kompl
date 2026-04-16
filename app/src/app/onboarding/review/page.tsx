@@ -319,7 +319,7 @@ function ReviewPageInner() {
             color: 'var(--fg-dim)', textDecoration: 'none',
           }}
         >
-          <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M8 4.5H1M1 4.5L4.5 1M1 4.5L4.5 8" stroke="#ABABAD" strokeWidth="1.2" strokeLinecap="square"/></svg>
+          <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M8 4.5H1M1 4.5L4.5 1M1 4.5L4.5 8" style={{ stroke: 'var(--fg-muted)' }} strokeWidth="1.2" strokeLinecap="square"/></svg>
           Back
         </a>
 
@@ -330,8 +330,9 @@ function ReviewPageInner() {
           style={{
             display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
             gap: 8, padding: '16px 32px',
-            background: confirming || selectedCount === 0 ? 'rgba(137,240,203,0.2)' : 'var(--accent)',
+            background: 'var(--accent)',
             border: 'none',
+            opacity: confirming || selectedCount === 0 ? 0.45 : 1,
             cursor: confirming || selectedCount === 0 ? 'not-allowed' : 'pointer',
             fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 10,
             lineHeight: '15px', letterSpacing: '1px', textTransform: 'uppercase',

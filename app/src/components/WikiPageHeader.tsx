@@ -52,7 +52,7 @@ export default function WikiPageHeader({
         alignItems: 'flex-end',
         paddingBottom: 32,
         gap: 40,
-        borderBottom: '1px solid rgba(71, 72, 74, 0.1)',
+        borderBottom: '1px solid rgba(var(--separator-rgb), 0.1)',
         marginBottom: '1.75rem',
       }}
     >

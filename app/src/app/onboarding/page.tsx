@@ -49,10 +49,12 @@ function OnboardingPageInner() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    const id = sessionStorage.getItem('kompl_session_id') ?? crypto.randomUUID();
+    // Resume existing session if URL carries ?session_id (review page back-links).
+    // Otherwise always generate a fresh UUID — never reuse a stale stored value.
+    const id = searchParams.get('session_id') ?? crypto.randomUUID();
     sessionStorage.setItem('kompl_session_id', id);
     setSessionId(id);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggleConnector(id: string) {
     setSelected(prev => {
@@ -156,7 +158,7 @@ function OnboardingPageInner() {
                     gap: 32,
                     cursor: 'pointer',
                     boxSizing: 'border-box',
-                    outline: checked ? '1px solid rgba(137,240,203,0.25)' : '1px solid transparent',
+                    outline: checked ? '1px solid rgba(var(--accent-rgb),0.25)' : '1px solid transparent',
                     transition: 'outline 0.1s',
                   }}
                 >
@@ -229,7 +231,7 @@ function OnboardingPageInner() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <c.Icon size={16} style={{ color: 'var(--fg-dim)', flexShrink: 0 }} />
                   <span style={{
-                    border: '1px solid rgba(171,171,173,0.3)',
+                    border: '1px solid rgba(var(--fg-muted-rgb),0.3)',
                     padding: '4px 8px',
                     fontFamily: 'var(--font-mono)',
                     fontSize: 8,
@@ -261,7 +263,7 @@ function OnboardingPageInner() {
                     lineHeight: '14px',
                     letterSpacing: '0.8px',
                     textTransform: 'uppercase',
-                    color: 'rgba(171,171,173,0.5)',
+                    color: 'rgba(var(--fg-muted-rgb),0.5)',
                   }}>
                     {c.subtitle}
                   </span>
@@ -277,7 +279,7 @@ function OnboardingPageInner() {
           bottom: 32, left: 0, right: 0,
           zIndex: 50,
           background: 'var(--bg)',
-          borderTop: '1px solid rgba(71,72,74,0.12)',
+          borderTop: '1px solid rgba(var(--separator-rgb),0.12)',
           padding: '16px 56px',
           display: 'flex',
           flexDirection: 'row',
@@ -311,8 +313,9 @@ function OnboardingPageInner() {
               justifyContent: 'center',
               gap: 8,
               padding: '16px 32px',
-              background: activeSelected.length === 0 ? 'rgba(137,240,203,0.2)' : 'var(--accent)',
+              background: 'var(--accent)',
               border: 'none',
+              opacity: activeSelected.length === 0 ? 0.45 : 1,
               cursor: activeSelected.length === 0 ? 'not-allowed' : 'pointer',
               fontFamily: 'var(--font-mono)',
               fontWeight: 700,

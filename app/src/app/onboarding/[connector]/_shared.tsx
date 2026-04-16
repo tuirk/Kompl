@@ -41,8 +41,9 @@ export function navigateBack(
   router: AppRouterInstance,
 ) {
   if (connectorIdx <= 0) {
-    // First connector — go back to selector
-    router.push('/onboarding');
+    // First connector — go back to selector, preserving session so the landing
+    // page resumes the existing UUID rather than generating a fresh one.
+    router.push(`/onboarding?session_id=${encodeURIComponent(sessionId)}`);
   } else {
     // Go to previous connector
     const prevIdx = connectorIdx - 1;
@@ -64,14 +65,14 @@ export const BTN_PRIMARY: React.CSSProperties = {
 
 export const BTN_PRIMARY_DISABLED: React.CSSProperties = {
   ...BTN_PRIMARY,
-  background: 'rgba(137,240,203,0.2)',
+  opacity: 0.45,
   cursor: 'not-allowed',
 };
 
 export const BTN_GHOST: React.CSSProperties = {
   display: 'flex', alignItems: 'center', justifyContent: 'center',
   padding: '16px 32px',
-  background: 'transparent', border: '1px solid #47484A', cursor: 'pointer',
+  background: 'transparent', border: '1px solid var(--separator)', cursor: 'pointer',
   fontFamily: 'var(--font-mono)', fontWeight: 400, fontSize: 10,
   lineHeight: '15px', letterSpacing: '1px', textTransform: 'uppercase',
   color: 'var(--fg)',
@@ -100,7 +101,7 @@ export function BottomNav({
       bottom: 32, left: 0, right: 0,
       zIndex: 50,
       background: 'var(--bg)',
-      borderTop: '1px solid rgba(71,72,74,0.12)',
+      borderTop: '1px solid rgba(var(--separator-rgb),0.12)',
       padding: '16px 56px',
       display: 'flex',
       justifyContent: 'space-between',
@@ -118,7 +119,7 @@ export function BottomNav({
         }}
       >
         <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
-          <path d="M8 4.5H1M1 4.5L4.5 1M1 4.5L4.5 8" stroke="#ABABAD" strokeWidth="1.2" strokeLinecap="square"/>
+          <path d="M8 4.5H1M1 4.5L4.5 1M1 4.5L4.5 8" style={{ stroke: 'var(--fg-muted)' }} strokeWidth="1.2" strokeLinecap="square"/>
         </svg>
         Back
       </button>

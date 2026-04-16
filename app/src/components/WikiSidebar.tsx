@@ -21,6 +21,12 @@ const PAGE_TYPE_COLORS: Record<string, string> = {
 };
 
 export default function WikiSidebar({ groups, activePageId, activeCategory }: WikiSidebarProps) {
+  // Pull comparison pages out of the category tree — they get their own section.
+  const comparisonPages = groups.flatMap((g) => g.pages).filter((p) => p.page_type === 'comparison');
+  const categoryGroups = groups
+    .map((g) => ({ ...g, pages: g.pages.filter((p) => p.page_type !== 'comparison') }))
+    .filter((g) => g.pages.length > 0);
+
   const recentPages = groups
     .flatMap((g) => g.pages)
     .sort((a, b) => (b.last_updated > a.last_updated ? 1 : -1))
@@ -64,7 +70,7 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
           style={{
             padding: 16,
             background: 'rgba(30, 32, 34, 0.5)',
-            border: '1px solid rgba(71, 72, 74, 0.1)',
+            border: '1px solid rgba(var(--separator-rgb), 0.1)',
             display: 'flex',
             flexDirection: 'column',
             gap: 12,
@@ -155,7 +161,7 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
         >
           Categories
         </div>
-        {groups.map((group) => {
+        {categoryGroups.map((group) => {
           const isActive = activeCategory === group.category;
           return (
             <div key={group.category} style={{ marginBottom: '0.75rem' }}>
@@ -207,6 +213,55 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
           );
         })}
       </section>
+
+      {/* Comparisons */}
+      {comparisonPages.length > 0 && (
+        <section>
+          <div
+            style={{
+              fontFamily: 'var(--font-body)',
+              fontSize: 10,
+              letterSpacing: 2,
+              textTransform: 'uppercase',
+              color: 'var(--fg-dim)',
+              marginBottom: '0.5rem',
+            }}
+          >
+            Comparisons
+          </div>
+          {comparisonPages.map((p) => (
+            <Link
+              key={p.page_id}
+              href={`/wiki/${p.page_id}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                fontSize: 12,
+                padding: '0.2em 0.4em 0.2em 1em',
+                borderRadius: 4,
+                color: activePageId === p.page_id ? 'var(--fg)' : 'var(--fg-muted)',
+                background: activePageId === p.page_id ? 'var(--bg-card-hover)' : 'transparent',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                textDecoration: 'none',
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: PAGE_TYPE_COLORS['comparison'],
+                  flexShrink: 0,
+                }}
+              />
+              {p.title}
+            </Link>
+          ))}
+        </section>
+      )}
     </aside>
   );
 }

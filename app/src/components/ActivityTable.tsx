@@ -49,10 +49,10 @@ interface BadgeCfg {
   color: string;
 }
 
-const MINT  = { bg: 'rgba(137,240,203,0.1)', border: 'rgba(137,240,203,0.2)', color: 'var(--accent)' };
-const NEUT  = { bg: 'rgba(71,72,74,0.1)',    border: 'rgba(71,72,74,0.2)',    color: 'var(--fg)' };
-const DIM   = { bg: 'rgba(71,72,74,0.1)',    border: 'rgba(71,72,74,0.2)',    color: 'var(--fg-dim)' };
-const RED   = { bg: 'rgba(255,113,108,0.1)', border: 'rgba(255,113,108,0.2)', color: 'var(--danger)' };
+const MINT  = { bg: 'rgba(var(--accent-rgb),0.1)', border: 'rgba(var(--accent-rgb),0.2)', color: 'var(--accent)' };
+const NEUT  = { bg: 'rgba(var(--separator-rgb),0.1)',    border: 'rgba(var(--separator-rgb),0.2)',    color: 'var(--fg)' };
+const DIM   = { bg: 'rgba(var(--separator-rgb),0.1)',    border: 'rgba(var(--separator-rgb),0.2)',    color: 'var(--fg-dim)' };
+const RED   = { bg: 'rgba(var(--danger-rgb),0.1)', border: 'rgba(var(--danger-rgb),0.2)', color: 'var(--danger)' };
 
 function getBadge(action_type: string, action?: string | null): BadgeCfg {
   switch (action_type) {
@@ -390,7 +390,7 @@ export function ActivityTable({ pollInterval = 2000 }: ActivityTableProps) {
   return (
     <>
       {pollError && (
-        <div style={{ background: 'rgba(255,113,108,0.08)', border: '1px solid rgba(255,113,108,0.2)', color: 'var(--danger)', padding: '0.6em 1em', marginBottom: '1rem', fontSize: 12, fontFamily: 'var(--font-mono)' }}>
+        <div style={{ background: 'rgba(var(--danger-rgb),0.08)', border: '1px solid rgba(var(--danger-rgb),0.2)', color: 'var(--danger)', padding: '0.6em 1em', marginBottom: '1rem', fontSize: 12, fontFamily: 'var(--font-mono)' }}>
           {pollError}
         </div>
       )}
@@ -440,7 +440,7 @@ export function ActivityTable({ pollInterval = 2000 }: ActivityTableProps) {
                   display: 'grid',
                   gridTemplateColumns: COL,
                   padding: '0 24px',
-                  borderTop: '1px solid rgba(71,72,74,0.1)',
+                  borderTop: '1px solid rgba(var(--separator-rgb),0.1)',
                   alignItems: 'center',
                 }}
               >

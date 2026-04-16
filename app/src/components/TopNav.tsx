@@ -169,7 +169,7 @@ export default function TopNav() {
         height: 65,
         zIndex: 100,
         background: 'var(--bg)',
-        borderBottom: '1px solid rgba(71, 72, 74, 0.1)',
+        borderBottom: '1px solid rgba(var(--separator-rgb), 0.1)',
         display: 'flex',
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -298,7 +298,7 @@ export default function TopNav() {
                       padding: '9px 14px',
                       background: selIndex === i ? 'var(--bg-card-hover)' : 'transparent',
                       border: 'none',
-                      borderBottom: '1px solid rgba(71,72,74,0.08)',
+                      borderBottom: '1px solid rgba(var(--separator-rgb),0.08)',
                       cursor: 'pointer',
                       textAlign: 'left',
                     }}

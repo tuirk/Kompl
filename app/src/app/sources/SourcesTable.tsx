@@ -33,18 +33,18 @@ function formatDate(iso: string): string {
 
 function getStatusBadge(source: SourceRow): BadgeCfg {
   if (source.status === 'archived') {
-    return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg-dim)', label: 'ARCHIVED' };
+    return { bg: 'rgba(var(--separator-rgb),0.1)', border: 'rgba(var(--separator-rgb),0.2)', color: 'var(--fg-dim)', label: 'ARCHIVED' };
   }
   switch (source.compile_status) {
     case 'active':
-      return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg)', label: 'ACTIVE' };
+      return { bg: 'rgba(var(--separator-rgb),0.1)', border: 'rgba(var(--separator-rgb),0.2)', color: 'var(--fg)', label: 'ACTIVE' };
     case 'failed':
-      return { bg: 'rgba(255,113,108,0.1)', border: 'rgba(255,113,108,0.2)', color: 'var(--danger)', label: 'FAILED' };
+      return { bg: 'rgba(var(--danger-rgb),0.1)', border: 'rgba(var(--danger-rgb),0.2)', color: 'var(--danger)', label: 'FAILED' };
     case 'in_progress':
     case 'extracted':
-      return { bg: 'rgba(137,240,203,0.1)', border: 'rgba(137,240,203,0.2)', color: 'var(--accent)', label: 'INDEXING' };
+      return { bg: 'rgba(var(--accent-rgb),0.1)', border: 'rgba(var(--accent-rgb),0.2)', color: 'var(--accent)', label: 'INDEXING' };
     default:
-      return { bg: 'rgba(71,72,74,0.1)', border: 'rgba(71,72,74,0.2)', color: 'var(--fg-dim)', label: 'PENDING' };
+      return { bg: 'rgba(var(--separator-rgb),0.1)', border: 'rgba(var(--separator-rgb),0.2)', color: 'var(--fg-dim)', label: 'PENDING' };
   }
 }
 
@@ -66,20 +66,20 @@ const btnBase: React.CSSProperties = {
 const btnGhost: React.CSSProperties = {
   ...btnBase,
   color: 'var(--fg-dim)',
-  border: '1px solid rgba(71,72,74,0.3)',
+  border: '1px solid rgba(var(--separator-rgb),0.3)',
 };
 
 const btnDanger: React.CSSProperties = {
   ...btnBase,
   color: 'var(--danger)',
-  border: '1px solid rgba(239,68,68,0.35)',
+  border: '1px solid rgba(var(--danger-rgb),0.35)',
 };
 
 const btnSolid: React.CSSProperties = {
   ...btnBase,
-  color: '#fff',
-  background: 'rgba(239,68,68,0.15)',
-  border: '1px solid rgba(239,68,68,0.5)',
+  color: 'var(--danger)',
+  background: 'rgba(var(--danger-rgb),0.1)',
+  border: '1px solid rgba(var(--danger-rgb),0.5)',
   padding: '5px 14px',
   fontSize: 10,
 };
@@ -87,7 +87,7 @@ const btnSolid: React.CSSProperties = {
 const btnOutline: React.CSSProperties = {
   ...btnBase,
   color: 'var(--fg-dim)',
-  border: '1px solid rgba(71,72,74,0.4)',
+  border: '1px solid rgba(var(--separator-rgb),0.4)',
   padding: '5px 14px',
   fontSize: 10,
 };
@@ -294,7 +294,7 @@ export default function SourcesTable({ initialSources }: { initialSources: Sourc
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '10px 24px',
           background: 'var(--bg-card-hover)',
-          border: '1px solid rgba(71,72,74,0.15)',
+          border: '1px solid rgba(var(--separator-rgb),0.15)',
           borderBottom: 'none',
           marginBottom: 0,
         }}>
@@ -364,7 +364,7 @@ export default function SourcesTable({ initialSources }: { initialSources: Sourc
                 display: 'grid',
                 gridTemplateColumns: COL,
                 padding: '0 24px',
-                borderTop: '1px solid rgba(71,72,74,0.1)',
+                borderTop: '1px solid rgba(var(--separator-rgb),0.1)',
                 alignItems: 'center',
                 background: isSelected ? 'rgba(152,255,217,0.03)' : undefined,
                 transition: 'background 150ms',
@@ -432,7 +432,7 @@ export default function SourcesTable({ initialSources }: { initialSources: Sourc
                 ) : (
                   <>
                     <button
-                      style={{ ...btnBase, color: 'var(--warning)', border: '1px solid rgba(245,158,11,0.35)', fontSize: 9, letterSpacing: '0.8px' }}
+                      style={{ ...btnBase, color: 'var(--warning)', border: '1px solid rgba(var(--warning-rgb),0.35)', fontSize: 9, letterSpacing: '0.8px' }}
                       onClick={() => handleArchive(s.source_id, s.status)}
                     >
                       {s.status === 'archived' ? 'Unarchive' : 'Archive'}

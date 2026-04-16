@@ -189,7 +189,7 @@ export default function WikiPageHeaderActions() {
                     display: 'flex', alignItems: 'center', gap: 10,
                     width: '100%', padding: '9px 14px', textAlign: 'left',
                     background: selIndex === i ? 'var(--bg-card-hover)' : 'transparent',
-                    border: 'none', borderBottom: '1px solid rgba(71,72,74,0.08)',
+                    border: 'none', borderBottom: '1px solid rgba(var(--separator-rgb),0.08)',
                     cursor: 'pointer',
                   }}
                 >

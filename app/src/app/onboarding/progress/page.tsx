@@ -55,7 +55,7 @@ function parseCommittedCount(detail: string | undefined): { pages: number; sourc
 function IconDone() {
   return (
     <svg width="14" height="11" viewBox="0 0 14 11" fill="none">
-      <path d="M1 5.5L5 9.5L13 1.5" stroke="#89F0CB" strokeWidth="1.5" strokeLinecap="square"/>
+      <path d="M1 5.5L5 9.5L13 1.5" style={{ stroke: 'var(--accent)' }} strokeWidth="1.5" strokeLinecap="square"/>
     </svg>
   );
 }
@@ -86,8 +86,8 @@ function IconPending() {
   /* Two short horizontal bars — pending / pause indicator */
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div style={{ width: 14, height: 2, background: '#ABABAD' }} />
-      <div style={{ width: 14, height: 2, background: '#ABABAD' }} />
+      <div style={{ width: 14, height: 2, background: 'var(--fg-muted)' }} />
+      <div style={{ width: 14, height: 2, background: 'var(--fg-muted)' }} />
     </div>
   );
 }
@@ -133,6 +133,9 @@ function ProgressPageInner() {
         if (elapsed > 30 * 60 * 1000) {
           stopPolling();
           localStorage.removeItem(LS_KEY);
+          sessionStorage.removeItem('kompl_session_id');
+          sessionStorage.removeItem('kompl_connectors');
+          sessionStorage.removeItem('kompl_connector_idx');
           setProgress({
             ...data,
             status: 'failed',
@@ -148,6 +151,9 @@ function ProgressPageInner() {
         localStorage.setItem(LS_KEY, JSON.stringify({ session_id: sessionId, source_count: sourceCount }));
       } else if (data.status === 'completed' || data.status === 'failed') {
         localStorage.removeItem(LS_KEY);
+        sessionStorage.removeItem('kompl_session_id');
+        sessionStorage.removeItem('kompl_connectors');
+        sessionStorage.removeItem('kompl_connector_idx');
       }
 
       // Arm a 60s timer the first time we see 'queued'; cancel it if pipeline starts.
@@ -244,8 +250,8 @@ function ProgressPageInner() {
         maxWidth: 624,
         margin: '0 auto',
         background: 'var(--bg-card)',
-        border: '1px solid rgba(71,72,74,0.1)',
-        boxShadow: '0 0 50px rgba(137,240,203,0.03)',
+        border: '1px solid rgba(var(--separator-rgb),0.1)',
+        boxShadow: '0 0 50px rgba(var(--accent-rgb),0.03)',
         padding: 32,
         display: 'flex',
         flexDirection: 'column',
@@ -294,14 +300,14 @@ function ProgressPageInner() {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
             <span style={{
               fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
-              letterSpacing: '1px', textTransform: 'uppercase', color: '#757578',
+              letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-subtle)',
             }}>
               {stepCounterLabel}
             </span>
             <span style={{
               fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 16,
               lineHeight: '24px', letterSpacing: '-0.8px', color: 'var(--accent)',
-              textShadow: '0 0 12px rgba(137,240,203,0.4)',
+              textShadow: '0 0 12px rgba(var(--accent-rgb),0.4)',
             }}>
               {stepCounterValue}
             </span>
@@ -315,7 +321,7 @@ function ProgressPageInner() {
           <div style={{
             position: 'absolute', width: 1, left: 19.5,
             top: 40, bottom: 40,
-            background: '#47484A', opacity: 0.2, pointerEvents: 'none',
+            background: 'var(--separator)', opacity: 0.2, pointerEvents: 'none',
           }} />
 
           {STEPS.map(step => {
@@ -329,10 +335,10 @@ function ProgressPageInner() {
             const isStepPending = !isStepDone && !isStepActive && !isStepFailed;
 
             const iconBg =
-              isStepDone   ? 'rgba(74,178,144,0.2)' :
+              isStepDone   ? 'rgba(var(--accent-rgb),0.2)' :
               isStepActive ? 'var(--accent)'         :
-              isStepFailed ? 'rgba(255,113,108,0.15)' :
-                             '#242629';
+              isStepFailed ? 'rgba(var(--danger-rgb),0.15)' :
+                             'var(--bg-track)';
 
             return (
               <div
@@ -380,13 +386,13 @@ function ProgressPageInner() {
                     {detail && (
                       <span style={{
                         fontFamily: 'var(--font-heading)', fontSize: 14,
-                        lineHeight: '20px', color: '#757578',
+                        lineHeight: '20px', color: 'var(--fg-subtle)',
                       }}>
                         {detail}
                       </span>
                     )}
                     {/* Micro progress bar */}
-                    <div style={{ height: 4, background: '#242629', position: 'relative', overflow: 'hidden', marginTop: 4 }}>
+                    <div style={{ height: 4, background: 'var(--bg-track)', position: 'relative', overflow: 'hidden', marginTop: 4 }}>
                       <div style={{
                         position: 'absolute', top: 0, left: 0, bottom: 0, width: '50%',
                         background: 'var(--accent)',
@@ -409,7 +415,7 @@ function ProgressPageInner() {
                     {isStepDone && (
                       <span style={{
                         fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
-                        letterSpacing: '-0.5px', textTransform: 'uppercase', color: '#757578',
+                        letterSpacing: '-0.5px', textTransform: 'uppercase', color: 'var(--fg-subtle)',
                         flexShrink: 0,
                       }}>
                         Done
@@ -424,7 +430,7 @@ function ProgressPageInner() {
 
         {/* ── Footer ─────────────────────────────────────────────────────────── */}
         <div style={{
-          borderTop: '1px solid rgba(71,72,74,0.1)',
+          borderTop: '1px solid rgba(var(--separator-rgb),0.1)',
           paddingTop: 24,
           display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
         }}>
@@ -435,7 +441,7 @@ function ProgressPageInner() {
               <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <span style={{
                   fontFamily: 'var(--font-mono)', fontSize: 8, lineHeight: '12px',
-                  letterSpacing: '0.8px', textTransform: 'uppercase', color: '#757578',
+                  letterSpacing: '0.8px', textTransform: 'uppercase', color: 'var(--fg-subtle)',
                 }}>
                   {label}
                 </span>
@@ -455,7 +461,7 @@ function ProgressPageInner() {
             <button
               onClick={() => router.push('/')}
               style={{
-                background: '#242629', border: 'none', cursor: 'pointer',
+                background: 'var(--bg-track)', border: 'none', cursor: 'pointer',
                 padding: '8px 24px',
                 fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
                 letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--fg)',
@@ -503,7 +509,7 @@ function ProgressPageInner() {
         {queuedRetry && !isFailedStatus && (
           <pre style={{
             fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)',
-            background: 'rgba(71,72,74,0.1)', border: '1px solid rgba(71,72,74,0.2)',
+            background: 'rgba(var(--separator-rgb),0.1)', border: '1px solid rgba(var(--separator-rgb),0.2)',
             padding: '12px 16px', margin: 0, overflowX: 'auto',
             whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           }}>
@@ -515,7 +521,7 @@ function ProgressPageInner() {
         {isFailedStatus && progress?.error && (
           <pre style={{
             fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--danger)',
-            background: 'rgba(255,113,108,0.08)', border: '1px solid rgba(255,113,108,0.2)',
+            background: 'rgba(var(--danger-rgb),0.08)', border: '1px solid rgba(var(--danger-rgb),0.2)',
             padding: '12px 16px', margin: 0, overflowX: 'auto',
             whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           }}>
@@ -529,7 +535,7 @@ function ProgressPageInner() {
         <p style={{
           maxWidth: 624, margin: '12px auto 0',
           fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
-          letterSpacing: '0.5px', color: '#757578', textAlign: 'center',
+          letterSpacing: '0.5px', color: 'var(--fg-subtle)', textAlign: 'center',
         }}>
           {patienceVisible
             ? 'Taking longer than expected — still running. You can close this tab and come back later.'

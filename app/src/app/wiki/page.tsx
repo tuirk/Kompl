@@ -87,7 +87,7 @@ export default function WikiIndexPage() {
                     style={{
                       flex: 1,
                       height: 1,
-                      background: 'linear-gradient(90deg, rgba(71,72,74,0.3) 0%, rgba(71,72,74,0) 100%)',
+                      background: 'linear-gradient(90deg, rgba(var(--separator-rgb),0.3) 0%, rgba(var(--separator-rgb),0) 100%)',
                     }}
                   />
                 </div>
@@ -98,7 +98,7 @@ export default function WikiIndexPage() {
                     display: 'grid',
                     gridTemplateColumns: 'repeat(4, 1fr)',
                     gap: 1,
-                    background: 'rgba(71,72,74,0.1)',
+                    background: 'rgba(var(--separator-rgb),0.1)',
                   }}
                 >
                   {group.pages.map((page) => {

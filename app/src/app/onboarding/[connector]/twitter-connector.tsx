@@ -519,7 +519,7 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
         )}
 
         {parseError && (
-          <p style={{ marginTop: '0.75rem', color: 'var(--error, #e74c3c)', fontSize: '0.88rem' }}>
+          <p style={{ marginTop: '0.75rem', color: 'var(--danger)', fontSize: '0.88rem' }}>
             {parseError}
           </p>
         )}

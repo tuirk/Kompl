@@ -119,7 +119,7 @@ function ActiveCompileBanner() {
   if (doneState === 'completed') {
     return (
       <div style={{
-        background: 'rgba(74,178,144,0.08)',
+        background: 'rgba(var(--accent-rgb),0.08)',
         borderLeft: '2px solid var(--accent)',
         padding: '12px 20px', marginBottom: 24,
         display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
@@ -154,7 +154,7 @@ function ActiveCompileBanner() {
   if (doneState === 'failed') {
     return (
       <div style={{
-        background: 'rgba(255,113,108,0.06)',
+        background: 'rgba(var(--danger-rgb),0.06)',
         borderLeft: '2px solid var(--danger)',
         padding: '12px 20px', marginBottom: 24,
         display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
@@ -261,12 +261,12 @@ function StaleBanner() {
 
   return (
     <div style={{
-      background: 'rgba(245,158,11,0.06)',
-      borderLeft: '2px solid rgba(245,158,11,0.5)',
+      background: 'rgba(var(--warning-rgb),0.06)',
+      borderLeft: '2px solid rgba(var(--warning-rgb),0.5)',
       padding: '12px 20px', marginBottom: 24,
       display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
     }}>
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(245,158,11,0.9)', letterSpacing: '0.5px' }}>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(var(--warning-rgb),0.9)', letterSpacing: '0.5px' }}>
         ⚠ {count} source{count !== 1 ? 's' : ''} {count !== 1 ? 'haven\'t' : 'hasn\'t'} been updated in over {threshold} days.
       </span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
@@ -274,7 +274,7 @@ function StaleBanner() {
           href={`/sources?older_than=${threshold}`}
           style={{
             fontFamily: 'var(--font-mono)', fontSize: '0.7rem',
-            color: 'rgba(245,158,11,0.9)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap',
+            color: 'rgba(var(--warning-rgb),0.9)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap',
             textDecoration: 'none',
           }}
         >
@@ -302,19 +302,19 @@ interface SourceQueueRow {
   compile_status: string;
 }
 
-const GREEN_DOT = <div style={{ width: 9, height: 9, borderRadius: '50%', background: 'rgba(137,240,203,0.5)', flexShrink: 0 }} />;
-const DIM_DOT   = <div style={{ width: 9, height: 9, borderRadius: '50%', background: '#47484A',               flexShrink: 0 }} />;
+const GREEN_DOT = <div style={{ width: 9, height: 9, borderRadius: '50%', background: 'rgba(var(--accent-rgb),0.5)', flexShrink: 0 }} />;
+const DIM_DOT   = <div style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--separator)',      flexShrink: 0 }} />;
 
 function getStatusCfg(status: string) {
   switch (status) {
     case 'active':
     case 'extracted':
     case 'in_progress':
-      return { border: 'rgba(137,240,203,0.4)', icon: GREEN_DOT, fillColor: 'rgba(137,240,203,0.3)', progress: 100, dim: false };
+      return { border: 'rgba(var(--accent-rgb),0.4)', icon: GREEN_DOT, fillColor: 'rgba(var(--accent-rgb),0.3)', progress: 100, dim: false };
     case 'failed':
-      return { border: 'rgba(255,113,108,0.4)', icon: <AlertTriangle size={13} style={{ color: 'var(--danger)' }} />, fillColor: 'var(--danger)', progress: 100, dim: false };
+      return { border: 'rgba(var(--danger-rgb),0.4)', icon: <AlertTriangle size={13} style={{ color: 'var(--danger)' }} />, fillColor: 'var(--danger)', progress: 100, dim: false };
     default:
-      return { border: 'rgba(137,240,203,0.15)', icon: DIM_DOT, fillColor: '#47484A', progress: 100, dim: true };
+      return { border: 'rgba(var(--accent-rgb),0.15)', icon: DIM_DOT, fillColor: 'var(--separator)', progress: 100, dim: true };
   }
 }
 
@@ -390,7 +390,7 @@ function ProcessQueue() {
             <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 14, lineHeight: '20px', color: 'var(--fg-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {s.title}
             </div>
-            <div style={{ height: 4, background: '#242629', position: 'relative' }}>
+            <div style={{ height: 4, background: 'var(--bg-track)', position: 'relative' }}>
               <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${cfg.progress}%`, background: cfg.fillColor }} />
             </div>
             {isFailed && (
@@ -400,7 +400,7 @@ function ProcessQueue() {
                 style={{
                   marginTop: 2,
                   background: 'transparent',
-                  border: '1px solid rgba(255,113,108,0.3)',
+                  border: '1px solid rgba(var(--danger-rgb),0.3)',
                   color: isRetrying ? 'var(--fg-dim)' : 'var(--danger)',
                   fontFamily: 'var(--font-body)',
                   fontWeight: 700,
@@ -695,7 +695,7 @@ export default function DashboardClient() {
               <span style={{ fontFamily: 'var(--font-heading)', fontSize: 18, fontWeight: 700, color: 'var(--accent-text)' }}>
                 Add Sources
               </span>
-              <Upload size={17} style={{ color: '#00291D', flexShrink: 0 }} />
+              <Upload size={17} style={{ color: 'var(--accent-text)', flexShrink: 0 }} />
             </Link>
 
             {/* Secondary — Browse Wiki */}
@@ -760,7 +760,7 @@ export default function DashboardClient() {
           >
             Recently Processed
           </h2>
-          <div style={{ flex: 1, height: 1, background: 'rgba(71,72,74,0.3)' }} />
+          <div style={{ flex: 1, height: 1, background: 'rgba(var(--separator-rgb),0.3)' }} />
           <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
             <Link href="/sources" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--fg-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               View all sources →
@@ -788,7 +788,7 @@ export default function DashboardClient() {
           }}>
             Pending Drafts
           </h2>
-          <div style={{ flex: 1, height: 1, background: 'rgba(71,72,74,0.3)' }} />
+          <div style={{ flex: 1, height: 1, background: 'rgba(var(--separator-rgb),0.3)' }} />
         </div>
         <PendingDrafts />
       </section>

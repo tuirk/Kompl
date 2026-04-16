@@ -168,7 +168,7 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast }: Connec
               <span style={{
                 position: 'absolute', top: 16, right: 16,
                 fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '1.8px',
-                textTransform: 'uppercase', color: 'rgba(137, 240, 203, 0.3)',
+                textTransform: 'uppercase', color: 'rgba(var(--accent-rgb), 0.3)',
               }}>URL IMPORT</span>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -209,11 +209,17 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast }: Connec
             </div>
           )}
 
-          {/* Hint row */}
+          {/* Hint rows */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
             <div style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: '50%', flexShrink: 0 }} />
             <span style={{ fontFamily: 'var(--font-heading)', fontSize: 12, color: 'var(--fg-dim)' }}>
               YouTube videos are supported — transcripts extracted automatically when available.
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 6 }}>
+            <div style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: '50%', flexShrink: 0, marginTop: 2 }} />
+            <span style={{ fontFamily: 'var(--font-heading)', fontSize: 12, color: 'var(--fg-dim)' }}>
+              GitHub repo links are enriched automatically (title, description, README). Issues, PRs, and file links are scraped as regular pages — results may vary.
             </span>
           </div>
         </>
@@ -346,7 +352,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
                   onClick={() => phase !== 'loading' && fileInputRef.current?.click()}
                   style={{
                     background: '#000000',
-                    border: `2px dashed ${isDragging ? 'var(--accent)' : '#47484A'}`,
+                    border: `2px dashed ${isDragging ? 'var(--accent)' : 'var(--separator)'}`,
                     padding: '88px 48px',
                     display: 'flex',
                     flexDirection: 'column',
@@ -364,14 +370,14 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
                   <span style={{
                     position: 'absolute', top: 12, left: 12,
                     fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.9px',
-                    textTransform: 'uppercase', color: '#47484A',
+                    textTransform: 'uppercase', color: 'var(--separator)',
                   }}>DROP.ZONE / v2</span>
 
                   {/* Bottom-right decor */}
                   <span style={{
                     position: 'absolute', bottom: 12, right: 12,
                     fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.9px',
-                    textTransform: 'uppercase', color: '#47484A',
+                    textTransform: 'uppercase', color: 'var(--separator)',
                   }}>MAX 50 MB / FILE</span>
 
                   {phase === 'loading' ? (
@@ -462,7 +468,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
                   fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '2px',
                   textTransform: 'uppercase', color: 'var(--accent)',
                 }}>INGESTION QUEUE</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#757578' }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-subtle)' }}>
                   {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''}
                 </span>
               </div>
@@ -486,7 +492,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
                           }}>{displayName}</div>
                           <div style={{
                             fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase',
-                            color: '#757578',
+                            color: 'var(--fg-subtle)',
                           }}>{ext}</div>
                         </div>
                       </div>
@@ -494,7 +500,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
                         onClick={e => { e.stopPropagation(); removeFile(i); }}
                         style={{
                           background: 'none', border: 'none', cursor: 'pointer',
-                          color: '#757578', fontSize: 13, padding: 0, lineHeight: 1,
+                          color: 'var(--fg-subtle)', fontSize: 13, padding: 0, lineHeight: 1,
                         }}
                       >×</button>
                     </div>
@@ -505,20 +511,20 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
                 {Array.from({ length: Math.max(0, 3 - selectedFiles.length) }).map((_, i) => (
                   <div key={`empty-${i}`} style={{
                     background: '#000000', opacity: 0.3,
-                    border: '1px solid rgba(71,72,74,0.1)',
+                    border: '1px solid rgba(var(--separator-rgb),0.1)',
                     padding: 16, display: 'flex', alignItems: 'center',
                     justifyContent: 'center', height: 64, boxSizing: 'border-box',
                   }}>
                     <span style={{
                       fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
-                      textTransform: 'uppercase', color: '#757578',
+                      textTransform: 'uppercase', color: 'var(--fg-subtle)',
                     }}>WAITING FOR FILES</span>
                   </div>
                 ))}
               </div>
 
               {/* Hint box */}
-              <div style={{ marginTop: 32, background: 'rgba(74,178,144,0.1)', border: '1px solid rgba(137,240,203,0.2)', padding: 16 }}>
+              <div style={{ marginTop: 32, background: 'rgba(var(--accent-rgb),0.1)', border: '1px solid rgba(var(--accent-rgb),0.2)', padding: 16 }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
                   <div style={{
                     width: 11, height: 11, background: 'var(--accent)',
@@ -526,7 +532,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
                   }} />
                   <span style={{
                     fontFamily: 'var(--font-body)', fontSize: 11, letterSpacing: '0.275px',
-                    textTransform: 'uppercase', color: '#7BE2BD',
+                    textTransform: 'uppercase', color: 'var(--accent-dim)',
                   }}>
                     Max 50 MB per file · PDF, DOCX, PPTX, XLSX, TXT, MD, HTML, CSV, images, audio supported
                   </span>
@@ -931,7 +937,7 @@ function ConnectorPageInner() {
             {connectors.map((_, i) => (
               <div key={i} style={{
                 flex: 1, height: 4,
-                background: i <= connectorIdx ? 'var(--accent)' : '#242629',
+                background: i <= connectorIdx ? 'var(--accent)' : 'var(--bg-track)',
               }} />
             ))}
           </div>

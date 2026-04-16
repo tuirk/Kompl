@@ -183,8 +183,17 @@ export default function WikiGraphPage() {
   const canvasWidth = dimensions.width - panelWidth;
 
   return (
+    <>
+    {/*
+      The force-graph library maps mouse events using getBoundingClientRect(), which
+      returns visual (post-zoom) dimensions. With html { zoom: 0.9 } the canvas CSS
+      coordinate space (0..width) and the mouse position range (0..width*0.9) diverge
+      by 10%, causing hover/click to miss. Resetting html zoom to 1 for this page
+      only (React removes the <style> on unmount when navigating away).
+    */}
+    <style>{`html { zoom: 1; }`}</style>
     <main
-      style={{ height: 'calc(100dvh / 0.9 - 97px)', display: 'flex', flexDirection: 'column', background: '#0D0E10', overflow: 'hidden' }}
+      style={{ height: 'calc(100dvh - 97px)', display: 'flex', flexDirection: 'column', background: '#0D0E10', overflow: 'hidden' }}
     >
       {/* Floating header bar */}
       <header
@@ -728,5 +737,6 @@ export default function WikiGraphPage() {
         })()}
       </div>
     </main>
+    </>
   );
 }
