@@ -15,8 +15,8 @@
  *    code executes."
  *   — https://github.com/WiseLibs/better-sqlite3/blob/master/docs/api.md
  *
- * The Pass-5 three-phase commit pattern used by /api/sources/store (and,
- * in commit 4, /api/compile/commit) is:
+ * The Pass-5 three-phase commit pattern used by /api/onboarding/collect (and
+ * /api/compile/commit) is:
  *
  *   Phase 1 — async pre-work (httpx calls, hashing, gzipping)
  *   Phase 2 — synchronous db.transaction(() => { ... writes ... })
@@ -271,16 +271,6 @@ export function getSource(sourceId: string): SourceRow | null {
   return row ?? null;
 }
 
-/**
- * Check whether a source_id already exists. Used for idempotent-retry
- * detection in /api/sources/store (return 409 instead of 500 on dupe).
- */
-export function sourceExists(sourceId: string): boolean {
-  const row = openDb()
-    .prepare('SELECT 1 AS one FROM sources WHERE source_id = ?')
-    .get(sourceId) as { one: number } | undefined;
-  return !!row;
-}
 
 // ============================================================================
 // Onboarding helpers (Part 1a)
@@ -1820,20 +1810,6 @@ export function getIngestFailures(): IngestFailureRow[] {
     .all() as IngestFailureRow[];
 }
 
-/**
- * Mark any unresolved failures for a given URL as resolved.
- * Called by /api/sources/store after a successful ingest.
- */
-export function resolveIngestFailures(sourceUrl: string, resolvedSourceId: string): void {
-  openDb()
-    .prepare(
-      `UPDATE ingest_failures
-          SET resolved_source_id = ?
-        WHERE source_url = ?
-          AND resolved_source_id IS NULL`
-    )
-    .run(resolvedSourceId, sourceUrl);
-}
 
 /**
  * Unresolved saved links for the wiki page.

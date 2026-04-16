@@ -6,7 +6,7 @@
  * progress UI when status = 'failed'.
  */
 import { NextResponse } from 'next/server';
-import { createCompileProgress } from '@/lib/db';
+import { getCompileProgress, resetForRetry } from '@/lib/db';
 
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL ?? 'http://n8n:5678/webhook';
 
@@ -20,8 +20,12 @@ export async function POST(request: Request) {
   const { session_id } = rawBody as { session_id?: string };
   if (!session_id?.trim()) return NextResponse.json({ error: 'session_id required' }, { status: 400 });
 
-  // Reset progress (createCompileProgress does INSERT OR REPLACE)
-  createCompileProgress(session_id);
+  const progress = getCompileProgress(session_id);
+  if (!progress) return NextResponse.json({ error: 'no_progress_record' }, { status: 404 });
+
+  // Reset only failed/pending steps — preserve completed work so runCompilePipeline
+  // can skip expensive steps (extract, draft) that already succeeded.
+  resetForRetry(session_id);
 
   // Re-trigger n8n — best-effort, don't fail if n8n is down
   await fetch(`${N8N_WEBHOOK_URL}/session-compile`, {

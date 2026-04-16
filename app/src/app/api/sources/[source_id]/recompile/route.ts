@@ -2,16 +2,15 @@
  * POST /api/sources/[source_id]/recompile
  *
  * Manual re-trigger for a stuck or failed source. Resets the source's
- * compile_status back to 'pending' and fires the appropriate compile workflow:
+ * compile_status back to 'pending' and fires the session-compile pipeline.
  *
- *   - Session source (has onboarding_session_id): resets compile_progress and
- *     triggers the full 8-step session-compile pipeline via n8n.
- *   - Standalone source (no session): triggers the single-source compile-source
- *     workflow via n8n (same path as the drain for non-onboarding sources).
+ * All sources go through the session pipeline. Sources without an
+ * onboarding_session_id cannot be recompiled (return 422).
  *
  * Guards:
  *   404 — source not found
  *   409 — source is already active (nothing to do)
+ *   422 — source has no session (legacy standalone, cannot recompile)
  *
  * Request:  (no body required)
  * Response: { source_id, session_id: string|null, status: 'queued' }
@@ -37,7 +36,7 @@ export async function POST(
   if (!source) {
     return NextResponse.json({ error: 'source_not_found' }, { status: 404 });
   }
-  if (source.compile_status === 'active' || source.compile_status === 'compiled') {
+  if (source.compile_status === 'active') {
     return NextResponse.json({ error: 'source_already_compiled' }, { status: 409 });
   }
 
@@ -52,38 +51,27 @@ export async function POST(
 
   const sessionId = source.onboarding_session_id ?? null;
 
-  if (sessionId) {
-    // Full session pipeline: reset progress record + trigger session-compile
-    createCompileProgress(sessionId, 1);
-    await fetch(`${N8N_WEBHOOK_URL}/session-compile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId }),
-      signal: AbortSignal.timeout(10_000),
-    }).catch((err: unknown) => {
-      insertActivity({
-        action_type: 'compile_trigger_failed',
-        source_id,
-        details: { event: 'session-compile', error: err instanceof Error ? err.message : 'timeout' },
-      });
-    });
-
-    return NextResponse.json({ source_id, session_id: sessionId, status: 'queued' });
+  if (!sessionId) {
+    return NextResponse.json(
+      { error: 'no_session: source has no onboarding session and cannot be recompiled' },
+      { status: 422 }
+    );
   }
 
-  // Standalone source — trigger single-source compile workflow
-  await fetch(`${N8N_WEBHOOK_URL}/compile`, {
+  // Reset progress record + trigger the session-compile pipeline via n8n
+  createCompileProgress(sessionId, 1);
+  await fetch(`${N8N_WEBHOOK_URL}/session-compile`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_id }),
+    body: JSON.stringify({ session_id: sessionId }),
     signal: AbortSignal.timeout(10_000),
   }).catch((err: unknown) => {
     insertActivity({
       action_type: 'compile_trigger_failed',
       source_id,
-      details: { event: 'compile', error: err instanceof Error ? err.message : 'timeout' },
+      details: { event: 'session-compile', error: err instanceof Error ? err.message : 'timeout' },
     });
   });
 
-  return NextResponse.json({ source_id, session_id: null, status: 'queued' });
+  return NextResponse.json({ source_id, session_id: sessionId, status: 'queued' });
 }
