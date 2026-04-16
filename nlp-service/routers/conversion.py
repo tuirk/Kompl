@@ -30,9 +30,11 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
+import re
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from markitdown import MarkItDown
 from pydantic import BaseModel, ConfigDict, Field
@@ -53,6 +55,12 @@ class ContentMetadata(BaseModel):
     status_code: int | None = None
     content_type: str | None = None
     final_url: str | None = None
+    # GitHub repo fields — populated only for source_type="github-repo"
+    github_owner: str | None = None
+    github_repo: str | None = None
+    github_stars: int | None = None
+    github_topics: list[str] | None = None
+    github_language: str | None = None
 
 
 class ConvertResponse(BaseModel):
@@ -97,7 +105,7 @@ _FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
 # Results below this threshold indicate a JS-rendered SPA, paywall, or a YouTube
 # video with no available transcript — Firecrawl is used as a fallback in those cases.
 _MARKITDOWN_MIN_CHARS = 500
-_DATA_ROOT = "/data"
+_DATA_ROOT = Path("/data")
 _ALLOWED_EXTENSIONS = {
     ".pdf",
     ".docx",
@@ -121,6 +129,96 @@ _ALLOWED_EXTENSIONS = {
 # ---------------------------------------------------------------------------
 # Endpoint 1 — POST /convert/url
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# GitHub repo enrichment
+# ---------------------------------------------------------------------------
+
+_GITHUB_REPO_RE = re.compile(
+    r"^https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+)
+_GITHUB_API = "https://api.github.com"
+_GITHUB_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "kompl/2",
+}
+
+
+def _is_github_repo_url(url: str) -> tuple[str, str] | None:
+    """Return (owner, repo) if url is a GitHub repo root, else None."""
+    m = _GITHUB_REPO_RE.match(url)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def _convert_github_repo(
+    source_id: str, url: str, owner: str, repo: str
+) -> "ConvertResponse | None":
+    """Fetch repo metadata + raw README via GitHub public API.
+
+    Returns None on any failure (rate limit, network, private repo) so the
+    caller falls through to MarkItDown → Firecrawl as normal.
+    Unauthenticated: 60 req/hr per IP — sufficient for personal use.
+    """
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            meta_r = client.get(
+                f"{_GITHUB_API}/repos/{owner}/{repo}", headers=_GITHUB_HEADERS
+            )
+            if meta_r.status_code != 200:
+                return None
+            meta = meta_r.json()
+
+            readme_r = client.get(
+                f"{_GITHUB_API}/repos/{owner}/{repo}/readme",
+                headers={**_GITHUB_HEADERS, "Accept": "application/vnd.github.raw+json"},
+            )
+            readme_md = readme_r.text if readme_r.status_code == 200 else ""
+    except Exception:
+        return None
+
+    description = meta.get("description") or ""
+    topics: list[str] = meta.get("topics") or []
+    stars: int | None = meta.get("stargazers_count")
+    lang: str | None = meta.get("language")
+    full_name: str = meta.get("full_name") or f"{owner}/{repo}"
+
+    # Compose enriched document: metadata header + README body
+    parts: list[str] = [f"# {full_name}", ""]
+    if description:
+        parts += [description, ""]
+    meta_lines: list[str] = []
+    if lang:
+        meta_lines.append(f"**Language:** {lang}")
+    if stars is not None:
+        meta_lines.append(f"**Stars:** {stars:,}")
+    if topics:
+        meta_lines.append(f"**Topics:** {', '.join(topics)}")
+    if meta_lines:
+        parts += meta_lines + [""]
+    if readme_md:
+        parts += ["---", "", readme_md]
+
+    markdown = "\n".join(parts).strip()
+    content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+    return ConvertResponse(
+        source_id=source_id,
+        source_type="github-repo",
+        title=full_name,
+        source_url=url,
+        markdown=markdown,
+        content_hash=content_hash,
+        metadata=ContentMetadata(
+            description=description or None,
+            github_owner=owner,
+            github_repo=repo,
+            github_stars=stars,
+            github_topics=topics or None,
+            github_language=lang,
+        ),
+    )
 
 
 # RFC 2606 reserved TLDs (never valid on the public internet). Fail fast
@@ -187,6 +285,15 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
                 "message": f"reserved_tld: {tld} is not resolvable on the public internet",
             },
         )
+
+    # GitHub repo pre-check: intercept repo root URLs before MarkItDown and
+    # fetch clean structured content via the GitHub public API (metadata + README).
+    # Falls through to MarkItDown on any API failure (rate limit, private repo, network).
+    gh = _is_github_repo_url(req.url)
+    if gh:
+        github_result = _convert_github_repo(req.source_id, req.url, gh[0], gh[1])
+        if github_result is not None:
+            return github_result
 
     # Layer 1: MarkItDown (free, local). For YouTube, uses YouTubeTranscriptApi
     # to extract full transcripts — better quality than Firecrawl for captioned
@@ -323,7 +430,7 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
     # Path safety — straight port of v1 conversion.py check. Prevents a
     # compromised n8n from asking us to read arbitrary host paths.
     p = Path(req.file_path).resolve()
-    if not str(p).startswith(_DATA_ROOT + "/"):
+    if not p.is_relative_to(_DATA_ROOT):
         raise HTTPException(status_code=403, detail="path_outside_data_volume")
 
     if not p.exists():

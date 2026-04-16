@@ -28,13 +28,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from google import genai
 from google.genai import types
-from openai import OpenAI as _OpenAI
 from pydantic import BaseModel
 from pyrate_limiter import Duration, InMemoryBucket, Limiter, Rate
 
@@ -42,12 +42,8 @@ from pyrate_limiter import Duration, InMemoryBucket, Limiter, Rate
 # Configuration from environment
 # ---------------------------------------------------------------------------
 
-_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 _GEMINI_RPM = int(os.environ.get("GEMINI_RPM", "800"))
-
-# Ollama provider (chat toggle). Defaults to the internal Docker DNS name.
-_OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434/v1")
-_OLLAMA_MODEL = "llama3.2:3b"
 # Rough char budget: 1 token ≈ 4 chars for English. 32,000 tokens → 128,000 chars.
 _GEMINI_INPUT_TOKEN_CAP = int(os.environ.get("GEMINI_INPUT_TOKEN_CAP", "128000"))
 _DAILY_CAP = float(os.environ.get("GEMINI_DAILY_USD_CAP", "5.00"))
@@ -73,10 +69,6 @@ class CostCeilingError(Exception):
 
 class LLMCompileError(Exception):
     """Raised when the LLM call succeeds but the response cannot be parsed."""
-
-
-class OllamaUnavailableError(Exception):
-    """Raised when the Ollama server is unreachable or the model is not yet pulled."""
 
 
 # ---------------------------------------------------------------------------
@@ -170,23 +162,6 @@ def get_client() -> genai.Client:
             raise RuntimeError("GEMINI_API_KEY not set")
         _client = genai.Client(api_key=_GEMINI_API_KEY)
     return _client
-
-
-# ---------------------------------------------------------------------------
-# Ollama client (lazy init — only created when chat_provider='ollama')
-# ---------------------------------------------------------------------------
-
-_ollama_client: _OpenAI | None = None
-
-
-def _get_ollama_client() -> _OpenAI:
-    global _ollama_client
-    if _ollama_client is None:
-        _ollama_client = _OpenAI(
-            base_url=_OLLAMA_BASE_URL,
-            api_key="ollama",  # required by the SDK but ignored by Ollama
-        )
-    return _ollama_client
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +403,7 @@ def extract_source(
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=LLMExtractionResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=512),
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
                 max_output_tokens=8192,
                 temperature=0.0,
             ),
@@ -564,14 +539,15 @@ _DRAFT_PAGE_PROMPTS: dict[str, str] = {
 Write a source summary wiki page for the following source document.
 
 The page should include:
-- YAML frontmatter: title, page_type: source-summary, summary (1-2 sentences describing what this source is about), sources (list with source_id and title), last_updated
+- YAML frontmatter: title, page_type: source-summary, category, summary (1-2 sentences describing what this source is about), sources (list with source_id and title), last_updated
 - ## Key Takeaways (3-5 bullet points)
 - ## Summary (2-4 paragraphs)
 - ## Entities Mentioned (bullet list of key people, companies, tools)
 - ## Concepts (bullet list of key ideas)
 
 Write clean markdown. Be concise and factual. Do not add information not in the source.
-Use [[wikilinks]] for any entities, people, tools, or concepts that have their own wiki pages.""",
+Use [[wikilinks]] for any entities, people, tools, or concepts that have their own wiki pages.
+When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 
     "entity": """\
 Write an entity wiki page synthesizing information from multiple sources.
@@ -584,7 +560,8 @@ The page should include:
 
 Synthesize across all sources. If sources provide complementary information, merge coherently.
 If sources contradict each other, note the contradiction with citations to both sources.
-Use [[wikilinks]] when referencing related entities or concepts that have wiki pages.""",
+Use [[wikilinks]] when referencing related entities or concepts that have wiki pages.
+When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 
     "concept": """\
 Write a concept wiki page synthesizing information from multiple sources.
@@ -597,19 +574,21 @@ The page should include:
 - ## Related Concepts (use [[wikilinks]] for concepts that have wiki pages)
 
 Synthesize across sources. Attribute specific claims to their source.
-Use [[wikilinks]] when referencing related concepts or entities that have wiki pages.""",
+Use [[wikilinks]] when referencing related concepts or entities that have wiki pages.
+When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 
     "comparison": """\
 Write a comparison wiki page comparing two entities or concepts.
 
 The page should include:
-- YAML frontmatter: title, page_type: comparison, summary (1-2 sentences describing what is being compared), sources (list), last_updated
+- YAML frontmatter: title, page_type: comparison, category, summary (1-2 sentences describing what is being compared), sources (list), last_updated
 - A brief intro paragraph explaining what is being compared and why
 - A structured comparison (use a table or parallel sections)
 - ## Summary: which is better suited for different use cases (if applicable)
 
 Be objective and factual.
-Use [[wikilinks]] when naming the entities being compared and any related concepts that have wiki pages.""",
+Use [[wikilinks]] when naming the entities being compared and any related concepts that have wiki pages.
+When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 
     "overview": """\
 Write an overview wiki page summarizing all pages in a category.
@@ -619,7 +598,8 @@ The page should include:
 - A high-level summary paragraph of the category
 - Brief descriptions of each entity/concept in the category (with [[wikilinks]] from the provided list)
 - ## Common Themes
-- ## Open Questions (gaps in coverage, if any)""",
+- ## Open Questions (gaps in coverage, if any)
+When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 }
 
 
@@ -632,6 +612,7 @@ def draft_page(
     schema: str | None = None,
     existing_page_titles: list[str] | None = None,
     extraction_dossier: str = "",
+    existing_categories: list[str] | None = None,
 ) -> str:
     """Draft a wiki page using Gemini 2.5 Flash.
 
@@ -703,18 +684,43 @@ def draft_page(
     parts.append("Source documents:")
     for sc in source_contents:
         md = sc.get("markdown", "")
-        if len(md) > _GEMINI_INPUT_TOKEN_CAP // max(len(source_contents), 1):
-            md = md[:_GEMINI_INPUT_TOKEN_CAP // max(len(source_contents), 1)]
         parts += [
             f"--- Source: {sc.get('title', sc.get('source_id', ''))} ---",
             md,
             "",
         ]
 
+    # Build category suffix separately so the truncation below never removes it.
+    # It must survive at the very end of the final prompt for Gemini recency attention.
+    # Always emit CATEGORY ASSIGNMENT — even when the list is empty — so the LLM
+    # always has explicit instruction to write the category field.  When cats is
+    # empty (first session) the LLM must invent one; when cats is non-empty it
+    # must reuse an existing one or invent only when none fits.
+    cats = existing_categories or []
+    if cats:
+        cats_str = ", ".join(f'"{c}"' for c in cats)
+        cat_suffix = (
+            "\nCATEGORY ASSIGNMENT:\n"
+            f"Existing wiki categories: {cats_str}\n\n"
+            "You MUST use one of these exact strings for the \"category\" frontmatter field. "
+            "Only invent a new category if none of the existing ones fit. "
+            "Do NOT paraphrase or rephrase an existing category."
+        )
+    else:
+        cat_suffix = (
+            "\nCATEGORY ASSIGNMENT:\n"
+            "No existing categories yet. You MUST invent a suitable broad category for the "
+            "\"category\" frontmatter field (e.g. \"Technology\", \"AI & Machine Learning\", "
+            "\"Organizations\", \"Concepts\", \"Gaming\"). "
+            "The category field is REQUIRED — do not leave it blank or omit it."
+        )
+
     prompt = "\n".join(parts)
 
     if len(prompt) > _GEMINI_INPUT_TOKEN_CAP:
         prompt = prompt[:_GEMINI_INPUT_TOKEN_CAP]
+
+    prompt += cat_suffix
 
     limiter = _get_limiter()
     acquired = limiter.try_acquire("gemini")
@@ -746,7 +752,11 @@ def draft_page(
     if not raw_text:
         raise LLMCompileError(f"draft_page_error: empty response for '{title}'")
 
-    return raw_text.strip()
+    raw = raw_text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:yaml|markdown)?\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw)
+    return raw.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +781,12 @@ class CrossrefResponse(BaseModel):
     # No extra='forbid' — LLM output model.
     updated_pages: list[CrossrefUpdatedPage]
     contradictions_found: list[CrossrefContradiction]
+
+
+class TriageResponse(BaseModel):
+    # No extra='forbid' — LLM output model.
+    decision: str  # "update" | "contradiction" | "skip"
+    reason: str
 
 
 _CROSSREF_SYSTEM_PROMPT = """\
@@ -943,14 +959,7 @@ def triage_page_update(
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema={
-                    "type": "OBJECT",
-                    "properties": {
-                        "decision": {"type": "STRING"},
-                        "reason": {"type": "STRING"},
-                    },
-                    "required": ["decision", "reason"],
-                },
+                response_schema=TriageResponse,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
                 max_output_tokens=512,
                 temperature=0.0,
@@ -970,14 +979,12 @@ def triage_page_update(
         raise LLMCompileError("triage_error: empty response text")
 
     try:
-        result = _json.loads(raw_text)
+        triage = TriageResponse.model_validate_json(raw_text)
     except Exception as e:
         raise LLMCompileError(f"triage_json_parse_failed: {e}") from e
 
-    decision = result.get("decision", "skip")
-    if decision not in ("update", "contradiction", "skip"):
-        decision = "skip"
-    return {"decision": decision, "reason": result.get("reason", "")}
+    decision = triage.decision if triage.decision in ("update", "contradiction", "skip") else "skip"
+    return {"decision": decision, "reason": triage.reason}
 
 
 def generate_schema(pages_summary: list[dict[str, Any]]) -> str:
@@ -1161,137 +1168,25 @@ Return JSON with two fields:
 """
 
 
-def _synthesize_with_ollama(
-    question: str,
-    pages: list[dict[str, Any]],
-    history: list[dict[str, Any]],
-) -> SynthesizeResponse:
-    """Synthesize a wiki-grounded answer using Ollama llama3.2:3b (CPU, free).
-
-    Uses OpenAI-compatible JSON mode + explicit schema instructions.
-    Ollama guarantees valid JSON but not field presence — parsed manually.
-
-    Raises:
-        OllamaUnavailableError  — server not running or model still pulling
-        LLMCompileError         — response received but JSON missing required fields
-    """
-    import json as _json
-
-    # Build page context (same assembly as the Gemini path)
-    page_sections: list[str] = []
-    for p in pages:
-        content = p.get("markdown", "")
-        page_sections.append(
-            f"=== [{p['page_id']}] {p['title']} (type: {p.get('page_type', '')}) ===\n{content}"
-        )
-    pages_text = "\n\n".join(page_sections)
-
-    history_text = ""
-    if history:
-        history_lines = [
-            f"{h['role'].upper()}: {h['content']}" for h in history[-10:]
-        ]
-        history_text = "Conversation history:\n" + "\n".join(history_lines) + "\n\n"
-
-    user_content = (
-        f"{history_text}"
-        f"Wiki pages:\n\n{pages_text}\n\n"
-        f"---\n\n"
-        f"Question: {question}"
-    )
-
-    # Ollama (3b CPU): cap input aggressively — 3b models can't reason over long context
-    # and processing 128k chars is slow on CPU. 8k chars ≈ 2-3 wiki pages, enough for grounded answers.
-    _OLLAMA_INPUT_CAP = 8000
-    if len(user_content) > _OLLAMA_INPUT_CAP:
-        user_content = user_content[:_OLLAMA_INPUT_CAP]
-
-    # Extend the system prompt with explicit JSON schema instructions.
-    # json_object mode guarantees parseable JSON but NOT field presence.
-    system_prompt = (
-        _SYNTHESIZE_SYSTEM_PROMPT
-        + '\nYou MUST return valid JSON with EXACTLY these two top-level fields:\n'
-        + '{"answer": "<markdown string>", "citations": [{"page_id": "<id>", "page_title": "<title>"}, ...]}\n'
-        + 'Do not add extra fields. The citations array may be empty if you used no specific pages.'
-    )
-
-    client = _get_ollama_client()
-    try:
-        completion = client.chat.completions.create(
-            model=_OLLAMA_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-            max_tokens=512,
-            extra_body={"options": {"num_ctx": 1024}},
-        )
-    except Exception as e:
-        err_str = str(e).lower()
-        if any(kw in err_str for kw in ("connection", "refused", "not found", "404", "pull")):
-            raise OllamaUnavailableError(f"ollama_unavailable: {e}") from e
-        raise LLMCompileError(f"ollama_call_failed: {e}") from e
-
-    raw_text = completion.choices[0].message.content if completion.choices else ""
-    if not raw_text:
-        raise LLMCompileError("ollama_error: empty response content")
-
-    try:
-        data = _json.loads(raw_text)
-    except _json.JSONDecodeError as e:
-        raise LLMCompileError(f"ollama_parse_failed: invalid JSON: {e}") from e
-
-    if not isinstance(data, dict):
-        raise LLMCompileError(f"ollama_parse_failed: expected object, got {type(data).__name__}")
-
-    answer = data.get("answer")
-    if not isinstance(answer, str) or not answer.strip():
-        raise LLMCompileError(
-            f"ollama_parse_failed: 'answer' field missing or empty. Keys present: {list(data.keys())}"
-        )
-
-    # Citations are best-effort — skip malformed entries, return empty list if absent.
-    raw_citations = data.get("citations", [])
-    citations: list[SynthesisCitation] = []
-    if isinstance(raw_citations, list):
-        for c in raw_citations:
-            if isinstance(c, dict):
-                pid = c.get("page_id", "")
-                ptitle = c.get("page_title", "")
-                if isinstance(pid, str) and isinstance(ptitle, str) and pid:
-                    citations.append(SynthesisCitation(page_id=pid, page_title=ptitle))
-
-    return SynthesizeResponse(answer=answer.strip(), citations=citations)
-
-
 def synthesize_answer(
     question: str,
     pages: list[dict[str, Any]],
     history: list[dict[str, Any]],
-    provider: str = "gemini",
 ) -> SynthesizeResponse:
-    """Synthesize a wiki-grounded answer to a question.
+    """Synthesize a wiki-grounded answer to a question using Gemini 2.5 Flash.
 
     Args:
         question: The user's question.
         pages:    List of {page_id, title, page_type, markdown} dicts.
         history:  List of {role, content} dicts (conversation history).
-        provider: 'gemini' (default, uses Gemini 2.5 Flash) or 'ollama'
-                  (uses local llama3.2:3b via Ollama — free, CPU-only).
 
     Returns SynthesizeResponse with answer markdown and citations.
 
     Raises:
-        OllamaUnavailableError — Ollama server down or model not yet pulled (provider='ollama')
-        LLMRateLimitedError    — bucket exhausted (provider='gemini')
-        CostCeilingError       — daily $ cap exceeded (provider='gemini')
-        LLMCompileError        — parse failure (both providers)
+        LLMRateLimitedError — bucket exhausted
+        CostCeilingError    — daily $ cap exceeded
+        LLMCompileError     — parse failure
     """
-    if provider == "ollama":
-        return _synthesize_with_ollama(question, pages, history)
-
     import json as _json
 
     limiter = _get_limiter()
@@ -1380,7 +1275,7 @@ def generate_digest(data: Any) -> str:
         LLMCompileError      — empty or failed response
     """
     limiter = _get_limiter()
-    acquired = limiter.try_acquire("digest")
+    acquired = limiter.try_acquire("gemini")
     if not acquired:
         raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
 
