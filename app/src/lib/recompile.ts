@@ -26,6 +26,7 @@ import {
   updatePageContent,
   setPendingContent,
   clearPendingContent,
+  getCategoryGroups,
   getPageTitleMap,
   insertPageLink,
 } from './db';
@@ -46,7 +47,8 @@ interface WritePageResult {
 async function callDraftPage(
   pageType: string,
   title: string,
-  sourceContents: SourceContent[]
+  sourceContents: SourceContent[],
+  existingCategories: string[]
 ): Promise<string> {
   const res = await fetch(`${NLP_SERVICE_URL}/pipeline/draft-page`, {
     method: 'POST',
@@ -58,6 +60,7 @@ async function callDraftPage(
       related_pages: [],
       existing_content: null,
       schema: null,
+      existing_categories: existingCategories,
     }),
     signal: AbortSignal.timeout(180_000), // 3 min — Gemini thinking can be slow
   });
@@ -134,7 +137,10 @@ export async function recompilePage(pageId: string, removedSourceId: string): Pr
   }
 
   // ── Phase 1: call Gemini via NLP service ─────────────────────────────────
-  const newMarkdown = await callDraftPage(page.page_type, page.title, sourceContents);
+  const existingCategories = getCategoryGroups()
+    .map((g) => g.category)
+    .filter((c) => c !== 'Uncategorized');
+  const newMarkdown = await callDraftPage(page.page_type, page.title, sourceContents, existingCategories);
 
   // ── Phase 2: sync transaction — update pages + setPendingContent + FTS5 ──
   // File is NOT written yet. pending_content stores markdown so the boot

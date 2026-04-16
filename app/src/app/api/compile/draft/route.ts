@@ -23,6 +23,7 @@ import { NextResponse } from 'next/server';
 
 import {
   getAllPages,
+  getCategoryGroups,
   getExtractionsBySession,
   getPagePlansByStatus,
   readRawMarkdown,
@@ -56,7 +57,8 @@ async function callDraftPage(
   existingContent?: string,
   schema?: string,
   existingPageTitles?: string[],
-  extractionDossier?: string
+  extractionDossier?: string,
+  existingCategories?: string[]
 ): Promise<string> {
   const res = await fetch(`${NLP_SERVICE_URL}/pipeline/draft-page`, {
     method: 'POST',
@@ -70,6 +72,7 @@ async function callDraftPage(
       schema: schema ?? null,
       existing_page_titles: existingPageTitles ?? [],
       extraction_dossier: extractionDossier ?? '',
+      existing_categories: existingCategories ?? [],
     }),
     signal: AbortSignal.timeout(180_000), // 3 min — Gemini thinking can be slow
   });
@@ -299,6 +302,18 @@ export async function POST(request: Request) {
     .filter((t) => !sessionTitleSet.has(t));
   const allKnownTitles = [...sessionTitles, ...sortedExistingTitles].slice(0, 200);
 
+  // Existing wiki categories — passed to Gemini so it reuses them instead of inventing new ones.
+  // Filter out 'Uncategorized' (the null-category fallback) so the LLM isn't told to use it literally.
+  // baseCategories = categories already committed to the DB from prior sessions.
+  const baseCategories = getCategoryGroups()
+    .map((g) => g.category)
+    .filter((c): c is string => c !== null && c !== 'Uncategorized');
+
+  // sessionCategories accumulates categories invented during this session's draft loop.
+  // Source-summary pages are drafted first; their invented categories are harvested
+  // before entity/concept pages run so later layers see a consistent category list.
+  const sessionCategorySet = new Set<string>(baseCategories);
+
   // Layer order for drafting
   const LAYER_ORDER = ['source-summary', 'entity', 'concept', 'comparison', 'overview'] as const;
 
@@ -373,11 +388,12 @@ export async function POST(request: Request) {
         plan.draft_content ?? undefined, // existing content for 'update' action
         schema,
         allKnownTitles,
-        dossier || undefined
+        dossier || undefined,
+        Array.from(sessionCategorySet)
       );
 
       updatePlanDraft(plan.plan_id, markdown);
-      return plan.page_type;
+      return { pageType: plan.page_type, markdown };
     });
 
     const results = await pLimit(tasks, DRAFT_CONCURRENCY);
@@ -389,7 +405,13 @@ export async function POST(request: Request) {
         updatePlanStatus(layerPlans[i].plan_id, 'failed');
       } else {
         drafted++;
-        byType[r] = (byType[r] ?? 0) + 1;
+        byType[r.pageType] = (byType[r.pageType] ?? 0) + 1;
+        // Harvest any new categories this layer invented so later layers can reuse them.
+        const catMatch = r.markdown.match(/^category:\s*["']?(.+?)["']?\s*$/m);
+        if (catMatch?.[1]) {
+          const newCat = catMatch[1].trim();
+          if (newCat && newCat !== 'Uncategorized') sessionCategorySet.add(newCat);
+        }
       }
     }
   }

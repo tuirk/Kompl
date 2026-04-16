@@ -135,6 +135,7 @@ class DraftPageRequest(BaseModel):
     schema: str | None = None
     existing_page_titles: list[str] = []
     extraction_dossier: str = ""
+    existing_categories: list[str] = []
 
 
 class DraftPageResponse(BaseModel):
@@ -160,6 +161,7 @@ def pipeline_draft_page(req: DraftPageRequest) -> DraftPageResponse:
             schema=req.schema,
             existing_page_titles=req.existing_page_titles if req.existing_page_titles else None,
             extraction_dossier=req.extraction_dossier,
+            existing_categories=req.existing_categories,
         )
         return DraftPageResponse(markdown=markdown)
     except LLMRateLimitedError as e:
