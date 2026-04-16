@@ -356,12 +356,18 @@ async function commitSession(session_id: string): Promise<Response> {
             return `${base || 'page'}-${suffix}`;
           })();
 
-      const links = plan.draft_content!.match(/\[\[([^\]]+)\]\]/g) ?? [];
-      for (const link of links) {
+      // Delete stale wikilinks for this page before re-inserting current ones.
+      // Prevents phantom backlinks when [[links]] are removed on recompile.
+      db.prepare(`DELETE FROM page_links WHERE source_page_id = ? AND link_type = 'wikilink'`).run(fromPageId);
+
+      const rawLinks = plan.draft_content!.match(/\[\[([^\]]+)\]\]/g) ?? [];
+      const seenTargets = new Set<string>();
+      for (const link of rawLinks) {
         const title = link.slice(2, -2).trim();
         const toPageId = titleMap.get(title.toLowerCase());
-        if (toPageId && toPageId !== fromPageId) {
-          try { insertPageLink(fromPageId, toPageId, 'wikilink'); } catch { /* duplicate — ignore */ }
+        if (toPageId && toPageId !== fromPageId && !seenTargets.has(toPageId)) {
+          seenTargets.add(toPageId);
+          insertPageLink(fromPageId, toPageId, 'wikilink');
         }
       }
     }

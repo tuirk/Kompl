@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -249,6 +249,21 @@ CREATE INDEX IF NOT EXISTS idx_pages_pending_flush ON pages(page_id)
   WHERE pending_content IS NOT NULL;
 """
 
+# V15: page_links unique constraint.
+# The original table had no UNIQUE constraint, so INSERT OR IGNORE was a no-op
+# and every recompile re-inserted duplicate rows. Deduplicate existing data first
+# (keep lowest id per triple), then add a unique index so INSERT OR IGNORE works.
+MIGRATION_V15_SQL = """
+DELETE FROM page_links
+  WHERE id NOT IN (
+    SELECT MIN(id)
+      FROM page_links
+     GROUP BY source_page_id, target_page_id, link_type
+  );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_page_links_unique
+  ON page_links(source_page_id, target_page_id, link_type);
+"""
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -362,6 +377,10 @@ def migrate():
         if "pending_content" not in existing_cols:
             conn.execute(MIGRATION_V14_SQL)
         conn.executescript(MIGRATION_V14_INDEX_SQL)
+
+    if current < 15:
+        print("  applying migration v15 (page_links unique constraint + dedup)...")
+        conn.executescript(MIGRATION_V15_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

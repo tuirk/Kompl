@@ -26,6 +26,8 @@ import {
   updatePageContent,
   setPendingContent,
   clearPendingContent,
+  getPageTitleMap,
+  insertPageLink,
 } from './db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -164,6 +166,22 @@ export async function recompilePage(pageId: string, removedSourceId: string): Pr
   // Throws on failure — caller catches and falls back to decrementPageSourceCount.
   const writeResult = await callWritePage(pageId, newMarkdown);
   clearPendingContent(pageId, writeResult.previous_path);
+
+  // ── Phase 3c: sync page_links — clear stale wikilinks, insert current ones ─
+  // Must run after Phase 3a so the new markdown is available in newMarkdown.
+  // The DELETE ensures removed [[links]] don't persist as phantom backlinks.
+  const titleMap = getPageTitleMap();
+  getDb().prepare(`DELETE FROM page_links WHERE source_page_id = ? AND link_type = 'wikilink'`).run(pageId);
+  const rawLinks = newMarkdown.match(/\[\[([^\]]+)\]\]/g) ?? [];
+  const seenTargets = new Set<string>();
+  for (const link of rawLinks) {
+    const title = link.slice(2, -2).trim();
+    const toPageId = titleMap.get(title.toLowerCase());
+    if (toPageId && toPageId !== pageId && !seenTargets.has(toPageId)) {
+      seenTargets.add(toPageId);
+      insertPageLink(pageId, toPageId, 'wikilink');
+    }
+  }
 
   // ── Phase 3b: vector upsert — fire-and-forget ────────────────────────────
   void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
