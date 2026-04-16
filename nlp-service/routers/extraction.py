@@ -328,16 +328,16 @@ def extract_route(req: RouteRequest) -> RouteResponse:
 
     if req.content_length == "short":
         profile = "short"
-        methods = {"rake"}
+        methods = {"rake", "yake"}
     elif req.content_length == "long":
         profile = "long"
-        methods = {"keybert", "textrank"}
+        methods = {"keybert", "textrank", "yake"}
     elif req.entity_density == "high":
         profile = "medium-entity-heavy"
-        methods = {"rake"}
+        methods = {"rake", "yake"}
     else:
         profile = "medium-concept-heavy"
-        methods = {"keybert", "textrank"}
+        methods = {"keybert", "textrank", "yake"}
 
     if req.wiki_exists and req.content_length != "short":
         methods.add("tfidf-overlap")

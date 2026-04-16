@@ -1,9 +1,8 @@
 """Kompl v2 nlp-service FastAPI app.
 
-Commit 4 scope: conversion + LLM compile pipeline.
+Commit 4 scope: conversion + LLM pipeline.
   - POST /convert/url           — Firecrawl v2 scrape → markdown
   - POST /convert/file-path     — MarkItDown local-file → markdown
-  - POST /pipeline/compile-simple — Gemini structured output → wiki page fields
   - GET  /health
 
 Part 2a additions (extraction infrastructure):
@@ -29,6 +28,8 @@ Commit 7 additions (vector store + chat agent):
   - POST /chat/select-pages     — index-first LLM page selection
   - POST /chat/synthesize       — wiki-grounded answer synthesis
 
+  GET /llm/usage               — today's Gemini spend vs daily cap (from /data/llm-cap.json)
+
 Future commits will add routers for:
   - pipeline    (commit 10 — /pipeline/draft, /pipeline/plan)
   - wiki        (commit 12 — wiki rebuild orchestration)
@@ -52,6 +53,7 @@ from pydantic import BaseModel, ConfigDict
 from routers.chat import router as chat_router
 from routers.conversion import router as conversion_router
 from routers.extraction import router as extraction_router
+from routers.llm import router as llm_router
 from routers.pipeline import router as pipeline_router
 from routers.resolution import router as resolution_router
 from routers.storage import router as storage_router
@@ -70,6 +72,7 @@ app = FastAPI(title="kompl-nlp-service", version="0.7.0")
 
 app.include_router(conversion_router)
 app.include_router(extraction_router)
+app.include_router(llm_router)
 app.include_router(pipeline_router)
 app.include_router(resolution_router)
 app.include_router(storage_router)
@@ -88,8 +91,9 @@ def startup_check() -> None:
     if not gemini_key:
         logger.warning(
             "GEMINI_API_KEY is not set. "
-            "POST /pipeline/compile-simple will fail with 500. "
-            "Set GEMINI_API_KEY in docker-compose.yml / .env."
+            "LLM endpoints (/pipeline/extract-llm, /pipeline/draft, "
+            "/pipeline/lint-scan, /resolve/disambiguate, /chat/synthesize) "
+            "will fail with 500. Set GEMINI_API_KEY in docker-compose.yml / .env."
         )
 
 

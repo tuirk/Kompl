@@ -1,9 +1,6 @@
-"""Pipeline router for Kompl v2 nlp-service (commits 4 + 11 + Part 2a).
+"""Pipeline router for Kompl v2 nlp-service (commits 11 + Part 2a).
 
 Endpoints:
-  POST /pipeline/compile-simple  (commit 4)
-    Compile raw markdown → structured wiki page via Gemini.
-
   POST /pipeline/lint-scan  (commit 11)
     Lightweight LLM call: scan page summaries for contradictions.
     Called by /api/wiki/lint-pass (Next.js) during the lint operation.
@@ -25,7 +22,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from services.llm_client import (
-    CompileResponse,
     Contradiction,
     CostCeilingError,
     CrossrefResponse,
@@ -33,7 +29,6 @@ from services.llm_client import (
     LLMCompileError,
     LLMExtractionResponse,
     LLMRateLimitedError,
-    compile_source,
     crossref_pages,
     draft_page,
     extract_source,
@@ -44,31 +39,6 @@ from services.llm_client import (
 )
 
 router = APIRouter(tags=["pipeline"])
-
-
-class CompileSimpleRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-
-    source_id: str
-    markdown: str
-
-
-@router.post("/pipeline/compile-simple", response_model=CompileResponse)
-def pipeline_compile_simple(req: CompileSimpleRequest) -> CompileResponse:
-    """Compile a source's raw markdown into structured wiki content via Gemini.
-
-    HTTP 429 when rate limit bucket is full.
-    HTTP 503 when daily cost ceiling is exceeded.
-    HTTP 500 when the LLM call fails or the JSON response cannot be parsed.
-    """
-    try:
-        return compile_source(req.source_id, req.markdown)
-    except LLMRateLimitedError as e:
-        raise HTTPException(status_code=429, detail="llm_rate_limited") from e
-    except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
-    except LLMCompileError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 class LintScanRequest(BaseModel):

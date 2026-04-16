@@ -3,7 +3,8 @@
 Responsibilities:
   - Wrap the google-genai SDK for structured output via Pydantic response_schema.
   - Enforce a per-process token-bucket rate limiter (pyrate-limiter, in-memory).
-  - Track estimated daily spend; raise CostCeilingError when the daily cap is hit.
+  - Track estimated daily spend in /data/llm-cap.json (survives restarts, resets at midnight UTC);
+    raise CostCeilingError when the daily cap is hit.
   - Truncate inputs to GEMINI_INPUT_TOKEN_CAP chars before sending (latency guard).
 
 Architecture notes (docs/research/2026-04-09-llm-compile.md):
@@ -25,9 +26,10 @@ This module NEVER opens kompl.db. rule #1 in CLAUDE.md.
 
 from __future__ import annotations
 
+import json
 import os
-import time
-import threading
+from datetime import date
+from pathlib import Path
 from typing import Any
 
 from google import genai
@@ -48,7 +50,7 @@ _OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434/v1")
 _OLLAMA_MODEL = "llama3.2:3b"
 # Rough char budget: 1 token ≈ 4 chars for English. 32,000 tokens → 128,000 chars.
 _GEMINI_INPUT_TOKEN_CAP = int(os.environ.get("GEMINI_INPUT_TOKEN_CAP", "128000"))
-_GEMINI_DAILY_USD_CAP = float(os.environ.get("GEMINI_DAILY_USD_CAP", "5.00"))
+_DAILY_CAP = float(os.environ.get("GEMINI_DAILY_USD_CAP", "5.00"))
 
 # Gemini 2.5 Flash approximate pricing ($/M tokens, as of 2026-04).
 # Both caps are env-driven per research artifact section 8 so pricing changes
@@ -89,40 +91,51 @@ class Entity(BaseModel):
     type: str  # PERSON | ORG | PRODUCT | CONCEPT | EVENT | LOCATION | OTHER
 
 
-class CompileResponse(BaseModel):
-    # No extra='forbid' — same reason as Entity above.
-    title: str
-    page_type: str    # source-summary | concept | entity | topic
-    category: str
-    summary: str
-    body: str
-    entities: list[Entity]
-
-
 # ---------------------------------------------------------------------------
-# Daily spend tracker (resets at process restart — sufficient for commit 4)
+# Daily spend tracker — file-based, survives restarts, resets at midnight UTC
 # ---------------------------------------------------------------------------
 
-_spend_lock = threading.Lock()
-_daily_spend_usd: float = 0.0
-_spend_day: int = 0  # day-of-year when the counter was last reset
+_CAP_FILE = Path(os.environ.get("DATA_ROOT", "/data")) / "llm-cap.json"
 
 
-def _record_spend(input_tokens: int, output_tokens: int) -> None:
-    global _daily_spend_usd, _spend_day
-    today = time.gmtime().tm_yday
-    with _spend_lock:
-        if today != _spend_day:
-            _daily_spend_usd = 0.0
-            _spend_day = today
-        cost = (input_tokens / 1_000_000) * _INPUT_PRICE_PER_M \
+def _read_cap() -> dict:
+    """Read today's spend from disk. Reset automatically when the date changes."""
+    try:
+        data = json.loads(_CAP_FILE.read_text())
+        today = str(date.today())
+        if data.get("date") != today:
+            return {"date": today, "total_usd": 0.0, "call_count": 0}
+        return data
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return {"date": str(date.today()), "total_usd": 0.0, "call_count": 0}
+
+
+def _write_cap(data: dict) -> None:
+    """Persist current spend to disk. Non-fatal on I/O failure."""
+    try:
+        _CAP_FILE.write_text(json.dumps(data))
+    except OSError:
+        pass  # cap still enforced in-memory for this call
+
+
+def _check_and_record_cost(input_tokens: int, output_tokens: int) -> None:
+    """Check daily cap then record cost. Raises CostCeilingError if exceeded.
+
+    Called after every successful Gemini API call. If GEMINI_DAILY_USD_CAP=0
+    the check is skipped (unlimited mode).
+    """
+    cost_usd = (input_tokens / 1_000_000) * _INPUT_PRICE_PER_M \
              + (output_tokens / 1_000_000) * _OUTPUT_PRICE_PER_M
-        _daily_spend_usd += cost
-        if _daily_spend_usd > _GEMINI_DAILY_USD_CAP:
-            raise CostCeilingError(
-                f"daily cost ceiling reached: "
-                f"${_daily_spend_usd:.4f} > ${_GEMINI_DAILY_USD_CAP:.2f}"
-            )
+    cap_data = _read_cap()
+    if _DAILY_CAP > 0 and cap_data["total_usd"] + cost_usd > _DAILY_CAP:
+        raise CostCeilingError(
+            f"Daily Gemini spend limit (${_DAILY_CAP:.2f}) reached. "
+            f"Today's spend: ${cap_data['total_usd']:.4f}. "
+            f"Resets at midnight UTC."
+        )
+    cap_data["total_usd"] = round(cap_data["total_usd"] + cost_usd, 6)
+    cap_data["call_count"] = cap_data.get("call_count", 0) + 1
+    _write_cap(cap_data)
 
 
 # ---------------------------------------------------------------------------
@@ -174,96 +187,6 @@ def _get_ollama_client() -> _OpenAI:
             api_key="ollama",  # required by the SDK but ignored by Ollama
         )
     return _ollama_client
-
-
-# ---------------------------------------------------------------------------
-# Compile prompt
-# ---------------------------------------------------------------------------
-
-_COMPILE_SYSTEM_PROMPT = """\
-You are a knowledge compiler. Given a markdown document, extract structured
-information to create a wiki page entry.
-
-Return JSON with these fields (in order):
-1. title      — concise, descriptive title for this page
-2. page_type  — one of: source-summary, concept, entity, topic
-3. category   — one broad category (e.g., "Cryptocurrency", "Machine Learning",
-                "Software Engineering")
-4. summary    — 2-4 sentence plain-English summary of the document
-5. body       — the full compiled markdown body for the wiki page. Use headers,
-                bullet points, and inline code where appropriate. Include all
-                key information from the source. Do not truncate.
-6. entities   — list of named entities from the document. Each has:
-                  name: the entity name
-                  type: PERSON | ORG | PRODUCT | CONCEPT | EVENT | LOCATION | OTHER
-
-Be precise. Do not hallucinate information not present in the document.
-"""
-
-
-def compile_source(source_id: str, markdown: str) -> CompileResponse:
-    """Call Gemini to compile a source's markdown into structured wiki content.
-
-    Truncates markdown to _GEMINI_INPUT_TOKEN_CAP chars before calling the API.
-    Acquires the rate limiter bucket before calling — blocks up to 60s if needed.
-    Records token usage against the daily spend cap after each call.
-
-    Raises:
-        LLMRateLimitedError  — bucket exhausted after 60s wait
-        CostCeilingError     — daily $ cap exceeded
-        LLMCompileError      — LLM returned but JSON parse failed
-        RuntimeError         — GEMINI_API_KEY not set
-    """
-    # Truncate before calling to guard against latency cliff at 100k+ tokens.
-    if len(markdown) > _GEMINI_INPUT_TOKEN_CAP:
-        markdown = markdown[:_GEMINI_INPUT_TOKEN_CAP]
-
-    # Rate limit acquire (blocks up to max_delay=60s via asyncio.sleep internally).
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted after max_delay")
-
-    prompt = (
-        f"{_COMPILE_SYSTEM_PROMPT}\n\n"
-        f"---\n\n"
-        f"Source ID: {source_id}\n\n"
-        f"{markdown}"
-    )
-
-    client = get_client()
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=CompileResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
-                max_output_tokens=32768,
-            ),
-        )
-    except Exception as e:
-        raise LLMCompileError(f"llm_call_failed: {e}") from e
-
-    # Record spend (raises CostCeilingError if over cap).
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
-
-    # Parse response — never use response.parsed (unreliable across SDK versions).
-    raw_text = response.text
-    if not raw_text:
-        raise LLMCompileError("llm_compile_error: empty response text")
-
-    try:
-        result = CompileResponse.model_validate_json(raw_text)
-    except Exception as e:
-        raise LLMCompileError(f"llm_compile_error: JSON parse failed: {e}") from e
-
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +264,7 @@ def lint_scan(pages: list[str]) -> LintScanResponse:
     if usage is not None:
         input_tok = getattr(usage, "prompt_token_count", 0) or 0
         output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
+        _check_and_record_cost(int(input_tok), int(output_tok))
 
     raw_text = response.text
     if not raw_text:
@@ -517,7 +440,7 @@ def extract_source(
     if usage is not None:
         input_tok = getattr(usage, "prompt_token_count", 0) or 0
         output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
+        _check_and_record_cost(int(input_tok), int(output_tok))
 
     raw_text = response.text
     if not raw_text:
@@ -620,7 +543,7 @@ def disambiguate_entities(pairs: list[dict[str, Any]]) -> DisambiguationResponse
     if usage is not None:
         input_tok = getattr(usage, "prompt_token_count", 0) or 0
         output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
+        _check_and_record_cost(int(input_tok), int(output_tok))
 
     raw_text = response.text
     if not raw_text:
@@ -817,7 +740,7 @@ def draft_page(
     if usage is not None:
         input_tok = getattr(usage, "prompt_token_count", 0) or 0
         output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
+        _check_and_record_cost(int(input_tok), int(output_tok))
 
     raw_text = response.text
     if not raw_text:
@@ -933,7 +856,7 @@ def crossref_pages(pages: list[dict[str, Any]]) -> CrossrefResponse:
     if usage is not None:
         input_tok = getattr(usage, "prompt_token_count", 0) or 0
         output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
+        _check_and_record_cost(int(input_tok), int(output_tok))
 
     raw_text = response.text
     if not raw_text:
@@ -1040,7 +963,7 @@ def triage_page_update(
     if usage is not None:
         input_tok = getattr(usage, "prompt_token_count", 0) or 0
         output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
+        _check_and_record_cost(int(input_tok), int(output_tok))
 
     raw_text = response.text
     if not raw_text:
@@ -1101,7 +1024,7 @@ def generate_schema(pages_summary: list[dict[str, Any]]) -> str:
     if usage is not None:
         input_tok = getattr(usage, "prompt_token_count", 0) or 0
         output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
+        _check_and_record_cost(int(input_tok), int(output_tok))
 
     raw_text = response.text
     if not raw_text:
@@ -1190,7 +1113,7 @@ def select_pages_for_query(
     if usage is not None:
         input_tok = getattr(usage, "prompt_token_count", 0) or 0
         output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
+        _check_and_record_cost(int(input_tok), int(output_tok))
 
     raw_text = response.text
     if not raw_text:
@@ -1424,7 +1347,7 @@ def synthesize_answer(
     if usage is not None:
         input_tok = getattr(usage, "prompt_token_count", 0) or 0
         output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
+        _check_and_record_cost(int(input_tok), int(output_tok))
 
     raw_text = response.text
     if not raw_text:
@@ -1494,7 +1417,7 @@ Keep it under 150 words. No markdown formatting — plain text with line breaks.
     if usage is not None:
         input_tok = getattr(usage, "prompt_token_count", 0) or 0
         output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _record_spend(int(input_tok), int(output_tok))
+        _check_and_record_cost(int(input_tok), int(output_tok))
 
     raw_text = response.text
     if not raw_text:
