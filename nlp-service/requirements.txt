@@ -26,3 +26,7 @@ rapidfuzz>=3.0
 # Commit 7: Chroma vector store (embedded, no separate server). 0.4.x API:
 # PersistentClient, get_or_create_collection, cosine distance.
 chromadb==0.4.24
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-mock==3.12.0
