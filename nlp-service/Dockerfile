@@ -29,6 +29,12 @@ WORKDIR /app
 # Install Python deps BEFORE copying source so the layer is cached when only
 # source files change.
 COPY requirements.txt /app/requirements.txt
+
+# Install CPU-only torch first. Without this, pip resolves the CUDA wheel
+# (~2 GB) from PyPI, bloating the image to 10 GB+. sentence-transformers and
+# keybert find torch already installed and skip their own resolution.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Part 2a: download spaCy model and NLTK corpora required by rake-nltk.

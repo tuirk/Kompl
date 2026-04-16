@@ -74,3 +74,4 @@ tui-readme.md
 
 # MCP server config (local-only Claude Code / tool setup)
 .mcp.json
+docker-compose.override.yml

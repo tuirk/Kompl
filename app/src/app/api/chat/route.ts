@@ -14,7 +14,7 @@
 
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { getChatHistory, getChatProvider, getPageCategories, getWikiStats, insertChatDraft, insertChatMessage } from '@/lib/db';
+import { getChatHistory, getPageCategories, getWikiStats, insertChatDraft, insertChatMessage } from '@/lib/db';
 import { retrievePages } from '@/lib/retrieval';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -141,11 +141,10 @@ export async function POST(request: Request) {
     }));
 
     // 5. Synthesise via nlp-service
-    const chatProvider = getChatProvider();
     const synthRes = await fetch(`${NLP_SERVICE_URL}/chat/synthesize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, pages: synthPages, history, provider: chatProvider }),
+      body: JSON.stringify({ question, pages: synthPages, history }),
       signal: AbortSignal.timeout(60_000),
     });
 

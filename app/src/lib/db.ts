@@ -616,7 +616,7 @@ export function searchPages(query: string, limit = 20): PageRow[] {
 export function getBacklinks(pageId: string): PageRow[] {
   return openDb()
     .prepare(
-      `SELECT p.page_id, p.title, p.page_type, p.category, p.summary,
+      `SELECT DISTINCT p.page_id, p.title, p.page_type, p.category, p.summary,
               p.content_path, p.previous_content_path, p.last_updated,
               p.source_count, p.created_at
          FROM page_links l
@@ -1055,7 +1055,8 @@ export function markSourcesActive(sourceIds: string[]): void {
   openDb()
     .prepare(
       `UPDATE sources SET compile_status = 'active'
-        WHERE source_id IN (${placeholders})`
+        WHERE source_id IN (${placeholders})
+          AND compile_status != 'failed'`
     )
     .run(...sourceIds);
 }
@@ -1633,24 +1634,6 @@ export function getAutoApprove(): boolean {
  */
 export function setAutoApprove(value: boolean): void {
   setSetting('auto_approve', value ? '1' : '0');
-}
-
-/**
- * Get the chat provider setting. Defaults to 'gemini' if not set.
- * 'gemini' uses Gemini 2.5 Flash (API key required, ~$0.001/turn).
- * 'ollama' uses local llama3.2:3b via Ollama (free, CPU-only, ~10 tok/s).
- */
-export function getChatProvider(): 'gemini' | 'ollama' {
-  const saved = getSetting('chat_provider');
-  if (saved === 'gemini') return 'gemini';
-  return 'ollama';
-}
-
-/**
- * Set the chat provider toggle.
- */
-export function setChatProvider(value: 'gemini' | 'ollama'): void {
-  setSetting('chat_provider', value);
 }
 
 /**

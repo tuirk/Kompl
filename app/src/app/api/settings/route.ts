@@ -2,8 +2,8 @@
  * GET  /api/settings — return current settings
  * POST /api/settings — update settings
  *
- * Exposes: auto_approve (boolean), chat_provider ('gemini' | 'ollama'),
- *          digest_enabled (boolean), digest_telegram_token (masked on GET),
+ * Exposes: auto_approve (boolean), digest_enabled (boolean),
+ *          digest_telegram_token (masked on GET),
  *          digest_telegram_chat_id (string | null),
  *          lint_enabled (boolean), lint_last_result (details from last lint_complete | null)
  */
@@ -11,7 +11,6 @@
 import { NextResponse } from 'next/server';
 import {
   getAutoApprove, setAutoApprove,
-  getChatProvider, setChatProvider,
   getRelatedPagesMinSources, setRelatedPagesMinSources,
   getDigestSettings, setDigestSettings,
   getLintEnabled, setLintEnabled, getLastLintResult,
@@ -26,7 +25,6 @@ function buildResponse() {
   const digest = getDigestSettings();
   return {
     auto_approve: getAutoApprove(),
-    chat_provider: getChatProvider(),
     related_pages_min_sources: getRelatedPagesMinSources(),
     stale_threshold_days: getStaleThresholdDays(),
     digest_enabled: digest.enabled,
@@ -49,7 +47,6 @@ export async function GET() {
 export async function POST(request: Request) {
   const body = (await request.json()) as {
     auto_approve?: boolean;
-    chat_provider?: string;
     related_pages_min_sources?: number;
     stale_threshold_days?: number;
     digest_enabled?: boolean;
@@ -62,7 +59,7 @@ export async function POST(request: Request) {
   };
 
   const knownFields = [
-    'auto_approve', 'chat_provider', 'related_pages_min_sources',
+    'auto_approve', 'related_pages_min_sources',
     'stale_threshold_days',
     'digest_enabled', 'digest_telegram_token', 'digest_telegram_chat_id',
     'lint_enabled', 'deployment_mode',
@@ -77,16 +74,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'auto_approve must be a boolean' }, { status: 422 });
     }
     setAutoApprove(body.auto_approve);
-  }
-
-  if (body.chat_provider !== undefined) {
-    if (body.chat_provider !== 'gemini' && body.chat_provider !== 'ollama') {
-      return NextResponse.json(
-        { error: "chat_provider must be 'gemini' or 'ollama'" },
-        { status: 422 },
-      );
-    }
-    setChatProvider(body.chat_provider);
   }
 
   if (body.related_pages_min_sources !== undefined) {

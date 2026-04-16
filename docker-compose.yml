@@ -79,11 +79,6 @@ services:
       GEMINI_INPUT_TOKEN_CAP: ${GEMINI_INPUT_TOKEN_CAP:-128000}
       # Daily $ cost ceiling. nlp-service raises CostCeilingError when exceeded.
       GEMINI_DAILY_USD_CAP: ${GEMINI_DAILY_USD_CAP:-5.00}
-      # Ollama provider (chat toggle). Points to the ollama service on the internal network.
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434/v1}
-    depends_on:
-      ollama:
-        condition: service_healthy
     volumes:
       # Shared file access to /data/raw so MarkItDown can read uploads
       # that Next.js wrote. Does NOT include write access to /data/db/kompl.db
@@ -156,46 +151,6 @@ services:
     image: alpine:latest
     # Placeholder — becomes real in commit 11 (Docusaurus static wiki).
 
-  ollama:
-    image: ollama/ollama:latest
-    init: true
-    restart: unless-stopped
-    # CPU-only: no GPU reservation block — omitting deploy.resources.reservations.devices
-    # is sufficient. The official ollama/ollama image auto-detects and uses CPU.
-    environment:
-      # Pin model in RAM for 24h so first request after idle doesn't pay the
-      # 13-46s cold-start reload cost. Docker sometimes miscounts cores — set
-      # OLLAMA_NUM_THREADS explicitly to your physical core count (default: all cores).
-      OLLAMA_KEEP_ALIVE: "24h"
-      # Single parallel request on CPU — each slot needs 1.5× model RAM.
-      # More than 1 on CPU just causes swapping.
-      OLLAMA_NUM_PARALLEL: "1"
-      # Only llama3.2:3b is used — no need to hold multiple models in RAM.
-      OLLAMA_MAX_LOADED_MODELS: "1"
-    volumes:
-      - ollama-data:/root/.ollama
-    # Internal only — nlp-service reaches it at http://ollama:11434/v1.
-    # No host port exposure needed (Ollama UI is not required).
-    healthcheck:
-      test: ["CMD", "sh", "-c", "curl -sf http://localhost:11434/api/tags || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 8
-      start_period: 60s
-    # Run ollama serve as a background process, pull the model, warm it into RAM,
-    # then wait. SIGTERM is trapped and forwarded to ollama serve so graceful
-    # shutdown works correctly. init:true injects tini as PID 1 for zombie reaping.
-    # Trap is set BEFORE backgrounding to eliminate the race window where SIGTERM
-    # arrives during the slow ollama pull/warmup phase. Handler calls wait after
-    # kill so the shell waits for ollama to finish cleanup before exiting.
-    entrypoint: ["/bin/sh", "-c", "trap 'kill -TERM \"$OLLAMA_PID\"; wait \"$OLLAMA_PID\"' TERM INT; ollama serve & OLLAMA_PID=$!; sleep 5 && ollama pull llama3.2:3b && ollama run llama3.2:3b ''; wait \"$OLLAMA_PID\""]
-    deploy:
-      resources:
-        limits:
-          memory: 6g
-          cpus: '4.0'
-
 volumes:
   kompl-data:
   n8n-data:
-  ollama-data:

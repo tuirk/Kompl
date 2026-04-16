@@ -21,7 +21,6 @@ from services.llm_client import (
     LLMCompileError,
     LLMRateLimitedError,
     CostCeilingError,
-    OllamaUnavailableError,
     select_pages_for_query,
     synthesize_answer,
 )
@@ -71,7 +70,6 @@ class SynthesizeRequest(BaseModel):
     question: str
     pages: list[SynthesizePage]
     history: list[HistoryMessage]
-    provider: str = "gemini"  # 'gemini' | 'ollama'
 
 
 class Citation(BaseModel):
@@ -119,19 +117,11 @@ def chat_synthesize(req: SynthesizeRequest) -> SynthesizeResponse:
     The answer is grounded exclusively in the provided pages — no general
     knowledge hallucination. Citations reference only pages that were used.
     """
-    if req.provider not in ("gemini", "ollama"):
-        raise HTTPException(
-            status_code=422,
-            detail=f"invalid provider '{req.provider}': must be 'gemini' or 'ollama'",
-        )
-
     pages_dicts = [p.model_dump() for p in req.pages]
     history_dicts = [h.model_dump() for h in req.history]
 
     try:
-        result = synthesize_answer(req.question, pages_dicts, history_dicts, provider=req.provider)
-    except OllamaUnavailableError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
+        result = synthesize_answer(req.question, pages_dicts, history_dicts)
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     except CostCeilingError as e:

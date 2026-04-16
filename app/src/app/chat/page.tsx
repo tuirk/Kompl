@@ -33,10 +33,6 @@ function formatTime(iso: string): string {
   return `[${hh}:${mm}:${ss}]`;
 }
 
-function providerLabel(p: 'gemini' | 'ollama'): string {
-  return p === 'ollama' ? 'OLLAMA LOCAL' : 'GEMINI 2.5 FLASH';
-}
-
 // ---------------------------------------------------------------------------
 // Citation chip rendering
 // ---------------------------------------------------------------------------
@@ -148,19 +144,8 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [savedDrafts, setSavedDrafts] = useState<Set<number>>(new Set());
-  const [provider, setProvider] = useState<'gemini' | 'ollama'>('gemini');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  // Fetch current provider from settings
-  useEffect(() => {
-    fetch('/api/settings')
-      .then((r) => r.json())
-      .then((d: { chat_provider?: string }) =>
-        setProvider((d.chat_provider as 'gemini' | 'ollama') ?? 'ollama'),
-      )
-      .catch(() => {});
-  }, []);
 
   // Reset session
   function newConversation() {
@@ -282,12 +267,12 @@ export default function ChatPage() {
           alignItems: 'center',
           padding: '0 56px',
           background: 'rgba(13,14,16,0.8)',
-          borderBottom: '1px solid rgba(71,72,74,0.05)',
+          borderBottom: '1px solid rgba(var(--separator-rgb),0.05)',
           backdropFilter: 'blur(6px)',
           zIndex: 10,
         }}
       >
-        {/* Left: title + provider badge + switch link */}
+        {/* Left: title + model badge */}
         <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <span
             style={{
@@ -334,29 +319,9 @@ export default function ChatPage() {
                 whiteSpace: 'nowrap',
               }}
             >
-              {providerLabel(provider)}
+              GEMINI 2.5 FLASH
             </span>
           </div>
-
-          {/* Switch provider link */}
-          <Link
-            href="/settings"
-            style={{
-              fontFamily: 'var(--font-body)',
-              fontWeight: 400,
-              fontSize: 10,
-              lineHeight: '15px',
-              letterSpacing: '1.2px',
-              textTransform: 'uppercase',
-              color: 'var(--fg-muted)',
-              textDecoration: 'none',
-              border: '1px solid var(--border)',
-              padding: '2px 8px',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            Switch Provider
-          </Link>
         </div>
 
         {/* Right: new conversation */}
@@ -539,7 +504,7 @@ export default function ChatPage() {
           right: 0,
           height: 172,
           background: 'var(--bg)',
-          borderTop: '1px solid rgba(71,72,74,0.1)',
+          borderTop: '1px solid rgba(var(--separator-rgb),0.1)',
           padding: '24px 56px',
           display: 'flex',
           flexDirection: 'column',
@@ -557,7 +522,7 @@ export default function ChatPage() {
                 textAlign: 'center',
                 padding: '8px',
                 background: 'none',
-                border: '1px solid rgba(71,72,74,0.2)',
+                border: '1px solid rgba(var(--separator-rgb),0.2)',
                 cursor: isLoading ? 'default' : 'pointer',
                 fontFamily: 'var(--font-body)',
                 fontWeight: 400,
@@ -606,7 +571,7 @@ export default function ChatPage() {
               gap: 16,
               padding: 16,
               background: 'var(--bg-card-hover)',
-              border: '1px solid rgba(71,72,74,0.3)',
+              border: '1px solid rgba(var(--separator-rgb),0.3)',
             }}
           >
             <textarea

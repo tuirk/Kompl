@@ -372,7 +372,9 @@ def extract_source(
     import json as _json
 
     if len(markdown) > _GEMINI_INPUT_TOKEN_CAP:
-        markdown = markdown[:_GEMINI_INPUT_TOKEN_CAP]
+        truncated = markdown[:_GEMINI_INPUT_TOKEN_CAP]
+        last_para = truncated.rfind("\n\n")
+        markdown = truncated[:last_para] if last_para > 0 else truncated
 
     limiter = _get_limiter()
     acquired = limiter.try_acquire("gemini")
@@ -540,12 +542,12 @@ Write a source summary wiki page for the following source document.
 
 The page should include:
 - YAML frontmatter: title, page_type: source-summary, category, summary (1-2 sentences describing what this source is about), sources (list with source_id and title), last_updated
-- ## Key Takeaways (3-5 bullet points)
-- ## Summary (2-4 paragraphs)
+- ## Content (reproduce the source content faithfully and in full — do NOT summarize, paraphrase, or shorten it; copy the text as written, preserving the author's voice, formatting, headings, and structure; for GitHub repos this means the full README)
+- ## Key Facts (3-5 bullet points of the most important facts for quick reference)
 - ## Entities Mentioned (bullet list of key people, companies, tools)
 - ## Concepts (bullet list of key ideas)
 
-Write clean markdown. Be concise and factual. Do not add information not in the source.
+The ## Content section is the most important part — it must contain the actual source text, not a rewrite of it. Do not add information not in the source.
 Use [[wikilinks]] for any entities, people, tools, or concepts that have their own wiki pages.
 When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 

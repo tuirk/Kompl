@@ -5,7 +5,6 @@
  *
  * Settings:
  *   - auto_approve              — commit wiki changes immediately vs. queue as drafts
- *   - chat_provider             — 'gemini' (API key, ~$0.001/turn) or 'ollama' (local, free)
  *   - digest_enabled            — send weekly Telegram digest every Sunday 00:00 UTC
  *   - digest_telegram_token     — Telegram bot token (masked in GET, write-only)
  *   - digest_telegram_chat_id   — Telegram chat ID for the bot to send to
@@ -21,10 +20,6 @@ export default function SettingsPage() {
   const [autoApprove, setAutoApprove] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-
-  const [chatProvider, setChatProviderState] = useState<'gemini' | 'ollama' | null>(null);
-  const [providerSaving, setProviderSaving] = useState(false);
-  const [providerSaved, setProviderSaved] = useState(false);
 
   const [relatedMinSources, setRelatedMinSources] = useState<number | null>(null);
   const [relatedSaving, setRelatedSaving] = useState(false);
@@ -89,7 +84,6 @@ export default function SettingsPage() {
       .then((r) => r.json())
       .then((data: {
         auto_approve: boolean;
-        chat_provider: 'gemini' | 'ollama';
         related_pages_min_sources: number;
         stale_threshold_days: number;
         digest_enabled: boolean;
@@ -104,7 +98,6 @@ export default function SettingsPage() {
         min_draft_chars: number;
       }) => {
         setAutoApprove(data.auto_approve);
-        setChatProviderState(data.chat_provider);
         setRelatedMinSources(data.related_pages_min_sources);
         setStaleThreshold(data.stale_threshold_days);
         setDigestEnabled(data.digest_enabled);
@@ -337,21 +330,6 @@ export default function SettingsPage() {
     }
   }
 
-  async function toggleProvider(next: 'gemini' | 'ollama') {
-    if (chatProvider === null || providerSaving || chatProvider === next) return;
-    setProviderSaving(true);
-    setProviderSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_provider: next }),
-    });
-    setChatProviderState(next);
-    setProviderSaving(false);
-    setProviderSaved(true);
-    setTimeout(() => setProviderSaved(false), 2000);
-  }
-
   async function saveMinSourceChars() {
     if (minSourceChars === null) return;
     setMinSourceCharsSaving(true);
@@ -440,74 +418,6 @@ export default function SettingsPage() {
           </button>
         </div>
         {saved && (
-          <div
-            style={{
-              padding: '0.6rem 1.5rem',
-              background: 'var(--success-bg, #ecfdf5)',
-              borderTop: '1px solid var(--success-border, #a7f3d0)',
-              color: 'var(--success, #059669)',
-              fontSize: 13,
-            }}
-          >
-            Saved.
-          </div>
-        )}
-      </section>
-
-      <section
-        style={{
-          border: '1px solid var(--border)',
-          borderRadius: 8,
-          overflow: 'hidden',
-          marginTop: '1rem',
-        }}
-      >
-        <div
-          style={{
-            padding: '1.25rem 1.5rem',
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'space-between',
-            gap: '1.5rem',
-          }}
-        >
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-              Chat agent provider
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-              <strong>Ollama</strong> (default) runs llama3.2:3b locally — free, CPU-only, ~10 tok/s
-              (first boot downloads ~2 GB).{' '}
-              <strong>Gemini</strong> uses Gemini 2.5 Flash — requires an API key,
-              costs ~$0.001 per chat turn. Compile-time LLM calls always use Gemini.
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
-            {(['gemini', 'ollama'] as const).map((p) => (
-              <button
-                key={p}
-                className={chatProvider === p ? undefined : 'btn-outline'}
-                onClick={() => void toggleProvider(p)}
-                disabled={chatProvider === null || providerSaving || chatProvider === p}
-                style={{
-                  padding: '0.45rem 1rem',
-                  borderRadius: 20,
-                  fontSize: '0.85rem',
-                  opacity: chatProvider === null ? 0.5 : 1,
-                  textTransform: 'capitalize',
-                  ...(chatProvider === p && {
-                    background: 'var(--accent)',
-                    color: '#0a0a0a',
-                    borderColor: 'var(--accent)',
-                  }),
-                }}
-              >
-                {chatProvider === null ? '…' : p}
-              </button>
-            ))}
-          </div>
-        </div>
-        {providerSaved && (
           <div
             style={{
               padding: '0.6rem 1.5rem',
@@ -628,8 +538,8 @@ export default function SettingsPage() {
             {/* Warning banner */}
             <div style={{
               display: 'flex', alignItems: 'flex-start', gap: 8,
-              background: 'rgba(245,158,11,0.08)',
-              border: '1px solid rgba(245,158,11,0.25)',
+              background: 'rgba(var(--warning-rgb),0.08)',
+              border: '1px solid rgba(var(--warning-rgb),0.25)',
               padding: '0.6rem 0.85rem',
               borderRadius: 4,
             }}>
