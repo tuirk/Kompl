@@ -403,7 +403,7 @@ def extract_source(
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=LLMExtractionResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=512),
                 max_output_tokens=8192,
                 temperature=0.0,
             ),
