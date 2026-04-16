@@ -1,17 +1,14 @@
 /**
  * POST /api/onboarding/confirm
  *
- * Called when the user clicks "Build your wiki." Deletes unchecked sources
- * and transitions selected sources from 'collected' → 'pending' so the
- * compile drain picks them up.
+ * Called when the user clicks "Build your wiki." Deletes unchecked sources,
+ * transitions selected sources from 'collected' → 'pending', then fires a
+ * fire-and-forget POST to /webhook/session-compile to kick off the LLM batch.
  *
  * All DB mutations (deletes + pending update + activity log) are wrapped in
  * a single db.transaction() so a mid-operation crash cannot leave sources
  * in a broken state. File cleanup happens after the transaction (best-effort
  * — orphaned gzip files are harmless and will be overwritten on retry).
- *
- * No n8n trigger needed: the existing compile-drain.json polls for 'pending'
- * sources every 10s and will pick these up automatically.
  *
  * Request:
  *   {

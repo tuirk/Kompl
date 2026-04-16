@@ -14,8 +14,7 @@
  *   7. insertExtraction() + markSourceExtracted()
  *
  * After this route succeeds, the source has compile_status = 'extracted'.
- * The compile-drain is NOT affected — it only claims 'pending' sources.
- * The 2c session-compile workflow will pick up 'extracted' sources.
+ * The session-compile workflow will pick up 'extracted' sources.
  *
  * Request:  { source_id: string }
  * Response: { source_id: string, extraction: LLMExtractionResponse }
