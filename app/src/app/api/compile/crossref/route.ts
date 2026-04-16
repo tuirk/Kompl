@@ -177,10 +177,19 @@ export async function POST(request: Request) {
     const crossClusterResult = await callCrossref(summaryPages);
     allContradictions.push(...crossClusterResult.contradictions_found);
 
-    // Merge: use full cluster result but apply any new wikilinks from cross-cluster pass
+    // Build a lookup from the cross-cluster pass for wikilink injection.
+    // Gemini may omit pages from its response — clusterResults is the source of
+    // truth for full page content. Never fall back to cp.markdown (300-char
+    // truncated) as that would store partial frontmatter and break rendering.
+    const crossClusterByPlanId = new Map<string, CrossrefUpdatedPage>();
     for (const cp of crossClusterResult.updated_pages) {
-      const existing = clusterResults.get(cp.plan_id);
-      if (existing) {
+      crossClusterByPlanId.set(cp.plan_id, cp);
+    }
+
+    // Merge: iterate clusterResults (complete) and apply any new cross-cluster wikilinks
+    for (const [planId, existing] of clusterResults.entries()) {
+      const cp = crossClusterByPlanId.get(planId);
+      if (cp) {
         // Extract new [[wikilinks]] from cross-cluster result and inject into full content
         const newLinks = (cp.markdown.match(/\[\[[^\]]+\]\]/g) ?? []).filter(
           (lk) => !existing.markdown.includes(lk)
@@ -188,10 +197,8 @@ export async function POST(request: Request) {
         if (newLinks.length > 0) {
           existing.markdown += `\n\n${newLinks.join(' ')}`;
         }
-        allUpdated.push(existing);
-      } else {
-        allUpdated.push(cp);
       }
+      allUpdated.push(existing);
     }
   }
 
