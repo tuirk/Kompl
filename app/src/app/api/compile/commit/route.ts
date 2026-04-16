@@ -222,9 +222,11 @@ async function commitSession(session_id: string): Promise<Response> {
       page_id = `${base || 'page'}-${suffix}`;
     }
 
-    // Extract frontmatter fields (category, summary) from YAML
-    const categoryMatch = markdown.match(/^category:\s*["']?(.+?)["']?\s*$/m);
-    const summaryMatch = markdown.match(/^summary:\s*["']?(.+?)["']?\s*$/m);
+    // Extract frontmatter fields (category, summary) from YAML.
+    // Use [ \t]* (not \s*) so the regex cannot cross a newline and accidentally
+    // capture the next YAML key when category:/summary: has no inline value.
+    const categoryMatch = markdown.match(/^category:[ \t]*["']?(.+?)["']?[ \t]*$/m);
+    const summaryMatch = markdown.match(/^summary:[ \t]*["']?(.+?)["']?[ \t]*$/m);
     const category = categoryMatch?.[1]?.trim() ?? null;
     const summary = summaryMatch?.[1]?.trim() ?? null;
 

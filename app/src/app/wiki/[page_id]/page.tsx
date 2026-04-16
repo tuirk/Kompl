@@ -25,7 +25,7 @@ import {
   readPageMarkdown,
   type PageRow,
 } from '../../../lib/db';
-import { renderMarkdown } from '../../../lib/markdown';
+import { renderMarkdown, stripFrontmatter } from '../../../lib/markdown';
 import WikiSidebar from '../../../components/WikiSidebar';
 
 interface PageProps {
@@ -56,13 +56,6 @@ function expandWikilinks(md: string, titleMap: Map<string, string>): string {
     if (pageId) return `[${title}](/wiki/${pageId})`;
     return title;
   });
-}
-
-/** Strip YAML frontmatter (--- ... ---) before rendering. */
-function stripFrontmatter(md: string): string {
-  if (!md.startsWith('---\n')) return md;
-  const end = md.indexOf('\n---\n', 4);
-  return end === -1 ? md : md.slice(end + 5);
 }
 
 /** Extract headings for TOC: returns [{level, text, anchor}] */

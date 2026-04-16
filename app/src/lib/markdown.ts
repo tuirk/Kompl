@@ -31,3 +31,10 @@ export function renderMarkdown(md: string): string {
   // marked 12.x returns string for sync path.
   return marked.parse(md, { async: false, renderer }) as string;
 }
+
+/** Strip YAML frontmatter (--- ... ---) before rendering. */
+export function stripFrontmatter(md: string): string {
+  if (!md.startsWith('---\n')) return md;
+  const end = md.indexOf('\n---\n', 4);
+  return end === -1 ? md : md.slice(end + 5);
+}

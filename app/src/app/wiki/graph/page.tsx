@@ -629,19 +629,47 @@ export default function WikiGraphPage() {
                   marginTop: 16,
                 }}
               >
-                {/* Summary text */}
-                <div
-                  style={{
-                    fontFamily: 'var(--font-heading)',
-                    fontWeight: 400,
-                    fontSize: 14,
-                    lineHeight: '23px',
-                    color: '#E2E2E5',
-                    opacity: 0.8,
-                  }}
-                >
-                  {selectedNode.summary ?? 'No summary available for this page yet.'}
+                {/* Category + type — always available */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-body)',
+                      fontSize: 9,
+                      letterSpacing: '0.9px',
+                      textTransform: 'uppercase',
+                      color: '#FDFBFE',
+                      opacity: 0.5,
+                    }}
+                  >
+                    Category
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-heading)',
+                      fontWeight: 600,
+                      fontSize: 13,
+                      color: '#E2E2E5',
+                    }}
+                  >
+                    {selectedNode.category}
+                  </div>
                 </div>
+
+                {/* Summary — shown only when present */}
+                {selectedNode.summary && (
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-heading)',
+                      fontWeight: 400,
+                      fontSize: 14,
+                      lineHeight: '23px',
+                      color: '#E2E2E5',
+                      opacity: 0.8,
+                    }}
+                  >
+                    {selectedNode.summary}
+                  </div>
+                )}
 
                 {/* Stats row */}
                 <div
@@ -688,7 +716,7 @@ export default function WikiGraphPage() {
                         opacity: 0.5,
                       }}
                     >
-                      Key Links
+                      Sources
                     </div>
                     <div
                       style={{
@@ -699,7 +727,7 @@ export default function WikiGraphPage() {
                         color: '#FDFBFE',
                       }}
                     >
-                      {selectedNode.source_count} Active
+                      {selectedNode.source_count}
                     </div>
                   </div>
                 </div>
