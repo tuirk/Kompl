@@ -41,6 +41,14 @@ export default function SettingsPage() {
   const [staleSaving, setStaleSaving] = useState(false);
   const [staleSaved, setStaleSaved] = useState(false);
 
+  const [minSourceChars, setMinSourceChars] = useState<number | null>(null);
+  const [minSourceCharsSaving, setMinSourceCharsSaving] = useState(false);
+  const [minSourceCharsSaved, setMinSourceCharsSaved] = useState(false);
+
+  const [minDraftChars, setMinDraftChars] = useState<number | null>(null);
+  const [minDraftCharsSaving, setMinDraftCharsSaving] = useState(false);
+  const [minDraftCharsSaved, setMinDraftCharsSaved] = useState(false);
+
   const [deploymentMode, setDeploymentModeState] = useState<'personal-device' | 'always-on' | null>(null);
   const [deploymentSaving, setDeploymentSaving] = useState(false);
   const [deploymentSaved, setDeploymentSaved] = useState(false);
@@ -92,6 +100,8 @@ export default function SettingsPage() {
         deployment_mode: 'personal-device' | 'always-on';
         last_lint_at: string | null;
         last_backup_at: string | null;
+        min_source_chars: number;
+        min_draft_chars: number;
       }) => {
         setAutoApprove(data.auto_approve);
         setChatProviderState(data.chat_provider);
@@ -105,6 +115,8 @@ export default function SettingsPage() {
         setDeploymentModeState(data.deployment_mode);
         setLastLintAt(data.last_lint_at);
         setLastBackupAt(data.last_backup_at);
+        setMinSourceChars(data.min_source_chars);
+        setMinDraftChars(data.min_draft_chars);
       });
   }, []);
 
@@ -338,6 +350,34 @@ export default function SettingsPage() {
     setProviderSaving(false);
     setProviderSaved(true);
     setTimeout(() => setProviderSaved(false), 2000);
+  }
+
+  async function saveMinSourceChars() {
+    if (minSourceChars === null) return;
+    setMinSourceCharsSaving(true);
+    setMinSourceCharsSaved(false);
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ min_source_chars: minSourceChars }),
+    });
+    setMinSourceCharsSaving(false);
+    setMinSourceCharsSaved(true);
+    setTimeout(() => setMinSourceCharsSaved(false), 2000);
+  }
+
+  async function saveMinDraftChars() {
+    if (minDraftChars === null) return;
+    setMinDraftCharsSaving(true);
+    setMinDraftCharsSaved(false);
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ min_draft_chars: minDraftChars }),
+    });
+    setMinDraftCharsSaving(false);
+    setMinDraftCharsSaved(true);
+    setTimeout(() => setMinDraftCharsSaved(false), 2000);
   }
 
   return (
@@ -1118,6 +1158,124 @@ export default function SettingsPage() {
         )}
       </section>
 
+      {/* Compilation Quality */}
+      <section
+        style={{
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          overflow: 'hidden',
+          marginTop: '1rem',
+        }}
+      >
+        <div style={{ padding: '1.25rem 1.5rem' }}>
+          <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.85rem' }}>
+            Compilation Quality
+          </div>
+
+          {/* Min source chars */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: '1.5rem',
+              paddingBottom: '1rem',
+              borderBottom: '1px solid var(--border)',
+            }}
+          >
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
+                Minimum source length for wiki page
+              </div>
+              <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+                Sources shorter than this get extracted but won&apos;t have their own summary page.
+                Tweets, error pages, and short scrapes are filtered here. Set to <strong>0</strong> to disable.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
+              <input
+                type="number"
+                min={0}
+                step={50}
+                value={minSourceChars ?? ''}
+                onChange={(e) => setMinSourceChars(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                onBlur={() => void saveMinSourceChars()}
+                disabled={minSourceChars === null || minSourceCharsSaving}
+                style={{
+                  width: 80,
+                  padding: '0.45rem 0.6rem',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-card)',
+                  color: 'var(--fg)',
+                  fontSize: '0.9rem',
+                  textAlign: 'right',
+                  opacity: minSourceChars === null ? 0.5 : 1,
+                }}
+              />
+              <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>chars</span>
+            </div>
+          </div>
+
+          {/* Min draft chars */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: '1.5rem',
+              paddingTop: '1rem',
+            }}
+          >
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
+                Minimum draft length to commit
+              </div>
+              <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+                If the AI produces a draft shorter than this, it won&apos;t be committed.
+                The draft is logged so you can review it. Set to <strong>0</strong> to disable.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
+              <input
+                type="number"
+                min={0}
+                step={50}
+                value={minDraftChars ?? ''}
+                onChange={(e) => setMinDraftChars(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                onBlur={() => void saveMinDraftChars()}
+                disabled={minDraftChars === null || minDraftCharsSaving}
+                style={{
+                  width: 80,
+                  padding: '0.45rem 0.6rem',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-card)',
+                  color: 'var(--fg)',
+                  fontSize: '0.9rem',
+                  textAlign: 'right',
+                  opacity: minDraftChars === null ? 0.5 : 1,
+                }}
+              />
+              <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>chars</span>
+            </div>
+          </div>
+        </div>
+        {(minSourceCharsSaved || minDraftCharsSaved) && (
+          <div
+            style={{
+              padding: '0.6rem 1.5rem',
+              background: 'var(--success-bg, #ecfdf5)',
+              borderTop: '1px solid var(--success-border, #a7f3d0)',
+              color: 'var(--success, #059669)',
+              fontSize: 13,
+            }}
+          >
+            Saved.
+          </div>
+        )}
+      </section>
+
       {/* Wiki Export */}
       <section
         style={{
@@ -1175,8 +1333,19 @@ export default function SettingsPage() {
           <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
             Import Wiki
           </div>
-          <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '1.25rem' }}>
-            Restore from a .kompl.zip backup. Only works on an empty wiki.
+          <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.75rem' }}>
+            Restore from a .kompl.zip backup. <strong>Only works on an empty wiki</strong> — importing into a wiki that already has data will fail.
+          </div>
+          <div style={{
+            fontSize: '0.8rem',
+            color: 'var(--fg-dim)',
+            lineHeight: 1.5,
+            marginBottom: '1.25rem',
+            paddingLeft: '0.75rem',
+            borderLeft: '2px solid var(--border)',
+          }}>
+            Merge import (skip existing pages, dedup by URL/content hash) is not yet implemented.
+            To migrate sources from another instance, re-ingest them through onboarding — compilation is deterministic per source so you get the same result.
           </div>
           <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
             <input

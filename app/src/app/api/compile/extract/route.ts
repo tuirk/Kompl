@@ -30,6 +30,7 @@
 
 import { NextResponse } from 'next/server';
 import {
+  getAllPageIds,
   getExtraction,
   getPageCount,
   getSource,
@@ -207,14 +208,12 @@ export async function POST(request: Request) {
     // Step 5: fan out to method endpoints in parallel
     const methodCalls: Array<Promise<[string, KeyphraseResponse | TfidfResponse]>> = [];
 
+    const pageIds = getAllPageIds();
+
     for (const method of routeResult.methods) {
       if (method === 'tfidf-overlap') {
-        // tfidf-overlap needs page IDs — for now pass empty list if we don't
-        // have a pre-fetched list (caller can upgrade this in 2b when we have
-        // resolved entities to look up). An empty list returns score=0, which
-        // is correct when there's no wiki or no candidates yet.
         methodCalls.push(
-          callTfidfOverlap(markdown, []).then((r) => ['tfidf-overlap', r] as [string, TfidfResponse])
+          callTfidfOverlap(markdown, pageIds).then((r) => ['tfidf-overlap', r] as [string, TfidfResponse])
         );
       } else {
         methodCalls.push(

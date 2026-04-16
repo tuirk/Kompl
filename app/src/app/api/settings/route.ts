@@ -18,6 +18,8 @@ import {
   getStaleThresholdDays, setStaleThresholdDays,
   getDeploymentMode, setDeploymentMode,
   getLastLintAt, getLastBackupAt,
+  getMinSourceChars, setMinSourceChars,
+  getMinDraftChars, setMinDraftChars,
 } from '../../../lib/db';
 
 function buildResponse() {
@@ -35,6 +37,8 @@ function buildResponse() {
     deployment_mode: getDeploymentMode(),
     last_lint_at: getLastLintAt(),
     last_backup_at: getLastBackupAt(),
+    min_source_chars: getMinSourceChars(),
+    min_draft_chars: getMinDraftChars(),
   };
 }
 
@@ -53,6 +57,8 @@ export async function POST(request: Request) {
     digest_telegram_chat_id?: string;
     lint_enabled?: boolean;
     deployment_mode?: 'personal-device' | 'always-on';
+    min_source_chars?: number;
+    min_draft_chars?: number;
   };
 
   const knownFields = [
@@ -60,6 +66,7 @@ export async function POST(request: Request) {
     'stale_threshold_days',
     'digest_enabled', 'digest_telegram_token', 'digest_telegram_chat_id',
     'lint_enabled', 'deployment_mode',
+    'min_source_chars', 'min_draft_chars',
   ];
   if (!knownFields.some((f) => f in body)) {
     return NextResponse.json({ error: 'no recognized setting field in request body' }, { status: 422 });
@@ -138,6 +145,26 @@ export async function POST(request: Request) {
       );
     }
     setDeploymentMode(body.deployment_mode);
+  }
+
+  if (body.min_source_chars !== undefined) {
+    if (!Number.isInteger(body.min_source_chars) || body.min_source_chars < 0) {
+      return NextResponse.json(
+        { error: 'min_source_chars must be a non-negative integer' },
+        { status: 422 },
+      );
+    }
+    setMinSourceChars(body.min_source_chars);
+  }
+
+  if (body.min_draft_chars !== undefined) {
+    if (!Number.isInteger(body.min_draft_chars) || body.min_draft_chars < 0) {
+      return NextResponse.json(
+        { error: 'min_draft_chars must be a non-negative integer' },
+        { status: 422 },
+      );
+    }
+    setMinDraftChars(body.min_draft_chars);
   }
 
   return NextResponse.json(buildResponse());

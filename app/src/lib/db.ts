@@ -446,7 +446,7 @@ export function insertEntityStubPage(args: InsertEntityStubArgs): void {
 }
 
 /**
- * Fetch one page row by id. Used by /page/[page_id] server component.
+ * Fetch one page row by id. Used by /wiki/[page_id] server component.
  */
 export interface PageRow {
   page_id: string;
@@ -518,7 +518,7 @@ export function pagesFilePath(pageId: string): string {
 }
 
 /**
- * Read and decompress a compiled wiki page. Used by /page/[page_id] server
+ * Read and decompress a compiled wiki page. Used by /wiki/[page_id] server
  * component. Returns null if both the file and pending_content are missing.
  *
  * Falls back to pages.pending_content (raw TEXT) when the gzip file has not yet
@@ -536,125 +536,6 @@ export function readPageMarkdown(pageId: string): string | null {
 }
 
 // ============================================================================
-// Compile status helpers (sync)
-// ============================================================================
-
-/**
- * Atomically claim one pending source for compilation.
- * Sets compile_status='in_progress' for a single row that is:
- *   - compile_status = 'pending'
- *   - compile_next_eligible_at IS NULL OR <= now  (datetime() on both sides per rule #5)
- * Returns the source_id of the claimed row, or null if nothing is eligible.
- *
- * The LIMIT 1 + single-writer pattern prevents double-processing even if two
- * callers race — only one UPDATE wins because better-sqlite3 is sync.
- */
-export function claimCompileSource(): string | null {
-  const db = openDb();
-  const claimFn = db.transaction(() => {
-    const row = db
-      .prepare(
-        `SELECT source_id FROM sources
-           WHERE compile_status = 'pending'
-             AND onboarding_session_id IS NULL
-             AND (compile_next_eligible_at IS NULL
-                  OR datetime(compile_next_eligible_at) <= datetime('now'))
-           ORDER BY date_ingested ASC
-           LIMIT 1`
-      )
-      .get() as { source_id: string } | undefined;
-
-    if (!row) return null;
-
-    const result = db
-      .prepare(
-        `UPDATE sources
-           SET compile_status = 'in_progress'
-           WHERE source_id = ? AND compile_status = 'pending'`
-      )
-      .run(row.source_id);
-
-    return result.changes > 0 ? row.source_id : null;
-  });
-  return claimFn();
-}
-
-/**
- * Mark a source as successfully compiled. Called inside Phase 2 transaction.
- */
-export function markCompileSuccess(sourceId: string, pageId: string): void {
-  openDb()
-    .prepare(
-      `UPDATE sources
-         SET compile_status = 'compiled',
-             compile_attempts = compile_attempts + 1
-         WHERE source_id = ?`
-    )
-    .run(sourceId);
-  void pageId; // pageId stored in provenance; not duplicated on sources row
-}
-
-/**
- * Mark a source compile attempt as failed. Increments compile_attempts and
- * sets compile_next_eligible_at to an exponential backoff (2^attempts minutes).
- * After 5 attempts, sets compile_status = 'failed' permanently.
- *
- * Timestamp gotcha (CLAUDE.md rule #5): both sides of time comparisons on
- * compile_next_eligible_at must use datetime() — see claimCompileSource above.
- */
-export function markCompileFailed(sourceId: string): void {
-  const db = openDb();
-  const row = db
-    .prepare(
-      `SELECT compile_attempts FROM sources WHERE source_id = ?`
-    )
-    .get(sourceId) as { compile_attempts: number } | undefined;
-
-  if (!row) return;
-
-  const attempts = (row.compile_attempts ?? 0) + 1;
-  if (attempts >= 5) {
-    db.prepare(
-      `UPDATE sources
-         SET compile_status = 'failed',
-             compile_attempts = ?
-         WHERE source_id = ?`
-    ).run(attempts, sourceId);
-  } else {
-    // Exponential backoff: 2^attempts minutes
-    const delayMinutes = Math.pow(2, attempts);
-    db.prepare(
-      `UPDATE sources
-         SET compile_status = 'pending',
-             compile_attempts = ?,
-             compile_next_eligible_at = datetime('now', '+' || ? || ' minutes')
-         WHERE source_id = ?`
-    ).run(attempts, delayMinutes, sourceId);
-  }
-}
-
-/**
- * Get one pending compile-eligible source row. Used by the drain poller to
- * check existence before claiming (the claim is done in claimCompileSource).
- */
-export function getPendingCompile(): SourceRow | null {
-  const row = openDb()
-    .prepare(
-      `SELECT source_id, title, source_type, source_url, content_hash,
-              file_path, status, date_ingested, metadata,
-              compile_status, compile_attempts, onboarding_session_id
-         FROM sources
-         WHERE compile_status = 'pending'
-           AND (compile_next_eligible_at IS NULL
-                OR datetime(compile_next_eligible_at) <= datetime('now'))
-         ORDER BY date_ingested ASC
-         LIMIT 1`
-    )
-    .get() as SourceRow | undefined;
-  return row ?? null;
-}
-
-// ============================================================================
 // Wiki index helpers (commit 11)
 // ============================================================================
 
@@ -668,6 +549,13 @@ export function getAllPages(): PageRow[] {
          ORDER BY last_updated DESC`
     )
     .all() as PageRow[];
+}
+
+/** All compiled page IDs. Used by /api/compile/extract to build TF-IDF corpus. */
+export function getAllPageIds(): string[] {
+  return (openDb().prepare('SELECT page_id FROM pages').all() as { page_id: string }[]).map(
+    (r) => r.page_id
+  );
 }
 
 export interface CategoryGroup {
@@ -1158,16 +1046,15 @@ export function getPageByTitle(title: string): PageRow | null {
 }
 
 /**
- * Sets compile_status = 'compiled' for sources that completed the session pipeline.
- * Note: function name is legacy — it previously set 'active', now correctly sets 'compiled'.
- * Used by the session commit endpoint (commitSession).
+ * Sets compile_status = 'active' for sources that completed the session pipeline.
+ * Called by commitSession after all page plans have been committed.
  */
 export function markSourcesActive(sourceIds: string[]): void {
   if (sourceIds.length === 0) return;
   const placeholders = sourceIds.map(() => '?').join(', ');
   openDb()
     .prepare(
-      `UPDATE sources SET compile_status = 'compiled'
+      `UPDATE sources SET compile_status = 'active'
         WHERE source_id IN (${placeholders})`
     )
     .run(...sourceIds);
@@ -1299,12 +1186,59 @@ export function markStaleSessionsFailed(olderThanMinutes: number): number {
     .prepare(
       `UPDATE compile_progress
           SET status = 'failed',
-              error  = 'Pipeline interrupted — server restarted or timed out. Click Retry to rerun.'
+              error  = ?
         WHERE status = 'running'
           AND datetime(started_at) < datetime('now', ? || ' minutes')`
     )
-    .run(`-${olderThanMinutes}`);
+    .run(
+      `Pipeline interrupted — timed out after ${olderThanMinutes} minutes. Click Retry to rerun.`,
+      `-${olderThanMinutes}`
+    );
   return result.changes as number;
+}
+
+/**
+ * Reset compile_progress for a retry, preserving completed steps.
+ * Only resets from the first non-done step onwards — completed expensive
+ * steps (extract, draft) keep their 'done' status so runCompilePipeline
+ * can skip them. Clears error and resets status to 'queued'.
+ *
+ * If all steps are already done, this is a no-op.
+ */
+export function resetForRetry(sessionId: string): void {
+  const progress = getCompileProgress(sessionId);
+  if (!progress) return;
+
+  const steps = JSON.parse(progress.steps) as Record<string, { status: string; detail?: string }>;
+  const stepOrder = ['extract', 'resolve', 'match', 'plan', 'draft', 'crossref', 'commit', 'schema'];
+
+  // Find the first non-done step
+  let resetFrom = -1;
+  for (let i = 0; i < stepOrder.length; i++) {
+    if (steps[stepOrder[i]]?.status !== 'done') {
+      resetFrom = i;
+      break;
+    }
+  }
+
+  if (resetFrom === -1) return; // all steps done — nothing to retry
+
+  // Reset from the first non-done step forward
+  for (let i = resetFrom; i < stepOrder.length; i++) {
+    steps[stepOrder[i]] = { status: 'pending' };
+  }
+
+  openDb()
+    .prepare(
+      `UPDATE compile_progress
+          SET status       = 'queued',
+              current_step = NULL,
+              error        = NULL,
+              completed_at = NULL,
+              steps        = ?
+        WHERE session_id   = ?`
+    )
+    .run(JSON.stringify(steps), sessionId);
 }
 
 /** Fetch the progress record for a session. Returns null if not found. */
@@ -1322,8 +1256,9 @@ export function getCompileProgress(sessionId: string): CompileProgressRow | null
 /**
  * Fetch all sources for a session that still need compilation
  * (compile_status NOT IN ('active', 'compiled')). Used by /api/compile/run
- * to determine which sources to extract. Excludes both the legacy 'active'
- * value and the current 'compiled' terminal state.
+ * to determine which sources to extract. 'active' is the current terminal
+ * state; 'compiled' is a retired legacy terminal state retained here so that
+ * pre-existing rows are not re-processed.
  */
 export function getSourcesBySession(sessionId: string): SourceRow[] {
   return openDb()
@@ -1742,6 +1677,35 @@ export function getStaleThresholdDays(): number {
 
 export function setStaleThresholdDays(value: number): void {
   setSetting('stale_threshold_days', String(Math.max(0, Math.floor(value))));
+}
+
+/**
+ * Minimum source content length (chars) for a source-summary wiki page to be
+ * planned. Sources shorter than this still contribute to entity extraction and
+ * provenance — they just don't get their own page. Default 500.
+ * Set to 0 to disable (all sources get a page regardless of length).
+ */
+export function getMinSourceChars(): number {
+  const v = getSetting('min_source_chars');
+  return v !== null ? Math.max(0, parseInt(v, 10)) : 500;
+}
+
+export function setMinSourceChars(value: number): void {
+  setSetting('min_source_chars', String(Math.max(0, Math.floor(value))));
+}
+
+/**
+ * Minimum draft body length (chars, frontmatter excluded) for a draft to be
+ * committed. Drafts shorter than this are skipped and logged as
+ * 'draft_too_thin'. Default 800. Set to 0 to disable.
+ */
+export function getMinDraftChars(): number {
+  const v = getSetting('min_draft_chars');
+  return v !== null ? Math.max(0, parseInt(v, 10)) : 800;
+}
+
+export function setMinDraftChars(value: number): void {
+  setSetting('min_draft_chars', String(Math.max(0, Math.floor(value))));
 }
 
 export interface StaleSourceRow {

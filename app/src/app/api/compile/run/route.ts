@@ -108,7 +108,7 @@ async function callCrossref(sessionId: string): Promise<{ wikilinks_added: numbe
   return res.json() as Promise<{ wikilinks_added: number }>;
 }
 
-async function callCommit(sessionId: string): Promise<{ committed: number }> {
+async function callCommit(sessionId: string): Promise<{ committed: number; thin_drafts_skipped: number }> {
   const res = await fetch(`${APP_URL}/api/compile/commit`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -116,7 +116,7 @@ async function callCommit(sessionId: string): Promise<{ committed: number }> {
     signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) throw new Error(`commit failed: ${res.status}`);
-  return res.json() as Promise<{ committed: number }>;
+  return res.json() as Promise<{ committed: number; thin_drafts_skipped: number }>;
 }
 
 async function callSchema(sessionId: string): Promise<unknown> {
@@ -131,43 +131,56 @@ async function callSchema(sessionId: string): Promise<unknown> {
 }
 
 async function runCompilePipeline(sessionId: string): Promise<void> {
-  // Step 1: extract — sequential per source, isolated per failure so one bad
-  // source doesn't abort the entire session. Only abort when ALL fail.
-  updateCompileStep(sessionId, 'extract', 'running');
-  const sources = getSourcesBySession(sessionId);
-  let extractSucceeded = 0;
-  for (let i = 0; i < sources.length; i++) {
-    try {
-      await callExtract(sources[i].source_id);
-      extractSucceeded++;
-    } catch (err) {
-      insertActivity({
-        action_type: 'extraction_failed',
-        source_id: sources[i].source_id,
-        details: { error: err instanceof Error ? err.message : String(err) },
-      });
-    }
-    updateCompileStep(
-      sessionId,
-      'extract',
-      'running',
-      `${Math.min(extractSucceeded + (i - extractSucceeded + 1), sources.length)}/${sources.length} sources extracted`
-    );
-  }
-  if (extractSucceeded === 0) {
-    updateCompileStep(sessionId, 'extract', 'failed', `0/${sources.length} sources extracted`);
-    failCompileProgress(sessionId, 'All sources failed extraction');
-    return;
-  }
-  updateCompileStep(sessionId, 'extract', 'done', `${extractSucceeded}/${sources.length} sources extracted`);
+  // Read step statuses once — may have completed steps from a prior failed run.
+  // resetForRetry() preserves 'done' on completed steps so we can skip them.
+  const currentProgress = getCompileProgress(sessionId);
+  const stepStatuses = currentProgress
+    ? (JSON.parse(currentProgress.steps) as Record<string, { status: string }>)
+    : {};
+  const isDone = (step: string) => stepStatuses[step]?.status === 'done';
 
-  // Step 2: resolve
+  // Step 1: extract — SKIP if done (expensive: 1 Gemini call per source).
+  // /api/compile/extract writes results to the extractions table, so resolve
+  // can read from there directly when this step is skipped.
+  if (isDone('extract')) {
+    console.log(`[compile:${sessionId}] extract already done — skipping`);
+  } else {
+    updateCompileStep(sessionId, 'extract', 'running');
+    const sources = getSourcesBySession(sessionId);
+    let extractSucceeded = 0;
+    for (let i = 0; i < sources.length; i++) {
+      try {
+        await callExtract(sources[i].source_id);
+        extractSucceeded++;
+      } catch (err) {
+        insertActivity({
+          action_type: 'extraction_failed',
+          source_id: sources[i].source_id,
+          details: { error: err instanceof Error ? err.message : String(err) },
+        });
+      }
+      updateCompileStep(
+        sessionId,
+        'extract',
+        'running',
+        `${Math.min(extractSucceeded + (i - extractSucceeded + 1), sources.length)}/${sources.length} sources extracted`
+      );
+    }
+    if (extractSucceeded === 0) {
+      updateCompileStep(sessionId, 'extract', 'failed', `0/${sources.length} sources extracted`);
+      failCompileProgress(sessionId, 'All sources failed extraction');
+      return;
+    }
+    updateCompileStep(sessionId, 'extract', 'done', `${extractSucceeded}/${sources.length} sources extracted`);
+  }
+
+  // Step 2: resolve — ALWAYS re-run (cheap: reads extractions table directly).
   updateCompileStep(sessionId, 'resolve', 'running');
   const resolveResult = await callResolve(sessionId);
   const canonicalEntities = resolveResult.canonical_entities;
   updateCompileStep(sessionId, 'resolve', 'done', `${canonicalEntities.length} canonical entities`);
 
-  // Step 3: match — TF-IDF + LLM triage vs existing wiki pages
+  // Step 3: match — ALWAYS re-run (cheap: TF-IDF, no LLM unless triage).
   updateCompileStep(sessionId, 'match', 'running');
   const matchResult = await callMatch(sessionId, canonicalEntities);
   if (matchResult.skipped) {
@@ -181,27 +194,42 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     );
   }
 
-  // Step 4: plan
-  updateCompileStep(sessionId, 'plan', 'running');
-  const planResult = await callPlan(sessionId, canonicalEntities, matchResult.matches);
-  updateCompileStep(sessionId, 'plan', 'done', `${planResult.stats.total} pages planned`);
+  // Steps 4+5: plan + draft — co-dependent skip.
+  // plan calls clearStagedPagePlans() which deletes ALL non-committed page_plans
+  // including 'drafted' and 'crossreffed' rows. If draft is already done those
+  // rows must not be destroyed — skip both plan and draft together.
+  // When draft is NOT done, plan must re-run to rebuild fresh page_plans first.
+  if (isDone('draft')) {
+    console.log(`[compile:${sessionId}] plan+draft already done — skipping both`);
+  } else {
+    // Step 4: plan — ALWAYS run when draft is not done (pure TS logic, zero LLM).
+    updateCompileStep(sessionId, 'plan', 'running');
+    const planResult = await callPlan(sessionId, canonicalEntities, matchResult.matches);
+    updateCompileStep(sessionId, 'plan', 'done', `${planResult.stats.total} pages planned`);
 
-  // Step 5: draft
-  updateCompileStep(sessionId, 'draft', 'running');
-  const draftResult = await callDraft(sessionId);
-  updateCompileStep(sessionId, 'draft', 'done', `${draftResult.drafted} drafts generated`);
+    // Step 5: draft — SKIP if done (expensive: 1 Gemini call per page).
+    // draft writes results to page_plans.draft_content, so crossref reads from
+    // there directly when this step is skipped.
+    updateCompileStep(sessionId, 'draft', 'running');
+    const draftResult = await callDraft(sessionId);
+    updateCompileStep(sessionId, 'draft', 'done', `${draftResult.drafted} drafts generated`);
+  }
 
-  // Step 6: crossref
+  // Step 6: crossref — ALWAYS re-run.
+  // Reads page_plans WHERE draft_status='drafted'. If draft was skipped and
+  // plans are already 'crossreffed' (commit-failure retry), this returns 0
+  // wikilinks as a safe no-op — plans stay 'crossreffed' for commit to consume.
   updateCompileStep(sessionId, 'crossref', 'running');
   const crossrefResult = await callCrossref(sessionId);
   updateCompileStep(sessionId, 'crossref', 'done', `${crossrefResult.wikilinks_added} wikilinks added`);
 
-  // Step 7: commit
+  // Step 7: commit — ALWAYS re-run (no LLM, DB + disk writes, idempotent).
   updateCompileStep(sessionId, 'commit', 'running');
   const commitResult = await callCommit(sessionId);
-  updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages committed`);
+  const thinMsg = commitResult.thin_drafts_skipped > 0 ? `, ${commitResult.thin_drafts_skipped} thin drafts skipped` : '';
+  updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages committed${thinMsg}`);
 
-  // Step 8: schema — always call, schema route handles already_exists internally
+  // Step 8: schema — ALWAYS re-run (idempotent, schema route handles already_exists).
   updateCompileStep(sessionId, 'schema', 'running');
   await callSchema(sessionId);
   updateCompileStep(sessionId, 'schema', 'done');
@@ -224,8 +252,11 @@ export async function POST(request: Request) {
   if (progress.status === 'completed') return NextResponse.json({ session_id, status: 'already_completed' }, { status: 409 });
 
   if (progress.status === 'running') {
-    // Stale detection: if it's been running > 30 min the pipeline is dead — clean it up inline
-    markStaleSessionsFailed(30);
+    // Dynamic stale timeout: 60 min floor + 2 min per source.
+    // 5 sources → 60 min, 50 sources → 100 min, 100 sources → 200 min.
+    const sessionSources = getSourcesBySession(session_id);
+    const staleMinutes = Math.max(60, sessionSources.length * 2);
+    markStaleSessionsFailed(staleMinutes);
     const refreshed = getCompileProgress(session_id);
     if (refreshed?.status === 'running') {
       return NextResponse.json({ error: 'already_running' }, { status: 409 });
