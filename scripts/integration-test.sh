@@ -51,14 +51,28 @@ if ! python3 --version 2>&1 | grep -q "Python 3"; then
 fi
 
 # Compose command: prefer v2 plugin (`docker compose`), fall back to v1 standalone (`docker-compose`)
+# In CI, COMPOSE_FILE is set by the workflow (docker-compose.yml:docker-compose.ci.yml) and
+# handles the ollama stub — do NOT pass --file flags or they will override COMPOSE_FILE.
+# Locally, if docker-compose.test.yml exists (gitignored), pass it via --file to stub ollama
+# so the suite doesn't pull llama3.2:3b (~2GB) on every cold start. --file is used instead
+# of COMPOSE_FILE to avoid Windows path-separator issues (Docker is a Windows binary, uses ';').
+if [ -n "${CI:-}" ]; then
+    _COMPOSE_FILES=""
+else
+    _COMPOSE_FILES="--file docker-compose.yml"
+    if [ -f "docker-compose.test.yml" ]; then
+        _COMPOSE_FILES="$_COMPOSE_FILES --file docker-compose.test.yml"
+    fi
+fi
 if docker compose version >/dev/null 2>&1; then
-    COMPOSE="docker compose"
+    COMPOSE="docker compose $_COMPOSE_FILES"
 elif command -v docker-compose >/dev/null 2>&1; then
-    COMPOSE="docker-compose"
+    COMPOSE="docker-compose $_COMPOSE_FILES"
 else
     echo "ERROR: neither 'docker compose' nor 'docker-compose' found" >&2
     exit 1
 fi
+unset _COMPOSE_FILES
 
 # Track which stages ran and their outcomes, printed as a summary at the end.
 STAGE_RESULTS=()
@@ -121,22 +135,12 @@ stage_0_cold_start() {
         return 1
     fi
 
-    # n8n readiness: wait until the ingest webhook activates (same probe as stage 4)
-    echo "  waiting for n8n ingest webhook to activate (up to 120s)..."
-    local elapsed=0
-    local code="000"
-    while [ $elapsed -lt 120 ]; do
-        code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -H "content-type: application/json" -d '{}' \
-            "http://localhost:5678/webhook/ingest" 2>/dev/null || echo "000")
-        if [ "$code" = "200" ] || [ "$code" = "202" ]; then
-            break
-        fi
-        sleep 3
-        elapsed=$((elapsed + 3))
-    done
-    if [ $elapsed -ge 120 ]; then
-        echo "  FAIL: n8n ingest webhook did not activate within 120s (last code: $code)"
+    # n8n readiness: /healthz returns {"status":"ok"} once the process is up
+    # and workflows are loaded. No webhook probe needed here — session-compile
+    # readiness is verified in stage 11.
+    echo "  waiting for n8n /healthz to return 200 (up to 120s)..."
+    if ! wait_for_http_200 "http://localhost:5678/healthz" 120; then
+        echo "  FAIL: n8n /healthz did not return 200 within 120s"
         $COMPOSE logs n8n 2>&1 | tail -30
         record_stage 0 REAL FAIL
         return 1
@@ -157,9 +161,9 @@ stage_1_migration_schema() {
     # gets re-created from scratch by migrate.py.
     $COMPOSE down -v >/dev/null 2>&1 || true
 
-    echo "  starting app service..."
-    if ! $COMPOSE up -d --build app; then
-        echo "  FAIL: docker compose up -d --build app returned non-zero"
+    echo "  starting app service (no-deps: testing nlp_ok:false path)..."
+    if ! $COMPOSE up -d --build --no-deps app; then
+        echo "  FAIL: docker compose up -d --build --no-deps app returned non-zero"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -223,35 +227,25 @@ stage_1_migration_schema() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage 4 — Live ingest end-to-end (REAL as of commit 3)
+# Stage 4 -- Live collect end-to-end (REAL -- no API key needed)
 # ---------------------------------------------------------------------------
-# Brings up the full stack (app already running from stage 1, plus
-# nlp-service and n8n). POSTs a Wikipedia URL to /api/ingest/url and
-# polls /api/activity until a source_stored row appears for the returned
-# source_id. Then GETs /api/sources/<id> and asserts the title is present.
+# Brings up nlp-service (app already running from stage 1). POSTs a Wikipedia
+# URL to /api/onboarding/collect and synchronously receives a stored source_id.
+# Then GETs /api/sources/<id> and asserts the title is present.
 #
-# After the happy path passes, runs a failure-path canary: POSTs an
-# unresolvable .invalid URL to /api/ingest/url and polls /api/activity
-# until an ingest_failed row appears for the returned source_id. This
-# proves the workflow's per-node onError: continueErrorOutput routing
-# still fires the "HTTP: Log Failure" node — silent regressions in error
-# routing would otherwise go unnoticed.
+# Uses MarkItDown for Wikipedia (free, local -- no Firecrawl key needed).
+# nlp-service's convert_url tries MarkItDown first; Wikipedia articles always
+# return >=500 chars so Firecrawl is never reached.
 #
-# Requires FIRECRAWL_API_KEY to be set (env var or .env file). If unset,
-# the stage skips gracefully with a note — CI without the Firecrawl secret
-# should see SKIPPED, not FAIL.
+# Also runs a failure-path canary: POSTs an RFC 2606 .invalid URL via collect.
+# nlp-service short-circuits immediately (< 1s) and collect writes an
+# ingest_failures row. Verified via /api/sources/failures.
 stage_4_live_ingest() {
-    echo "[STAGE 4] REAL: live ingest + compile end-to-end (commit 4)"
+    echo "[STAGE 4] REAL: live collect end-to-end (collect -> store -> verify)"
 
-    if [ -z "${FIRECRAWL_API_KEY:-}" ]; then
-        echo "  SKIP: FIRECRAWL_API_KEY not set. Set it in .env or export it to run this stage."
-        record_stage 4 REAL SKIPPED
-        return 0
-    fi
-
-    echo "  starting nlp-service and n8n..."
-    if ! $COMPOSE up -d --build nlp-service n8n; then
-        echo "  FAIL: docker compose up -d --build nlp-service n8n returned non-zero"
+    echo "  starting nlp-service..."
+    if ! $COMPOSE up -d --build nlp-service; then
+        echo "  FAIL: docker compose up -d --build nlp-service returned non-zero"
         record_stage 4 REAL FAIL
         return 1
     fi
@@ -265,104 +259,56 @@ stage_4_live_ingest() {
         return 1
     fi
 
-    # n8n takes longer to boot on first start (workflow import + sqlite init +
-    # workflow activation). We must distinguish "n8n process up" from "workflow
-    # actually active". An inactive workflow returns 404 on its webhook path;
-    # an active workflow with responseMode: onReceived returns 200 immediately.
-    #
-    # Probe by POSTing an empty JSON body. n8n's ingest workflow Switch node
-    # routes neither rule (no source_type field), so the workflow ends harmlessly
-    # with no downstream calls and no activity log writes. We accept ONLY 200/202
-    # as "ready"; 404 means workflow not yet activated.
-    echo "  waiting for n8n workflow to be activated (up to 120s)..."
-    local elapsed=0
-    while [ $elapsed -lt 120 ]; do
-        local code
-        code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -H "content-type: application/json" -d '{}' \
-            "http://localhost:5678/webhook/ingest" 2>/dev/null || echo "000")
-        if [ "$code" = "200" ] || [ "$code" = "202" ]; then
-            break
-        fi
-        sleep 3
-        elapsed=$((elapsed + 3))
-    done
-    if [ "$elapsed" -ge 120 ]; then
-        echo "  FAIL: n8n workflow did not become active within 120s (last code: $code)"
-        echo "  --- n8n logs ---"
-        $COMPOSE logs n8n 2>&1 | tail -40
-        record_stage 4 REAL FAIL
-        return 1
-    fi
+    # Generate a session_id for the collect call.
+    local SESSION_ID
+    SESSION_ID=$(uuidgen 2>/dev/null || \
+        powershell -Command "[guid]::NewGuid().ToString()" 2>/dev/null || \
+        python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || \
+        cat /proc/sys/kernel/random/uuid 2>/dev/null || \
+        date +%s | sha256sum | awk '{print substr($1,1,8)"-"substr($1,9,4)"-4"substr($1,14,3)"-"substr($1,17,4)"-"substr($1,21,12)}')
+    echo "  session_id: $SESSION_ID"
 
-    local since
-    since=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
-    echo "  poll watermark: $since"
-
-    echo "  POSTing Wikipedia URL to /api/ingest/url..."
-    local ingest_response
-    ingest_response=$(curl -sf -X POST \
+    # -----------------------------------------------------------------------
+    # Sub-test: happy path -- URL collect via /api/onboarding/collect
+    # -----------------------------------------------------------------------
+    echo "  POSTing Wikipedia URL to /api/onboarding/collect..."
+    local collect_response
+    collect_response=$(curl -sf -X POST \
         -H "content-type: application/json" \
-        -d '{"urls":["https://en.wikipedia.org/wiki/Bitcoin"]}' \
-        "http://localhost:3000/api/ingest/url" 2>&1)
-    if [ -z "$ingest_response" ]; then
-        echo "  FAIL: /api/ingest/url returned empty response"
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"url\",\"items\":[{\"url\":\"https://en.wikipedia.org/wiki/Bitcoin\"}]}" \
+        "http://localhost:3000/api/onboarding/collect" 2>&1)
+    if [ -z "$collect_response" ]; then
+        echo "  FAIL: /api/onboarding/collect returned empty response"
+        echo "  --- app logs ---"
+        $COMPOSE logs app 2>&1 | tail -20
+        echo "  --- nlp-service logs ---"
+        $COMPOSE logs nlp-service 2>&1 | tail -20
         record_stage 4 REAL FAIL
         return 1
     fi
-    echo "  ingest response: $ingest_response"
+    echo "  collect response: $collect_response"
 
-    # Extract source_id from the response using grep + sed. CI doesn't have
-    # jq; avoid the dep. Response shape: {"accepted":1,"source_ids":["uuid"]}
+    # Verify the stored array is non-empty. Shape: {"stored":[{"source_id":"uuid",...}],...}
+    if ! echo "$collect_response" | grep -q '"stored":\[{'; then
+        echo "  FAIL: collect response 'stored' array is empty -- URL conversion failed"
+        echo "  $collect_response"
+        record_stage 4 REAL FAIL
+        return 1
+    fi
+
+    # Extract source_id from the first stored item (grep + sed, no jq dep).
     local source_id
-    source_id=$(echo "$ingest_response" | grep -o '"source_ids":\[[^]]*\]' | grep -Eo '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1)
+    source_id=$(echo "$collect_response" | grep -o '"stored":\[{"source_id":"[^"]*"' | grep -Eo '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1)
     if [ -z "$source_id" ]; then
-        echo "  FAIL: could not extract source_id from ingest response"
+        echo "  FAIL: could not extract source_id from collect response"
         record_stage 4 REAL FAIL
         return 1
     fi
     echo "  source_id: $source_id"
 
-    echo "  polling /api/activity for source_stored (up to 180s)..."
-    elapsed=0
-    local stored=0
-    while [ $elapsed -lt 180 ]; do
-        local activity
-        activity=$(curl -sf "http://localhost:3000/api/activity?since=$since&limit=200" 2>/dev/null || echo "")
-        if echo "$activity" | grep -q "\"source_id\":\"$source_id\"" \
-           && echo "$activity" | grep -q '"action_type":"source_stored"'; then
-            stored=1
-            break
-        fi
-        if echo "$activity" | grep -q "\"source_id\":\"$source_id\"" \
-           && echo "$activity" | grep -q '"action_type":"ingest_failed"'; then
-            echo "  FAIL: activity shows ingest_failed for our source_id"
-            echo "  $activity"
-            echo "  --- n8n logs ---"
-            $COMPOSE logs n8n 2>&1 | tail -40
-            echo "  --- nlp-service logs ---"
-            $COMPOSE logs nlp-service 2>&1 | tail -40
-            record_stage 4 REAL FAIL
-            return 1
-        fi
-        sleep 3
-        elapsed=$((elapsed + 3))
-    done
-    if [ $stored -ne 1 ]; then
-        echo "  FAIL: source_stored did not appear in activity within 180s"
-        echo "  --- app logs ---"
-        $COMPOSE logs app 2>&1 | tail -20
-        echo "  --- n8n logs ---"
-        $COMPOSE logs n8n 2>&1 | tail -40
-        echo "  --- nlp-service logs ---"
-        $COMPOSE logs nlp-service 2>&1 | tail -40
-        record_stage 4 REAL FAIL
-        return 1
-    fi
-
     echo "  verifying /api/sources/$source_id..."
     local source_response
-    source_response=$(curl -sf "http://localhost:3000/api/sources/$source_id")
+    source_response=$(curl -sf "http://localhost:3000/api/sources/$source_id" 2>/dev/null || echo "")
     if ! echo "$source_response" | grep -qi '"title"'; then
         echo "  FAIL: /api/sources/<id> response missing title field"
         echo "  $source_response"
@@ -376,173 +322,55 @@ stage_4_live_ingest() {
         return 1
     fi
 
-    echo "  happy path: ingest stored PASS"
-
-    # -----------------------------------------------------------------------
-    # Sub-test: compile assertion
-    # -----------------------------------------------------------------------
-    # Skipped gracefully when GEMINI_API_KEY is not set (CI without the key).
-    if [ -z "${GEMINI_API_KEY:-}" ]; then
-        echo "  SKIP: GEMINI_API_KEY not set — skipping compile assertion"
-    else
-        echo "  polling /api/activity for source_compiled (up to 120s)..."
-        elapsed=0
-        local compiled=0
-        local page_id=""
-        while [ $elapsed -lt 120 ]; do
-            local compile_activity
-            compile_activity=$(curl -sf "http://localhost:3000/api/activity?since=$since&limit=200" 2>/dev/null || echo "")
-            if echo "$compile_activity" | grep -q "\"source_id\":\"$source_id\"" \
-               && echo "$compile_activity" | grep -q '"action_type":"source_compiled"'; then
-                compiled=1
-                # Extract page_id from details JSON (no jq — use grep/sed)
-                page_id=$(echo "$compile_activity" | grep -o '"page_id":"[^"]*"' | head -1 | sed 's/"page_id":"//;s/"//')
-                break
-            fi
-            if echo "$compile_activity" | grep -q "\"source_id\":\"$source_id\"" \
-               && echo "$compile_activity" | grep -q '"action_type":"compile_failed"'; then
-                echo "  FAIL: compile_failed in activity for source_id $source_id"
-                echo "  $compile_activity"
-                record_stage 4 REAL FAIL
-                return 1
-            fi
-            sleep 5
-            elapsed=$((elapsed + 5))
-        done
-        if [ $compiled -ne 1 ]; then
-            echo "  FAIL: source_compiled did not appear in activity within 120s"
-            $COMPOSE logs nlp-service 2>&1 | tail -30
-            record_stage 4 REAL FAIL
-            return 1
-        fi
-        echo "  source_compiled PASS (page_id: $page_id)"
-
-        if [ -n "$page_id" ]; then
-            echo "  verifying /page/$page_id renders (200 + title)..."
-            local page_response
-            page_response=$(curl -sf "http://localhost:3000/page/$page_id" 2>/dev/null || echo "")
-            if ! echo "$page_response" | grep -qi '<h1'; then
-                echo "  FAIL: /page/$page_id did not return an <h1> element"
-                echo "  response (first 500 chars): ${page_response:0:500}"
-                record_stage 4 REAL FAIL
-                return 1
-            fi
-            echo "  wiki page render PASS"
-        fi
-    fi
-
-    echo "  happy path PASS"
+    echo "  happy path: collect stored PASS"
 
     # -----------------------------------------------------------------------
     # Sub-test: failure-path canary
     # -----------------------------------------------------------------------
-    # Verifies the n8n workflow's per-node onError: continueErrorOutput routing
-    # fires "HTTP: Log Failure" which POSTs ingest_failed to /api/activity.
-    #
-    # Uses the /webhook/ingest-sync entrypoint (responseMode: lastNode) which
-    # blocks until the last node in the executed branch completes and returns
-    # its output synchronously. No polling loop, no sleep — deterministic.
-    #
-    # URL uses RFC 2606 reserved .invalid TLD. nlp-service's convert_url()
-    # short-circuits immediately (before calling Firecrawl) with a 502, so
-    # the error branch fires in <2s instead of waiting 30s for a DNS timeout.
-    #
-    # The canary source_id is generated locally (not through Next.js /api/ingest/url)
-    # because the sync webhook bypasses the Next.js front door — it's a test-only
-    # entrypoint. We generate a UUID client-side so the activity assertion can
-    # filter by that exact source_id.
-    echo "  canary: POSTing .invalid URL to n8n sync webhook (blocking)..."
+    # POSTs a RFC 2606 .invalid URL via collect. nlp-service short-circuits
+    # immediately (< 1s, before MarkItDown or Firecrawl). collect's catch block
+    # calls insertIngestFailure and returns the item in the 'failed' array.
+    echo "  canary: POSTing .invalid URL to /api/onboarding/collect..."
 
-    local canary_source_id
-    # Generate a UUID. Works on Linux (uuidgen), macOS (uuidgen), and
-    # Git Bash on Windows (PowerShell fallback).
-    canary_source_id=$(uuidgen 2>/dev/null || \
+    local canary_session_id
+    canary_session_id=$(uuidgen 2>/dev/null || \
         powershell -Command "[guid]::NewGuid().ToString()" 2>/dev/null || \
         python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || \
         cat /proc/sys/kernel/random/uuid 2>/dev/null || \
         date +%s | sha256sum | awk '{print substr($1,1,8)"-"substr($1,9,4)"-4"substr($1,14,3)"-"substr($1,17,4)"-"substr($1,21,12)}')
-    echo "  canary source_id: $canary_source_id"
 
-    local canary_since
-    canary_since=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
-
-    # POST directly to the sync webhook. Blocks until "HTTP: Log Failure" returns.
-    # --max-time 30: hard timeout (RFC 2606 short-circuit + 3 retries × 2s wait =
-    # ~8s worst case; 30s gives plenty of headroom without the 90s sleep-loop).
-    local canary_sync_response
-    canary_sync_response=$(curl -s --max-time 30 -X POST \
+    local canary_collect_response
+    canary_collect_response=$(curl -s -X POST \
         -H "content-type: application/json" \
-        -d "{\"source_id\":\"$canary_source_id\",\"source_type\":\"url\",\"source_ref\":\"https://this-domain-does-not-exist-kompl-canary.invalid\"}" \
-        "http://localhost:5678/webhook/ingest-sync" 2>&1 || echo "CURL_FAILED")
+        -d "{\"session_id\":\"$canary_session_id\",\"connector\":\"url\",\"items\":[{\"url\":\"https://this-domain-does-not-exist-kompl-canary.invalid\"}]}" \
+        "http://localhost:3000/api/onboarding/collect" 2>&1 || echo "")
+    echo "  canary collect response: $canary_collect_response"
 
-    if [ "$canary_sync_response" = "CURL_FAILED" ]; then
-        echo "  FAIL: canary sync webhook curl timed out or failed"
-        echo "  (Is n8n running? Is the ingest-sync webhook activated?)"
-        echo "  --- n8n logs ---"
-        $COMPOSE logs n8n 2>&1 | tail -20
+    # collect returns 200 with failed:[{...}] when a URL fails conversion.
+    if ! echo "$canary_collect_response" | grep -q '"failed":\[{'; then
+        echo "  FAIL: canary collect response 'failed' array is empty or missing"
+        echo "  $canary_collect_response"
         record_stage 4 REAL FAIL
         return 1
     fi
-    echo "  canary sync response: $canary_sync_response"
 
-    # The sync response arrived, meaning the workflow completed synchronously.
-    # Now verify the ingest_failed activity row was actually written.
-    local canary_activity
-    canary_activity=$(curl -sf "http://localhost:3000/api/activity?since=$canary_since&limit=200" 2>/dev/null || echo "")
-    if ! echo "$canary_activity" | grep -q "\"source_id\":\"$canary_source_id\"" \
-       || ! echo "$canary_activity" | grep -q '"action_type":"ingest_failed"'; then
-        echo "  FAIL: canary ingest_failed row not found in activity after sync webhook returned"
-        echo "  (HTTP: Log Failure node fired but /api/activity POST may have failed?)"
-        echo "  canary_activity: $canary_activity"
-        echo "  --- n8n logs ---"
-        $COMPOSE logs n8n 2>&1 | tail -20
+    # Verify insertIngestFailure wrote a row to the ingest_failures table.
+    local failures_response
+    failures_response=$(curl -sf "http://localhost:3000/api/sources/failures" 2>/dev/null || echo "")
+    if ! echo "$failures_response" | grep -q 'does-not-exist-kompl-canary'; then
+        echo "  FAIL: ingest_failures row not found in /api/sources/failures after collect failure"
+        echo "  failures_response: $failures_response"
         record_stage 4 REAL FAIL
         return 1
     fi
 
     echo "  canary PASS"
 
-    # -----------------------------------------------------------------------
-    # Sub-test: ingest_failures persistence canary
-    # -----------------------------------------------------------------------
-    # POST a bad URL directly to /api/ingest/url (not via the n8n sync webhook)
-    # so the Next.js path that calls insertIngestFailure is exercised.
-    # We kill n8n reachability by using a non-routable n8n URL via a one-shot
-    # env override — simplest approach without docker network manipulation.
-    # Instead, POST with the stack running normally: n8n will return an error
-    # for an unresolvable URL, but the /api/ingest/url route will still write
-    # the ingest_failed activity row. The insertIngestFailure call fires when
-    # the n8n webhook itself fails, so we use a URL that n8n cannot parse as
-    # valid (same .invalid TLD). The ingest_failed activity row (already
-    # verified above via the sync webhook) proves the error path fires.
-    #
-    # For the insertIngestFailure path specifically: POST directly to
-    # /api/ingest/url and verify a row appears in /api/sources/failures.
-    echo "  ingest_failures canary: POSTing .invalid URL to /api/ingest/url..."
-    local if_canary_response
-    if_canary_response=$(curl -s -X POST \
-        -H "content-type: application/json" \
-        -d '{"urls":["https://this-domain-does-not-exist-kompl-if-canary.invalid"]}' \
-        "http://localhost:3000/api/ingest/url" 2>&1 || echo "")
-    echo "  ingest_failures canary response: $if_canary_response"
-
-    # The route returns 202 for partial success or 502 if all n8n calls failed.
-    # Either way, the insertIngestFailure call must have run. Check via the
-    # /api/sources/failures endpoint.
-    local failures_response
-    failures_response=$(curl -sf "http://localhost:3000/api/sources/failures" 2>/dev/null || echo "")
-    if ! echo "$failures_response" | grep -q 'does-not-exist-kompl-if-canary'; then
-        echo "  FAIL: ingest_failures row not found in /api/sources/failures after failed ingest"
-        echo "  failures_response: $failures_response"
-        record_stage 4 REAL FAIL
-        return 1
-    fi
-    echo "  ingest_failures persistence canary PASS"
-
     echo "  PASS"
     record_stage 4 REAL PASS
     return 0
 }
+
 
 # ---------------------------------------------------------------------------
 # Stage 11 — Onboarding API canary (REAL as of Part 1b)
