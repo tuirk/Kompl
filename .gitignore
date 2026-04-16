@@ -58,8 +58,10 @@ wiki/build/
 npm-debug.log*
 .gitnexus
 
-# Claude Code project memory (local only)
-.claude/
+# Claude Code — ignore personal/local dirs, commit shared settings
+.claude/memory/
+.claude/skills/
+.claude/plans/
 
 # Internal docs (local only — not for public repo)
 docs/spec/

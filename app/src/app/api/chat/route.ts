@@ -125,7 +125,7 @@ export async function POST(request: Request) {
     }
 
     // 3. Build conversation history (last 10 messages = 5 exchanges)
-    const historyRows = getChatHistory(sessionId, 10);
+    const historyRows = getChatHistory(sessionId, 11); // 11 = 10 prior + current question
     // Exclude the user message we just inserted (last row)
     const history = historyRows
       .slice(0, -1)

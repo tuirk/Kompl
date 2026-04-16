@@ -25,6 +25,7 @@
  *             pages_created, pages_updated, sources_activated, wikilink_warnings }
  */
 
+import { createHash } from 'node:crypto';
 import { NextResponse } from 'next/server';
 
 import {
@@ -133,6 +134,9 @@ async function commitSession(session_id: string): Promise<Response> {
   let pagesUpdated = 0;
   let thinCount = 0;
   const allSourceIds = new Set<string>();
+  // Track page_ids that were actually committed so the wikilink pass below
+  // can exclude thin-draft and failed plans (which were never inserted into pages).
+  const committedPageIds = new Set<string>();
 
   const minDraftChars = getMinDraftChars();
 
@@ -233,6 +237,11 @@ async function commitSession(session_id: string): Promise<Response> {
     // Deterministic path — known before the file is written (page_id is fixed).
     const expectedPath = `/data/pages/${page_id}.md.gz`;
 
+    // Compute content hash from the in-memory markdown before the transaction.
+    // We cannot call getCurrentPageHash() (disk read) inside the transaction, and
+    // Phase 3a (file flush) hasn't happened yet — so we hash the source directly.
+    const contentHash = createHash('sha256').update(markdown).digest('hex');
+
     // Phase 2: sync transaction — insertPage + setPendingContent + insertProvenance + FTS5
     // File is NOT written yet. pending_content stores the markdown so the boot
     // reconciler can re-attempt the flush if Phase 3a crashes.
@@ -261,7 +270,7 @@ async function commitSession(session_id: string): Promise<Response> {
           insertProvenance({
             source_id: sid,
             page_id,
-            content_hash: '',
+            content_hash: contentHash,
             contribution_type: contribType,
           });
         }
@@ -270,7 +279,7 @@ async function commitSession(session_id: string): Promise<Response> {
         db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(page_id);
         db.prepare(
           `INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)`
-        ).run(page_id, plan.title, markdown.replace(/^---[\s\S]*?---\n*/m, ''));
+        ).run(page_id, plan.title, stripFrontmatter(markdown));
 
         // Log to activity
         insertActivity({
@@ -337,6 +346,7 @@ async function commitSession(session_id: string): Promise<Response> {
       source_count: sourceIds.length,
     });
 
+    committedPageIds.add(page_id);
     committed++;
     if (plan.action === 'update') pagesUpdated++; else pagesCreated++;
   }
@@ -347,7 +357,22 @@ async function commitSession(session_id: string): Promise<Response> {
   let wikilinkWarnings = 0;
   try {
     const titleMap = getPageTitleMap(); // title.toLowerCase() → page_id
-    const committedPlans = plans.filter((p) => p.draft_content && p.action !== 'provenance-only');
+    // Only process plans whose page_id was actually committed (excludes thin-draft
+    // skips and failures — pages that were never inserted into `pages`).
+    // Without this guard, a thin-draft plan with [[wikilinks]] causes an FK
+    // violation that aborts the entire loop, leaving subsequent pages with no links.
+    const committedPlans = plans.filter((p) => {
+      if (!p.draft_content || p.action === 'provenance-only') return false;
+      const pid = p.action === 'update' && p.existing_page_id
+        ? p.existing_page_id
+        : (() => {
+            const suffix = p.plan_id.replace(/-/g, '').slice(0, 8);
+            const base = p.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '')
+              .replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 56).replace(/^-+|-+$/g, '');
+            return `${base || 'page'}-${suffix}`;
+          })();
+      return committedPageIds.has(pid);
+    });
 
     for (const plan of committedPlans) {
       const fromPageId = plan.action === 'update' && plan.existing_page_id

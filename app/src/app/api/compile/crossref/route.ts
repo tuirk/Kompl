@@ -195,7 +195,7 @@ export async function POST(request: Request) {
           (lk) => !existing.markdown.includes(lk)
         );
         if (newLinks.length > 0) {
-          existing.markdown += `\n\n${newLinks.join(' ')}`;
+          existing.markdown += `\n\n## See Also\n\n${newLinks.join('\n\n')}`;
         }
       }
       allUpdated.push(existing);

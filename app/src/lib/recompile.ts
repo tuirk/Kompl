@@ -175,19 +175,23 @@ export async function recompilePage(pageId: string, removedSourceId: string): Pr
 
   // ── Phase 3c: sync page_links — clear stale wikilinks, insert current ones ─
   // Must run after Phase 3a so the new markdown is available in newMarkdown.
-  // The DELETE ensures removed [[links]] don't persist as phantom backlinks.
+  // Wrapped in a transaction so a crash between DELETE and INSERT doesn't leave
+  // partial/no wikilinks (boot reconciler covers pending_content, not page_links).
   const titleMap = getPageTitleMap();
-  getDb().prepare(`DELETE FROM page_links WHERE source_page_id = ? AND link_type = 'wikilink'`).run(pageId);
-  const rawLinks = newMarkdown.match(/\[\[([^\]]+)\]\]/g) ?? [];
-  const seenTargets = new Set<string>();
-  for (const link of rawLinks) {
-    const title = link.slice(2, -2).trim();
-    const toPageId = titleMap.get(title.toLowerCase());
-    if (toPageId && toPageId !== pageId && !seenTargets.has(toPageId)) {
-      seenTargets.add(toPageId);
-      insertPageLink(pageId, toPageId, 'wikilink');
+  const db3c = getDb();
+  db3c.transaction(() => {
+    db3c.prepare(`DELETE FROM page_links WHERE source_page_id = ? AND link_type = 'wikilink'`).run(pageId);
+    const rawLinks = newMarkdown.match(/\[\[([^\]]+)\]\]/g) ?? [];
+    const seenTargets = new Set<string>();
+    for (const link of rawLinks) {
+      const title = link.slice(2, -2).trim();
+      const toPageId = titleMap.get(title.toLowerCase());
+      if (toPageId && toPageId !== pageId && !seenTargets.has(toPageId)) {
+        seenTargets.add(toPageId);
+        insertPageLink(pageId, toPageId, 'wikilink');
+      }
     }
-  }
+  })();
 
   // ── Phase 3b: vector upsert — fire-and-forget ────────────────────────────
   void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {

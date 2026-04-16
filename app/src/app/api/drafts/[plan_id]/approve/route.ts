@@ -11,6 +11,7 @@
  * Only operates on plans with draft_status = 'pending_approval'.
  */
 
+import { createHash } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import {
   getDb,
@@ -88,6 +89,9 @@ export async function POST(_request: Request, { params }: RouteContext) {
   // Deterministic path — known before the file is written (page_id is fixed).
   const expectedPath = `/data/pages/${page_id}.md.gz`;
 
+  // Compute content hash from the in-memory markdown before the transaction.
+  const contentHash = createHash('sha256').update(markdown).digest('hex');
+
   // Phase 2: sync transaction — all writes atomic, including plan status.
   // Idempotency guard at the top handles re-approval after a prior crash
   // that committed the transaction but died before returning the response.
@@ -116,7 +120,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
         db.prepare('UPDATE pages SET source_count = ? WHERE page_id = ?').run(sourceIds.length, page_id);
         const contribType = plan.action === 'update' ? 'updated' : 'created';
         for (const sid of sourceIds) {
-          insertProvenance({ source_id: sid, page_id, content_hash: '', contribution_type: contribType });
+          insertProvenance({ source_id: sid, page_id, content_hash: contentHash, contribution_type: contribType });
         }
       }
 
@@ -125,7 +129,9 @@ export async function POST(_request: Request, { params }: RouteContext) {
       db.prepare('INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)').run(
         page_id,
         plan.title,
-        markdown.replace(/^---[\s\S]*?---\n*/m, '')
+        markdown.match(/^---\n[\s\S]*?\n---\n?/)
+          ? markdown.slice(markdown.match(/^---\n[\s\S]*?\n---\n?/)![0].length).trim()
+          : markdown.trim()
       );
 
       insertActivity({

@@ -328,13 +328,16 @@ export async function POST(request: Request) {
     if (planIdA) related.push(planIdA);
     if (planIdB) related.push(planIdB);
 
+    const compTitle = `${nameA} vs ${nameB}`;
+    const existingComp = getPageByTitle(compTitle);
     plans.push({
       plan_id: randomUUID(),
-      title: `${nameA} vs ${nameB}`,
+      title: compTitle,
       page_type: 'comparison',
-      action: 'create',
+      action: existingComp ? 'update' : 'create',
       source_ids: [...sourceSet],
       related_plan_ids: related,
+      existing_page_id: existingComp?.page_id,
     });
   }
 
@@ -360,13 +363,16 @@ export async function POST(request: Request) {
       if (plan) plan.source_ids.forEach((s) => overviewSourceIds.add(s));
     }
 
+    const overviewTitle = `${category} Overview`;
+    const existingOverview = getPageByTitle(overviewTitle);
     plans.push({
       plan_id: randomUUID(),
-      title: `${category} Overview`,
+      title: overviewTitle,
       page_type: 'overview',
-      action: 'create',
+      action: existingOverview ? 'update' : 'create',
       source_ids: [...overviewSourceIds],
       related_plan_ids: relatedIds,
+      existing_page_id: existingOverview?.page_id,
     });
   }
 

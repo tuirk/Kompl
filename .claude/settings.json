@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if grep -q '\"git push' ; then bash scripts/check-schema-sync.sh; fi",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

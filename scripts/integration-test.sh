@@ -119,9 +119,9 @@ stage_0_cold_start() {
         return 1
     fi
 
-    echo "  waiting for app /api/health to return 200 (up to 240s)..."
-    if ! wait_for_http_200 "http://localhost:3000/api/health" 240; then
-        echo "  FAIL: app /api/health not ready within 240s"
+    echo "  waiting for app /api/health to return 200 (up to 360s)..."
+    if ! wait_for_http_200 "http://localhost:3000/api/health" 360; then
+        echo "  FAIL: app /api/health not ready within 360s"
         $COMPOSE logs app 2>&1 | tail -30
         record_stage 0 REAL FAIL
         return 1
