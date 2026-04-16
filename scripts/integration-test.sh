@@ -272,14 +272,24 @@ stage_4_live_ingest() {
     # -----------------------------------------------------------------------
     echo "  POSTing text note to /api/onboarding/collect..."
     local NOTE_TITLE="Integration Test Note"
-    local NOTE_MD
-    NOTE_MD=$(printf '# Integration Test Note\n\nThis note is seeded by the integration test suite to verify the text connector collect path end-to-end.\n\nIt contains enough content to clear the min_source_chars gate (default 500 characters). The collect endpoint should store this note synchronously and return a source_id in the stored array.\n\nThe quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump. The five boxing wizards jump quickly.')
+    # Single-line markdown — avoids literal newlines breaking the JSON string in the curl -d argument.
+    # Content is long enough (>500 chars) to clear the min_source_chars gate.
+    local NOTE_MD="Integration Test Note. This note is seeded by the integration test suite to verify the text connector collect path end-to-end. It contains enough content to clear the min_source_chars gate (default 500 characters). The collect endpoint should store this note synchronously and return a source_id in the stored array. The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump quickly. The five boxing wizards are fully ready and waiting here."
 
-    local collect_response
-    collect_response=$(curl -sf -X POST \
+    local collect_response collect_http
+    collect_http=$(curl -s -o /tmp/collect_body.json -w "%{http_code}" -X POST \
         -H "content-type: application/json" \
         -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"text\",\"items\":[{\"markdown\":\"$NOTE_MD\",\"title_hint\":\"$NOTE_TITLE\",\"source_type_hint\":\"note\"}]}" \
         "http://localhost:3000/api/onboarding/collect" 2>&1)
+    collect_response=$(cat /tmp/collect_body.json 2>/dev/null || echo "")
+    if [ "$collect_http" != "200" ]; then
+        echo "  FAIL: /api/onboarding/collect returned HTTP $collect_http"
+        echo "  body: $collect_response"
+        echo "  --- app logs ---"
+        $COMPOSE logs app 2>&1 | tail -30
+        record_stage 4 REAL FAIL
+        return 1
+    fi
     if [ -z "$collect_response" ]; then
         echo "  FAIL: /api/onboarding/collect returned empty response"
         echo "  --- app logs ---"
