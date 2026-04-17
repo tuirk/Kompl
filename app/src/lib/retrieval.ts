@@ -19,7 +19,7 @@
  * never directly from Next.js.
  */
 
-import { getPage, getPageIndex, searchPages } from '@/lib/db';
+import { getAllArchivedPageIds, getPage, getPageIndex, searchPages } from '@/lib/db';
 import type { RetrievedPage } from '@/lib/chat-types';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -104,8 +104,12 @@ async function hybridRetrieval(
 ): Promise<RetrievedPage[]> {
   const fetchCount = maxPages * 2;
 
+  // Compute once — pages where ALL backing sources are archived are excluded
+  // from both FTS and vector branches so they never surface in chat.
+  const archivedPageIds = getAllArchivedPageIds();
+
   // FTS5 search (synchronous, already available)
-  const ftsRows = searchPages(question, fetchCount);
+  const ftsRows = searchPages(question, fetchCount, archivedPageIds);
 
   // Vector search (async, NLP service)
   let vectorMatches: Array<{ page_id: string; similarity: number }> = [];
@@ -120,7 +124,10 @@ async function hybridRetrieval(
       const data = (await res.json()) as {
         matches: Array<{ page_id: string; similarity: number }>;
       };
-      vectorMatches = data.matches ?? [];
+      // Filter out all-archived pages from vector results
+      vectorMatches = (data.matches ?? []).filter(
+        (m) => !archivedPageIds.has(m.page_id)
+      );
     }
   } catch {
     // Vector branch optional — FTS covers the rest

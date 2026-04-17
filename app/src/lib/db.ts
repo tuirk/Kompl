@@ -321,7 +321,12 @@ export function deleteSource(sourceId: string): string | null {
     .prepare('SELECT file_path FROM sources WHERE source_id = ?')
     .get(sourceId) as { file_path: string } | null;
   if (!row) return null;
+  // Must delete child rows before parent — foreign_keys = ON enforces this.
+  db.prepare('DELETE FROM extractions WHERE source_id = ?').run(sourceId);
   db.prepare('DELETE FROM sources WHERE source_id = ?').run(sourceId);
+  // Invalidate archived-page-ids cache — the deleted source's provenance rows
+  // have been removed, which may change which pages are "all-archived".
+  _archivedIdsCache = null;
   return row.file_path;
 }
 
@@ -501,16 +506,24 @@ export function readPageMarkdown(pageId: string): string | null {
 // Wiki index helpers (commit 11)
 // ============================================================================
 
-/** All compiled pages, newest first. Used by /wiki index and /api/pages. */
-export function getAllPages(): PageRow[] {
-  return openDb()
+/** All compiled pages, newest first. Used by /wiki index and /api/pages.
+ *
+ * When includeArchived=false (default): excludes legacy page_type='archived' rows
+ * AND pages where every backing source is archived (all-archived-sources filter).
+ */
+export function getAllPages(includeArchived = false): PageRow[] {
+  const rows = openDb()
     .prepare(
       `SELECT page_id, title, page_type, category, summary, content_path,
               previous_content_path, last_updated, source_count, created_at
          FROM pages
-         ORDER BY last_updated DESC`
+        ${includeArchived ? '' : "WHERE page_type != 'archived'"}
+        ORDER BY last_updated DESC`
     )
     .all() as PageRow[];
+  if (includeArchived) return rows;
+  const archivedIds = getAllArchivedPageIds();
+  return rows.filter((r) => !archivedIds.has(r.page_id));
 }
 
 /** All compiled page IDs. Used by /api/compile/extract to build TF-IDF corpus. */
@@ -525,18 +538,27 @@ export interface CategoryGroup {
   pages: PageRow[];
 }
 
-/** Pages grouped by category, sorted alphabetically by category then title. */
-export function getCategoryGroups(): CategoryGroup[] {
+/** Pages grouped by category, sorted alphabetically by category then title.
+ *
+ * When includeArchived=false (default): excludes page_type='archived' rows
+ * and pages where every backing source is archived.
+ */
+export function getCategoryGroups(includeArchived = false): CategoryGroup[] {
   const rows = openDb()
     .prepare(
       `SELECT page_id, title, page_type, category, summary, content_path,
               previous_content_path, last_updated, source_count, created_at
          FROM pages
+        ${includeArchived ? '' : "WHERE page_type != 'archived'"}
         ORDER BY COALESCE(category, 'Uncategorized'), title`
     )
     .all() as PageRow[];
+  const filtered = includeArchived ? rows : (() => {
+    const archivedIds = getAllArchivedPageIds();
+    return rows.filter((r) => !archivedIds.has(r.page_id));
+  })();
   const map = new Map<string, PageRow[]>();
-  for (const row of rows) {
+  for (const row of filtered) {
     const cat = row.category ?? 'Uncategorized';
     if (!map.has(cat)) map.set(cat, []);
     map.get(cat)!.push(row);
@@ -549,8 +571,11 @@ export function getCategoryGroups(): CategoryGroup[] {
  * Each word in the query gets a trailing * for prefix matching so that
  * partial input like "cryp" matches "cryptocurrency". Uses parameterized
  * binding (no string interpolation) to eliminate SQL injection risk.
+ *
+ * Pass excludePageIds (e.g. getAllArchivedPageIds()) to post-filter results.
+ * Post-filtering keeps FTS5 rank ordering intact — no subquery in the SQL.
  */
-export function searchPages(query: string, limit = 20): PageRow[] {
+export function searchPages(query: string, limit = 20, excludePageIds?: Set<string>): PageRow[] {
   const words = query.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return [];
   // Strip FTS5 special characters per word, then append * for prefix match.
@@ -560,7 +585,7 @@ export function searchPages(query: string, limit = 20): PageRow[] {
     .map((w) => `${w}*`)
     .join(' ');
   if (!ftsQuery.trim()) return [];
-  return openDb()
+  const rows = openDb()
     .prepare(
       `SELECT p.page_id, p.title, p.page_type, p.category, p.summary,
               p.content_path, p.previous_content_path, p.last_updated,
@@ -572,6 +597,8 @@ export function searchPages(query: string, limit = 20): PageRow[] {
         LIMIT ?`
     )
     .all(ftsQuery, limit) as PageRow[];
+  if (!excludePageIds || excludePageIds.size === 0) return rows;
+  return rows.filter((r) => !excludePageIds.has(r.page_id));
 }
 
 /** Pages that link TO the given page_id (backlinks). */
@@ -607,6 +634,7 @@ export interface GraphNode {
   source_count: number;
   summary?: string | null;
   last_updated?: string;
+  archived?: boolean;  // true when all backing sources are archived (muted styling)
 }
 
 export interface GraphLink {
@@ -620,23 +648,36 @@ export interface GraphData {
   links: GraphLink[];
 }
 
-export function getWikiGraph(): GraphData {
+export function getWikiGraph(includeArchived = false): GraphData {
   const db = openDb();
-  const nodes = db
+  const allNodes = db
     .prepare(
       `SELECT page_id AS id, title AS label, page_type AS "group",
               COALESCE(category, 'Uncategorized') AS category,
               source_count, summary, last_updated
-         FROM pages`
+         FROM pages
+        ${includeArchived ? '' : "WHERE page_type != 'archived'"}`
     )
     .all() as GraphNode[];
 
-  const links = db
+  const archivedIds = getAllArchivedPageIds();
+  let nodes: GraphNode[];
+  if (includeArchived) {
+    // Mark archived nodes for muted styling; include all
+    nodes = allNodes.map((n) => archivedIds.has(n.id) ? { ...n, archived: true } : n);
+  } else {
+    nodes = allNodes.filter((n) => !archivedIds.has(n.id));
+  }
+
+  const nodeIdSet = new Set(nodes.map((n) => n.id));
+  const allLinks = db
     .prepare(
       `SELECT source_page_id AS source, target_page_id AS target, link_type AS type
          FROM page_links`
     )
     .all() as GraphLink[];
+  // Only include links where both endpoints are visible nodes
+  const links = allLinks.filter((l) => nodeIdSet.has(l.source) && nodeIdSet.has(l.target));
 
   return { nodes, links };
 }
@@ -1306,6 +1347,7 @@ export function getChatHistory(sessionId: string, limit = 20): ChatMessageRow[] 
 /**
  * Return all pages as a lightweight index for chat retrieval.
  * Sorted by source_count DESC so most-sourced pages appear first.
+ * Excludes page_type='archived' and all-archived-sources pages by default.
  */
 export function getPageIndex(): Array<{
   page_id: string;
@@ -1315,20 +1357,18 @@ export function getPageIndex(): Array<{
   category: string | null;
   source_count: number;
 }> {
-  return openDb()
+  type Row = { page_id: string; title: string; page_type: string; summary: string | null; category: string | null; source_count: number };
+  const rows = openDb()
     .prepare(
       `SELECT page_id, title, page_type, summary, category, source_count
        FROM pages
+       WHERE page_type != 'archived'
        ORDER BY source_count DESC`
     )
-    .all() as Array<{
-      page_id: string;
-      title: string;
-      page_type: string;
-      summary: string | null;
-      category: string | null;
-      source_count: number;
-    }>;
+    .all() as Row[];
+  const archivedIds = getAllArchivedPageIds();
+  if (archivedIds.size === 0) return rows;
+  return rows.filter((r) => !archivedIds.has(r.page_id));
 }
 
 /**
@@ -1365,6 +1405,9 @@ export function insertChatDraft(data: {
 export function getAllSources(options?: {
   status?: string;
   source_type?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  search?: string;
   sort_by?: 'date_ingested' | 'title' | 'source_type';
   sort_order?: 'asc' | 'desc';
   limit?: number;
@@ -1380,6 +1423,18 @@ export function getAllSources(options?: {
   if (options?.source_type) {
     conditions.push('source_type = ?');
     params.push(options.source_type);
+  }
+  if (options?.dateFrom) {
+    conditions.push('date_ingested >= ?');
+    params.push(options.dateFrom);
+  }
+  if (options?.dateTo) {
+    conditions.push('date_ingested <= ?');
+    params.push(options.dateTo + 'T23:59:59');
+  }
+  if (options?.search) {
+    conditions.push('title LIKE ?');
+    params.push(`%${options.search}%`);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -1429,6 +1484,18 @@ export function getAllSourcesWithPageCounts(
   if (options?.source_type) {
     conditions.push('s.source_type = ?');
     params.push(options.source_type);
+  }
+  if (options?.dateFrom) {
+    conditions.push('s.date_ingested >= ?');
+    params.push(options.dateFrom);
+  }
+  if (options?.dateTo) {
+    conditions.push('s.date_ingested <= ?');
+    params.push(options.dateTo + 'T23:59:59');
+  }
+  if (options?.search) {
+    conditions.push('s.title LIKE ?');
+    params.push(`%${options.search}%`);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -1538,6 +1605,16 @@ export function archivePage(pageId: string): void {
 }
 
 /**
+ * Set source_count to an explicit value for a page.
+ * Called after a short-source deletion where recompile is skipped.
+ */
+export function setPageSourceCount(pageId: string, count: number): void {
+  openDb()
+    .prepare('UPDATE pages SET source_count = ? WHERE page_id = ?')
+    .run(Math.max(0, count), pageId);
+}
+
+/**
  * Decrement source_count by 1 (minimum 0) for a page.
  * Called when a source is deleted but the page has other sources remaining.
  */
@@ -1548,9 +1625,61 @@ export function decrementPageSourceCount(pageId: string): void {
 }
 
 /**
+ * Permanently delete a page from the DB (pages, FTS, page_links, aliases, provenance).
+ * Wrapped in a transaction so all child-table cleanups are atomic — if any step
+ * fails, no partial state is left. Deletion order respects FK constraints:
+ * page_links + pages_fts first (no FK to pages), then aliases + provenance
+ * (both REFERENCE pages), then the pages row itself.
+ */
+export function deletePage(pageId: string): void {
+  const db = openDb();
+  db.transaction(() => {
+    db.prepare(`DELETE FROM page_links WHERE source_page_id = ? OR target_page_id = ?`).run(pageId, pageId);
+    db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(pageId);
+    db.prepare(`DELETE FROM aliases WHERE canonical_page_id = ?`).run(pageId);
+    db.prepare(`DELETE FROM provenance WHERE page_id = ?`).run(pageId);
+    db.prepare(`DELETE FROM pages WHERE page_id = ?`).run(pageId);
+  })();
+}
+
+/**
+ * Return the set of page_ids where ALL backing sources have status='archived'.
+ * Zero-provenance pages are NOT included (HAVING COUNT(*) > 0 guard prevents
+ * the degenerate 0=0 case from hiding pages with no provenance at all).
+ *
+ * Result is cached for 30s — this query runs on every chat message in hybrid
+ * mode and is expensive (GROUP BY JOIN on provenance). Cache is invalidated by
+ * setSourceStatus (archive/unarchive) and deleteSource (source removal).
+ */
+let _archivedIdsCache: { ids: Set<string>; ts: number } | null = null;
+const ARCHIVED_IDS_TTL = 30_000;
+
+export function getAllArchivedPageIds(): Set<string> {
+  const now = Date.now();
+  if (_archivedIdsCache && now - _archivedIdsCache.ts < ARCHIVED_IDS_TTL) {
+    return _archivedIdsCache.ids;
+  }
+  const rows = openDb()
+    .prepare(
+      `SELECT pr.page_id
+         FROM provenance pr
+         JOIN sources s ON s.source_id = pr.source_id
+        GROUP BY pr.page_id
+       HAVING COUNT(*) > 0
+          AND COUNT(*) = SUM(CASE WHEN s.status = 'archived' THEN 1 ELSE 0 END)`
+    )
+    .all() as { page_id: string }[];
+  const ids = new Set(rows.map((r) => r.page_id));
+  _archivedIdsCache = { ids, ts: now };
+  return ids;
+}
+
+/**
  * Set the status column on a source row (active / archived).
+ * Invalidates the archived-page-ids cache so the next read reflects the change.
  */
 export function setSourceStatus(sourceId: string, status: 'active' | 'archived'): void {
+  _archivedIdsCache = null;
   openDb()
     .prepare('UPDATE sources SET status = ? WHERE source_id = ?')
     .run(status, sourceId);

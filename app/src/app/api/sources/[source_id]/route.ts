@@ -8,29 +8,87 @@
  *
  * DELETE /api/sources/[source_id]
  *
- * Removes the source row and best-effort unlinks the raw gzip file.
- * Used by the onboarding review screen to remove unchecked sources
- * individually (the bulk path goes through /api/onboarding/confirm).
+ * Two-tier cascade delete:
+ *   - Pages with 0 or 1 remaining source → permanently deleted
+ *   - Pages with 2+ remaining sources, deleted source < 500 chars → kept, provenance note
+ *   - Pages with 2+ remaining sources, deleted source ≥ 500 chars → kept, rewritten
+ *
+ * PATCH /api/sources/[source_id]
+ *
+ * Archive or unarchive a source (status: 'active' | 'archived').
  */
 
+import path from 'node:path';
 import { promises as fsPromises } from 'fs';
+import zlib from 'node:zlib';
 import { NextResponse } from 'next/server';
 
 import {
+  DATA_ROOT,
   deleteSource,
+  deletePage,
   getSource,
+  getPage,
   getPagesBySourceId,
   removeProvenanceForSource,
-  archivePage,
-  decrementPageSourceCount,
+  getProvenanceForPage,
+  setPageSourceCount,
+  readRawMarkdown,
   setSourceStatus,
   insertActivity,
 } from '../../../../lib/db';
 import { recompilePage } from '../../../../lib/recompile';
 
+const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
+const PAGES_DIR = path.join(DATA_ROOT, 'pages');
+
 interface RouteContext {
   params: Promise<{ source_id: string }>;
 }
+
+// ---------------------------------------------------------------------------
+// Async helpers
+// ---------------------------------------------------------------------------
+
+async function deletePageFile(pageId: string): Promise<void> {
+  const files = await fsPromises.readdir(PAGES_DIR).catch(() => [] as string[]);
+  await Promise.all(
+    files
+      .filter((f) => f.startsWith(pageId))
+      .map((f) => fsPromises.unlink(path.join(PAGES_DIR, f)).catch(() => {}))
+  );
+}
+
+async function deleteFromVectorStore(pageId: string): Promise<void> {
+  await fetch(`${NLP_SERVICE_URL}/vectors/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ page_id: pageId }),
+    signal: AbortSignal.timeout(10_000),
+  });
+}
+
+/**
+ * Append a provenance note to a page's gzipped markdown file.
+ * Non-fatal: silently skips if the file is missing or unreadable.
+ * The note is cleaned up on the next recompile (recompilePage generates fresh content).
+ */
+async function addProvenanceNote(contentPath: string | null, note: string): Promise<void> {
+  if (!contentPath) return;
+  const filePath = path.join(PAGES_DIR, path.basename(contentPath));
+  try {
+    const compressed = await fsPromises.readFile(filePath);
+    const md = zlib.gunzipSync(compressed).toString('utf-8');
+    const updated = md + `\n\n> _${note}_\n`;
+    await fsPromises.writeFile(filePath, zlib.gzipSync(updated));
+  } catch {
+    // Non-fatal: page still intact, note just won't appear
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------------------
 
 export async function GET(_request: Request, { params }: RouteContext) {
   const { source_id } = await params;
@@ -106,71 +164,113 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: 'not_found' }, { status: 404 });
   }
 
-  // Cascade: find affected pages, remove provenance, then archive orphans or
-  // recompile pages with remaining sources.
+  // Determine size tier BEFORE removing anything from the DB.
+  const sourceContent = readRawMarkdown(source_id);
+  const sourceChars = sourceContent?.length ?? 0;
+  const isShortSource = sourceChars < 500;
+
   const affectedPages = getPagesBySourceId(source_id);
 
   // Remove provenance FIRST so recompilePage sees only remaining sources.
   removeProvenanceForSource(source_id);
 
-  const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
-  let recompiled = 0;
-  let recompileFailed = 0;
+  const results = { pages_deleted: 0, pages_rewritten: 0, pages_noted: 0 };
+  const today = new Date().toISOString().split('T')[0];
 
   for (const page of affectedPages) {
-    if (page.source_count <= 1) {
-      // No remaining sources — archive.
-      archivePage(page.page_id);
-      insertActivity({
-        action_type: 'page_archived',
-        source_id: null,
-        details: { page_id: page.page_id, reason: 'source_deleted' },
-      });
+    // Count remaining sources AFTER provenance removal.
+    const remainingCount = getProvenanceForPage(page.page_id).length;
 
-      // Remove from vector store (fire-and-forget).
-      void fetch(`${NLP_SERVICE_URL}/vectors/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ page_id: page.page_id }),
-        signal: AbortSignal.timeout(10_000),
-      }).catch(() => {});
+    if (remainingCount <= 1) {
+      // 0 or 1 remaining — permanently delete the page.
+      deletePage(page.page_id);
+      void deleteFromVectorStore(page.page_id).catch(() => {});
+      void deletePageFile(page.page_id).catch(() => {});
+      insertActivity({
+        action_type: 'page_deleted',
+        source_id,
+        details: {
+          page_id: page.page_id,
+          title: page.title,
+          reason: remainingCount === 0 ? 'no_remaining_sources' : 'sole_remaining_source',
+          remaining_sources: remainingCount,
+        },
+      });
+      results.pages_deleted++;
+
+    } else if (isShortSource) {
+      // 2+ remaining, short source — no rewrite, just a provenance note.
+      const fullPage = getPage(page.page_id);
+      void addProvenanceNote(
+        fullPage?.content_path ?? null,
+        `Source "${source.title}" deleted on ${today}.`
+      ).catch(() => {});
+      setPageSourceCount(page.page_id, remainingCount);
+      insertActivity({
+        action_type: 'page_provenance_updated',
+        source_id,
+        details: {
+          page_id: page.page_id,
+          title: page.title,
+          reason: 'short_source_deleted',
+          source_chars: sourceChars,
+          remaining_sources: remainingCount,
+        },
+      });
+      results.pages_noted++;
+
     } else {
-      // Has remaining sources — re-draft from those sources.
+      // 2+ remaining, substantial source — rewrite from remaining sources.
       try {
         await recompilePage(page.page_id, source_id);
-        recompiled++;
         insertActivity({
           action_type: 'page_recompiled',
-          source_id: null,
-          details: { page_id: page.page_id, reason: 'source_deleted', removed_source_id: source_id },
+          source_id,
+          details: {
+            page_id: page.page_id,
+            title: page.title,
+            reason: 'source_deleted',
+            source_chars: sourceChars,
+            remaining_sources: remainingCount,
+          },
         });
+        results.pages_rewritten++;
       } catch (err) {
-        // Recompile failed — fall back to decrement so the delete still completes.
-        recompileFailed++;
-        decrementPageSourceCount(page.page_id);
+        // Rewrite failed — fall back to provenance note so delete still completes.
+        const fullPage = getPage(page.page_id);
+        void addProvenanceNote(
+          fullPage?.content_path ?? null,
+          `Source "${source.title}" deleted on ${today}. Rewrite failed.`
+        ).catch(() => {});
+        setPageSourceCount(page.page_id, remainingCount);
         insertActivity({
           action_type: 'page_recompile_failed',
-          source_id: null,
-          details: { page_id: page.page_id, removed_source_id: source_id, error: String(err) },
+          source_id,
+          details: {
+            page_id: page.page_id,
+            title: page.title,
+            error: String(err),
+          },
         });
+        results.pages_noted++;
       }
     }
   }
 
-  const filePath = deleteSource(source_id);
-  if (filePath) {
-    void fsPromises.unlink(filePath).catch(() => undefined);
-  }
+  // Delete source record (also deletes extractions via deleteSource).
+  const rawFilePath = deleteSource(source_id);
+  if (rawFilePath) void fsPromises.unlink(rawFilePath).catch(() => {});
 
   insertActivity({
     action_type: 'source_deleted',
     source_id,
     details: {
+      title: source.title,
+      source_chars: sourceChars,
       pages_affected: affectedPages.length,
-      pages_recompiled: recompiled,
-      pages_recompile_failed: recompileFailed,
+      ...results,
     },
   });
 
-  return new NextResponse(null, { status: 204 });
+  return NextResponse.json({ deleted: true, source_id, ...results });
 }
