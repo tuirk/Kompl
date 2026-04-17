@@ -105,8 +105,10 @@ function ProgressPageInner() {
 
   const [progress,        setProgress]        = useState<ProgressResponse | null>(null);
   const [retrying,        setRetrying]        = useState(false);
+  const [cancelling,      setCancelling]      = useState(false);
   const [patienceVisible, setPatienceVisible] = useState(false);
   const [queuedRetry,     setQueuedRetry]     = useState(false);
+  const [actionError,     setActionError]     = useState<string | null>(null);
 
   const intervalRef      = useRef<ReturnType<typeof setInterval>  | null>(null);
   const patienceTimerRef = useRef<ReturnType<typeof setTimeout>   | null>(null);
@@ -149,7 +151,7 @@ function ProgressPageInner() {
 
       if (data.status === 'running' || data.status === 'queued') {
         localStorage.setItem(LS_KEY, JSON.stringify({ session_id: sessionId, source_count: sourceCount }));
-      } else if (data.status === 'completed' || data.status === 'failed') {
+      } else if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
         localStorage.removeItem(LS_KEY);
         sessionStorage.removeItem('kompl_session_id');
         sessionStorage.removeItem('kompl_connectors');
@@ -164,7 +166,7 @@ function ProgressPageInner() {
         queuedTimerRef.current = null;
       }
 
-      if (data.status === 'completed' || data.status === 'failed') stopPolling();
+      if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') stopPolling();
     } catch { /* silent — keep polling */ }
   }
 
@@ -180,19 +182,63 @@ function ProgressPageInner() {
   async function handleRetry() {
     if (!sessionId) return;
     setRetrying(true);
+    setActionError(null);
     localStorage.removeItem(LS_KEY);
     try {
-      await fetch('/api/compile/retry', {
+      const res = await fetch('/api/compile/retry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        setActionError(
+          body.error === 'n8n_unreachable'
+            ? 'Retry failed — background worker (n8n) is unreachable. Check Docker and try again.'
+            : `Retry failed (${res.status}). ${body.error ?? ''}`
+        );
+        setRetrying(false);
+        return;
+      }
       isActiveRef.current = true;
       setProgress(null);
       setRetrying(false);
+      setQueuedRetry(false);
       void fetchProgress();
       intervalRef.current = setInterval(fetchProgress, POLL_INTERVAL_MS);
-    } catch { setRetrying(false); }
+    } catch {
+      setActionError('Retry failed — network error.');
+      setRetrying(false);
+    }
+  }
+
+  async function handleCancel() {
+    if (!sessionId) return;
+    setCancelling(true);
+    setActionError(null);
+    try {
+      const res = await fetch('/api/compile/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string; message?: string };
+        setActionError(
+          body.error === 'commit_in_progress'
+            ? (body.message ?? 'Commit is running — wait a moment and retry.')
+            : `Cancel failed (${res.status}). ${body.error ?? ''}`
+        );
+        setCancelling(false);
+        return;
+      }
+      setCancelling(false);
+      // Polling will pick up status='cancelled' within POLL_INTERVAL_MS.
+      void fetchProgress();
+    } catch {
+      setActionError('Cancel failed — network error.');
+      setCancelling(false);
+    }
   }
 
   // ── Derived state ────────────────────────────────────────────────────────────
@@ -202,7 +248,9 @@ function ProgressPageInner() {
 
   const isComplete     = status === 'completed';
   const isFailedStatus = status === 'failed';
+  const isCancelled    = status === 'cancelled';
   const isRunning      = status === 'running';
+  const isQueued       = status === 'queued';
 
   const { pages: committedPages, sources: committedSources } =
     parseCommittedCount(steps['commit']?.detail);
@@ -213,15 +261,20 @@ function ProgressPageInner() {
   const headingText =
     isComplete     ? 'Wiki Ready.'           :
     isFailedStatus ? 'Something went wrong.' :
+    isCancelled    ? 'Compile cancelled.'    :
                      'Building your wiki.';
 
   const statusLabel =
-    isComplete     ? 'COMPLETE' :
-    isFailedStatus ? 'FAILED'   :
-    isRunning      ? 'RUNNING'  :
+    isComplete     ? 'COMPLETE'  :
+    isFailedStatus ? 'FAILED'    :
+    isCancelled    ? 'CANCELLED' :
+    isRunning      ? 'RUNNING'   :
                      'QUEUED';
 
-  const statusColor = isFailedStatus ? 'var(--danger)' : 'var(--accent)';
+  const statusColor =
+    isFailedStatus ? 'var(--danger)' :
+    isCancelled    ? 'var(--fg-subtle)' :
+                     'var(--accent)';
 
   const stepCounterLabel = isComplete ? 'PAGES' : 'STEP';
   const stepCounterValue =
@@ -470,6 +523,23 @@ function ProgressPageInner() {
               Dashboard
             </button>
 
+            {(isRunning || isQueued) && (
+              <button
+                onClick={handleCancel}
+                disabled={cancelling}
+                style={{
+                  background: 'transparent', border: '1px solid var(--danger)',
+                  cursor: cancelling ? 'not-allowed' : 'pointer',
+                  padding: '8px 24px',
+                  fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                  letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--danger)',
+                  opacity: cancelling ? 0.5 : 1,
+                }}
+              >
+                {cancelling ? 'Cancelling…' : 'Cancel'}
+              </button>
+            )}
+
             {isComplete && (
               <Link
                 href="/wiki"
@@ -486,7 +556,7 @@ function ProgressPageInner() {
               </Link>
             )}
 
-            {(isFailedStatus || queuedRetry) && (
+            {(isFailedStatus || isCancelled || queuedRetry) && (
               <button
                 onClick={handleRetry}
                 disabled={retrying}
@@ -526,6 +596,18 @@ function ProgressPageInner() {
             whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           }}>
             {progress.error}
+          </pre>
+        )}
+
+        {/* Inline error from a cancel/retry button click */}
+        {actionError && (
+          <pre style={{
+            fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--danger)',
+            background: 'rgba(var(--danger-rgb),0.08)', border: '1px solid rgba(var(--danger-rgb),0.2)',
+            padding: '12px 16px', margin: 0, overflowX: 'auto',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}>
+            {actionError}
           </pre>
         )}
       </div>

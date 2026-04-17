@@ -130,7 +130,20 @@ async function callSchema(sessionId: string): Promise<unknown> {
   return res.json();
 }
 
+class CompileCancelledError extends Error {
+  constructor() {
+    super('Cancelled by user');
+    this.name = 'CompileCancelledError';
+  }
+}
+
+function assertNotCancelled(sessionId: string): void {
+  const p = getCompileProgress(sessionId);
+  if (p?.status === 'cancelled') throw new CompileCancelledError();
+}
+
 async function runCompilePipeline(sessionId: string): Promise<void> {
+  assertNotCancelled(sessionId);
   // Read step statuses once — may have completed steps from a prior failed run.
   // resetForRetry() preserves 'done' on completed steps so we can skip them.
   const currentProgress = getCompileProgress(sessionId);
@@ -173,12 +186,14 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     }
     updateCompileStep(sessionId, 'extract', 'done', `${extractSucceeded}/${sources.length} sources extracted`);
   }
+  assertNotCancelled(sessionId);
 
   // Step 2: resolve — ALWAYS re-run (cheap: reads extractions table directly).
   updateCompileStep(sessionId, 'resolve', 'running');
   const resolveResult = await callResolve(sessionId);
   const canonicalEntities = resolveResult.canonical_entities;
   updateCompileStep(sessionId, 'resolve', 'done', `${canonicalEntities.length} canonical entities`);
+  assertNotCancelled(sessionId);
 
   // Step 3: match — ALWAYS re-run (cheap: TF-IDF, no LLM unless triage).
   updateCompileStep(sessionId, 'match', 'running');
@@ -193,6 +208,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
       `${matchResult.stats.updates} updates, ${matchResult.stats.contradictions} contradictions, ${matchResult.stats.skips} skipped`
     );
   }
+  assertNotCancelled(sessionId);
 
   // Steps 4+5: plan + draft — co-dependent skip.
   // plan calls clearStagedPagePlans() which deletes ALL non-committed page_plans
@@ -206,6 +222,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     updateCompileStep(sessionId, 'plan', 'running');
     const planResult = await callPlan(sessionId, canonicalEntities, matchResult.matches);
     updateCompileStep(sessionId, 'plan', 'done', `${planResult.stats.total} pages planned`);
+    assertNotCancelled(sessionId);
 
     // Step 5: draft — SKIP if done (expensive: 1 Gemini call per page).
     // draft writes results to page_plans.draft_content, so crossref reads from
@@ -213,6 +230,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     updateCompileStep(sessionId, 'draft', 'running');
     const draftResult = await callDraft(sessionId);
     updateCompileStep(sessionId, 'draft', 'done', `${draftResult.drafted} drafts generated`);
+    assertNotCancelled(sessionId);
   }
 
   // Step 6: crossref — ALWAYS re-run.
@@ -222,8 +240,11 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   updateCompileStep(sessionId, 'crossref', 'running');
   const crossrefResult = await callCrossref(sessionId);
   updateCompileStep(sessionId, 'crossref', 'done', `${crossrefResult.wikilinks_added} wikilinks added`);
+  assertNotCancelled(sessionId);
 
   // Step 7: commit — ALWAYS re-run (no LLM, DB + disk writes, idempotent).
+  // Pass 5 is a synchronous better-sqlite3 transaction — cancel is blocked at
+  // the route level once this step is 'running'. No mid-transaction abort.
   updateCompileStep(sessionId, 'commit', 'running');
   const commitResult = await callCommit(sessionId);
   const thinMsg = commitResult.thin_drafts_skipped > 0 ? `, ${commitResult.thin_drafts_skipped} thin drafts skipped` : '';
@@ -266,6 +287,10 @@ export async function POST(request: Request) {
 
   // Fire and forget — return immediately so n8n doesn't timeout
   runCompilePipeline(session_id).catch((err: unknown) => {
+    if (err instanceof CompileCancelledError) {
+      console.log(`[compile:${session_id}] cancelled by user — pipeline exited cleanly`);
+      return;
+    }
     failCompileProgress(session_id, err instanceof Error ? err.message : String(err));
   });
 

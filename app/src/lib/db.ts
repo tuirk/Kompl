@@ -70,6 +70,15 @@ export function dbPath(): string {
   return DB_PATH;
 }
 
+// Test-only: inject an in-memory db (or null to clear). Gated to NODE_ENV=test
+// so production code can never accidentally swap the handle.
+export function __setDbForTesting(db: Database.Database | null): void {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('__setDbForTesting may only be called when NODE_ENV=test');
+  }
+  _db = db;
+}
+
 // ============================================================================
 // Health / introspection helpers (commit 2)
 // ============================================================================
@@ -1155,6 +1164,17 @@ export function failCompileProgress(sessionId: string, error: string): void {
     .run(error, sessionId);
 }
 
+/** Mark the session compile as cancelled by the user. */
+export function cancelCompileProgress(sessionId: string, reason: string): void {
+  openDb()
+    .prepare(
+      `UPDATE compile_progress
+          SET status = 'cancelled', error = ?, completed_at = CURRENT_TIMESTAMP
+        WHERE session_id = ?`
+    )
+    .run(reason, sessionId);
+}
+
 /**
  * Mark all 'running' sessions older than olderThanMinutes as failed.
  * Called on server startup (health check) to recover from mid-pipeline crashes.
@@ -1430,7 +1450,8 @@ export function getAllSources(options?: {
   }
   if (options?.dateTo) {
     conditions.push('date_ingested <= ?');
-    params.push(options.dateTo + 'T23:59:59');
+    // If caller passed a full ISO timestamp, use it verbatim; else expand date-only to end-of-day.
+    params.push(options.dateTo.includes('T') ? options.dateTo : options.dateTo + 'T23:59:59');
   }
   if (options?.search) {
     conditions.push('title LIKE ?');
@@ -1492,7 +1513,7 @@ function buildSourcesWhereSql(
   }
   if (options?.dateTo) {
     conditions.push('s.date_ingested <= ?');
-    params.push(options.dateTo + 'T23:59:59');
+    params.push(options.dateTo.includes('T') ? options.dateTo : options.dateTo + 'T23:59:59');
   }
   if (options?.search) {
     conditions.push('s.title LIKE ?');
