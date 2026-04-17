@@ -50,6 +50,7 @@ ${content}${citationLines}
     session_id: `chat-manual-${session_id}`,
     title,
     draft_content,
+    pages_used: citations.map((c) => c.page_id),
   });
 
   return NextResponse.json({ saved: true });

@@ -166,7 +166,7 @@ export async function POST(request: Request) {
       allContradictions.push(...result.contradictions_found);
     }
 
-    // Cross-cluster pass: just titles + first 200 chars of each page (summary only)
+    // Cross-cluster pass: just titles + first 300 chars of each page (summary only)
     const summaryPages: CrossrefPageInput[] = pages.map((p) => ({
       plan_id: p.plan_id,
       title: p.title,

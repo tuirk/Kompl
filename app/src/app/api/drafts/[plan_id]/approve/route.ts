@@ -22,6 +22,7 @@ import {
   setPendingContent,
   clearPendingContent,
 } from '@/lib/db';
+import { upsertVectorWithRetry } from '@/lib/vector-upsert';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -80,9 +81,10 @@ export async function POST(_request: Request, { params }: RouteContext) {
     page_id = `${base || 'page'}-${suffix}`;
   }
 
-  // Extract frontmatter fields
-  const categoryMatch = markdown.match(/^category:\s*["']?(.+?)["']?\s*$/m);
-  const summaryMatch = markdown.match(/^summary:\s*["']?(.+?)["']?\s*$/m);
+  // Extract frontmatter fields. Use [ \t]* (not \s*) so the regex cannot cross a
+  // newline and accidentally capture the next YAML key when the value is blank.
+  const categoryMatch = markdown.match(/^category:[ \t]*["']?(.+?)["']?[ \t]*$/m);
+  const summaryMatch = markdown.match(/^summary:[ \t]*["']?(.+?)["']?[ \t]*$/m);
   const category = categoryMatch?.[1]?.trim() ?? null;
   const summary = summaryMatch?.[1]?.trim() ?? null;
 
@@ -175,16 +177,13 @@ export async function POST(_request: Request, { params }: RouteContext) {
     }
   }
 
-  // Phase 3b: fire-and-forget vector upsert
-  void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      page_id,
-      metadata: { title: plan.title, page_type: plan.page_type, category: category ?? '', source_count: sourceIds.length },
-    }),
-    signal: AbortSignal.timeout(30_000),
-  }).catch(() => {});
+  // Phase 3b: vector upsert — retried 3× before queuing for backfill (same as compile route).
+  void upsertVectorWithRetry(page_id, {
+    title: plan.title,
+    page_type: plan.page_type,
+    category: category ?? '',
+    source_count: sourceIds.length,
+  });
 
   return NextResponse.json({ page_id, title: plan.title, committed: true });
 }
