@@ -284,4 +284,48 @@ export function formatTweetMarkdown(t: ParsedTweet): string {
   return parts.join('\n');
 }
 
+/**
+ * Like detectAndParse but also returns tweets dropped due to empty text.
+ * Skipped items have a tweet_url worth preserving on Saved Links.
+ * Works for flat-array formats (Siftly, Simple, Legacy, WebExporter).
+ * GraphQL/API v2 don't surface tweet_url at item level — skipped is [] for those.
+ */
+export function detectAndParseAll(
+  raw: string
+): { tweets: ParsedTweet[]; skipped: ParsedTweet[] } {
+  const tweets = detectAndParse(raw);
+
+  let data: unknown;
+  try { data = JSON.parse(raw); } catch { return { tweets, skipped: [] }; }
+
+  // Unwrap known envelope keys (mirrors detectAndParse)
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>;
+    for (const key of ['bookmarks', 'tweets', 'items', 'results', 'records']) {
+      if (Array.isArray(obj[key])) { data = obj[key]; break; }
+    }
+  }
+
+  if (!Array.isArray(data)) return { tweets, skipped: [] };
+
+  const skipped: ParsedTweet[] = (data as Record<string, unknown>[])
+    .filter(item => {
+      const text = String(item.text ?? item.full_text ?? '').trim();
+      const url  = item.tweet_url ?? item.url ?? null;
+      return !text && typeof url === 'string' && url.length > 0;
+    })
+    .map(item => ({
+      text: '',
+      author: normaliseAuthor(
+        String(item.author ?? item.username ??
+          ((item.user as Record<string, unknown>)?.screen_name) ?? '')
+      ),
+      date: toIso((item.created_at ?? item.date ?? null) as string | number | null),
+      urls: [],
+      tweet_url: String(item.tweet_url ?? item.url),
+    }));
+
+  return { tweets, skipped };
+}
+
 export { isTwitterUrl };
