@@ -44,7 +44,7 @@ interface ResolvedGroup {
 export interface PlannedPage {
   plan_id: string;
   title: string;
-  page_type: 'source-summary' | 'entity' | 'concept' | 'comparison' | 'overview';
+  page_type: 'source-summary' | 'original-source' | 'entity' | 'concept' | 'comparison' | 'overview';
   action: 'create' | 'update' | 'provenance-only';
   source_ids: string[];
   existing_page_id?: string;
@@ -172,33 +172,23 @@ export async function POST(request: Request) {
   }
 
   const plans: PlannedPage[] = [];
-  const skippedSources: Array<{ source_id: string; reason: string; chars: number }> = [];
 
   // Dynamic threshold: entity/concept page requires mentions in >= this many sources.
   // Math.ceil(10% of session sources), minimum 2. Prevents a single dense source
   // from creating dozens of entity pages and burning LLM budget.
   const entityThreshold = Math.max(2, Math.ceil(sessionSources.length * 0.1));
 
-  // Minimum source length gate (Gate 1). Sources below this threshold still
-  // contribute to entity extraction and provenance — they just don't get their
-  // own source-summary page. 0 = disabled (all sources get a page).
-  const minSourceChars = getMinSourceChars();
-
   // ── Rule 1: Source summaries ─────────────────────────────────────────────────
+  // All sources get a page. Short sources (<min_source_chars) become 'original-source'
+  // pages that display raw content without LLM drafting. Long sources are 'source-summary'.
+  const minSourceChars = getMinSourceChars();
   for (const src of sessionSources) {
-    if (minSourceChars > 0) {
-      const markdown = readRawMarkdown(src.source_id);
-      const contentLength = markdown?.length ?? 0;
-      if (contentLength < minSourceChars) {
-        skippedSources.push({ source_id: src.source_id, reason: 'too_short', chars: contentLength });
-        continue;
-      }
-    }
-
+    const isShort = minSourceChars > 0 &&
+      (readRawMarkdown(src.source_id)?.length ?? 0) < minSourceChars;
     plans.push({
       plan_id: randomUUID(),
       title: src.title,
-      page_type: 'source-summary',
+      page_type: isShort ? 'original-source' : 'source-summary',
       action: 'create',
       source_ids: [src.source_id],
       related_plan_ids: [],
@@ -415,17 +405,17 @@ export async function POST(request: Request) {
 
   const stats = {
     source_summaries: plans.filter((p) => p.page_type === 'source-summary').length,
+    original_sources: plans.filter((p) => p.page_type === 'original-source').length,
     entity_pages: plans.filter((p) => p.page_type === 'entity').length,
     concept_pages: plans.filter((p) => p.page_type === 'concept').length,
     comparison_pages: plans.filter((p) => p.page_type === 'comparison').length,
     overview_pages: plans.filter((p) => p.page_type === 'overview').length,
     total: plans.length,
     entity_threshold: entityThreshold,
-    skipped_short_sources: skippedSources.length,
     comparison_threshold: COMPARISON_SOURCE_THRESHOLD,
     relationships_found: relationshipSourceCounts.size,
     relationships_below_threshold: [...relationshipSourceCounts.values()].filter((s) => s.size < COMPARISON_SOURCE_THRESHOLD).length,
   };
 
-  return NextResponse.json({ session_id, pages: plans, stats, skipped_sources: skippedSources }, { status: 200 });
+  return NextResponse.json({ session_id, pages: plans, stats }, { status: 200 });
 }

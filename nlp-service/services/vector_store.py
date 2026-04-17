@@ -184,6 +184,19 @@ def restore_bulk(items: list[dict[str, Any]]) -> int:
     return len(ids)
 
 
+def delete_page(page_id: str) -> None:
+    """Delete a single page's embedding from Chroma by page_id.
+
+    No-ops silently if the page_id is not in the collection.
+    """
+    collection = _get_collection()
+    try:
+        collection.delete(ids=[page_id])
+        logger.info("Deleted vector for page %s", page_id)
+    except Exception as e:
+        logger.warning("delete_page failed for %s: %s", page_id, e)
+
+
 def get_indexed_ids(page_ids: list[str]) -> set[str]:
     """Return the subset of page_ids that are already in Chroma.
 

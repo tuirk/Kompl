@@ -134,13 +134,14 @@ services:
       - "127.0.0.1:5678:5678"
     # n8n exposes /healthz. n8n is a Node.js app so `node` is always present;
     # wget and curl are NOT in the n8n image. Use the same node HTTP pattern as
-    # the app healthcheck. Give 45s start_period for auto-import.sh to finish.
+    # the app healthcheck. Give 90s start_period: auto-import.sh + task runner
+    # token handshake can take 60-70s on a cold volume.
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:5678/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1)).setTimeout(3000,()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 45s
+      start_period: 90s
     deploy:
       resources:
         limits:

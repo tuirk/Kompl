@@ -35,6 +35,18 @@ import {
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 const DRAFT_CONCURRENCY = 5;
 
+// Same mapping as plan/route.ts — kept local to avoid a shared-lib extraction for 10 lines.
+function entityTypeToCategory(entityType: string): string {
+  const t = entityType.toUpperCase();
+  if (t === 'PERSON') return 'People';
+  if (t === 'ORG') return 'Organizations';
+  if (t === 'PRODUCT') return 'Products';
+  if (t === 'LOCATION') return 'Locations';
+  if (t === 'EVENT') return 'Events';
+  if (t === 'CONCEPT') return 'Concepts';
+  return 'General';
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface SourceContent {
@@ -314,8 +326,8 @@ export async function POST(request: Request) {
   // before entity/concept pages run so later layers see a consistent category list.
   const sessionCategorySet = new Set<string>(baseCategories);
 
-  // Layer order for drafting
-  const LAYER_ORDER = ['source-summary', 'entity', 'concept', 'comparison', 'overview'] as const;
+  // Layer order for drafting. 'original-source' runs alongside source-summary (raw passthrough, no LLM).
+  const LAYER_ORDER = ['original-source', 'source-summary', 'entity', 'concept', 'comparison', 'overview'] as const;
 
   let drafted = 0;
   let failed = 0;
@@ -364,6 +376,25 @@ export async function POST(request: Request) {
 
       if (sourceContents.length === 0) {
         throw new Error(`no_readable_sources for plan ${plan.plan_id}`);
+      }
+
+      // Raw passthrough for 'original-source' pages — no LLM call.
+      // Category + summary derived from existing NLP extraction (already ran at collect time).
+      if (plan.page_type === 'original-source') {
+        const src = sourceContents[0];
+        const ext = extractionsBySource.get(src.source_id);
+        const entities = (ext?.entities as Array<{ type?: string; mentions?: number }> | undefined) ?? [];
+        const topEntity = entities.reduce<{ type?: string; mentions?: number } | null>(
+          (best, e) => (e.mentions ?? 0) > (best?.mentions ?? 0) ? e : best,
+          null
+        );
+        const category = topEntity?.type ? entityTypeToCategory(topEntity.type) : 'Uncategorized';
+        const firstClaim = (ext?.claims as Array<{ claim?: string }> | undefined)?.[0]?.claim;
+        const firstConcept = (ext?.concepts as Array<{ definition?: string }> | undefined)?.[0]?.definition;
+        const summaryText = (firstClaim ?? firstConcept ?? src.markdown.slice(0, 120).replace(/\n/g, ' ')).trim();
+        const rawDraft = `---\ntitle: "${plan.title}"\ncategory: ${category}\nsummary: "${summaryText.replace(/"/g, "'")}"\n---\n\n${src.markdown}`;
+        updatePlanDraft(plan.plan_id, rawDraft);
+        return { pageType: plan.page_type, markdown: rawDraft };
       }
 
       // Related pages: for overview/comparison, use already-drafted pages

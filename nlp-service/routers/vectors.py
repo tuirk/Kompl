@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from services.file_store import read_page
-from services.vector_store import export_all, get_indexed_ids, restore_bulk, search_pages, upsert_page
+from services.vector_store import delete_page, export_all, get_indexed_ids, restore_bulk, search_pages, upsert_page
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,18 @@ class VectorRestoreResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     restored: int
+
+
+class VectorDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    page_id: str
+
+
+class VectorDeleteResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    deleted: str
 
 
 class BackfillRequest(BaseModel):
@@ -189,6 +201,21 @@ def vectors_restore(req: VectorRestoreRequest) -> VectorRestoreResponse:
         logger.error("vectors restore failed: %s", e)
         raise HTTPException(status_code=500, detail=f"vectors_restore_failed: {e}") from e
     return VectorRestoreResponse(restored=restored)
+
+
+@router.post("/vectors/delete", response_model=VectorDeleteResponse)
+def vectors_delete(req: VectorDeleteRequest) -> VectorDeleteResponse:
+    """Delete a page's embedding from Chroma.
+
+    Called fire-and-forget when a wiki page is permanently deleted.
+    No-ops silently if the page_id is not indexed.
+    """
+    try:
+        delete_page(req.page_id)
+    except Exception as e:
+        logger.error("vector delete failed for %s: %s", req.page_id, e)
+        raise HTTPException(status_code=500, detail=f"vector_delete_failed: {e}") from e
+    return VectorDeleteResponse(deleted=req.page_id)
 
 
 @router.post("/vectors/backfill", response_model=BackfillResponse)
