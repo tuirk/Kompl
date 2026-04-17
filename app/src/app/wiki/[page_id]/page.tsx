@@ -197,7 +197,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
   return (
     <div style={{ display: 'flex', minHeight: 'calc(100dvh / 0.9)' }}>
       <WikiSidebar
-        groups={groups}
+        initialGroups={groups}
         activePageId={page_id}
         activeCategory={page.category ?? undefined}
       />

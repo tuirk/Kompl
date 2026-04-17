@@ -36,7 +36,7 @@ export default function WikiIndexPage() {
 
   return (
     <div style={{ display: 'flex', minHeight: 'calc(100dvh / 0.9)' }}>
-      <WikiSidebar groups={groups} />
+      <WikiSidebar initialGroups={groups} />
 
       <main style={{ flex: 1, padding: '2rem 2.5rem', minWidth: 0 }}>
         <WikiPageHeader

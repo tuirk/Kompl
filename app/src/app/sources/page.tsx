@@ -1,42 +1,134 @@
-// Disable static prerendering — reads from SQLite at runtime.
-export const dynamic = 'force-dynamic';
+'use client';
 
 /**
  * /sources — Browse all ingested sources.
- * SERVER component — fetches data and passes to SourcesTable client component.
+ * Client component — fetches from /api/sources and provides live filter controls.
  */
 
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { getAllSources, getDb } from '../../lib/db';
 import SourcesTable, { type SourceWithCount } from './SourcesTable';
 
-export default async function SourcesPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ older_than?: string }>;
-}) {
-  const params = await searchParams;
-  const olderThan = params.older_than ? parseInt(params.older_than, 10) : null;
+// ─── Shared input/select style ────────────────────────────────────────────────
 
-  const sources = getAllSources({ sort_by: 'date_ingested', sort_order: 'desc', limit: 500 });
-  const db = getDb();
+const controlStyle: React.CSSProperties = {
+  background: 'var(--bg-card)',
+  border: '1px solid var(--border)',
+  color: 'var(--fg)',
+  borderRadius: '6px',
+  padding: '0.4rem 0.75rem',
+  fontSize: '0.85rem',
+  fontFamily: 'var(--font-mono)',
+};
 
-  const withCounts: SourceWithCount[] = sources
-    .filter((s) => {
-      if (!olderThan || olderThan <= 0) return true;
-      const ingestedMs = new Date(s.date_ingested.replace(' ', 'T') + 'Z').getTime();
-      const daysOld = (Date.now() - ingestedMs) / 86_400_000;
-      return daysOld > olderThan;
-    })
-    .map((s) => {
-      const row = db
-        .prepare('SELECT COUNT(DISTINCT page_id) AS n FROM provenance WHERE source_id = ?')
-        .get(s.source_id) as { n: number };
-      return { ...s, page_count: row.n };
-    });
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
-  const total = sources.length;
-  const activeCount = sources.filter((s) => s.status === 'active').length;
+export default function SourcesPage() {
+  const [sources, setSources] = useState<SourceWithCount[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Filter state
+  const [statusFilter, setStatusFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  // ── Init from URL params (once on mount) ──
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const olderThan = p.get('older_than');
+    if (olderThan && parseInt(olderThan, 10) > 0) {
+      const cutoff = new Date(Date.now() - parseInt(olderThan, 10) * 24 * 60 * 60 * 1000);
+      setDateTo(cutoff.toISOString().split('T')[0]);
+    }
+    if (p.get('status'))      setStatusFilter(p.get('status')!);
+    if (p.get('source_type')) setTypeFilter(p.get('source_type')!);
+    if (p.get('date_from'))   setDateFrom(p.get('date_from')!);
+    if (p.get('date_to'))     setDateTo(p.get('date_to')!);
+    if (p.get('search'))      { setSearchQuery(p.get('search')!); setDebouncedSearch(p.get('search')!); }
+  }, []);
+
+  // ── Debounce search 300ms ──
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  // ── Fetch on any filter change ──
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const p = new URLSearchParams();
+    if (statusFilter)    p.set('status',      statusFilter);
+    if (typeFilter)      p.set('source_type', typeFilter);
+    if (dateFrom)        p.set('date_from',   dateFrom);
+    if (dateTo)          p.set('date_to',     dateTo);
+    if (debouncedSearch) p.set('search',      debouncedSearch);
+    p.set('limit', '500');
+
+    setError(null);
+    setLoading(true);
+    fetch(`/api/sources?${p}`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then((data: { sources: SourceWithCount[]; total: number }) => {
+        setSources(data.sources);
+        setTotal(data.total);
+      })
+      .catch((err) => {
+        if ((err as Error).name !== 'AbortError') {
+          setError('Failed to load sources. Try refreshing.');
+        }
+      })
+      .finally(() => setLoading(false));
+
+    return () => controller.abort();
+  }, [statusFilter, typeFilter, dateFrom, dateTo, debouncedSearch]);
+
+  // ── Refetch for mutation-triggered refreshes (archive/delete) ──
+  // Separate from the useEffect above — no AbortController needed for
+  // deliberate single-shot refreshes triggered by user actions in SourcesTable.
+  const refetch = useCallback(() => {
+    const p = new URLSearchParams();
+    if (statusFilter)    p.set('status',      statusFilter);
+    if (typeFilter)      p.set('source_type', typeFilter);
+    if (dateFrom)        p.set('date_from',   dateFrom);
+    if (dateTo)          p.set('date_to',     dateTo);
+    if (debouncedSearch) p.set('search',      debouncedSearch);
+    p.set('limit', '500');
+
+    setError(null);
+    setLoading(true);
+    fetch(`/api/sources?${p}`)
+      .then((r) => r.json())
+      .then((data: { sources: SourceWithCount[]; total: number }) => {
+        setSources(data.sources);
+        setTotal(data.total);
+      })
+      .catch(() => {
+        setError('Failed to load sources. Try refreshing.');
+      })
+      .finally(() => setLoading(false));
+  }, [statusFilter, typeFilter, dateFrom, dateTo, debouncedSearch]);
+
+  // ── Filter indicators ──
+  // showClearButton: visible as soon as user starts typing (even during debounce)
+  const showClearButton = !!(statusFilter || typeFilter || dateFrom || dateTo || searchQuery);
+  // activeFiltersApplied: truthful — reflects what was actually fetched
+  const activeFiltersApplied = !!(statusFilter || typeFilter || dateFrom || dateTo || debouncedSearch);
+
+  const clearAllFilters = () => {
+    setStatusFilter('');
+    setTypeFilter('');
+    setDateFrom('');
+    setDateTo('');
+    setSearchQuery('');
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────────
 
   return (
     <main style={{ maxWidth: 1040, margin: '0 auto', padding: '2rem 40px 5rem' }}>
@@ -55,15 +147,17 @@ export default async function SourcesPage({
       </Link>
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div>
           <h1 style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 24, letterSpacing: '1.8px', textTransform: 'uppercase', color: 'var(--fg)', margin: 0 }}>
             Sources
           </h1>
-          <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', letterSpacing: '0.5px', margin: '4px 0 0' }}>
-            {olderThan && olderThan > 0
-              ? <>{withCounts.length} stale (older than {olderThan} days) · <a href="/sources" style={{ color: 'var(--fg-dim)', textDecoration: 'underline' }}>show all</a></>
-              : <>{activeCount} active · {total} total</>
+          <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', letterSpacing: '0.5px', margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+            {loading
+              ? 'Loading…'
+              : activeFiltersApplied
+                ? <>{total} filtered · <a href="/sources" style={{ color: 'var(--fg-dim)', textDecoration: 'underline' }}>show all</a></>
+                : <>{total} total</>
             }
           </p>
         </div>
@@ -87,10 +181,85 @@ export default async function SourcesPage({
         </Link>
       </div>
 
-      {withCounts.length === 0 ? (
-        <p style={{ color: 'var(--fg-dim)', fontFamily: 'var(--font-mono)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>No sources yet.</p>
+      {/* Filter bar */}
+      <div style={{
+        display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center',
+        padding: '1rem 0', borderBottom: '1px solid var(--border)', marginBottom: '1.5rem',
+      }}>
+        {/* Status */}
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={controlStyle}>
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="archived">Archived</option>
+          <option value="failed">Failed</option>
+        </select>
+
+        {/* Source type */}
+        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} style={controlStyle}>
+          <option value="">All types</option>
+          <option value="url">URL / Article</option>
+          <option value="file-upload">File upload</option>
+          <option value="text">Note / Text</option>
+          <option value="tweet">Tweet</option>
+        </select>
+
+        {/* Date range */}
+        <input
+          type="date"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+          style={controlStyle}
+          title="Ingested from"
+        />
+        <span style={{ color: 'var(--fg-secondary)', fontSize: '0.85rem' }}>—</span>
+        <input
+          type="date"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+          style={controlStyle}
+          title="Ingested to"
+        />
+
+        {/* Title search */}
+        <input
+          type="search"
+          placeholder="Search titles…"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          style={{ ...controlStyle, minWidth: '200px' }}
+        />
+
+        {/* Clear filters */}
+        {showClearButton && (
+          <button
+            onClick={clearAllFilters}
+            style={{
+              fontSize: '0.8rem', color: 'var(--accent)', background: 'none',
+              border: 'none', cursor: 'pointer', padding: '0.4rem',
+              fontFamily: 'var(--font-mono)',
+            }}
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+
+      {/* Error */}
+      {error && (
+        <p style={{ color: 'var(--danger)', fontFamily: 'var(--font-mono)', fontSize: 12, marginBottom: '1rem' }}>
+          {error}
+        </p>
+      )}
+
+      {/* Content */}
+      {loading ? (
+        <p style={{ color: 'var(--fg-dim)', fontFamily: 'var(--font-mono)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Loading…</p>
+      ) : sources.length === 0 ? (
+        <p style={{ color: 'var(--fg-dim)', fontFamily: 'var(--font-mono)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          {activeFiltersApplied ? 'No sources match the current filters.' : 'No sources yet.'}
+        </p>
       ) : (
-        <SourcesTable initialSources={withCounts} />
+        <SourcesTable initialSources={sources} onMutation={refetch} />
       )}
     </main>
   );

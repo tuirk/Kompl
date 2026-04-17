@@ -40,6 +40,7 @@ interface GraphNode {
   source_count: number;
   summary?: string | null;
   last_updated?: string;
+  archived?: boolean;  // true when all backing sources are archived
   // ForceGraph adds these at runtime
   x?: number;
   y?: number;
@@ -82,6 +83,7 @@ export default function WikiGraphPage() {
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
+  const [showArchived, setShowArchived] = useState(false);
   const zoomLevelRef = useRef(1);
   const graphRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
@@ -89,20 +91,23 @@ export default function WikiGraphPage() {
   const router = useRouter();
 
   useEffect(() => {
-    fetch('/api/wiki/graph')
+    setLoading(true);
+    const url = showArchived ? '/api/wiki/graph?include_archived=true' : '/api/wiki/graph';
+    fetch(url)
       .then((r) => {
         if (!r.ok) throw new Error(`graph fetch failed: ${r.status}`);
         return r.json() as Promise<GraphData>;
       })
       .then((data) => {
         setGraphData(data);
+        setSelectedNode(null);
         setLoading(false);
       })
       .catch((e) => {
         setError(e instanceof Error ? e.message : 'failed to load graph');
         setLoading(false);
       });
-  }, []);
+  }, [showArchived]);
 
   useEffect(() => {
     function measure() {
@@ -273,6 +278,10 @@ export default function WikiGraphPage() {
               const isDimmed = !!selectedNode && !isSelected && !isNeighbor;
               const color = NODE_COLORS[n.group] ?? NODE_COLOR_DEFAULT;
 
+              // Archived nodes: render at reduced opacity
+              const prevAlpha = ctx.globalAlpha;
+              if (n.archived) ctx.globalAlpha = 0.35;
+
               // Main circle
               ctx.beginPath();
               ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, 2 * Math.PI);
@@ -308,6 +317,9 @@ export default function WikiGraphPage() {
                 ctx.textAlign = 'center';
                 ctx.fillText(n.label.slice(0, 32), n.x ?? 0, (n.y ?? 0) + r + 6);
               }
+
+              // Restore globalAlpha for archived nodes
+              if (n.archived) ctx.globalAlpha = prevAlpha;
             }}
             linkColor={(link) => {
               if (!selectedNode) return '#2a3947';
@@ -457,6 +469,43 @@ export default function WikiGraphPage() {
                 </label>
               );
             })}
+            {/* Show Archived toggle */}
+            <label
+              style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', userSelect: 'none', marginTop: 4, paddingTop: 8, borderTop: '1px solid rgba(71,72,74,0.15)' }}
+            >
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={() => setShowArchived((v) => !v)}
+                style={{ display: 'none' }}
+              />
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  background: showArchived ? '#6b7280' : 'transparent',
+                  border: '1.5px solid #6b7280',
+                  flexShrink: 0,
+                  display: 'inline-block',
+                  transition: 'background 150ms',
+                  opacity: 0.5,
+                }}
+              />
+              <span
+                style={{
+                  fontFamily: 'var(--font-body)',
+                  fontSize: 11,
+                  lineHeight: '16px',
+                  letterSpacing: '0.55px',
+                  textTransform: 'uppercase',
+                  color: showArchived ? '#FDFBFE' : '#52525b',
+                  transition: 'color 150ms',
+                }}
+              >
+                Archived
+              </span>
+            </label>
           </div>
         </div>
 

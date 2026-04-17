@@ -13,7 +13,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { detectAndParse, formatTweetMarkdown, isTwitterUrl, type ParsedTweet } from '../../../lib/twitter-parser';
+import { detectAndParseAll, formatTweetMarkdown, isTwitterUrl, type ParsedTweet } from '../../../lib/twitter-parser';
 import {
   type ConnectorProps,
   navigateNext,
@@ -253,6 +253,7 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
   const [phase, setPhase] = useState<Phase>('idle');
   const [collectingStep, setCollectingStep] = useState('');
   const [storedCount, setStoredCount] = useState(0);
+  const [skippedTweetUrls, setSkippedTweetUrls] = useState<string[]>([]);
 
   const articleUrls = [...new Set(
     tweets.flatMap(t => t.urls).filter(u => !isTwitterUrl(u))
@@ -262,12 +263,13 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
   function tryParse(raw: string) {
     setParseError(null);
     try {
-      const parsed = detectAndParse(raw);
-      if (parsed.length === 0) {
+      const { tweets: parsed, skipped } = detectAndParseAll(raw);
+      if (parsed.length === 0 && skipped.length === 0) {
         setParseError('No tweets found in this file. Is it the right export?');
         return;
       }
       setTweets(parsed);
+      setSkippedTweetUrls(skipped.map(t => t.tweet_url!));
       setGuideCollapsed(true);
       setPhase('preview');
     } catch (e) {
@@ -338,6 +340,23 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
       }
       let total = b1.stored.length;
 
+      // Phase 1b: media-only tweets — no text, but tweet_url worth preserving
+      if (skippedTweetUrls.length > 0) {
+        setCollectingStep(
+          `Saving ${skippedTweetUrls.length} media-only tweet link${skippedTweetUrls.length !== 1 ? 's' : ''} to Saved Links…`
+        );
+        await fetch('/api/onboarding/collect', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessionId,
+            connector: 'saved-link',
+            items: skippedTweetUrls.map(url => ({ url, title_hint: 'Saved tweet' })),
+          }),
+        });
+        // Don't abort on failure — Phase 1 tweets are already stored
+      }
+
       // Phase 2: linked article URLs (opt-in)
       if (fetchLinks && articleUrls.length > 0) {
         setCollectingStep(`Fetching linked articles… (${articleUrls.length} URLs)`);
@@ -398,6 +417,7 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
           <p style={{ margin: '0.4rem 0 0', fontSize: '0.88rem', color: 'var(--fg-muted)' }}>
             {tweets.length} tweet{tweets.length !== 1 ? 's' : ''}
             {fetchLinks && articleUrls.length > 0 ? ` + ${articleUrls.length} linked article${articleUrls.length !== 1 ? 's' : ''}` : ''}
+            {skippedTweetUrls.length > 0 ? ` · ${skippedTweetUrls.length} link${skippedTweetUrls.length !== 1 ? 's' : ''} → Saved Links` : ''}
             {' '}queued for compilation.
           </p>
         </div>
@@ -554,6 +574,12 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
               </p>
             )}
           </div>
+
+          {skippedTweetUrls.length > 0 && (
+            <p style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', color: 'var(--fg-muted)' }}>
+              {skippedTweetUrls.length} media-only tweet{skippedTweetUrls.length !== 1 ? 's' : ''} (no text) will be saved to your <strong>Saved Links</strong> page.
+            </p>
+          )}
 
           {/* Linked article opt-in */}
           {hasArticleLinks && (

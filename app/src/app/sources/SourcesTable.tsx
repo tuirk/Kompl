@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import type { SourceRow } from '../../lib/db';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -98,8 +97,7 @@ const COL = '40px 120px 1fr 140px 200px';
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function SourcesTable({ initialSources }: { initialSources: SourceWithCount[] }) {
-  const router = useRouter();
+export default function SourcesTable({ initialSources, onMutation }: { initialSources: SourceWithCount[]; onMutation?: () => void }) {
   const [sources, setSources] = useState<SourceWithCount[]>(initialSources);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
@@ -117,6 +115,16 @@ export default function SourcesTable({ initialSources }: { initialSources: Sourc
     el.checked = all;
     el.indeterminate = some;
   }, [selectedIds, sources.length]);
+
+  // Sync rows whenever the parent passes new filtered data.
+  // useState(initialSources) only captures the mount-time value — without this
+  // effect, filter changes in the parent page never update the table rows.
+  // Selection is also cleared: filtered views show different rows, so stale
+  // selections would cause phantom "X selected" display and broken checkbox state.
+  useEffect(() => {
+    setSources(initialSources);
+    setSelectedIds(new Set());
+  }, [initialSources]);
 
   // ─── Selection helpers ──────────────────────────────────────────────────────
 
@@ -152,7 +160,7 @@ export default function SourcesTable({ initialSources }: { initialSources: Sourc
         body: JSON.stringify({ status: newStatus }),
       });
       if (!res.ok) throw new Error(`${res.status}`);
-      router.refresh();
+      onMutation?.();
     } catch {
       // Revert
       setSources((prev) => prev.map((s) => s.source_id === sourceId ? { ...s, status: currentStatus } : s));
@@ -160,7 +168,7 @@ export default function SourcesTable({ initialSources }: { initialSources: Sourc
     } finally {
       setLoadingIds((prev) => { const s = new Set(prev); s.delete(sourceId); return s; });
     }
-  }, [router]);
+  }, [onMutation]);
 
   // ─── Delete single ──────────────────────────────────────────────────────────
 
@@ -179,7 +187,7 @@ export default function SourcesTable({ initialSources }: { initialSources: Sourc
     try {
       const res = await fetch(`/api/sources/${sourceId}`, { method: 'DELETE' });
       if (!res.ok && res.status !== 204) throw new Error(`${res.status}`);
-      router.refresh();
+      onMutation?.();
     } catch {
       // Revert — re-insert at original index
       if (saved !== undefined) {
@@ -193,7 +201,7 @@ export default function SourcesTable({ initialSources }: { initialSources: Sourc
     } finally {
       setLoadingIds((prev) => { const s = new Set(prev); s.delete(sourceId); return s; });
     }
-  }, [sources, router]);
+  }, [sources, onMutation]);
 
   // ─── Bulk archive ───────────────────────────────────────────────────────────
 
@@ -235,8 +243,8 @@ export default function SourcesTable({ initialSources }: { initialSources: Sourc
 
     setLoadingIds((prev) => { const s = new Set(prev); ids.forEach((id) => s.delete(id)); return s; });
     setSelectedIds(new Set());
-    router.refresh();
-  }, [selectedIds, sources, router]);
+    onMutation?.();
+  }, [selectedIds, sources, onMutation]);
 
   // ─── Bulk delete ────────────────────────────────────────────────────────────
 
@@ -281,8 +289,8 @@ export default function SourcesTable({ initialSources }: { initialSources: Sourc
     }
 
     setLoadingIds((prev) => { const s = new Set(prev); ids.forEach((id) => s.delete(id)); return s; });
-    router.refresh();
-  }, [sources, router]);
+    onMutation?.();
+  }, [sources, onMutation]);
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 

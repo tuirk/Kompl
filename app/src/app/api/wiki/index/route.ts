@@ -3,9 +3,13 @@ import { getAllPages } from '@/lib/db';
 
 /** GET /api/wiki/index — machine-readable catalog for the LLM chat agent.
  *  Returns every page with metadata (no body content) so the agent can
- *  pick relevant page_ids before fetching full content. */
-export async function GET() {
-  const pages = getAllPages();
+ *  pick relevant page_ids before fetching full content.
+ *  ?include_archived=true — include pages where all sources are archived
+ *  (used by WikiSidebar "Show archived" toggle). */
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const includeArchived = searchParams.get('include_archived') === 'true';
+  const pages = getAllPages(includeArchived);
 
   // Group page_ids by category for quick category-level lookup
   const categories: Record<string, string[]> = {};

@@ -131,7 +131,7 @@ export async function POST(request: Request) {
   if (typeof body.session_id !== 'string' || !body.session_id) {
     return NextResponse.json({ error: 'missing field: session_id' }, { status: 422 });
   }
-  const VALID_CONNECTORS = ['url', 'file-upload', 'text'] as const;
+  const VALID_CONNECTORS = ['url', 'file-upload', 'text', 'saved-link'] as const;
   type Connector = (typeof VALID_CONNECTORS)[number];
   if (!VALID_CONNECTORS.includes(body.connector as Connector)) {
     return NextResponse.json({ error: 'unknown connector' }, { status: 422 });
@@ -140,7 +140,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'items must be a non-empty array' }, { status: 422 });
   }
 
-  const { session_id, connector } = body as { session_id: string; connector: 'url' | 'file-upload' | 'text' };
+  const { session_id, connector } = body as { session_id: string; connector: 'url' | 'file-upload' | 'text' | 'saved-link' };
   const items = body.items as CollectItem[];
 
   const stored: object[] = [];
@@ -148,6 +148,35 @@ export async function POST(request: Request) {
   const warnings: Array<{ source_id: string; warning: string }> = [];
 
   const db = getDb();
+
+  // ── connector: 'saved-link' — direct ingest_failures insert, no NLP ─────────
+  if (connector === 'saved-link') {
+    for (const item of items) {
+      if (!item.url) continue;
+      // Deduplicate: skip if this exact URL already has an unresolved failure
+      const existing = db
+        .prepare(`SELECT 1 FROM ingest_failures WHERE source_url = ? AND resolved_source_id IS NULL LIMIT 1`)
+        .get(item.url);
+      if (existing) continue;
+      const dateSaved =
+        typeof item.metadata_hint?.date_saved === 'string'
+          ? item.metadata_hint.date_saved
+          : null;
+      insertIngestFailure({
+        failure_id: randomUUID(),
+        source_url: item.url,
+        title_hint: item.title_hint ?? null,
+        date_saved: dateSaved,
+        error: 'media-only tweet — no text content',
+        source_type: 'tweet',
+      });
+    }
+    void regenerateSavedLinksPage().catch(() => {});
+    return NextResponse.json(
+      { session_id, stored: [], failed: [], warnings: [] },
+      { status: 200 }
+    );
+  }
 
   for (const item of items) {
     // Validate per-item shape

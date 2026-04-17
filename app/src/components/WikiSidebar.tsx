@@ -1,13 +1,17 @@
+'use client';
+
 /**
  * WikiSidebar — shared left panel for all /wiki/* pages.
- * Server component: receives pre-fetched category groups from the parent.
+ * Client component: manages "Show archived" toggle with client-side state.
+ * Receives initialGroups from the parent server component.
  */
 
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import type { CategoryGroup } from '../lib/db';
+import type { CategoryGroup, PageRow } from '../lib/db';
 
 interface WikiSidebarProps {
-  groups: CategoryGroup[];
+  initialGroups: CategoryGroup[];
   activePageId?: string;
   activeCategory?: string;
 }
@@ -20,7 +24,47 @@ const PAGE_TYPE_COLORS: Record<string, string> = {
   overview: 'var(--success)',
 };
 
-export default function WikiSidebar({ groups, activePageId, activeCategory }: WikiSidebarProps) {
+/** Client-side equivalent of getCategoryGroups() — groups PageRow[] by category. */
+function buildCategoryGroups(pages: PageRow[]): CategoryGroup[] {
+  const map = new Map<string, PageRow[]>();
+  for (const p of pages) {
+    const cat = p.category ?? 'Uncategorized';
+    if (!map.has(cat)) map.set(cat, []);
+    map.get(cat)!.push(p);
+  }
+  return Array.from(map.entries())
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([category, pages]) => ({ category, pages }));
+}
+
+export default function WikiSidebar({ initialGroups, activePageId, activeCategory }: WikiSidebarProps) {
+  const [showArchived, setShowArchived] = useState(false);
+  const [groups, setGroups] = useState(initialGroups);
+
+  // Sync groups when server re-renders a new page (initialGroups changes via App Router).
+  // Without this, useState persists stale groups across soft navigations in the shared layout.
+  useEffect(() => {
+    if (!showArchived) setGroups(initialGroups);
+  }, [initialGroups, showArchived]);
+
+  async function handleToggle() {
+    const next = !showArchived;
+    setShowArchived(next);
+    if (next) {
+      try {
+        const res = await fetch('/api/wiki/index?include_archived=true');
+        if (res.ok) {
+          const data = (await res.json()) as { pages: PageRow[] };
+          setGroups(buildCategoryGroups(data.pages));
+        }
+      } catch {
+        // Non-fatal: toggle still flips, just may not show archived pages
+      }
+    } else {
+      setGroups(initialGroups);
+    }
+  }
+
   // Pull comparison pages out of the category tree — they get their own section.
   const comparisonPages = groups.flatMap((g) => g.pages).filter((p) => p.page_type === 'comparison');
   const categoryGroups = groups
@@ -49,20 +93,37 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
         gap: 24,
       }}
     >
-      {/* Index link */}
-      <Link
-        href="/wiki"
-        style={{
-          display: 'block',
-          fontFamily: 'var(--font-body)',
-          fontSize: 12,
-          color: 'var(--fg-muted)',
-          textDecoration: 'none',
-          padding: '0.3em 0.5em',
-        }}
-      >
-        Index
-      </Link>
+      {/* Index link + archive toggle row */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Link
+          href="/wiki"
+          style={{
+            fontFamily: 'var(--font-body)',
+            fontSize: 12,
+            color: 'var(--fg-muted)',
+            textDecoration: 'none',
+            padding: '0.3em 0.5em',
+          }}
+        >
+          Index
+        </Link>
+        <button
+          onClick={handleToggle}
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 9,
+            letterSpacing: 0.5,
+            textTransform: 'uppercase',
+            color: showArchived ? 'var(--accent)' : 'var(--fg-dim)',
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: '0.3em 0.5em',
+          }}
+        >
+          {showArchived ? 'Hide Archived' : 'Show Archived'}
+        </button>
+      </div>
 
       {/* Recently Compiled */}
       {recentPages.length > 0 && (
@@ -195,6 +256,7 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     textDecoration: 'none',
+                    opacity: p.page_type === 'archived' ? 0.45 : 1,
                   }}
                 >
                   <span
@@ -202,7 +264,7 @@ export default function WikiSidebar({ groups, activePageId, activeCategory }: Wi
                       width: 6,
                       height: 6,
                       borderRadius: '50%',
-                      background: PAGE_TYPE_COLORS[p.page_type] ?? 'var(--fg-dim)',
+                      background: p.page_type === 'archived' ? 'var(--fg-dim)' : (PAGE_TYPE_COLORS[p.page_type] ?? 'var(--fg-dim)'),
                       flexShrink: 0,
                     }}
                   />
