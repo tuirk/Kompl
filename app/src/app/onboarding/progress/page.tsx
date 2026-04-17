@@ -152,7 +152,8 @@ function ProgressPageInner() {
       if (data.status === 'running' || data.status === 'queued') {
         localStorage.setItem(LS_KEY, JSON.stringify({ session_id: sessionId, source_count: sourceCount }));
       } else if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
-        localStorage.removeItem(LS_KEY);
+        // Keep LS_KEY so the dashboard banner persists until the user dismisses it via the ✕.
+        // Clear onboarding-session state only (these are step-wizard breadcrumbs, not the banner pointer).
         sessionStorage.removeItem('kompl_session_id');
         sessionStorage.removeItem('kompl_connectors');
         sessionStorage.removeItem('kompl_connector_idx');
@@ -510,27 +511,14 @@ function ProgressPageInner() {
 
           {/* Right: buttons */}
           <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 16 }}>
-            {/* Dashboard — always visible so the user can leave */}
-            <button
-              onClick={() => router.push('/')}
-              style={{
-                background: 'var(--bg-track)', border: 'none', cursor: 'pointer',
-                padding: '8px 24px',
-                fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
-                letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--fg)',
-              }}
-            >
-              Dashboard
-            </button>
-
             {(isRunning || isQueued) && (
               <button
                 onClick={handleCancel}
                 disabled={cancelling}
                 style={{
-                  background: 'transparent', border: '1px solid var(--danger)',
+                  background: 'transparent', border: 'none',
                   cursor: cancelling ? 'not-allowed' : 'pointer',
-                  padding: '8px 24px',
+                  padding: '8px 4px',
                   fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
                   letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--danger)',
                   opacity: cancelling ? 0.5 : 1,
@@ -539,6 +527,20 @@ function ProgressPageInner() {
                 {cancelling ? 'Cancelling…' : 'Cancel'}
               </button>
             )}
+
+            {/* Dashboard — always visible so the user can leave */}
+            <button
+              onClick={() => router.push('/')}
+              style={{
+                background: 'var(--accent)', border: 'none', cursor: 'pointer',
+                padding: '8px 24px',
+                fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                letterSpacing: '2px', textTransform: 'uppercase',
+                color: 'var(--bg)', fontWeight: 700,
+              }}
+            >
+              Dashboard
+            </button>
 
             {isComplete && (
               <Link

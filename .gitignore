@@ -73,6 +73,10 @@ CLAUDE.md
 AGENTS.md
 tui-read.me
 tui-readme.md
+docs/Tui-read.me
+
+# Scratch patch files from refactor sessions
+.tmp-patches/
 
 # MCP server config (local-only Claude Code / tool setup)
 .mcp.json

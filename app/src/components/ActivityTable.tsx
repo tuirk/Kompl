@@ -72,6 +72,10 @@ function getBadge(action_type: string, action?: string | null): BadgeCfg {
     case 'source_unarchived':          return { ...DIM,  label: 'RESTORED'   };
     case 'source_deleted':             return { ...RED,  label: 'DELETED'    };
     case 'page_archived':              return { ...DIM,  label: 'ARCHIVED'   };
+    case 'page_deleted':               return { ...RED,  label: 'PAGE DEL'   };
+    case 'page_recompiled':            return { ...NEUT, label: 'RECOMPILED' };
+    case 'page_provenance_updated':    return { ...DIM,  label: 'NOTED'      };
+    case 'page_recompile_failed':      return { ...RED,  label: 'FAILED'     };
     case 'source_recompile_triggered': return { ...DIM,  label: 'RETRYING'   };
     case 'draft_rejected':
       return { ...RED, label: 'REJECTED' };
@@ -292,6 +296,59 @@ function getRowContent(ev: ActivityRow): RowContent {
         ? <Link href={`/wiki/${page_id}`} style={linkStyle}><strong>{pageName}</strong></Link>
         : <strong>{pageName}</strong>;
       return { primary, secondary: null, action: null, isError: false };
+    }
+
+    case 'page_deleted': {
+      const pageName = detailTitle ?? page_id ?? '…';
+      const reason = str('reason');
+      const reasonText = reason === 'no_remaining_sources'
+        ? 'no sources remained'
+        : reason === 'sole_remaining_source'
+          ? 'sole source deleted'
+          : null;
+      const secondary = reasonText
+        ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)' }}>{reasonText}</span>
+        : null;
+      return { primary: <strong>{pageName}</strong>, secondary, action: null, isError: true };
+    }
+
+    case 'page_recompiled': {
+      const pageName = detailTitle ?? page_id ?? '…';
+      const primary = page_id
+        ? <Link href={`/wiki/${page_id}`} style={linkStyle}><strong>{pageName}</strong></Link>
+        : <strong>{pageName}</strong>;
+      const secondary = <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)' }}>rewritten after source removed</span>;
+      const action = page_id
+        ? <Link href={`/wiki/${page_id}`} style={{ ...linkStyle, color: 'var(--fg-dim)' }}>View</Link>
+        : null;
+      return { primary, secondary, action, isError: false };
+    }
+
+    case 'page_provenance_updated': {
+      const pageName = detailTitle ?? page_id ?? '…';
+      const primary = page_id
+        ? <Link href={`/wiki/${page_id}`} style={linkStyle}><strong>{pageName}</strong></Link>
+        : <strong>{pageName}</strong>;
+      const secondary = <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)' }}>provenance note added</span>;
+      const action = page_id
+        ? <Link href={`/wiki/${page_id}`} style={{ ...linkStyle, color: 'var(--fg-dim)' }}>View</Link>
+        : null;
+      return { primary, secondary, action, isError: false };
+    }
+
+    case 'page_recompile_failed': {
+      const pageName = detailTitle ?? page_id ?? '…';
+      const primary = page_id
+        ? <Link href={`/wiki/${page_id}`} style={linkStyle}><strong>{pageName}</strong></Link>
+        : <strong>{pageName}</strong>;
+      const errorMsg = str('error');
+      const secondary = errorMsg
+        ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>{errorMsg}</span>
+        : null;
+      const action = page_id
+        ? <Link href={`/wiki/${page_id}`} style={{ ...linkStyle, color: 'var(--danger)' }}>View</Link>
+        : null;
+      return { primary, secondary, action, isError: true };
     }
 
     case 'lint_complete': {

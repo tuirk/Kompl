@@ -1369,6 +1369,7 @@ main() {
     stage_19_chat_canary
     stage_20_source_mgmt_canary
     stage_21_wiki_data_canary
+    stage_22_original_source_gate2
 
     echo
     echo "=== Stage summary ==="
@@ -1376,7 +1377,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 14 stages (0, 1, 4, 11–21) executed, all passed ==="
+    echo "=== All 15 stages (0, 1, 4, 11–22) executed, all passed ==="
     exit 0
 }
 
@@ -1618,6 +1619,138 @@ stage_21_wiki_data_canary() {
     echo "  pages/search OK"
     echo "  stage 21 PASS — wiki index, data, and search endpoints OK"
     record_stage 21 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 22 — original-source Gate 2 exemption (regression)
+# ---------------------------------------------------------------------------
+# Seeds a <min_source_chars (default 500) text source. The plan step assigns
+# page_type='original-source' and the draft step writes a raw passthrough
+# (body length < min_draft_chars, default 800). The commit route MUST exempt
+# 'original-source' from Gate 2 — otherwise the plan is rejected as
+# draft_too_thin and no pages row is ever written. This stage asserts that
+# a page with page_type='original-source' exists after commit.
+#
+# Skipped if GEMINI_API_KEY unset — /api/compile/extract still needs Gemini
+# even though plan/draft/commit for original-source bypass the LLM.
+# ---------------------------------------------------------------------------
+stage_22_original_source_gate2() {
+    echo "--- stage 22: original-source Gate 2 exemption ---"
+
+    if [ -z "${GEMINI_API_KEY:-}" ]; then
+        echo "  SKIPPED: GEMINI_API_KEY not set"
+        record_stage 22 REAL SKIPPED
+        return 0
+    fi
+
+    local SESSION_ID
+    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+
+    # ~80 chars — well under default min_source_chars=500.
+    local SHORT_MD='Bitcoin hit a new all-time high today. Satoshi would be proud.'
+
+    curl -sf --max-time 60 -X POST http://localhost:3000/api/onboarding/collect \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"text\",\"items\":[{\"markdown\":\"$SHORT_MD\",\"title_hint\":\"Short BTC note\",\"source_type_hint\":\"note\"}]}" > /dev/null
+
+    local review_response
+    review_response=$(curl -sf --max-time 30 \
+        "http://localhost:3000/api/onboarding/review?session_id=$SESSION_ID")
+
+    local SOURCE_ID
+    SOURCE_ID=$(echo "$review_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+sources = d.get('sources', {})
+for v in sources.values():
+    if isinstance(v, list) and v:
+        print(v[0]['source_id'])
+        break
+" 2>/dev/null)
+
+    if [ -z "$SOURCE_ID" ]; then
+        echo "  FAIL: could not extract source_id from review"
+        record_stage 22 REAL FAIL
+        return 1
+    fi
+
+    curl -sf --max-time 30 -X POST http://localhost:3000/api/onboarding/confirm \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"selected_source_ids\":[\"$SOURCE_ID\"],\"deleted_source_ids\":[]}" > /dev/null
+
+    curl -sf --max-time 180 -X POST http://localhost:3000/api/compile/extract \
+        -H 'Content-Type: application/json' \
+        -d "{\"source_id\":\"$SOURCE_ID\"}" > /dev/null
+
+    curl -sf --max-time 60 -X POST http://localhost:3000/api/compile/resolve \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}" > /dev/null
+
+    local plan_response
+    plan_response=$(curl -sf --max-time 30 -X POST http://localhost:3000/api/compile/plan \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"canonical_entities\":[]}")
+
+    local orig_planned
+    orig_planned=$(echo "$plan_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('stats', {}).get('original_sources', 0))
+" 2>/dev/null)
+
+    if [ "$orig_planned" -lt 1 ]; then
+        echo "  FAIL: plan did not assign page_type='original-source' (original_sources=$orig_planned)"
+        echo "  response: $plan_response"
+        record_stage 22 REAL FAIL
+        return 1
+    fi
+
+    curl -sf --max-time 120 -X POST http://localhost:3000/api/compile/draft \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}" > /dev/null
+
+    curl -sf --max-time 120 -X POST http://localhost:3000/api/compile/crossref \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}" > /dev/null
+
+    local commit_response
+    commit_response=$(curl -sf --max-time 60 -X POST http://localhost:3000/api/compile/commit \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}")
+
+    local committed thin
+    committed=$(echo "$commit_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('committed', 0))" 2>/dev/null)
+    thin=$(echo "$commit_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('thin', 0))" 2>/dev/null || echo "0")
+
+    if [ "$committed" -lt 1 ]; then
+        echo "  FAIL: expected committed>=1, got $committed (thin=$thin) — Gate 2 exemption broken"
+        echo "  response: $commit_response"
+        record_stage 22 REAL FAIL
+        return 1
+    fi
+
+    # Verify a page with page_type='original-source' exists in wiki/index
+    local index_response
+    index_response=$(curl -sf --max-time 10 "http://localhost:3000/api/wiki/index")
+
+    local orig_page_count
+    orig_page_count=$(echo "$index_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+pages = d.get('pages', [])
+print(sum(1 for p in pages if p.get('page_type') == 'original-source'))
+" 2>/dev/null)
+
+    if [ "$orig_page_count" -lt 1 ]; then
+        echo "  FAIL: wiki/index has no page with page_type='original-source'"
+        record_stage 22 REAL FAIL
+        return 1
+    fi
+
+    echo "  committed=$committed, original-source pages in wiki=$orig_page_count"
+    echo "  stage 22 PASS — Gate 2 correctly exempts 'original-source'"
+    record_stage 22 REAL PASS
     return 0
 }
 

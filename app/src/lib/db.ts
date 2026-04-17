@@ -1254,6 +1254,72 @@ export function getCompileProgress(sessionId: string): CompileProgressRow | null
   return row ?? null;
 }
 
+export interface CompileSessionSummary {
+  session_id: string;
+  status: string;
+  current_step: string | null;
+  source_count: number;
+  done_count: number;
+  total_steps: number;
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+/**
+ * List compile sessions newest-first for the /sessions page.
+ * Ordered by the most recent activity timestamp (completed_at || started_at || created_at).
+ */
+export function listCompileSessions(limit: number, offset: number): { items: CompileSessionSummary[]; total: number } {
+  const db = openDb();
+  const rows = db
+    .prepare(
+      `SELECT session_id, status, current_step, source_count, steps,
+              error, started_at, completed_at, created_at
+         FROM compile_progress
+        ORDER BY COALESCE(completed_at, started_at, created_at) DESC
+        LIMIT ? OFFSET ?`
+    )
+    .all(limit, offset) as Array<{
+      session_id: string;
+      status: string;
+      current_step: string | null;
+      source_count: number;
+      steps: string;
+      error: string | null;
+      started_at: string | null;
+      completed_at: string | null;
+      created_at: string;
+    }>;
+
+  const total = (db.prepare('SELECT COUNT(*) AS c FROM compile_progress').get() as { c: number }).c;
+
+  const items: CompileSessionSummary[] = rows.map((r) => {
+    let doneCount = 0;
+    let totalSteps = 0;
+    try {
+      const steps = JSON.parse(r.steps) as Record<string, { status: string }>;
+      totalSteps = Object.keys(steps).length;
+      doneCount = Object.values(steps).filter((s) => s.status === 'done').length;
+    } catch { /* malformed steps — leave counts at 0 */ }
+    return {
+      session_id: r.session_id,
+      status: r.status,
+      current_step: r.current_step,
+      source_count: r.source_count,
+      done_count: doneCount,
+      total_steps: totalSteps,
+      error: r.error,
+      started_at: r.started_at,
+      completed_at: r.completed_at,
+      created_at: r.created_at,
+    };
+  });
+
+  return { items, total };
+}
+
 /**
  * Fetch all sources for a session that still need compilation
  * (compile_status NOT IN ('active', 'compiled')). Used by /api/compile/run

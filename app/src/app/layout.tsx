@@ -66,7 +66,23 @@ export default function RootLayout({
               color: 'var(--accent)',
               letterSpacing: '0.04em',
             }}>
-              Tuirk &amp; Ahjinsolo
+              <a
+                href="https://github.com/tuirk"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'inherit', textDecoration: 'none' }}
+              >
+                Tuirk
+              </a>
+              {' & '}
+              <a
+                href="https://github.com/ahjinsolo"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'inherit', textDecoration: 'none' }}
+              >
+                Ahjinsolo
+              </a>
             </span>
           </span>
         </footer>

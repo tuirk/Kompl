@@ -42,7 +42,7 @@ interface ProgressResponse {
   steps: Record<string, { status: string; detail?: string }>;
 }
 
-type BannerDoneState = 'completed' | 'failed' | null;
+type BannerDoneState = 'completed' | 'failed' | 'cancelled' | null;
 
 function parsePages(steps: ProgressResponse['steps']): number {
   const detail = steps?.commit?.detail ?? '';
@@ -56,13 +56,11 @@ function ActiveCompileBanner() {
   const [doneState, setDoneState] = useState<BannerDoneState>(null);
   const [pages,     setPages]     = useState(0);
   const intervalRef   = useRef<ReturnType<typeof setInterval> | null>(null);
-  const dismissRef    = useRef<ReturnType<typeof setTimeout>  | null>(null);
 
   function stopPolling() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
   }
   function dismiss() {
-    if (dismissRef.current) { clearTimeout(dismissRef.current); dismissRef.current = null; }
     localStorage.removeItem(LS_KEY);
     setInfo(null);
     setDoneState(null);
@@ -76,17 +74,18 @@ function ActiveCompileBanner() {
 
       if (data.status === 'completed') {
         stopPolling();
-        localStorage.removeItem(LS_KEY);
         setPages(parsePages(data.steps ?? {}));
         setDoneState('completed');
-        dismissRef.current = setTimeout(dismiss, 180_000);
         return;
       }
       if (data.status === 'failed') {
         stopPolling();
-        localStorage.removeItem(LS_KEY);
         setDoneState('failed');
-        dismissRef.current = setTimeout(dismiss, 180_000);
+        return;
+      }
+      if (data.status === 'cancelled') {
+        stopPolling();
+        setDoneState('cancelled');
         return;
       }
       setCurrentStep(data.current_step);
@@ -106,7 +105,7 @@ function ActiveCompileBanner() {
     setInfo(stored);
     void poll(stored.session_id);
     intervalRef.current = setInterval(() => void poll(stored.session_id), BANNER_POLL_MS);
-    return () => { stopPolling(); if (dismissRef.current) clearTimeout(dismissRef.current); };
+    return () => { stopPolling(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -137,6 +136,41 @@ function ActiveCompileBanner() {
             color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap',
           }}>
             View Wiki →
+          </Link>
+          <button onClick={dismiss} style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: 'var(--fg-dim)', padding: '0 4px', lineHeight: 1,
+            fontSize: 16, display: 'flex', alignItems: 'center',
+          }}>
+            ×
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Cancelled state ── */
+  if (doneState === 'cancelled') {
+    return (
+      <div style={{
+        background: 'rgba(var(--separator-rgb),0.08)',
+        borderLeft: '2px solid var(--fg-subtle)',
+        padding: '12px 20px', marginBottom: 24,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
+      }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-subtle)', letterSpacing: '0.5px' }}>
+          COMPILE CANCELLED
+          {sc > 0 && <span style={{ color: 'var(--fg-muted)', marginLeft: 12 }}>
+            {sc} source{sc !== 1 ? 's' : ''}
+          </span>}
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+          <Link href={`/onboarding/progress?session_id=${encodeURIComponent(sessionId)}&queued=${sc}`}
+            style={{
+              fontFamily: 'var(--font-mono)', fontSize: '0.7rem',
+              color: 'var(--fg-subtle)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap',
+            }}>
+            Resume →
           </Link>
           <button onClick={dismiss} style={{
             background: 'transparent', border: 'none', cursor: 'pointer',
@@ -378,6 +412,7 @@ function ProcessQueue() {
               display: 'flex',
               flexDirection: 'column',
               gap: 8,
+              minWidth: 0,
               opacity: cfg.dim ? 0.5 : 1,
             }}
           >
@@ -439,6 +474,8 @@ interface DraftRow {
 function PendingDrafts() {
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   function toggleExpand(planId: string) {
@@ -449,11 +486,13 @@ function PendingDrafts() {
     });
   }
 
-  useEffect(() => {
+  function refresh() {
     void fetch('/api/drafts/pending')
       .then((r) => r.json())
       .then((data: { drafts: DraftRow[] }) => setDrafts(data.drafts));
-  }, []);
+  }
+
+  useEffect(() => { refresh(); }, []);
 
   async function approve(planId: string) {
     setBusy(planId);
@@ -469,6 +508,34 @@ function PendingDrafts() {
     setBusy(null);
   }
 
+  // Latest compile session = session_id of the most-recent draft that did NOT come
+  // from chat-save-draft (those use a 'chat-manual-' / 'chat-' prefix). Used to
+  // scope the "Approve all" bulk button so older chat drafts aren't swept up.
+  const latestCompileSessionId = drafts.find((d) => !d.session_id.startsWith('chat-'))?.session_id ?? null;
+  const compileSessionCount = latestCompileSessionId
+    ? drafts.filter((d) => d.session_id === latestCompileSessionId).length
+    : 0;
+
+  async function approveAllFromLatestSession() {
+    if (!latestCompileSessionId) return;
+    setBulkBusy(true);
+    setBulkResult(null);
+    try {
+      const res = await fetch('/api/drafts/approve-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: latestCompileSessionId }),
+      });
+      const data = (await res.json()) as { approved: number; failed: number; total: number };
+      setBulkResult(`Approved ${data.approved} of ${data.total}${data.failed > 0 ? ` (${data.failed} failed)` : ''}`);
+      refresh();
+    } catch (err) {
+      setBulkResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   if (drafts.length === 0) {
     return (
       <p style={{ color: 'var(--fg-muted)', fontSize: '0.9rem', margin: 0 }}>
@@ -479,6 +546,32 @@ function PendingDrafts() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      {compileSessionCount > 1 && (
+        <div
+          style={{
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            padding: '0.7rem 1rem',
+            background: 'var(--bg-card-hover)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '1rem',
+          }}
+        >
+          <div style={{ fontSize: '0.85rem', color: 'var(--fg)' }}>
+            <strong>{compileSessionCount}</strong> drafts from latest compile session
+            {bulkResult && <span style={{ marginLeft: '0.75rem', color: 'var(--fg-dim)' }}>{bulkResult}</span>}
+          </div>
+          <button
+            onClick={() => void approveAllFromLatestSession()}
+            disabled={bulkBusy}
+            style={{ padding: '0.4rem 0.9rem', fontSize: '0.85rem' }}
+          >
+            {bulkBusy ? 'Approving…' : `✓ Approve all (${compileSessionCount})`}
+          </button>
+        </div>
+      )}
       {drafts.map((d) => (
         <div
           key={d.plan_id}

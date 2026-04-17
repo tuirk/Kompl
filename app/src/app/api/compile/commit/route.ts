@@ -30,6 +30,7 @@ import { NextResponse } from 'next/server';
 
 import {
   getDb,
+  getAutoApprove,
   insertActivity,
   insertPage,
   insertProvenance,
@@ -98,12 +99,18 @@ async function commitSession(session_id: string): Promise<Response> {
   let pagesCreated = 0;
   let pagesUpdated = 0;
   let thinCount = 0;
+  let pendingApproval = 0;
   const allSourceIds = new Set<string>();
   // Track page_ids that were actually committed so the wikilink pass below
   // can exclude thin-draft and failed plans (which were never inserted into pages).
   const committedPageIds = new Set<string>();
 
   const minDraftChars = getMinDraftChars();
+  // OFF mode: when auto_approve='0', queue every content plan for manual approval
+  // via /drafts. Provenance-only plans still auto-commit (zero content to review).
+  // The approve route runs full Phase 2/3a/3b from scratch — same path used by
+  // chat-save-draft today — so no draft state is ever stranded.
+  const autoApprove = getAutoApprove();
 
   // Build source title map once before the loop — used to enrich page_compiled events.
   const sourceTitleMap = new Map<string, string>(
@@ -174,6 +181,19 @@ async function commitSession(session_id: string): Promise<Response> {
         thinCount++;
         continue;
       }
+    }
+
+    // OFF mode short-circuit: queue for manual review, skip Phase 2/3a/3b.
+    // Approve route will run insertPage / write-page / vector upsert from scratch.
+    if (!autoApprove) {
+      updatePlanStatus(plan.plan_id, 'pending_approval');
+      insertActivity({
+        action_type: 'draft_queued_for_approval',
+        source_id: sourceIds[0] ?? null,
+        details: { plan_id: plan.plan_id, title: plan.title, page_type: plan.page_type, session_id },
+      });
+      pendingApproval++;
+      continue;
     }
 
     let page_id: string;
@@ -368,7 +388,18 @@ async function commitSession(session_id: string): Promise<Response> {
   }
 
   return NextResponse.json(
-    { session_id, committed, failed, thin_drafts_skipped: thinCount, pages_created: pagesCreated, pages_updated: pagesUpdated, sources_activated: sourcesActivated, wikilink_warnings: wikilinkWarnings },
+    {
+      session_id,
+      committed,
+      failed,
+      thin_drafts_skipped: thinCount,
+      pending_approval: pendingApproval,
+      pages_created: pagesCreated,
+      pages_updated: pagesUpdated,
+      sources_activated: sourcesActivated,
+      wikilink_warnings: wikilinkWarnings,
+      auto_approve: autoApprove,
+    },
     { status: 200 }
   );
 }
