@@ -223,6 +223,9 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
       // 2+ remaining, substantial source — rewrite from remaining sources.
       try {
         const { outcome } = await recompilePage(page.page_id, source_id);
+        // recompilePage does not touch pages.source_count. Sync it here so the
+        // wiki/graph stats reflect reality immediately, not on next session commit.
+        setPageSourceCount(page.page_id, remainingCount);
         if (outcome === 'archived') {
           insertActivity({
             action_type: 'page_archived',

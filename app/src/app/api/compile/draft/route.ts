@@ -155,13 +155,15 @@ function buildDossier(
         if (entityData.context) lines.push(`  Context: ${entityData.context}`);
       }
 
+      // Pydantic ExtractionRelationship emits { from_entity, to, type, description } —
+      // the dossier must match those field names, not r.source/r.target which never exist.
       const rels = ((ext.relationships as Array<Record<string, unknown>>) ?? []).filter(
         (r) =>
-          typeof r.source === 'string' && r.source.toLowerCase() === nameLower ||
-          typeof r.target === 'string' && r.target.toLowerCase() === nameLower
+          (typeof r.from_entity === 'string' && r.from_entity.toLowerCase() === nameLower) ||
+          (typeof r.to === 'string' && r.to.toLowerCase() === nameLower)
       );
       for (const rel of rels) {
-        lines.push(`  Relationship: ${rel.source} —[${rel.type}]→ ${rel.target}`);
+        lines.push(`  Relationship: ${rel.from_entity} —[${rel.type}]→ ${rel.to}`);
       }
 
       const claims = ((ext.claims as Array<Record<string, unknown>>) ?? []).filter(
