@@ -33,11 +33,11 @@ sys.modules.setdefault("spacy", spacy_stub)
 pytextrank_stub = types.ModuleType("pytextrank")
 sys.modules.setdefault("pytextrank", pytextrank_stub)
 
-routers_stub = types.ModuleType("routers")
-resolution_stub = types.ModuleType("routers.resolution")
-resolution_stub._get_embed_model = MagicMock()
-sys.modules.setdefault("routers", routers_stub)
-sys.modules.setdefault("routers.resolution", resolution_stub)
+# routers/resolution.py lazy-loads sentence-transformers inside
+# _get_embed_model() — no module-level ML import — so real routers.* modules
+# are safe to import. Stubbing `routers` or `routers.resolution` up-front
+# breaks `from routers.chat import ...` in main.py because the stub lacks
+# __path__ and Python refuses to resolve it as a package.
 
 # ---------------------------------------------------------------------------
 # FastAPI app + TestClient
@@ -46,7 +46,14 @@ sys.modules.setdefault("routers.resolution", resolution_stub)
 
 @pytest.fixture(scope="session")
 def app():
-    from main import app as fastapi_app  # noqa: PLC0415
+    # Build a minimal app instead of importing main — main.py pulls in every
+    # router (extraction → spaCy/KeyBERT/pytextrank, vectors → chromadb, etc.)
+    # and stubbing them all here is brittle. The pipeline tests only exercise
+    # /pipeline/draft-page, so mount that router alone.
+    from fastapi import FastAPI  # noqa: PLC0415
+    from routers.pipeline import router as pipeline_router  # noqa: PLC0415
+    fastapi_app = FastAPI()
+    fastapi_app.include_router(pipeline_router)
     return fastapi_app
 
 

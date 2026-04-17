@@ -29,15 +29,11 @@ st_stub = types.ModuleType("sentence_transformers")
 st_stub.SentenceTransformer = MagicMock()
 sys.modules.setdefault("sentence_transformers", st_stub)
 
-# The module under test uses a relative import from routers.resolution — stub
-# the whole routers package so we never trigger model loading.
-routers_stub = types.ModuleType("routers")
-resolution_stub = types.ModuleType("routers.resolution")
-resolution_stub._get_embed_model = MagicMock()
-sys.modules.setdefault("routers", routers_stub)
-sys.modules.setdefault("routers.resolution", resolution_stub)
-
-# Now safe to import.
+# vector_store lazy-imports `from routers.resolution import _get_embed_model`
+# inside a function body — no module-level routers dependency. sentence_transformers
+# is stubbed above, so even if the lazy import fires it won't load real models.
+# Stubbing `routers` here would break the pipeline tests (main.py imports
+# routers.chat etc.) because the stub lacks __path__.
 from services import vector_store  # noqa: E402
 
 

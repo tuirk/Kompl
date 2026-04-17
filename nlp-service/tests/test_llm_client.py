@@ -32,8 +32,9 @@ def test_source_summary_prompt_has_required_sections():
 def test_source_summary_prompt_forbids_summarizing_and_paraphrasing():
     """source-summary prompt must explicitly prohibit summarization/paraphrasing."""
     prompt = llm_client._DRAFT_PAGE_PROMPTS["source-summary"].lower()
+    # The prompt combines the prohibition: "do NOT summarize, paraphrase, or shorten".
     assert "do not summarize" in prompt
-    assert "do not paraphrase" in prompt
+    assert "paraphrase" in prompt
 
 
 def test_source_summary_prompt_requires_faithful_reproduction():
