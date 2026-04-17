@@ -51,9 +51,16 @@ export interface PlannedPage {
   related_plan_ids: string[];
 }
 
+// ── Comparison page threshold ────────────────────────────────────────────────
+// A comparison page is only created when a specific rivalry appears in this
+// many distinct sources. One article saying "X competes with Y" is just that
+// article's opinion — three sources noting the same rivalry is a pattern
+// worth synthesising into its own page.
+export const COMPARISON_SOURCE_THRESHOLD = 3;
+
 // ── Levenshtein distance (simple, sufficient for short concept names) ─────────
 
-function levenshtein(a: string, b: string): number {
+export function levenshtein(a: string, b: string): number {
   const m = a.length, n = b.length;
   const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
     Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
@@ -69,7 +76,7 @@ function levenshtein(a: string, b: string): number {
 }
 
 // Simple acronym check: "ML" matches "Machine Learning" if first letters align.
-function isAcronymOf(acronym: string, full: string): boolean {
+export function isAcronymOf(acronym: string, full: string): boolean {
   if (acronym.length < 2 || acronym.length > 8) return false;
   const words = full.split(/\s+/);
   if (words.length < 2) return false;
@@ -77,7 +84,7 @@ function isAcronymOf(acronym: string, full: string): boolean {
   return initials === acronym.toUpperCase();
 }
 
-function conceptsMatch(a: string, b: string): boolean {
+export function conceptsMatch(a: string, b: string): boolean {
   const al = a.toLowerCase().trim();
   const bl = b.toLowerCase().trim();
   if (al === bl) return true;
@@ -88,7 +95,7 @@ function conceptsMatch(a: string, b: string): boolean {
 
 // ── Entity type → category heuristic ─────────────────────────────────────────
 
-function entityTypeToCategory(entityType: string): string {
+export function entityTypeToCategory(entityType: string): string {
   const t = entityType.toUpperCase();
   if (t === 'PERSON') return 'People';
   if (t === 'ORG') return 'Organizations';
@@ -278,11 +285,7 @@ export async function POST(request: Request) {
   }
 
   // ── Rule 4: Comparison pages ─────────────────────────────────────────────────
-  // A comparison page is only created when a specific rivalry appears in 3+
-  // distinct sources. One article saying "X competes with Y" is just that
-  // article's opinion — three sources noting the same rivalry is a pattern
-  // worth synthesising into its own page.
-  const COMPARISON_SOURCE_THRESHOLD = 3;
+  // Threshold (COMPARISON_SOURCE_THRESHOLD) is module-level so tests can pin it.
   const entityNameSet = new Set(canonicalEntities.map((e) => e.canonical.toLowerCase()));
 
   // Phase 1: count distinct sources that extracted each relationship pair.

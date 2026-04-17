@@ -32,7 +32,6 @@ import {
   getDb,
   insertActivity,
   insertPage,
-  insertPageLink,
   insertProvenance,
   markSourcesActive,
   getCompileProgress,
@@ -45,44 +44,10 @@ import {
   setPendingContent,
   clearPendingContent,
 } from '../../../../lib/db';
+import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
+import { syncPageWikilinks } from '../../../../lib/wikilinks';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
-
-/**
- * Upsert a page into the vector store with up to 3 attempts and 500ms backoff.
- * On final failure the page_id is written to vector_backfill_queue so it can
- * be recovered via POST /api/compile/backfill-vectors without re-compiling.
- * Never throws — vector failures must not fail the compile response.
- */
-async function upsertVectorWithRetry(
-  page_id: string,
-  metadata: Record<string, unknown>,
-  retries = 3
-): Promise<void> {
-  const db = getDb();
-  const payload = JSON.stringify({ page_id, metadata });
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const res = await fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (res.ok) return;
-      throw new Error(`status ${res.status}`);
-    } catch (err) {
-      if (attempt < retries - 1) {
-        await new Promise((r) => setTimeout(r, 500));
-      } else {
-        console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'vector_upsert_failed', page_id, error: err instanceof Error ? err.message : String(err) }));
-        try {
-          db.prepare('INSERT OR IGNORE INTO vector_backfill_queue (page_id) VALUES (?)').run(page_id);
-        } catch { /* non-fatal */ }
-      }
-    }
-  }
-}
 
 // Strip YAML frontmatter (--- ... ---) from the top of a markdown string.
 // Used to measure actual content length before the thin-draft gate check.
@@ -188,7 +153,9 @@ async function commitSession(session_id: string): Promise<Response> {
 
     // Gate 2: thin-draft check. Strip frontmatter before measuring so that
     // a page with only YAML and no body doesn't pass on character count alone.
-    if (minDraftChars > 0) {
+    // 'original-source' pages are intentional raw passthroughs of sub-min_source_chars
+    // content; Gate 2 targets thin LLM drafts, so exempt this type.
+    if (minDraftChars > 0 && plan.page_type !== 'original-source') {
       const bodyLength = stripFrontmatter(markdown).length;
       if (bodyLength < minDraftChars) {
         updatePlanStatus(plan.plan_id, 'draft_too_thin');
@@ -387,22 +354,7 @@ async function commitSession(session_id: string): Promise<Response> {
         })();
 
     try {
-      db.transaction(() => {
-        // Delete stale wikilinks for this page before re-inserting current ones.
-        // Prevents phantom backlinks when [[links]] are removed on recompile.
-        db.prepare(`DELETE FROM page_links WHERE source_page_id = ? AND link_type = 'wikilink'`).run(fromPageId);
-
-        const rawLinks = plan.draft_content!.match(/\[\[([^\]]+)\]\]/g) ?? [];
-        const seenTargets = new Set<string>();
-        for (const link of rawLinks) {
-          const title = link.slice(2, -2).trim();
-          const toPageId = titleMap.get(title.toLowerCase());
-          if (toPageId && toPageId !== fromPageId && !seenTargets.has(toPageId)) {
-            seenTargets.add(toPageId);
-            insertPageLink(fromPageId, toPageId, 'wikilink');
-          }
-        }
-      })();
+      syncPageWikilinks(db, fromPageId, plan.draft_content!, titleMap);
     } catch (wikiErr) {
       wikilinkWarnings++;
       console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'wikilink_edge_failed', session_id, plan_id: plan.plan_id, page_id: fromPageId, error: wikiErr instanceof Error ? wikiErr.message : String(wikiErr) }));

@@ -1,8 +1,12 @@
-name: Integration test
+name: Tests
 
 # Architecture rule #6: the integration test gates every commit from
 # commit 2 onward. TODO stages are fine; REAL stages must stay green.
 # See scripts/integration-test.sh for the 11-stage harness.
+#
+# Two jobs run in parallel:
+#   - unit-tests: vitest (app, cli) + pytest (nlp-service). Fast (<5 min).
+#   - integration-test: full docker compose end-to-end (10-15 min).
 
 on:
   push:
@@ -11,6 +15,56 @@ on:
     branches: [main]
 
 jobs:
+  unit-tests-app:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      - run: npx vitest run
+        working-directory: app
+
+  unit-tests-cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: cli/package-lock.json
+      - run: npm ci
+        working-directory: cli
+      - run: npm test
+        working-directory: cli
+
+  unit-tests-nlp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # nlp-service requirements include torch + spaCy + sentence-transformers
+    # (~2 GB). Heavy ML deps are stubbed in conftest.py so tests never load
+    # them — but a small set (google-genai, pyrate-limiter, fastapi, httpx,
+    # pytest) IS required at import time. Install full requirements.txt for
+    # parity with the integration test environment.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: nlp-service/requirements.txt
+      - run: pip install -r requirements.txt
+        working-directory: nlp-service
+      - run: python -m pytest
+        working-directory: nlp-service
+
   integration-test:
     runs-on: ubuntu-latest
     timeout-minutes: 20

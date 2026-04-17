@@ -28,8 +28,8 @@ import {
   clearPendingContent,
   getCategoryGroups,
   getPageTitleMap,
-  insertPageLink,
 } from './db';
+import { syncPageWikilinks } from './wikilinks';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -185,21 +185,7 @@ export async function recompilePage(
   // Must run after Phase 3a so the new markdown is available in newMarkdown.
   // Wrapped in a transaction so a crash between DELETE and INSERT doesn't leave
   // partial/no wikilinks (boot reconciler covers pending_content, not page_links).
-  const titleMap = getPageTitleMap();
-  const db3c = getDb();
-  db3c.transaction(() => {
-    db3c.prepare(`DELETE FROM page_links WHERE source_page_id = ? AND link_type = 'wikilink'`).run(pageId);
-    const rawLinks = newMarkdown.match(/\[\[([^\]]+)\]\]/g) ?? [];
-    const seenTargets = new Set<string>();
-    for (const link of rawLinks) {
-      const title = link.slice(2, -2).trim();
-      const toPageId = titleMap.get(title.toLowerCase());
-      if (toPageId && toPageId !== pageId && !seenTargets.has(toPageId)) {
-        seenTargets.add(toPageId);
-        insertPageLink(pageId, toPageId, 'wikilink');
-      }
-    }
-  })();
+  syncPageWikilinks(getDb(), pageId, newMarkdown, getPageTitleMap());
 
   // ── Phase 3b: vector upsert — fire-and-forget ────────────────────────────
   void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {

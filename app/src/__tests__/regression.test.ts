@@ -57,6 +57,15 @@ describe('stripFrontmatter', () => {
     const md = '--- title: "Inline" ---\nBody.';
     expect(stripFrontmatter(md)).toBe(md);
   });
+
+  // Gate 2 (commit/route.ts:194) measures stripFrontmatter(markdown).length
+  // against min_draft_chars. This pins the body-length invariant Gate 2 depends
+  // on — a body of exactly N characters must measure N (no trim, no offset).
+  it('preserves exact body length for Gate 2 measurement', () => {
+    const body = 'x'.repeat(800);
+    const md = `---\ntitle: "T"\n---\n${body}`;
+    expect(stripFrontmatter(md).length).toBe(800);
+  });
 });
 
 // ---------------------------------------------------------------------------
