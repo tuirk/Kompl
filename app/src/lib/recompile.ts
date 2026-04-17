@@ -101,14 +101,22 @@ async function callWritePage(pageId: string, markdown: string): Promise<WritePag
  * @param pageId         The page to recompile.
  * @param removedSourceId The source that was just deleted (for logging only —
  *                        its provenance rows are already gone).
+ * @returns              `{ outcome: 'rewritten' }` on normal redraft, or
+ *                       `{ outcome: 'archived' }` when the page was archived
+ *                       because no sources remained. Caller uses this to log
+ *                       the correct activity event and increment the right counter.
  * @throws               On draft or write failure. Caller must catch and fall back.
  */
-export async function recompilePage(pageId: string, removedSourceId: string): Promise<void> {
+export async function recompilePage(
+  pageId: string,
+  removedSourceId: string
+): Promise<{ outcome: 'rewritten' | 'archived' }> {
   // ── Fetch page metadata ───────────────────────────────────────────────────
   const page = getPage(pageId);
   if (!page) {
     // Page disappeared between the outer check and here — silently done.
-    return;
+    // Treat as archived-equivalent: nothing to rewrite, nothing to count.
+    return { outcome: 'archived' };
   }
 
   // ── Get remaining sources (provenance already pruned by caller) ───────────
@@ -117,7 +125,7 @@ export async function recompilePage(pageId: string, removedSourceId: string): Pr
   if (remainingProvenance.length === 0) {
     // Edge case: all provenance removed between check and now.
     archivePage(pageId);
-    return;
+    return { outcome: 'archived' };
   }
 
   // ── Build source contents for re-drafting ─────────────────────────────────
@@ -208,4 +216,6 @@ export async function recompilePage(pageId: string, removedSourceId: string): Pr
     }),
     signal: AbortSignal.timeout(30_000),
   }).catch(() => {});
+
+  return { outcome: 'rewritten' };
 }

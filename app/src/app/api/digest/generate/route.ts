@@ -38,6 +38,15 @@ export async function POST() {
   const draftsCreated = activity.filter((a) => a.action_type === 'draft_created').length;
   const draftsApproved = activity.filter((a) => a.action_type === 'draft_approved').length;
 
+  // Cleanup events — surface curation work in the digest. source_unarchived
+  // (correction) and page_recompiled (cascade noise) are intentionally excluded.
+  const sourcesRemoved = activity.filter(
+    (a) => a.action_type === 'source_archived' || a.action_type === 'source_deleted'
+  ).length;
+  const pagesRemoved = activity.filter(
+    (a) => a.action_type === 'page_archived' || a.action_type === 'page_deleted'
+  ).length;
+
   const newPageTitles = activity
     .filter((a) => a.action_type === 'page_created' && a.details)
     .map((a) => {
@@ -125,6 +134,9 @@ export async function POST() {
     `• ${pagesCreated} page${pagesCreated !== 1 ? 's' : ''} created`,
     `• ${pagesUpdated} page${pagesUpdated !== 1 ? 's' : ''} updated`,
     `• ${draftsApproved} draft${draftsApproved !== 1 ? 's' : ''} approved`,
+    ...(sourcesRemoved + pagesRemoved > 0
+      ? [`• ${sourcesRemoved} source${sourcesRemoved !== 1 ? 's' : ''} removed, ${pagesRemoved} page${pagesRemoved !== 1 ? 's' : ''} removed`]
+      : []),
     ``,
     summary,
     healthSection,

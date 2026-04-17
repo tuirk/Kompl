@@ -354,53 +354,59 @@ async function commitSession(session_id: string): Promise<Response> {
   // ── Wikilink → page_links pass ───────────────────────────────────────────────
   // Parse [[Page Title]] from every committed page's markdown and insert
   // page_links rows. Done after the loop so all page_ids exist in the DB.
+  //
+  // Per-plan DELETE+INSERTs run in their own db.transaction() — without this, a
+  // crash between the DELETE and the INSERTs leaves the page with zero wikilinks.
+  // Per-plan try/catch keeps one bad plan from skipping wikilink sync for the rest.
   let wikilinkWarnings = 0;
-  try {
-    const titleMap = getPageTitleMap(); // title.toLowerCase() → page_id
-    // Only process plans whose page_id was actually committed (excludes thin-draft
-    // skips and failures — pages that were never inserted into `pages`).
-    // Without this guard, a thin-draft plan with [[wikilinks]] causes an FK
-    // violation that aborts the entire loop, leaving subsequent pages with no links.
-    const committedPlans = plans.filter((p) => {
-      if (!p.draft_content || p.action === 'provenance-only') return false;
-      const pid = p.action === 'update' && p.existing_page_id
-        ? p.existing_page_id
-        : (() => {
-            const suffix = p.plan_id.replace(/-/g, '').slice(0, 8);
-            const base = p.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '')
-              .replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 56).replace(/^-+|-+$/g, '');
-            return `${base || 'page'}-${suffix}`;
-          })();
-      return committedPageIds.has(pid);
-    });
+  const titleMap = getPageTitleMap(); // title.toLowerCase() → page_id
+  // Only process plans whose page_id was actually committed (excludes thin-draft
+  // skips and failures — pages that were never inserted into `pages`).
+  // Without this guard, a thin-draft plan with [[wikilinks]] causes an FK
+  // violation that aborts the entire loop, leaving subsequent pages with no links.
+  const committedPlans = plans.filter((p) => {
+    if (!p.draft_content || p.action === 'provenance-only') return false;
+    const pid = p.action === 'update' && p.existing_page_id
+      ? p.existing_page_id
+      : (() => {
+          const suffix = p.plan_id.replace(/-/g, '').slice(0, 8);
+          const base = p.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '')
+            .replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 56).replace(/^-+|-+$/g, '');
+          return `${base || 'page'}-${suffix}`;
+        })();
+    return committedPageIds.has(pid);
+  });
 
-    for (const plan of committedPlans) {
-      const fromPageId = plan.action === 'update' && plan.existing_page_id
-        ? plan.existing_page_id
-        : (() => {
-            const suffix = plan.plan_id.replace(/-/g, '').slice(0, 8);
-            const base = plan.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 56).replace(/^-+|-+$/g, '');
-            return `${base || 'page'}-${suffix}`;
-          })();
+  for (const plan of committedPlans) {
+    const fromPageId = plan.action === 'update' && plan.existing_page_id
+      ? plan.existing_page_id
+      : (() => {
+          const suffix = plan.plan_id.replace(/-/g, '').slice(0, 8);
+          const base = plan.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 56).replace(/^-+|-+$/g, '');
+          return `${base || 'page'}-${suffix}`;
+        })();
 
-      // Delete stale wikilinks for this page before re-inserting current ones.
-      // Prevents phantom backlinks when [[links]] are removed on recompile.
-      db.prepare(`DELETE FROM page_links WHERE source_page_id = ? AND link_type = 'wikilink'`).run(fromPageId);
+    try {
+      db.transaction(() => {
+        // Delete stale wikilinks for this page before re-inserting current ones.
+        // Prevents phantom backlinks when [[links]] are removed on recompile.
+        db.prepare(`DELETE FROM page_links WHERE source_page_id = ? AND link_type = 'wikilink'`).run(fromPageId);
 
-      const rawLinks = plan.draft_content!.match(/\[\[([^\]]+)\]\]/g) ?? [];
-      const seenTargets = new Set<string>();
-      for (const link of rawLinks) {
-        const title = link.slice(2, -2).trim();
-        const toPageId = titleMap.get(title.toLowerCase());
-        if (toPageId && toPageId !== fromPageId && !seenTargets.has(toPageId)) {
-          seenTargets.add(toPageId);
-          insertPageLink(fromPageId, toPageId, 'wikilink');
+        const rawLinks = plan.draft_content!.match(/\[\[([^\]]+)\]\]/g) ?? [];
+        const seenTargets = new Set<string>();
+        for (const link of rawLinks) {
+          const title = link.slice(2, -2).trim();
+          const toPageId = titleMap.get(title.toLowerCase());
+          if (toPageId && toPageId !== fromPageId && !seenTargets.has(toPageId)) {
+            seenTargets.add(toPageId);
+            insertPageLink(fromPageId, toPageId, 'wikilink');
+          }
         }
-      }
+      })();
+    } catch (wikiErr) {
+      wikilinkWarnings++;
+      console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'wikilink_edge_failed', session_id, plan_id: plan.plan_id, page_id: fromPageId, error: wikiErr instanceof Error ? wikiErr.message : String(wikiErr) }));
     }
-  } catch (wikiErr) {
-    wikilinkWarnings++;
-    console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'wikilink_edge_failed', session_id, error: wikiErr instanceof Error ? wikiErr.message : String(wikiErr) }));
   }
 
   // Mark all session sources as active

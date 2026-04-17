@@ -332,19 +332,23 @@ export async function POST(request: Request) {
   }
 
   // ── Rule 5: Overview pages ───────────────────────────────────────────────────
-  // Group entity + concept pages by category, create overview when 3+
-  const categoryMap = new Map<string, string[]>(); // category → plan_ids
+  // Group entity + concept pages by category, create overview when 3+.
+  // Use Set — within-session canonical dedup (Rule 2) can yield multiple
+  // canonicalEntities entries sharing one plan_id; a list would double-count
+  // them and trigger an overview from fewer than 3 unique pages.
+  const categoryMap = new Map<string, Set<string>>(); // category → plan_ids
 
   for (const entity of canonicalEntities) {
     const planId = entityPlansByCanonical.get(entity.canonical.toLowerCase());
     if (!planId) continue;
     const cat = entityTypeToCategory(entity.type);
-    if (!categoryMap.has(cat)) categoryMap.set(cat, []);
-    categoryMap.get(cat)!.push(planId);
+    if (!categoryMap.has(cat)) categoryMap.set(cat, new Set());
+    categoryMap.get(cat)!.add(planId);
   }
 
-  for (const [category, relatedIds] of categoryMap.entries()) {
-    if (relatedIds.length < 3) continue;
+  for (const [category, relatedIdSet] of categoryMap.entries()) {
+    if (relatedIdSet.size < 3) continue;
+    const relatedIds = Array.from(relatedIdSet);
 
     // source_ids = union of all sources in this category group
     const overviewSourceIds = new Set<string>();

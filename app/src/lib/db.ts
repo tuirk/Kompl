@@ -1468,12 +1468,13 @@ export interface SourceWithPageCount extends SourceRow {
 }
 
 /**
- * Same as getAllSources but LEFT JOINs provenance to include page_count per source
- * in a single query, eliminating the N+1 pattern in GET /api/sources.
+ * Build the shared WHERE clause for sources list + count queries. Extracted so
+ * getAllSourcesWithPageCounts and countSourcesWithPageCounts stay in lockstep —
+ * a filter added to one without the other makes `total` silently wrong.
  */
-export function getAllSourcesWithPageCounts(
+function buildSourcesWhereSql(
   options?: Parameters<typeof getAllSources>[0]
-): SourceWithPageCount[] {
+): { where: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
 
@@ -1498,7 +1499,21 @@ export function getAllSourcesWithPageCounts(
     params.push(`%${options.search}%`);
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return {
+    where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
+    params,
+  };
+}
+
+/**
+ * Same as getAllSources but LEFT JOINs provenance to include page_count per source
+ * in a single query, eliminating the N+1 pattern in GET /api/sources.
+ */
+export function getAllSourcesWithPageCounts(
+  options?: Parameters<typeof getAllSources>[0]
+): SourceWithPageCount[] {
+  const { where, params } = buildSourcesWhereSql(options);
+
   const SORT_COLS: Record<string, string> = {
     date_ingested: 's.date_ingested',
     title: 's.title',
@@ -1524,6 +1539,23 @@ export function getAllSourcesWithPageCounts(
          LIMIT ? OFFSET ?`
     )
     .all(...params, limit, offset) as SourceWithPageCount[];
+}
+
+/**
+ * Count of sources matching the given filter — ignores limit/offset/sort.
+ * Used to populate the `total` field in GET /api/sources so the UI banner
+ * reports the full filtered count, not the post-limit row count.
+ */
+export function countSourcesWithPageCounts(
+  options?: Parameters<typeof getAllSources>[0]
+): number {
+  const { where, params } = buildSourcesWhereSql(options);
+  const row = openDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM sources s ${where}`
+    )
+    .get(...params) as { n: number };
+  return row.n;
 }
 
 /**

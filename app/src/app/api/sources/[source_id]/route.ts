@@ -174,7 +174,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   // Remove provenance FIRST so recompilePage sees only remaining sources.
   removeProvenanceForSource(source_id);
 
-  const results = { pages_deleted: 0, pages_rewritten: 0, pages_noted: 0 };
+  const results = { pages_deleted: 0, pages_rewritten: 0, pages_archived: 0, pages_noted: 0 };
   const today = new Date().toISOString().split('T')[0];
 
   for (const page of affectedPages) {
@@ -222,19 +222,34 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     } else {
       // 2+ remaining, substantial source — rewrite from remaining sources.
       try {
-        await recompilePage(page.page_id, source_id);
-        insertActivity({
-          action_type: 'page_recompiled',
-          source_id,
-          details: {
-            page_id: page.page_id,
-            title: page.title,
-            reason: 'source_deleted',
-            source_chars: sourceChars,
-            remaining_sources: remainingCount,
-          },
-        });
-        results.pages_rewritten++;
+        const { outcome } = await recompilePage(page.page_id, source_id);
+        if (outcome === 'archived') {
+          insertActivity({
+            action_type: 'page_archived',
+            source_id,
+            details: {
+              page_id: page.page_id,
+              title: page.title,
+              reason: 'source_deleted',
+              source_chars: sourceChars,
+              remaining_sources: remainingCount,
+            },
+          });
+          results.pages_archived++;
+        } else {
+          insertActivity({
+            action_type: 'page_recompiled',
+            source_id,
+            details: {
+              page_id: page.page_id,
+              title: page.title,
+              reason: 'source_deleted',
+              source_chars: sourceChars,
+              remaining_sources: remainingCount,
+            },
+          });
+          results.pages_rewritten++;
+        }
       } catch (err) {
         // Rewrite failed — fall back to provenance note so delete still completes.
         const fullPage = getPage(page.page_id);

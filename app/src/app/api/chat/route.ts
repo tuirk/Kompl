@@ -184,13 +184,20 @@ export async function POST(request: Request) {
 
     // 8. Compounding: if answer used 3+ pages, create a pending draft
     if (pages.length >= 3) {
-      const draftTitle = `FAQ: ${question.slice(0, 100)}`;
+      // Raw title for the DB column. Strip control chars (CR/LF/tab/etc) so
+      // the drafts list renders cleanly; do NOT escape quotes here — that's
+      // only needed when embedding in YAML.
+      const draftTitle = `FAQ: ${question.slice(0, 100).replace(/[\x00-\x1F\x7F]+/g, ' ').trim()}`;
+      // YAML-escaped copy for the frontmatter. Backslash must be doubled
+      // BEFORE quotes are escaped, otherwise `C:\` becomes `C:\\"` and the
+      // trailing quote closes the YAML string prematurely.
+      const yamlTitle = draftTitle.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       const citedList = citations
         .map((c) => `- [${c.page_title}](/wiki/${c.page_id})`)
         .join('\n');
       const draftContent = [
         `---`,
-        `title: "${draftTitle}"`,
+        `title: "${yamlTitle}"`,
         `page_type: query-generated`,
         `draft_status: pending_approval`,
         `pages_referenced: [${pagesUsed.map((id) => `"${id}"`).join(', ')}]`,
