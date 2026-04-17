@@ -6,7 +6,12 @@ import path from 'path';
 import zlib from 'zlib';
 import { NextResponse } from 'next/server';
 
-import { getDb, getPageCount, DATA_ROOT, insertActivity } from '@/lib/db';
+import { getDb, DATA_ROOT, insertActivity } from '@/lib/db';
+
+// System-generated pages that don't count as "user data" for the import
+// emptiness check. The Saved Links overview page is rebuilt any time an
+// ingest fails; it must not block a fresh import into an otherwise-empty wiki.
+const SYSTEM_PAGE_IDS = ['saved-links'] as const;
 
 export async function POST(request: Request) {
   // Parse multipart
@@ -45,14 +50,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'invalid_format' }, { status: 422 });
   }
 
-  // Check empty-wiki precondition (v1: clean import only)
-  const existingCount = getPageCount();
-  if (existingCount > 0) {
+  // Check empty-wiki precondition (v1: clean import only).
+  // System-generated pages (e.g. saved-links) are ignored — they'd otherwise
+  // block import on a wiki that the user considers empty.
+  const db = getDb();
+  const systemPlaceholders = SYSTEM_PAGE_IDS.map(() => '?').join(', ');
+  const userPageCount = (
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM pages WHERE page_id NOT IN (${systemPlaceholders})`)
+      .get(...SYSTEM_PAGE_IDS) as { n: number }
+  ).n;
+  if (userPageCount > 0) {
     return NextResponse.json(
       {
         error: 'wiki_not_empty',
         message: 'Import is only supported on an empty wiki. Delete all existing data first.',
-        existing_pages: existingCount,
+        existing_pages: userPageCount,
       },
       { status: 409 }
     );
@@ -89,10 +102,26 @@ export async function POST(request: Request) {
   // Follows the storeRawMarkdown pattern — file writes are atomic with DB rows.
   // -------------------------------------------------------------------------
 
-  const db = getDb();
+  // Remove stale on-disk system pages so a zip without one doesn't leave
+  // orphan .md.gz files behind. DB rows are deleted inside the transaction.
+  for (const pid of SYSTEM_PAGE_IDS) {
+    const stalePath = path.join(DATA_ROOT, 'pages', `${pid}.md.gz`);
+    try { fs.unlinkSync(stalePath); } catch { /* missing is fine */ }
+  }
+
   db.transaction(() => {
     fs.mkdirSync(path.join(DATA_ROOT, 'raw'), { recursive: true });
     fs.mkdirSync(path.join(DATA_ROOT, 'pages'), { recursive: true });
+
+    // Wipe system-generated state (saved-links page + ingest_failures) so
+    // the incoming zip inserts cleanly. The emptiness check above guarantees
+    // no user pages exist, so this touches only auto-generated rows.
+    for (const pid of SYSTEM_PAGE_IDS) {
+      db.prepare('DELETE FROM page_links WHERE source_page_id = ? OR target_page_id = ?').run(pid, pid);
+      db.prepare('DELETE FROM pages_fts WHERE page_id = ?').run(pid);
+      db.prepare('DELETE FROM pages WHERE page_id = ?').run(pid);
+    }
+    db.prepare('DELETE FROM ingest_failures').run();
 
     for (const [filename, buf] of rawBuffers) {
       fs.writeFileSync(path.join(DATA_ROOT, 'raw', filename), buf);

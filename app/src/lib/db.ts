@@ -473,13 +473,14 @@ export function insertProvenance(args: InsertProvenanceArgs): void {
 export interface ProvenanceRow {
   source_id: string;
   page_id: string;
+  content_hash: string;
   contribution_type: string;
   date_compiled: string;
 }
 
 export function getAllProvenance(): ProvenanceRow[] {
   return openDb()
-    .prepare('SELECT source_id, page_id, contribution_type, date_compiled FROM provenance')
+    .prepare('SELECT source_id, page_id, content_hash, contribution_type, date_compiled FROM provenance')
     .all() as ProvenanceRow[];
 }
 
