@@ -24,6 +24,8 @@
  */
 
 import { NextResponse } from 'next/server';
+import { Agent } from 'undici';
+
 import {
   getCompileProgress,
   updateCompileStep,
@@ -37,6 +39,21 @@ import {
 } from '@/lib/db';
 
 const APP_URL = process.env.APP_URL ?? 'http://app:3000';
+
+// Node's built-in fetch (undici) defaults headersTimeout=300_000 ms — shorter
+// than the 600-900 s AbortSignal we set on long LLM steps (draft, crossref),
+// so HeadersTimeoutError fires before our AbortSignal ever kicks in. Scoped
+// Agent with a 16-min headersTimeout/bodyTimeout matches the longest step's
+// deadline plus buffer. Only applied to the steps that genuinely need >5 min;
+// keeping other calls on the default Agent preserves fail-fast behavior for
+// the short paths (extract, resolve, match, plan, commit, schema).
+// Ref: https://nodejs.org/api/globals.html#custom-dispatcher
+const LONG_HTTP_AGENT = new Agent({
+  headersTimeout: 16 * 60_000,
+  bodyTimeout: 16 * 60_000,
+  connectTimeout: 10_000,
+  keepAliveTimeout: 60_000,
+});
 
 // Shared error surfacer. On !res.ok, read the response body (race-capped at
 // 3 s so a hung chunked response doesn't stall the orchestrator) and embed
@@ -116,6 +133,8 @@ async function callDraft(sessionId: string): Promise<{ drafted: number; failed: 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
     signal: AbortSignal.timeout(900_000),
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT,
   });
   await throwOnError('draft', res, sessionId);
   return res.json() as Promise<{ drafted: number; failed: number }>;
@@ -127,6 +146,8 @@ async function callCrossref(sessionId: string): Promise<{ wikilinks_added: numbe
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
     signal: AbortSignal.timeout(600_000),
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT,
   });
   await throwOnError('crossref', res, sessionId);
   return res.json() as Promise<{ wikilinks_added: number }>;
