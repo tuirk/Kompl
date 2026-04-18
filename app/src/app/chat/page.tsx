@@ -1,25 +1,17 @@
 'use client';
 
-/**
- * Chat agent page — ask questions about your wiki.
- *
- * Session lifecycle:
- *   - sessionId = randomUUID() on component mount (new session per page visit)
- *   - "New conversation" resets sessionId + messages
- *
- * Retrieval strategy (server-side, in /api/chat):
- *   - Small wikis (< 6k estimated tokens): index-first (LLM picks pages)
- *   - Large wikis: hybrid FTS5 + vector similarity with weighted scoring
- *
- * Citations: [Page Title] in answers render as teal badge chips linking to /wiki/{page_id}
- *
- * Layout: position:relative wrapper with three absolute sections —
- *   Phase 1 (async): header (64px top) | Phase 2 (sync): message area (64px→208px) | footer (208px bottom)
- */
-
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { ChatMessage, Citation } from '@/lib/chat-types';
+
+interface WikiStatsSnapshot {
+  source_count: number;
+  page_count: number;
+  entity_count: number;
+  concept_count: number;
+  last_ingested: string | null;
+  last_compiled: string | null;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,44 +29,98 @@ function formatTime(iso: string): string {
 // Citation chip rendering
 // ---------------------------------------------------------------------------
 
+const CHIP_STYLE: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  padding: '1px 6px 2px',
+  background: 'rgba(var(--accent-rgb),0.1)',
+  border: '1px solid rgba(var(--accent-rgb),0.3)',
+  color: 'var(--accent)',
+  fontFamily: 'var(--font-heading)',
+  fontWeight: 700,
+  fontSize: 10,
+  textDecoration: 'none',
+  letterSpacing: 0,
+  verticalAlign: 'middle',
+  marginLeft: 2,
+};
+
+function Chip({ citation, label, k }: { citation: Citation; label: string; k: string | number }) {
+  return (
+    <Link key={k} href={`/wiki/${citation.page_id}`} style={CHIP_STYLE}>
+      {label}
+    </Link>
+  );
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Pass 2: scan an unbracketed text span for literal page_title occurrences and
+ * wrap each match as a chip. Longest titles match first so a page called
+ * "Cookie Usage Policy" wins over "Cookie Usage" when both are in the citations
+ * list. Case-insensitive, word-boundary-anchored, minimum length 3.
+ */
+function linkifyLiteralTitles(
+  text: string,
+  sortedCitations: Citation[],
+  keyPrefix: string,
+): React.ReactNode[] {
+  if (!text || sortedCitations.length === 0) return [<span key={keyPrefix}>{text}</span>];
+  const pattern = new RegExp(
+    `\\b(${sortedCitations.map((c) => escapeRegex(c.page_title)).join('|')})\\b`,
+    'gi',
+  );
+  const out: React.ReactNode[] = [];
+  let lastIdx = 0;
+  let n = 0;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(text)) !== null) {
+    if (m.index > lastIdx) {
+      out.push(<span key={`${keyPrefix}-${n++}`}>{text.slice(lastIdx, m.index)}</span>);
+    }
+    const matchedText = m[1];
+    const cit = sortedCitations.find(
+      (c) => c.page_title.toLowerCase() === matchedText.toLowerCase(),
+    );
+    if (cit) {
+      out.push(<Chip key={`${keyPrefix}-${n++}`} citation={cit} label={matchedText} k={`${keyPrefix}-${n}`} />);
+    } else {
+      out.push(<span key={`${keyPrefix}-${n++}`}>{matchedText}</span>);
+    }
+    lastIdx = m.index + matchedText.length;
+  }
+  if (lastIdx < text.length) {
+    out.push(<span key={`${keyPrefix}-${n++}`}>{text.slice(lastIdx)}</span>);
+  }
+  return out;
+}
+
 function renderAnswer(answer: string, citations: Citation[]) {
   const citationMap = new Map(
     citations.map((c) => [c.page_title.toLowerCase(), c]),
   );
+  const fallback = [...citations]
+    .filter((c) => c.page_title.length >= 3)
+    .sort((a, b) => b.page_title.length - a.page_title.length);
+
   const parts = answer.split(/(\[[^\]]+\])/g);
-  return parts.map((part, i) => {
+  const nodes: React.ReactNode[] = [];
+  parts.forEach((part, i) => {
     const match = part.match(/^\[([^\]]+)\]$/);
     if (match) {
       const title = match[1];
       const citation = citationMap.get(title.toLowerCase());
       if (citation) {
-        return (
-          <Link
-            key={i}
-            href={`/wiki/${citation.page_id}`}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              padding: '1px 6px 2px',
-              background: 'rgba(var(--accent-rgb),0.1)',
-              border: '1px solid rgba(var(--accent-rgb),0.3)',
-              color: 'var(--accent)',
-              fontFamily: 'var(--font-heading)',
-              fontWeight: 700,
-              fontSize: 10,
-              textDecoration: 'none',
-              letterSpacing: 0,
-              verticalAlign: 'middle',
-              marginLeft: 2,
-            }}
-          >
-            {title}
-          </Link>
-        );
+        nodes.push(<Chip key={`b-${i}`} citation={citation} label={title} k={`b-${i}`} />);
+        return;
       }
     }
-    return <span key={i}>{part}</span>;
+    nodes.push(...linkifyLiteralTitles(part, fallback, `s-${i}`));
   });
+  return nodes;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,12 +171,30 @@ function TypingIndicator() {
 // Example questions
 // ---------------------------------------------------------------------------
 
+// Tailored to what the agent can actually do: the stat bar covers "how many"
+// questions, so the example prompts push toward retrieval + synthesis and one
+// fast-path (topics) that returns a category breakdown.
 const EXAMPLE_QUESTIONS = [
-  'Summarise latest research',
-  'Find connections between topics',
-  'Draft a system report',
-  'What are the key concepts?',
+  'What topics does my wiki cover?',
+  'Summarise my most recent sources',
+  'Find connections across my sources',
+  'What are the key themes?',
 ];
+
+function formatRelativeTime(iso: string | null): string {
+  if (!iso) return 'never';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return 'never';
+  const diff = Date.now() - then;
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
 
 // ---------------------------------------------------------------------------
 // Main component
@@ -144,6 +208,7 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [savedDrafts, setSavedDrafts] = useState<Set<number>>(new Set());
+  const [stats, setStats] = useState<WikiStatsSnapshot | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -155,6 +220,22 @@ export default function ChatPage() {
     setMessages([]);
     setInput('');
   }
+
+  // Fetch wiki stats once on mount for the header chip
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/wiki/stats')
+      .then((r) => (r.ok ? (r.json() as Promise<WikiStatsSnapshot>) : null))
+      .then((data) => {
+        if (!cancelled) setStats(data);
+      })
+      .catch(() => {
+        if (!cancelled) setStats(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Auto-scroll to latest message
   useEffect(() => {
@@ -322,6 +403,36 @@ export default function ChatPage() {
               GEMINI 2.5 FLASH
             </span>
           </div>
+
+          {/* Stat chip — persistent snapshot so users don't have to ask */}
+          {stats && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                padding: '2px 8px',
+                background: 'var(--bg-card-hover)',
+                border: '1px solid rgba(var(--separator-rgb),0.2)',
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: 'var(--font-body)',
+                  fontWeight: 400,
+                  fontSize: 10,
+                  lineHeight: '15px',
+                  letterSpacing: '0.5px',
+                  textTransform: 'uppercase',
+                  color: 'var(--fg-muted)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {`${stats.source_count} SOURCES · ${stats.page_count} PAGES · UPDATED ${formatRelativeTime(stats.last_compiled)}`}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Right: new conversation */}
@@ -371,8 +482,10 @@ export default function ChatPage() {
             style={{
               flex: 1,
               display: 'flex',
+              flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
+              gap: 8,
             }}
           >
             <p
@@ -386,6 +499,20 @@ export default function ChatPage() {
               }}
             >
               Ask anything about your compiled wiki.
+            </p>
+            <p
+              style={{
+                fontFamily: 'var(--font-body)',
+                fontSize: 10,
+                letterSpacing: '0.5px',
+                color: 'var(--fg-dim)',
+                margin: 0,
+                textAlign: 'center',
+                maxWidth: 520,
+              }}
+            >
+              This chat is intentionally primitive — basic info + testing only.
+              Fork and tailor it for your own workflow.
             </p>
           </div>
         )}

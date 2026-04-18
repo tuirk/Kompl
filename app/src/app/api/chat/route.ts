@@ -41,14 +41,18 @@ function detectMetaQuery(question: string): string | null {
     return `Your wiki has ${stats.page_count} pages: ${stats.entity_count} entity pages, ${stats.concept_count} concept pages, and ${stats.page_count - stats.entity_count - stats.concept_count} others.`;
   }
 
-  if (/what was the (last|latest|most recent).*(ingest|add|source)|last.*ingest/.test(q)) {
+  if (
+    /\b(last|latest|most recent|newest) (source|article|ingest|ingestion|add)|what was the (last|latest|most recent).*(ingest|add|source)/.test(q)
+  ) {
     const stats = getWikiStats();
     return stats.last_ingested
       ? `The most recent source was ingested on ${stats.last_ingested}.`
       : 'No sources have been ingested yet.';
   }
 
-  if (/when was.*last (compil|updat)|last.*compil/.test(q)) {
+  if (
+    /\b(last|latest|most recent) (update|updated|compile|compiled)|when was.*last (compil|updat)|\bwiki.*last.*(updat|compil)/.test(q)
+  ) {
     const stats = getWikiStats();
     return stats.last_compiled
       ? `The most recently compiled wiki page was updated on ${stats.last_compiled}.`
@@ -62,7 +66,6 @@ function detectMetaQuery(question: string): string | null {
     if (categories.length === 0) {
       return 'Your wiki has no compiled pages yet. Ingest some sources first.';
     }
-    // Group by category
     const catMap = new Map<string, string[]>();
     for (const row of categories) {
       const existing = catMap.get(row.category) ?? [];
@@ -74,6 +77,18 @@ function detectMetaQuery(question: string): string | null {
       .join('\n');
     const stats = getWikiStats();
     return `Your wiki has ${stats.page_count} pages across these categories:\n\n${catLines}`;
+  }
+
+  if (
+    /\b(stats|statistics|summary)\b.*\b(wiki|knowledge)|\b(wiki|knowledge)\b.*\b(stats|statistics|summary)\b|^\s*(wiki )?(stats|statistics|summary)\s*\??$|\bshow.*\b(wiki )?(stats|statistics|summary)\b/.test(q)
+  ) {
+    const stats = getWikiStats();
+    const parts = [
+      `Your wiki: **${stats.source_count} sources**, **${stats.page_count} pages** (${stats.entity_count} entities, ${stats.concept_count} concepts).`,
+    ];
+    if (stats.last_ingested) parts.push(`Last ingested: ${stats.last_ingested}.`);
+    if (stats.last_compiled) parts.push(`Last compiled: ${stats.last_compiled}.`);
+    return parts.join(' ');
   }
 
   return null;
@@ -161,19 +176,11 @@ export async function POST(request: Request) {
       citations: Array<{ page_id: string; page_title: string }>;
     };
 
-    let { answer } = synthData;
+    const { answer } = synthData;
     const citations = synthData.citations ?? [];
-
-    // 6. Safety net: no citations but pages available → prepend disclaimer
-    if (citations.length === 0 && pages.length > 0) {
-      answer =
-        '> Note: This answer was generated from your wiki but specific citations could not be determined.\n\n' +
-        answer;
-    }
-
     const pagesUsed = pages.map((p) => p.page_id);
 
-    // 7. Persist assistant message
+    // 6. Persist assistant message
     insertChatMessage({
       session_id: sessionId,
       role: 'assistant',
@@ -182,7 +189,7 @@ export async function POST(request: Request) {
       pages_used: pagesUsed,
     });
 
-    // 8. Compounding: if answer used 3+ pages, create a pending draft
+    // 7. Compounding: if answer used 3+ pages, create a pending draft
     if (pages.length >= 3) {
       // Raw title for the DB column. Strip control chars (CR/LF/tab/etc) so
       // the drafts list renders cleanly; do NOT escape quotes here — that's
