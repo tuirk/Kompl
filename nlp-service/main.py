@@ -54,6 +54,7 @@ from routers.chat import router as chat_router
 from routers.conversion import router as conversion_router
 from routers.extraction import router as extraction_router
 from routers.llm import router as llm_router
+from routers.metadata_peek import router as metadata_peek_router
 from routers.pipeline import router as pipeline_router
 from routers.resolution import router as resolution_router
 from routers.storage import router as storage_router
@@ -73,6 +74,7 @@ app = FastAPI(title="kompl-nlp-service", version="0.7.0")
 app.include_router(conversion_router)
 app.include_router(extraction_router)
 app.include_router(llm_router)
+app.include_router(metadata_peek_router)
 app.include_router(pipeline_router)
 app.include_router(resolution_router)
 app.include_router(storage_router)

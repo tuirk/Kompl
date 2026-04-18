@@ -24,6 +24,28 @@ const PAGE_ID = 'saved-links';
 const PAGE_TITLE = 'Saved Links';
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
+interface PeekedMetadata {
+  title?: string | null;
+  description?: string | null;
+  og_image?: string | null;
+}
+
+function parseMetadata(raw: string | null): PeekedMetadata {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === 'object') return parsed as PeekedMetadata;
+  } catch {
+    /* ignore malformed JSON — treat as empty */
+  }
+  return {};
+}
+
+function truncate(s: string, max: number): string {
+  const trimmed = s.trim().replace(/\s+/g, ' ');
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
+}
+
 function buildMarkdown(links: SavedLinkRow[]): string {
   if (links.length === 0) {
     return [
@@ -42,7 +64,9 @@ function buildMarkdown(links: SavedLinkRow[]): string {
   ];
 
   for (const link of links) {
-    const title = (link.title ?? link.source_url).replace(/[[\]]/g, '');
+    const meta = parseMetadata(link.metadata);
+    const titleSource = link.title ?? meta.title ?? link.source_url;
+    const title = titleSource.replace(/[[\]]/g, '');
     const dateStr = link.date_saved ?? link.date_attempted.slice(0, 10);
     // Trim verbose error prefixes so the page stays readable
     const reason = link.error
@@ -50,6 +74,9 @@ function buildMarkdown(links: SavedLinkRow[]): string {
       .replace(/^ingest_failed:\s*/i, '')
       .slice(0, 80);
     lines.push(`- [${title}](${link.source_url}) — ${dateStr} · *${reason}*`);
+    if (meta.description) {
+      lines.push(`  > ${truncate(meta.description, 160)}`);
+    }
   }
 
   lines.push('');

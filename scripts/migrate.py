@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -264,6 +264,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_page_links_unique
   ON page_links(source_page_id, target_page_id, link_type);
 """
 
+# V16: ingest_failures.metadata JSON column.
+# Holds best-effort og:title / og:description / og:image captured at
+# ingest-failure time so the Saved Links page shows real context, not a bare URL.
+MIGRATION_V16_SQL = "ALTER TABLE ingest_failures ADD COLUMN metadata JSON"
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -381,6 +386,15 @@ def migrate():
     if current < 15:
         print("  applying migration v15 (page_links unique constraint + dedup)...")
         conn.executescript(MIGRATION_V15_SQL)
+
+    if current < 16:
+        print("  applying migration v16 (ingest_failures.metadata column)...")
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(ingest_failures)").fetchall()
+        }
+        if "metadata" not in existing_cols:
+            conn.execute(MIGRATION_V16_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

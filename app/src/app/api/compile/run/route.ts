@@ -30,6 +30,8 @@ import {
   completeCompileProgress,
   failCompileProgress,
   getSourcesBySession,
+  getExtractionsBySession,
+  countPagePlansByStatus,
   insertActivity,
   markStaleSessionsFailed,
 } from '@/lib/db';
@@ -86,7 +88,7 @@ async function callPlan(
   return res.json() as Promise<{ stats: { total: number } }>;
 }
 
-async function callDraft(sessionId: string): Promise<{ drafted: number }> {
+async function callDraft(sessionId: string): Promise<{ drafted: number; failed: number }> {
   const res = await fetch(`${APP_URL}/api/compile/draft`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -94,7 +96,7 @@ async function callDraft(sessionId: string): Promise<{ drafted: number }> {
     signal: AbortSignal.timeout(900_000),
   });
   if (!res.ok) throw new Error(`draft failed: ${res.status}`);
-  return res.json() as Promise<{ drafted: number }>;
+  return res.json() as Promise<{ drafted: number; failed: number }>;
 }
 
 async function callCrossref(sessionId: string): Promise<{ wikilinks_added: number }> {
@@ -144,31 +146,30 @@ function assertNotCancelled(sessionId: string): void {
 
 async function runCompilePipeline(sessionId: string): Promise<void> {
   assertNotCancelled(sessionId);
-  // Read step statuses once — may have completed steps from a prior failed run.
-  // resetForRetry() preserves 'done' on completed steps so we can skip them.
-  const currentProgress = getCompileProgress(sessionId);
-  const stepStatuses = currentProgress
-    ? (JSON.parse(currentProgress.steps) as Record<string, { status: string }>)
-    : {};
-  const isDone = (step: string) => stepStatuses[step]?.status === 'done';
 
-  // Step 1: extract — SKIP if done (expensive: 1 Gemini call per source).
-  // /api/compile/extract writes results to the extractions table, so resolve
-  // can read from there directly when this step is skipped.
-  if (isDone('extract')) {
-    console.log(`[compile:${sessionId}] extract already done — skipping`);
+  // Step 1: extract. State is derived from the DB (extractions table), not
+  // from compile_progress.steps, so a prior partial failure (e.g. Gemini 429
+  // on half the sources) is resumable: on retry we only re-attempt the
+  // sources that are still missing from extractions. /api/compile/extract is
+  // idempotent — a source that IS already extracted short-circuits without a
+  // new Gemini call — but we skip the HTTP round-trip by filtering here.
+  const sources = getSourcesBySession(sessionId);
+  const extractedIds = new Set(getExtractionsBySession(sessionId).map((e) => e.source_id));
+  const unextracted = sources.filter((s) => !extractedIds.has(s.source_id));
+
+  if (sources.length > 0 && unextracted.length === 0) {
+    updateCompileStep(sessionId, 'extract', 'done', `${sources.length}/${sources.length} sources extracted`);
   } else {
     updateCompileStep(sessionId, 'extract', 'running');
-    const sources = getSourcesBySession(sessionId);
-    let extractSucceeded = 0;
-    for (let i = 0; i < sources.length; i++) {
+    let extractSucceeded = sources.length - unextracted.length;
+    for (const src of unextracted) {
       try {
-        await callExtract(sources[i].source_id);
+        await callExtract(src.source_id);
         extractSucceeded++;
       } catch (err) {
         insertActivity({
           action_type: 'extraction_failed',
-          source_id: sources[i].source_id,
+          source_id: src.source_id,
           details: { error: err instanceof Error ? err.message : String(err) },
         });
       }
@@ -176,7 +177,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
         sessionId,
         'extract',
         'running',
-        `${Math.min(extractSucceeded + (i - extractSucceeded + 1), sources.length)}/${sources.length} sources extracted`
+        `${extractSucceeded}/${sources.length} sources extracted`
       );
     }
     if (extractSucceeded === 0) {
@@ -210,27 +211,54 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   }
   assertNotCancelled(sessionId);
 
-  // Steps 4+5: plan + draft — co-dependent skip.
-  // plan calls clearStagedPagePlans() which deletes ALL non-committed page_plans
-  // including 'drafted' and 'crossreffed' rows. If draft is already done those
-  // rows must not be destroyed — skip both plan and draft together.
-  // When draft is NOT done, plan must re-run to rebuild fresh page_plans first.
-  if (isDone('draft')) {
-    console.log(`[compile:${sessionId}] plan+draft already done — skipping both`);
-  } else {
-    // Step 4: plan — ALWAYS run when draft is not done (pure TS logic, zero LLM).
+  // Steps 4+5: plan + draft. State is derived from the page_plans table, not
+  // compile_progress.steps, so per-plan failures (e.g. Gemini 429 mid-batch)
+  // are resumable without losing already-drafted siblings.
+  //
+  // plan calls clearStagedPagePlans() which deletes all non-committed rows
+  // (including 'drafted'/'crossreffed'). So plan must NOT re-run once plans
+  // exist. Once plans exist, draft is responsible for picking up any rows
+  // still in 'planned' or 'failed' (see /api/compile/draft filter).
+  const planCounts = countPagePlansByStatus(sessionId);
+  const planExists =
+    Object.values(planCounts).reduce((sum, c) => sum + c, 0) > 0;
+  const pendingDraftCount = (planCounts.planned ?? 0) + (planCounts.failed ?? 0);
+
+  if (!planExists) {
+    // Fresh run: plan then draft.
     updateCompileStep(sessionId, 'plan', 'running');
     const planResult = await callPlan(sessionId, canonicalEntities, matchResult.matches);
     updateCompileStep(sessionId, 'plan', 'done', `${planResult.stats.total} pages planned`);
     assertNotCancelled(sessionId);
 
-    // Step 5: draft — SKIP if done (expensive: 1 Gemini call per page).
-    // draft writes results to page_plans.draft_content, so crossref reads from
-    // there directly when this step is skipped.
     updateCompileStep(sessionId, 'draft', 'running');
     const draftResult = await callDraft(sessionId);
-    updateCompileStep(sessionId, 'draft', 'done', `${draftResult.drafted} drafts generated`);
+    updateCompileStep(
+      sessionId,
+      'draft',
+      'done',
+      draftResult.failed > 0
+        ? `${draftResult.drafted} drafts generated, ${draftResult.failed} failed — retry to re-attempt`
+        : `${draftResult.drafted} drafts generated`
+    );
     assertNotCancelled(sessionId);
+  } else if (pendingDraftCount > 0) {
+    // Retry path: plans exist, some are still 'planned' or were marked
+    // 'failed' on a prior Gemini error. Re-draft only those.
+    console.log(`[compile:${sessionId}] ${pendingDraftCount} plans pending — re-drafting without re-planning`);
+    updateCompileStep(sessionId, 'draft', 'running');
+    const draftResult = await callDraft(sessionId);
+    updateCompileStep(
+      sessionId,
+      'draft',
+      'done',
+      draftResult.failed > 0
+        ? `${draftResult.drafted} drafts generated, ${draftResult.failed} failed — retry to re-attempt`
+        : `${draftResult.drafted} drafts generated`
+    );
+    assertNotCancelled(sessionId);
+  } else {
+    console.log(`[compile:${sessionId}] plan+draft already complete — skipping both`);
   }
 
   // Step 6: crossref — ALWAYS re-run.

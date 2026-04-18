@@ -270,6 +270,7 @@ export default function WikiGraphPage() {
             nodeVal={(node) => Math.max(1, (node as GraphNode).source_count ?? 1)}
             onNodeClick={handleNodeClick as (node: object) => void}
             onNodeHover={handleNodeHover as (node: object | null) => void}
+            onBackgroundClick={() => setSelectedNode(null)}
             nodeCanvasObject={(node, ctx, globalScale) => {
               const n = node as GraphNode;
               const r = Math.sqrt(Math.max(1, n.source_count ?? 1)) * 4 + 2;

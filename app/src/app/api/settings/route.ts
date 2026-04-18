@@ -19,6 +19,7 @@ import {
   getLastLintAt, getLastBackupAt,
   getMinSourceChars, setMinSourceChars,
   getMinDraftChars, setMinDraftChars,
+  getDailyCapUsd, setDailyCapUsd,
 } from '../../../lib/db';
 
 function buildResponse() {
@@ -37,6 +38,7 @@ function buildResponse() {
     last_backup_at: getLastBackupAt(),
     min_source_chars: getMinSourceChars(),
     min_draft_chars: getMinDraftChars(),
+    daily_cap_usd: getDailyCapUsd(),
   };
 }
 
@@ -56,6 +58,7 @@ export async function POST(request: Request) {
     deployment_mode?: 'personal-device' | 'always-on';
     min_source_chars?: number;
     min_draft_chars?: number;
+    daily_cap_usd?: number;
   };
 
   const knownFields = [
@@ -64,6 +67,7 @@ export async function POST(request: Request) {
     'digest_enabled', 'digest_telegram_token', 'digest_telegram_chat_id',
     'lint_enabled', 'deployment_mode',
     'min_source_chars', 'min_draft_chars',
+    'daily_cap_usd',
   ];
   if (!knownFields.some((f) => f in body)) {
     return NextResponse.json({ error: 'no recognized setting field in request body' }, { status: 422 });
@@ -152,6 +156,16 @@ export async function POST(request: Request) {
       );
     }
     setMinDraftChars(body.min_draft_chars);
+  }
+
+  if (body.daily_cap_usd !== undefined) {
+    if (typeof body.daily_cap_usd !== 'number' || !Number.isFinite(body.daily_cap_usd) || body.daily_cap_usd < 0) {
+      return NextResponse.json(
+        { error: 'daily_cap_usd must be a non-negative number (0 = unlimited)' },
+        { status: 422 },
+      );
+    }
+    setDailyCapUsd(body.daily_cap_usd);
   }
 
   return NextResponse.json(buildResponse());

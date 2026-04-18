@@ -266,10 +266,14 @@ export async function POST(request: Request) {
   // Also get sources for other sessions referenced by entity page source_ids
   // (Not needed on first compile — all sources are in this session)
 
-  // Get planned pages
-  const plans = getPagePlansByStatus(session_id, 'planned').filter(
-    (p) => p.action !== 'provenance-only'
-  );
+  // Get pages needing drafting — 'planned' (never drafted) + 'failed' (prior
+  // attempt hit a Gemini 429/503). Failed plans are re-attempted here so a
+  // transient API outage does not permanently strand them. On success they
+  // transition to 'drafted' via updatePlanDraft (same path as fresh plans).
+  const plans = [
+    ...getPagePlansByStatus(session_id, 'planned'),
+    ...getPagePlansByStatus(session_id, 'failed'),
+  ].filter((p) => p.action !== 'provenance-only');
 
   if (plans.length === 0) {
     return NextResponse.json({ session_id, drafted: 0, failed: 0, by_type: {} }, { status: 200 });

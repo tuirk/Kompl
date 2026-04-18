@@ -100,6 +100,30 @@ async function callConvertFilePath(
   return res.json() as Promise<ConvertResponse>;
 }
 
+interface MetadataPeek {
+  title: string | null;
+  description: string | null;
+  og_image: string | null;
+}
+
+// Best-effort og-tag fetch for URLs whose primary conversion failed.
+// Always resolves — never throws — so the failure path stays linear.
+async function peekMetadata(url: string): Promise<MetadataPeek> {
+  const empty: MetadataPeek = { title: null, description: null, og_image: null };
+  try {
+    const res = await fetch(`${NLP_SERVICE_URL}/metadata/peek`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+      signal: AbortSignal.timeout(3_500),
+    });
+    if (!res.ok) return empty;
+    return (await res.json()) as MetadataPeek;
+  } catch {
+    return empty;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
@@ -335,17 +359,26 @@ export async function POST(request: Request) {
       failed.push({ item, error: msg });
       // Persist the link so it appears on the Saved Links wiki page even if
       // scraping failed. URL bookmarks have url + optional title_hint +
-      // optional date_saved from browser export.
+      // optional date_saved from browser export. Best-effort og-peek captures
+      // any title/description the upstream still serves (e.g. Cloudflare
+      // interstitials) so the entry is differentiable rather than a bare URL.
       if (connector === 'url' && item.url) {
         const dateSaved =
           typeof item.metadata_hint?.date_saved === 'string' ? item.metadata_hint.date_saved : null;
+        const peeked = await peekMetadata(item.url);
+        const resolvedTitle = item.title_hint ?? peeked.title ?? null;
+        const peekJson =
+          peeked.title || peeked.description || peeked.og_image
+            ? JSON.stringify(peeked)
+            : null;
         insertIngestFailure({
           failure_id: randomUUID(),
           source_url: item.url,
-          title_hint: item.title_hint ?? null,
+          title_hint: resolvedTitle,
           date_saved: dateSaved,
           error: msg,
           source_type: 'url',
+          metadata: peekJson,
         });
         void regenerateSavedLinksPage().catch(() => {});
       }

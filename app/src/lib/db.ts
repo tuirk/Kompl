@@ -576,6 +576,71 @@ export function getCategoryGroups(includeArchived = false): CategoryGroup[] {
   return Array.from(map.entries()).map(([category, pages]) => ({ category, pages }));
 }
 
+export interface SourceCardRow {
+  source_id: string;
+  title: string;
+  source_type: string;
+  source_url: string | null;
+  status: string;
+  date_ingested: string;
+  category: string | null;
+}
+
+export interface SourceCategoryGroup {
+  category: string;
+  sources: SourceCardRow[];
+}
+
+/** Sources grouped by the category of their source-summary / original-source page.
+ *
+ * Only sources with a LIVE summary page appear. Pending / failed-compile sources,
+ * and sources whose summary was archived (page_type='archived'), are excluded —
+ * those live on the /sources admin surface only. Source-level archival
+ * (sources.status='archived') is separately gated by includeArchived.
+ *
+ * One row per source. Within a category, newest-ingested first. Categories
+ * sorted alphabetically, 'Uncategorized' last (rare — requires a live summary
+ * whose draft landed with a null category).
+ */
+export function getSourceCategoryGroups(includeArchived = false): SourceCategoryGroup[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT s.source_id, s.title, s.source_type, s.source_url, s.status, s.date_ingested,
+              p.category
+         FROM sources s
+         INNER JOIN provenance pr ON pr.source_id = s.source_id
+         INNER JOIN pages p ON p.page_id = pr.page_id
+                            AND p.page_type IN ('source-summary', 'original-source')
+        ${includeArchived ? '' : "WHERE s.status != 'archived'"}
+        ORDER BY s.date_ingested DESC`
+    )
+    .all() as SourceCardRow[];
+
+  // Dedupe: one row per source. First match wins (query ordering keeps newest first).
+  const seen = new Set<string>();
+  const deduped: SourceCardRow[] = [];
+  for (const r of rows) {
+    if (seen.has(r.source_id)) continue;
+    seen.add(r.source_id);
+    deduped.push(r);
+  }
+
+  const map = new Map<string, SourceCardRow[]>();
+  for (const r of deduped) {
+    const cat = r.category ?? 'Uncategorized';
+    if (!map.has(cat)) map.set(cat, []);
+    map.get(cat)!.push(r);
+  }
+
+  return Array.from(map.entries())
+    .sort(([a], [b]) => {
+      if (a === 'Uncategorized') return 1;
+      if (b === 'Uncategorized') return -1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    })
+    .map(([category, sources]) => ({ category, sources }));
+}
+
 /** FTS5 full-text search against pages_fts (title + content).
  *
  * Each word in the query gets a trailing * for prefix matching so that
@@ -2044,6 +2109,40 @@ export function setMinDraftChars(value: number): void {
   setSetting('min_draft_chars', String(Math.max(0, Math.floor(value))));
 }
 
+const LLM_CONFIG_PATH = path.join(DATA_ROOT, 'llm-config.json');
+const DEFAULT_DAILY_CAP_USD = 5.00;
+
+export function getDailyCapUsd(): number {
+  const v = getSetting('daily_cap_usd');
+  if (v === null) return DEFAULT_DAILY_CAP_USD;
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_DAILY_CAP_USD;
+}
+
+export function setDailyCapUsd(value: number): void {
+  const clamped = Math.max(0, Number.isFinite(value) ? value : DEFAULT_DAILY_CAP_USD);
+  setSetting('daily_cap_usd', String(clamped));
+  try {
+    fs.writeFileSync(LLM_CONFIG_PATH, JSON.stringify({ daily_cap_usd: clamped }));
+  } catch {
+    // Non-fatal: NLP service falls back to env var default.
+  }
+}
+
+export function countPagePlansByStatus(sessionId: string): Record<string, number> {
+  const rows = openDb()
+    .prepare(
+      `SELECT draft_status, COUNT(*) AS c
+         FROM page_plans
+        WHERE session_id = ?
+        GROUP BY draft_status`
+    )
+    .all(sessionId) as Array<{ draft_status: string; c: number }>;
+  const out: Record<string, number> = {};
+  for (const r of rows) out[r.draft_status] = r.c;
+  return out;
+}
+
 export interface StaleSourceRow {
   source_id: string;
   title: string;
@@ -2075,15 +2174,16 @@ export interface InsertIngestFailureArgs {
   date_saved?: string | null;
   error: string;
   source_type?: string;
+  metadata?: string | null;
 }
 
 export function insertIngestFailure(args: InsertIngestFailureArgs): void {
   openDb()
     .prepare(
       `INSERT OR IGNORE INTO ingest_failures
-         (failure_id, source_url, title_hint, date_saved, error, source_type)
+         (failure_id, source_url, title_hint, date_saved, error, source_type, metadata)
        VALUES
-         (@failure_id, @source_url, @title_hint, @date_saved, @error, @source_type)`
+         (@failure_id, @source_url, @title_hint, @date_saved, @error, @source_type, @metadata)`
     )
     .run({
       failure_id: args.failure_id,
@@ -2092,6 +2192,7 @@ export function insertIngestFailure(args: InsertIngestFailureArgs): void {
       date_saved: args.date_saved ?? null,
       error: args.error,
       source_type: args.source_type ?? 'url',
+      metadata: args.metadata ?? null,
     });
 }
 
@@ -2115,6 +2216,9 @@ export function getIngestFailures(): IngestFailureRow[] {
  * Unresolved saved links for the wiki page.
  * Only rows in ingest_failures that have not been resolved yet.
  * Once a link is successfully ingested it drops off.
+ *
+ * `metadata` is a JSON string captured at failure time (best-effort og-peek):
+ * `{title, description, og_image}` — any field may be null.
  */
 export interface SavedLinkRow {
   source_url: string;
@@ -2123,6 +2227,7 @@ export interface SavedLinkRow {
   date_attempted: string;
   error: string;
   source_type: string;
+  metadata: string | null;
 }
 
 export function getUnresolvedLinks(): SavedLinkRow[] {
@@ -2133,7 +2238,8 @@ export function getUnresolvedLinks(): SavedLinkRow[] {
               date_saved,
               date_attempted,
               error,
-              source_type
+              source_type,
+              metadata
          FROM ingest_failures
         WHERE resolved_source_id IS NULL
           AND source_url IS NOT NULL

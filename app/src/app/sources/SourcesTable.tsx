@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { SourceRow } from '../../lib/db';
 
@@ -203,25 +203,27 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
     }
   }, [sources, onMutation]);
 
-  // ─── Bulk archive ───────────────────────────────────────────────────────────
+  // ─── Bulk archive / unarchive ───────────────────────────────────────────────
 
-  const handleBulkArchive = useCallback(async () => {
-    const ids = [...selectedIds];
+  const bulkSetStatus = useCallback(async (
+    ids: string[],
+    target: 'archived' | 'active',
+  ) => {
+    if (ids.length === 0) return;
     setLoadingIds((prev) => { const s = new Set(prev); ids.forEach((id) => s.add(id)); return s; });
 
-    // Optimistic — mark all selected as archived
     const prev_statuses = new Map(ids.map((id) => {
       const s = sources.find((r) => r.source_id === id);
       return [id, s?.status ?? 'active'] as [string, string];
     }));
-    setSources((prev) => prev.map((s) => ids.includes(s.source_id) ? { ...s, status: 'archived' } : s));
+    setSources((prev) => prev.map((s) => ids.includes(s.source_id) ? { ...s, status: target } : s));
 
     const results = await Promise.allSettled(
       ids.map((id) =>
         fetch(`/api/sources/${id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'archived' }),
+          body: JSON.stringify({ status: target }),
         }).then((r) => { if (!r.ok) throw new Error(`${r.status}`); return id; })
       )
     );
@@ -230,7 +232,6 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
     results.forEach((r, i) => { if (r.status === 'rejected') failed.add(ids[i]); });
 
     if (failed.size > 0) {
-      // Revert failed rows
       setSources((prev) => prev.map((s) =>
         failed.has(s.source_id) ? { ...s, status: prev_statuses.get(s.source_id) ?? 'active' } : s
       ));
@@ -242,9 +243,34 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
     }
 
     setLoadingIds((prev) => { const s = new Set(prev); ids.forEach((id) => s.delete(id)); return s; });
-    setSelectedIds(new Set());
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => { if (!failed.has(id)) next.delete(id); });
+      return next;
+    });
     onMutation?.();
-  }, [selectedIds, sources, onMutation]);
+  }, [sources, onMutation]);
+
+  const { archivableIds, unarchivableIds } = useMemo(() => {
+    const arch: string[] = [];
+    const unarch: string[] = [];
+    for (const id of selectedIds) {
+      const s = sources.find((r) => r.source_id === id);
+      if (!s) continue;
+      if (s.status === 'archived') unarch.push(id);
+      else arch.push(id);
+    }
+    return { archivableIds: arch, unarchivableIds: unarch };
+  }, [selectedIds, sources]);
+
+  const handleBulkArchive = useCallback(
+    () => bulkSetStatus(archivableIds, 'archived'),
+    [bulkSetStatus, archivableIds],
+  );
+  const handleBulkUnarchive = useCallback(
+    () => bulkSetStatus(unarchivableIds, 'active'),
+    [bulkSetStatus, unarchivableIds],
+  );
 
   // ─── Bulk delete ────────────────────────────────────────────────────────────
 
@@ -310,19 +336,30 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
             {selectedIds.size} selected
           </span>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              style={{ ...btnOutline, opacity: loadingIds.size > 0 ? 0.5 : 1 }}
-              disabled={loadingIds.size > 0}
-              onClick={handleBulkArchive}
-            >
-              Archive All
-            </button>
+            {archivableIds.length > 0 && (
+              <button
+                style={{ ...btnOutline, opacity: loadingIds.size > 0 ? 0.5 : 1 }}
+                disabled={loadingIds.size > 0}
+                onClick={handleBulkArchive}
+              >
+                Archive ({archivableIds.length})
+              </button>
+            )}
+            {unarchivableIds.length > 0 && (
+              <button
+                style={{ ...btnOutline, opacity: loadingIds.size > 0 ? 0.5 : 1 }}
+                disabled={loadingIds.size > 0}
+                onClick={handleBulkUnarchive}
+              >
+                Unarchive ({unarchivableIds.length})
+              </button>
+            )}
             <button
               style={{ ...btnDanger, padding: '5px 14px', fontSize: 10, opacity: loadingIds.size > 0 ? 0.5 : 1 }}
               disabled={loadingIds.size > 0}
               onClick={() => setModal({ kind: 'delete-bulk', ids: [...selectedIds] })}
             >
-              Delete All
+              Delete ({selectedIds.size})
             </button>
           </div>
         </div>

@@ -133,7 +133,8 @@ CREATE TABLE ingest_failures (
   date_attempted DATETIME DEFAULT CURRENT_TIMESTAMP,
   error TEXT NOT NULL,
   source_type TEXT NOT NULL DEFAULT 'url',
-  resolved_source_id TEXT
+  resolved_source_id TEXT,
+  metadata JSON
 );
 
 CREATE TABLE vector_backfill_queue (
@@ -174,4 +175,4 @@ CREATE INDEX idx_chat_session ON chat_messages(session_id);
 CREATE INDEX idx_ingest_failures_url ON ingest_failures(source_url);
 CREATE INDEX idx_ingest_failures_resolved ON ingest_failures(resolved_source_id);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '15');
+INSERT INTO settings (key, value) VALUES ('schema_version', '16');

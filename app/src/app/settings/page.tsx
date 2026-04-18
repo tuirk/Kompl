@@ -44,6 +44,10 @@ export default function SettingsPage() {
   const [minDraftCharsSaving, setMinDraftCharsSaving] = useState(false);
   const [minDraftCharsSaved, setMinDraftCharsSaved] = useState(false);
 
+  const [dailyCapUsd, setDailyCapUsd] = useState<number | null>(null);
+  const [dailyCapSaving, setDailyCapSaving] = useState(false);
+  const [dailyCapSaved, setDailyCapSaved] = useState(false);
+
   const [deploymentMode, setDeploymentModeState] = useState<'personal-device' | 'always-on' | null>(null);
   const [deploymentSaving, setDeploymentSaving] = useState(false);
   const [deploymentSaved, setDeploymentSaved] = useState(false);
@@ -96,6 +100,7 @@ export default function SettingsPage() {
         last_backup_at: string | null;
         min_source_chars: number;
         min_draft_chars: number;
+        daily_cap_usd: number;
       }) => {
         setAutoApprove(data.auto_approve);
         setRelatedMinSources(data.related_pages_min_sources);
@@ -110,6 +115,7 @@ export default function SettingsPage() {
         setLastBackupAt(data.last_backup_at);
         setMinSourceChars(data.min_source_chars);
         setMinDraftChars(data.min_draft_chars);
+        setDailyCapUsd(data.daily_cap_usd);
       });
   }, []);
 
@@ -356,6 +362,20 @@ export default function SettingsPage() {
     setMinDraftCharsSaving(false);
     setMinDraftCharsSaved(true);
     setTimeout(() => setMinDraftCharsSaved(false), 2000);
+  }
+
+  async function saveDailyCapUsd() {
+    if (dailyCapUsd === null) return;
+    setDailyCapSaving(true);
+    setDailyCapSaved(false);
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ daily_cap_usd: dailyCapUsd }),
+    });
+    setDailyCapSaving(false);
+    setDailyCapSaved(true);
+    setTimeout(() => setDailyCapSaved(false), 2000);
   }
 
   return (
@@ -1182,6 +1202,73 @@ export default function SettingsPage() {
             }}
           >
             Saved.
+          </div>
+        )}
+      </section>
+
+      {/* Daily Gemini spend cap */}
+      <section
+        style={{
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          overflow: 'hidden',
+          marginTop: '1rem',
+        }}
+      >
+        <div
+          style={{
+            padding: '1.25rem 1.5rem',
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '1.5rem',
+          }}
+        >
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
+              Daily Gemini spend cap
+            </div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+              Hard USD ceiling on Gemini API spend per UTC day. When exceeded, LLM calls raise a cost-ceiling error and the pipeline marks affected work as retryable. Resets at midnight UTC.
+              Set to <strong>0</strong> for unlimited (no cap).
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
+            <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>$</span>
+            <input
+              type="number"
+              min={0}
+              step={0.5}
+              value={dailyCapUsd ?? ''}
+              onChange={(e) => setDailyCapUsd(Math.max(0, parseFloat(e.target.value || '0')))}
+              onBlur={() => void saveDailyCapUsd()}
+              disabled={dailyCapUsd === null || dailyCapSaving}
+              style={{
+                width: 88,
+                padding: '0.45rem 0.6rem',
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-card)',
+                color: 'var(--fg)',
+                fontSize: '0.9rem',
+                textAlign: 'right',
+                opacity: dailyCapUsd === null ? 0.5 : 1,
+              }}
+            />
+            <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>/ day</span>
+          </div>
+        </div>
+        {dailyCapSaved && (
+          <div
+            style={{
+              padding: '0.6rem 1.5rem',
+              background: 'var(--success-bg, #ecfdf5)',
+              borderTop: '1px solid var(--success-border, #a7f3d0)',
+              color: 'var(--success, #059669)',
+              fontSize: 13,
+            }}
+          >
+            Saved — takes effect within 30 seconds.
           </div>
         )}
       </section>

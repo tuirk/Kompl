@@ -115,6 +115,7 @@ function ProgressPageInner() {
   const [actionError,     setActionError]     = useState<string | null>(null);
   const [queuedStartMs,   setQueuedStartMs]   = useState<number | null>(null);
   const [elapsedSec,      setElapsedSec]      = useState(0);
+  const [nowMs,           setNowMs]           = useState(() => Date.now());
 
   const intervalRef      = useRef<ReturnType<typeof setInterval>  | null>(null);
   const patienceTimerRef = useRef<ReturnType<typeof setTimeout>   | null>(null);
@@ -202,6 +203,18 @@ function ProgressPageInner() {
     );
     return () => clearInterval(id);
   }, [isQueued, queuedStartMs]);
+
+  // Total-runtime ticker. Ticks once a second while the session is queued or
+  // running; freezes once we hit a terminal status (completed/failed/cancelled).
+  // Anchored to progress.started_at so a reload mid-run shows the true elapsed,
+  // and to progress.completed_at so terminal-state rendering is stable.
+  const isTerminal =
+    status === 'completed' || status === 'failed' || status === 'cancelled';
+  useEffect(() => {
+    if (isTerminal) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isTerminal]);
 
   async function handleRetry() {
     if (!sessionId) return;
@@ -311,11 +324,29 @@ function ProgressPageInner() {
     isRunning  ? `${doneCount} / ${totalSteps}`                      :
                  `— / ${totalSteps}`;
 
+  // Parse server timestamp ("YYYY-MM-DD HH:MM:SS", UTC) to epoch ms.
+  function parseServerTs(ts: string | null | undefined): number | null {
+    if (!ts) return null;
+    const n = new Date(ts.replace(' ', 'T') + 'Z').getTime();
+    return Number.isFinite(n) ? n : null;
+  }
+  const startedAtMs   = parseServerTs(progress?.started_at);
+  const completedAtMs = parseServerTs(progress?.completed_at);
+  const runElapsedMs  =
+    startedAtMs !== null ? (completedAtMs ?? nowMs) - startedAtMs : null;
+  function formatElapsed(ms: number | null): string {
+    if (ms === null || ms < 0) return '—';
+    const total = Math.floor(ms / 1000);
+    return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, '0')}s`;
+  }
+
   /* Footer stats: SELECTED SOURCES + EST are fixed (from URL params, never change).
+     ELAPSED ticks every second while running and freezes on terminal status.
      When complete, also show PAGES CREATED. */
   const footerStats: { label: string; value: string }[] = [
     { label: 'SELECTED SOURCES', value: sourceCount  > 0 ? String(sourceCount)              : '—' },
     { label: 'EST.',              value: estimateMins !== null ? `~${estimateMins} min`      : '—' },
+    { label: 'ELAPSED',           value: formatElapsed(runElapsedMs) },
     ...(isComplete && committedPages > 0
       ? [{ label: 'PAGES CREATED', value: String(committedPages) }]
       : []),
