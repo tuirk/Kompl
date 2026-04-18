@@ -77,6 +77,12 @@ function getBadge(action_type: string, action?: string | null): BadgeCfg {
     case 'page_provenance_updated':    return { ...DIM,  label: 'NOTED'      };
     case 'page_recompile_failed':      return { ...RED,  label: 'FAILED'     };
     case 'source_recompile_triggered': return { ...DIM,  label: 'RETRYING'   };
+    case 'wiki_imported':              return { ...MINT, label: 'IMPORTED'   };
+    case 'compile_cancelled':          return { ...DIM,  label: 'CANCELLED'  };
+    case 'pending_drafts_cleaned':     return { ...DIM,  label: 'CLEANED'    };
+    case 'digest_sent':                return { ...NEUT, label: 'DIGEST'     };
+    case 'draft_too_thin':             return { ...DIM,  label: 'TOO THIN'   };
+    case 'draft_queued_for_approval':  return { ...DIM,  label: 'QUEUED'     };
     case 'draft_rejected':
       return { ...RED, label: 'REJECTED' };
     case 'ingest_failed':
@@ -84,6 +90,8 @@ function getBadge(action_type: string, action?: string | null): BadgeCfg {
     case 'compile_failed':
     case 'extraction_failed':
     case 'entity_expansion_failed':
+    case 'digest_failed':
+    case 'lint_failed':
       return { ...RED, label: 'FAILED' };
     default:
       return { ...DIM, label: action_type.replace(/_/g, ' ').toUpperCase().slice(0, 12) };
@@ -375,6 +383,83 @@ function getRowContent(ev: ActivityRow): RowContent {
 
     case 'onboarding_confirmed':
       return { primary: <>Onboarding completed</>, secondary: null, action: null, isError: false };
+
+    case 'wiki_imported': {
+      const sources = num('source_count');
+      const pages = num('page_count');
+      const parts = [
+        sources !== null && `${sources} source${sources !== 1 ? 's' : ''}`,
+        pages !== null && `${pages} page${pages !== 1 ? 's' : ''}`,
+      ].filter(Boolean);
+      const secondary = parts.length > 0
+        ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)' }}>{parts.join(' · ')}</span>
+        : null;
+      return { primary: <>Wiki imported</>, secondary, action: null, isError: false };
+    }
+
+    case 'compile_cancelled': {
+      const step = str('current_step');
+      const secondary = <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)' }}>
+        {step ? `at step: ${step}` : 'before first step'}
+      </span>;
+      return { primary: <>Compile cancelled</>, secondary, action: null, isError: false };
+    }
+
+    case 'pending_drafts_cleaned': {
+      const name = resolvedSourceTitle ?? detailTitle ?? source_id?.slice(0, 8) ?? '…';
+      const rewritten = num('rewritten') ?? 0;
+      const deleted = num('deleted') ?? 0;
+      const secondary = <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)' }}>
+        pending drafts: {rewritten} rewritten · {deleted} dropped
+      </span>;
+      return { primary: <strong>{name}</strong>, secondary, action: null, isError: false };
+    }
+
+    case 'digest_sent': {
+      const channel = str('channel');
+      const sources = num('sources_ingested');
+      const pages = num('pages_created');
+      const parts = [
+        channel,
+        sources !== null && `${sources} source${sources !== 1 ? 's' : ''}`,
+        pages !== null && `${pages} page${pages !== 1 ? 's' : ''}`,
+      ].filter(Boolean);
+      const secondary = parts.length > 0
+        ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)' }}>{parts.join(' · ')}</span>
+        : null;
+      return { primary: <>Weekly digest sent</>, secondary, action: null, isError: false };
+    }
+
+    case 'digest_failed':
+    case 'lint_failed': {
+      const label = ev.action_type === 'digest_failed' ? 'Weekly digest failed' : 'Wiki lint failed';
+      const err = str('error');
+      const secondary = err
+        ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>{err}</span>
+        : null;
+      return { primary: <>{label}</>, secondary, action: null, isError: true };
+    }
+
+    case 'draft_too_thin': {
+      const name = detailTitle ?? '…';
+      const chars = num('chars');
+      const threshold = num('threshold');
+      const secondary = (chars !== null && threshold !== null)
+        ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)' }}>
+            {chars} chars · threshold {threshold}
+          </span>
+        : null;
+      return { primary: <strong>{name}</strong>, secondary, action: null, isError: false };
+    }
+
+    case 'draft_queued_for_approval': {
+      const name = detailTitle ?? '…';
+      const pageType = str('page_type');
+      const secondary = <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)' }}>
+        queued for approval{pageType ? ` · ${pageType}` : ''}
+      </span>;
+      return { primary: <strong>{name}</strong>, secondary, action: null, isError: false };
+    }
 
     default:
       return {

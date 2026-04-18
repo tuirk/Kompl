@@ -1467,6 +1467,7 @@ main() {
     stage_20_source_mgmt_canary
     stage_21_wiki_data_canary
     stage_22_original_source_gate2
+    stage_23_zombie_cleanup_endpoint
 
     echo
     echo "=== Stage summary ==="
@@ -1474,7 +1475,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 15 stages (0, 1, 4, 11–22) executed, all passed ==="
+    echo "=== All 16 stages (0, 1, 4, 11–23) executed, all passed ==="
     exit 0
 }
 
@@ -1848,6 +1849,65 @@ print(sum(1 for p in pages if p.get('page_type') == 'original-source'))
     echo "  committed=$committed, original-source pages in wiki=$orig_page_count"
     echo "  stage 22 PASS — Gate 2 correctly exempts 'original-source'"
     record_stage 22 REAL PASS
+    return 0
+}
+
+stage_23_zombie_cleanup_endpoint() {
+    echo "--- stage 23: zombie-page cleanup endpoint smoke ---"
+
+    # GET — dry-run. Endpoint must respond with {count: int, pages: array}.
+    local get_response
+    get_response=$(curl -sf --max-time 10 http://localhost:3000/api/admin/cleanup/zombie-pages)
+
+    local count_field
+    count_field=$(echo "$get_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert isinstance(d.get('count'), int), 'count must be int'
+assert isinstance(d.get('pages'), list), 'pages must be list'
+print(d['count'])
+" 2>/dev/null)
+
+    if [ -z "$count_field" ]; then
+        echo "  FAIL: GET response missing or malformed: $get_response"
+        record_stage 23 REAL FAIL
+        return 1
+    fi
+
+    # POST — must succeed even when count=0 (no-op).
+    local post_response
+    post_response=$(curl -sf --max-time 10 -X POST http://localhost:3000/api/admin/cleanup/zombie-pages)
+
+    local deleted_field
+    deleted_field=$(echo "$post_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert isinstance(d.get('deleted'), int), 'deleted must be int'
+assert isinstance(d.get('pages'), list), 'pages must be list'
+print(d['deleted'])
+" 2>/dev/null)
+
+    if [ -z "$deleted_field" ]; then
+        echo "  FAIL: POST response missing or malformed: $post_response"
+        record_stage 23 REAL FAIL
+        return 1
+    fi
+
+    # POST must be idempotent — second call returns 0 (cleaned previously).
+    local second_response
+    second_response=$(curl -sf --max-time 10 -X POST http://localhost:3000/api/admin/cleanup/zombie-pages)
+    local second_deleted
+    second_deleted=$(echo "$second_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('deleted', -1))" 2>/dev/null)
+
+    if [ "$second_deleted" != "0" ]; then
+        echo "  FAIL: POST was not idempotent (second run deleted=$second_deleted)"
+        record_stage 23 REAL FAIL
+        return 1
+    fi
+
+    echo "  GET count=$count_field, POST deleted=$deleted_field, second POST deleted=0"
+    echo "  stage 23 PASS — admin cleanup endpoint shape + idempotent"
+    record_stage 23 REAL PASS
     return 0
 }
 

@@ -36,6 +36,7 @@ import {
   readRawMarkdown,
   setSourceStatus,
   insertActivity,
+  cleanupPendingPlansForDeletedSource,
 } from '../../../../lib/db';
 import { recompilePage } from '../../../../lib/recompile';
 
@@ -147,7 +148,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   insertActivity({
     action_type: status === 'archived' ? 'source_archived' : 'source_unarchived',
     source_id,
-    details: null,
+    details: { title: existing.title },
   });
 
   return NextResponse.json({ source_id, status });
@@ -174,6 +175,24 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   // Remove provenance FIRST so recompilePage sees only remaining sources.
   removeProvenanceForSource(source_id);
 
+  // Clean up orphaned pending_approval drafts that reference this source.
+  // Multi-source plans get their source_ids array shrunk; single-source plans
+  // are dropped. Without this, a stale draft can later be approved and UPSERT
+  // a page back to life (zombie resurrection via commitSinglePlan).
+  const planCleanup = cleanupPendingPlansForDeletedSource(source_id);
+  if (planCleanup.rewritten > 0 || planCleanup.deleted > 0) {
+    insertActivity({
+      action_type: 'pending_drafts_cleaned',
+      source_id,
+      details: {
+        title: source.title,
+        rewritten: planCleanup.rewritten,
+        deleted: planCleanup.deleted,
+        reason: 'source_deleted',
+      },
+    });
+  }
+
   const results = { pages_deleted: 0, pages_rewritten: 0, pages_archived: 0, pages_noted: 0 };
   const today = new Date().toISOString().split('T')[0];
 
@@ -183,7 +202,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
 
     if (remainingCount <= 1) {
       // 0 or 1 remaining — permanently delete the page.
-      deletePage(page.page_id);
+      const chatCleanup = deletePage(page.page_id);
       void deleteFromVectorStore(page.page_id).catch(() => {});
       void deletePageFile(page.page_id).catch(() => {});
       insertActivity({
@@ -196,6 +215,19 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
           remaining_sources: remainingCount,
         },
       });
+      if (chatCleanup.chatDraftsRewritten > 0 || chatCleanup.chatDraftsDeleted > 0) {
+        insertActivity({
+          action_type: 'chat_drafts_cleaned',
+          source_id: null,
+          details: {
+            page_id: page.page_id,
+            page_title: page.title,
+            rewritten: chatCleanup.chatDraftsRewritten,
+            deleted: chatCleanup.chatDraftsDeleted,
+            reason: 'page_deleted',
+          },
+        });
+      }
       results.pages_deleted++;
 
     } else if (isShortSource) {

@@ -1752,6 +1752,117 @@ export function removeProvenanceForSource(sourceId: string): void {
 }
 
 /**
+ * Strip a deleted page_id from every chat-save-draft's source_ids array
+ * (chat drafts store cited page_ids in source_ids — known semantic quirk),
+ * then drop any chat draft whose source_ids becomes empty. Run inside the
+ * deletePage transaction so a deleted page can never be cited by a draft
+ * that's later approved into a new page with broken [[wikilinks]].
+ *
+ * Mirrors cleanupPendingPlansForDeletedSource — same UPDATE-then-DELETE
+ * pattern, restricted to chat sessions via session_id LIKE 'chat-%'.
+ *
+ * Compile-stage page_plans are NOT touched here: they store source UUIDs,
+ * not page_ids, so the value compare would never match a real page_id even
+ * if the LIKE filter were removed. The filter just makes intent explicit.
+ *
+ * Returns counts so deletePage's caller can emit a chat_drafts_cleaned
+ * activity event when applicable.
+ */
+export function cleanupChatDraftsForDeletedPage(
+  pageId: string,
+): { rewritten: number; deleted: number } {
+  const db = openDb();
+  const rewritten = db
+    .prepare(
+      `UPDATE page_plans
+          SET source_ids = (SELECT COALESCE(json_group_array(value), '[]')
+                              FROM json_each(source_ids)
+                             WHERE value != ?)
+        WHERE draft_status = 'pending_approval'
+          AND session_id LIKE 'chat-%'
+          AND EXISTS (SELECT 1 FROM json_each(source_ids) WHERE value = ?)`
+    )
+    .run(pageId, pageId).changes;
+  const deleted = db
+    .prepare(
+      `DELETE FROM page_plans
+        WHERE draft_status = 'pending_approval'
+          AND session_id LIKE 'chat-%'
+          AND source_ids = '[]'`
+    )
+    .run().changes;
+  return { rewritten, deleted };
+}
+
+/**
+ * Find pages whose backing sources have all been deleted from the `sources` table.
+ * A page is a "zombie" when:
+ *   - it has no provenance rows at all (sources removed without proper cascade), OR
+ *   - every provenance row points to a source_id that no longer exists in sources
+ *
+ * The 'saved-links' system page is exempt (it's user-curated, not source-derived).
+ *
+ * Used by /api/admin/cleanup/zombie-pages to recover from prior delete-cascade
+ * gaps (e.g. plans that were committed after their backing sources were deleted).
+ */
+export function findZombiePages(): Array<{ page_id: string; title: string; page_type: string; source_count: number }> {
+  return openDb()
+    .prepare(
+      `SELECT p.page_id, p.title, p.page_type, p.source_count
+         FROM pages p
+        WHERE p.page_id != 'saved-links'
+          AND NOT EXISTS (
+            SELECT 1 FROM provenance pr
+             JOIN sources s ON s.source_id = pr.source_id
+            WHERE pr.page_id = p.page_id
+          )`
+    )
+    .all() as Array<{ page_id: string; title: string; page_type: string; source_count: number }>;
+}
+
+/**
+ * Strip a deleted source_id from every pending_approval plan's source_ids array,
+ * then drop any plan whose source_ids becomes empty. Run when a source is deleted
+ * so leftover compile drafts can't later be approved and resurrect the deleted
+ * source's pages (zombie resurrection via commitSinglePlan UPSERT).
+ *
+ * Multi-source entity plans (e.g. an "AI agents" page from 5 sources) survive
+ * single-source deletion — their source_ids array shrinks instead of vanishing —
+ * so user-curated drafts aren't lost when one of many sources is removed.
+ *
+ * Chat-save-draft plans (session_id LIKE 'chat-%') are unaffected: their
+ * source_ids column actually stores page_ids (a known semantic quirk), so the
+ * UUID compare against a real source_id never matches. Cleaning chat drafts on
+ * page deletion is a separate concern (different code path, different fix).
+ *
+ * Returns counts so the caller can decide whether to emit an activity event.
+ */
+export function cleanupPendingPlansForDeletedSource(
+  sourceId: string,
+): { rewritten: number; deleted: number } {
+  const db = openDb();
+  return db.transaction(() => {
+    const rewritten = db
+      .prepare(
+        `UPDATE page_plans
+            SET source_ids = (SELECT COALESCE(json_group_array(value), '[]')
+                                FROM json_each(source_ids)
+                               WHERE value != ?)
+          WHERE draft_status = 'pending_approval'
+            AND EXISTS (SELECT 1 FROM json_each(source_ids) WHERE value = ?)`
+      )
+      .run(sourceId, sourceId).changes;
+    const deleted = db
+      .prepare(
+        `DELETE FROM page_plans
+          WHERE draft_status = 'pending_approval' AND source_ids = '[]'`
+      )
+      .run().changes;
+    return { rewritten, deleted };
+  })();
+}
+
+/**
  * Return all provenance rows for a given page_id.
  * Used by recompilePage to discover remaining sources after one is deleted.
  */
@@ -1792,21 +1903,29 @@ export function decrementPageSourceCount(pageId: string): void {
 }
 
 /**
- * Permanently delete a page from the DB (pages, FTS, page_links, aliases, provenance).
- * Wrapped in a transaction so all child-table cleanups are atomic — if any step
- * fails, no partial state is left. Deletion order respects FK constraints:
- * page_links + pages_fts first (no FK to pages), then aliases + provenance
- * (both REFERENCE pages), then the pages row itself.
+ * Permanently delete a page from the DB (pages, FTS, page_links, aliases, provenance,
+ * orphaned pending_approval plans). Wrapped in a transaction so all child-table
+ * cleanups are atomic — if any step fails, no partial state is left. Deletion order
+ * respects FK constraints: page_links + pages_fts first (no FK to pages), then
+ * aliases + provenance + orphaned plans (both REFERENCE pages), then the pages row.
+ *
+ * Pending plans cleanup: any pending_approval page_plans row whose existing_page_id
+ * targets this page is dropped. Without this, an orphan plan can later be approved
+ * and re-UPSERT the deleted page (zombie resurrection via commitSinglePlan).
  */
-export function deletePage(pageId: string): void {
+export function deletePage(pageId: string): { chatDraftsRewritten: number; chatDraftsDeleted: number } {
   const db = openDb();
+  let chatCleanup = { rewritten: 0, deleted: 0 };
   db.transaction(() => {
     db.prepare(`DELETE FROM page_links WHERE source_page_id = ? OR target_page_id = ?`).run(pageId, pageId);
     db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(pageId);
     db.prepare(`DELETE FROM aliases WHERE canonical_page_id = ?`).run(pageId);
     db.prepare(`DELETE FROM provenance WHERE page_id = ?`).run(pageId);
+    db.prepare(`DELETE FROM page_plans WHERE existing_page_id = ? AND draft_status = 'pending_approval'`).run(pageId);
+    chatCleanup = cleanupChatDraftsForDeletedPage(pageId);
     db.prepare(`DELETE FROM pages WHERE page_id = ?`).run(pageId);
   })();
+  return { chatDraftsRewritten: chatCleanup.rewritten, chatDraftsDeleted: chatCleanup.deleted };
 }
 
 /**
