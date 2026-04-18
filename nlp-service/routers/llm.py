@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict
 
-from services.llm_client import _DAILY_CAP, _read_cap
+from services.llm_client import _read_cap, _read_daily_cap_usd
 
 router = APIRouter()
 
@@ -31,11 +31,12 @@ def get_llm_usage() -> LLMUsageResponse:
     """Return today's Gemini spend vs the configured daily cap."""
     cap_data = _read_cap()
     total = cap_data["total_usd"]
-    remaining = round(max(0.0, _DAILY_CAP - total), 4) if _DAILY_CAP > 0 else -1.0
+    daily_cap = _read_daily_cap_usd()
+    remaining = round(max(0.0, daily_cap - total), 4) if daily_cap > 0 else -1.0
     return LLMUsageResponse(
         date=cap_data["date"],
         total_usd=round(total, 4),
         call_count=cap_data.get("call_count", 0),
-        daily_cap_usd=_DAILY_CAP,
+        daily_cap_usd=daily_cap,
         remaining_usd=remaining,
     )

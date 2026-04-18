@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -46,7 +47,14 @@ _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 _GEMINI_RPM = int(os.environ.get("GEMINI_RPM", "800"))
 # Rough char budget: 1 token ≈ 4 chars for English. 32,000 tokens → 128,000 chars.
 _GEMINI_INPUT_TOKEN_CAP = int(os.environ.get("GEMINI_INPUT_TOKEN_CAP", "128000"))
-_DAILY_CAP = float(os.environ.get("GEMINI_DAILY_USD_CAP", "5.00"))
+# Extraction output is a structured JSON list of entities/concepts/claims — an
+# over-long input produces a JSON list that exceeds max_output_tokens (32K) and
+# truncates mid-string. Cap extraction inputs tighter. ~50K chars ≈ 12.5K tokens.
+_GEMINI_EXTRACT_INPUT_CAP = int(os.environ.get("GEMINI_EXTRACT_INPUT_CAP", "50000"))
+# Fallback when /data/llm-config.json is missing (first boot, dev env, test).
+# Runtime cap comes from _read_daily_cap_usd() below; Next.js writes the file
+# whenever the setting is changed in the Settings UI.
+_DAILY_CAP_FALLBACK = float(os.environ.get("GEMINI_DAILY_USD_CAP", "5.00"))
 
 # Gemini 2.5 Flash approximate pricing ($/M tokens, as of 2026-04).
 # Both caps are env-driven per research artifact section 8 so pricing changes
@@ -88,6 +96,35 @@ class Entity(BaseModel):
 # ---------------------------------------------------------------------------
 
 _CAP_FILE = Path(os.environ.get("DATA_ROOT", "/data")) / "llm-cap.json"
+_CONFIG_FILE = Path(os.environ.get("DATA_ROOT", "/data")) / "llm-config.json"
+
+# Cache the daily cap for 30 s to avoid a filesystem read on every LLM call.
+# 30 s is short enough that a Settings UI change takes effect quickly without
+# requiring a service restart.
+_cap_cache: dict[str, Any] = {"value": None, "read_at": 0.0}
+
+
+def _read_daily_cap_usd() -> float:
+    """Read the user-configurable daily Gemini $ cap from /data/llm-config.json.
+
+    Next.js writes this file whenever setDailyCapUsd() is called in db.ts
+    (backed by the 'daily_cap_usd' settings row). We cache the value for 30 s
+    to keep hot-path LLM calls cheap. If the file is absent or malformed we
+    fall back to GEMINI_DAILY_USD_CAP from the env (preserves pre-settings
+    behaviour on fresh installs and in tests).
+    """
+    now = time.time()
+    if _cap_cache["value"] is not None and now - _cap_cache["read_at"] < 30:
+        return _cap_cache["value"]  # type: ignore[return-value]
+    try:
+        data = json.loads(_CONFIG_FILE.read_text())
+        v = float(data["daily_cap_usd"])
+        cap = v if v >= 0 else _DAILY_CAP_FALLBACK
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        cap = _DAILY_CAP_FALLBACK
+    _cap_cache["value"] = cap
+    _cap_cache["read_at"] = now
+    return cap
 
 
 def _read_cap() -> dict:
@@ -119,9 +156,10 @@ def _check_and_record_cost(input_tokens: int, output_tokens: int) -> None:
     cost_usd = (input_tokens / 1_000_000) * _INPUT_PRICE_PER_M \
              + (output_tokens / 1_000_000) * _OUTPUT_PRICE_PER_M
     cap_data = _read_cap()
-    if _DAILY_CAP > 0 and cap_data["total_usd"] + cost_usd > _DAILY_CAP:
+    daily_cap = _read_daily_cap_usd()
+    if daily_cap > 0 and cap_data["total_usd"] + cost_usd > daily_cap:
         raise CostCeilingError(
-            f"Daily Gemini spend limit (${_DAILY_CAP:.2f}) reached. "
+            f"Daily Gemini spend limit (${daily_cap:.2f}) reached. "
             f"Today's spend: ${cap_data['total_usd']:.4f}. "
             f"Resets at midnight UTC."
         )
@@ -371,8 +409,8 @@ def extract_source(
     """
     import json as _json
 
-    if len(markdown) > _GEMINI_INPUT_TOKEN_CAP:
-        truncated = markdown[:_GEMINI_INPUT_TOKEN_CAP]
+    if len(markdown) > _GEMINI_EXTRACT_INPUT_CAP:
+        truncated = markdown[:_GEMINI_EXTRACT_INPUT_CAP]
         last_para = truncated.rfind("\n\n")
         markdown = truncated[:last_para] if last_para > 0 else truncated
 
@@ -406,7 +444,7 @@ def extract_source(
                 response_mime_type="application/json",
                 response_schema=LLMExtractionResponse,
                 thinking_config=types.ThinkingConfig(thinking_budget=512),
-                max_output_tokens=8192,
+                max_output_tokens=32768,
                 temperature=0.0,
             ),
         )
