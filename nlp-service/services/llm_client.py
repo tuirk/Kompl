@@ -29,15 +29,30 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
+import httpx
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
 from pyrate_limiter import Duration, InMemoryBucket, Limiter, Rate
+
+# google-genai raises its own error types (ClientError / ServerError / APIError)
+# that generic retry predicates miss — see cookbook issue #1091. We catch the
+# APIError base and filter by status code below. Tolerate SDK layout drift
+# (the class moved between minor releases): a missing module just means the
+# retry loop's `except _APIError` becomes a safe no-op.
+try:
+    from google.genai import errors as _genai_errors
+    _APIError: Any = _genai_errors.APIError
+except (ImportError, AttributeError):  # pragma: no cover
+    _APIError = tuple()
+
+T = TypeVar("T")
 
 # ---------------------------------------------------------------------------
 # Configuration from environment
@@ -187,6 +202,137 @@ def _get_limiter() -> Limiter:
 
 
 # ---------------------------------------------------------------------------
+# Retry wrapper for transient upstream errors (google-genai 1.12.1 has no
+# built-in retry; HttpRetryOptions was added in ≥1.65 which is a 60-version
+# jump we're not taking mid-debug). Retries on connection-class errors +
+# Gemini APIError with retryable status codes (408/429/5xx). Rate-limiter
+# token is re-acquired per attempt so retries count against the 800 RPM cap.
+# Apply only to read-only analyzers (extract/resolve/match/triage/…) — never
+# wrap draft_page / synthesize / digest, whose outputs commit downstream
+# state and can't be safely re-executed after a partial response.
+# ---------------------------------------------------------------------------
+
+
+_RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _with_retry(fn: Callable[[], T], step: str, *, max_attempts: int = 3, base_delay: float = 0.5) -> T:
+    limiter = _get_limiter()
+    last_exc: Exception | None = None
+
+    for i in range(max_attempts):
+        if not limiter.try_acquire("gemini"):
+            raise LLMRateLimitedError(f"llm_rate_limited: bucket exhausted on {step}")
+
+        try:
+            return fn()
+        except (
+            httpx.ConnectError,
+            httpx.PoolTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.RemoteProtocolError,
+            httpx.WriteError,
+            httpx.ReadError,
+        ) as e:
+            last_exc = e
+            err_class = type(e).__name__
+        except _APIError as e:
+            code = getattr(e, "code", None) or getattr(e, "status_code", None)
+            if code not in _RETRYABLE_STATUSES:
+                raise
+            last_exc = e
+            err_class = f"APIError{code}"
+
+        if i < max_attempts - 1:
+            delay = base_delay * (2 ** i)
+            print(
+                f"[llm-retry] {step} attempt {i + 1}/{max_attempts} after "
+                f"{err_class}: {str(last_exc)[:200]} — sleeping {delay}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
+
+    assert last_exc is not None
+    raise last_exc
+
+
+def _log_usage(step: str, response: Any) -> None:
+    """One-line stderr log per Gemini call: finish_reason + token counts.
+
+    Ground truth for distinguishing a MAX_TOKENS truncation from a normal
+    STOP, or an empty response, or a thinking-budget exhaustion. Non-fatal:
+    a broken log must never break the caller, so swallow any exception.
+    """
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        finish = "NONE"
+        if candidates:
+            fr = getattr(candidates[0], "finish_reason", None)
+            finish = str(fr).split(".")[-1] if fr is not None else "NONE"
+        usage = getattr(response, "usage_metadata", None)
+        if usage is not None:
+            ptok = getattr(usage, "prompt_token_count", 0) or 0
+            ctok = getattr(usage, "candidates_token_count", 0) or 0
+            ttok = getattr(usage, "thoughts_token_count", 0) or 0
+            print(
+                f"[gemini] step={step} finish={finish} in={ptok} out={ctok} thinking={ttok}",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(f"[gemini] step={step} finish={finish} usage=none", file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
+def _was_truncated(response: Any) -> bool:
+    """Check if Gemini hit max_output_tokens (ground truth, not regex).
+
+    Gemini 2.5 Flash has a known repetition-loop bug at temperature=0.0 where
+    the sampler enters a fixed-point attractor and emits the same token until
+    max_output_tokens. finish_reason is the authoritative signal — the text-
+    ending heuristic is unreliable (could false-positive on legitimate
+    trailing quotes, or false-negative on loops that happen to close brackets).
+    """
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return False
+        fr = getattr(candidates[0], "finish_reason", None)
+        if fr is None:
+            return False
+        return str(fr).endswith("MAX_TOKENS")
+    except Exception:
+        return False
+
+
+def _salvage_extraction(raw_text: str) -> "LLMExtractionResponse | None":
+    """Best-effort recovery of truncated JSON from a Gemini repetition loop.
+
+    When Gemini emits 32 k tokens of "AI", "AI", "AI",... and truncates mid-
+    string, the prefix is still valid extraction work we paid for. json-repair
+    closes unterminated arrays/strings and drops the malformed tail. Schema-
+    guided mode fills missing required fields with sensible defaults.
+
+    Returns the parsed model on success, None on irrecoverable garbage. Never
+    raises — the caller decides whether to retry or surface the original error.
+    """
+    try:
+        from json_repair import repair_json
+    except ImportError:
+        return None
+    try:
+        repaired = repair_json(raw_text, return_objects=True)
+        if not isinstance(repaired, dict):
+            return None
+        return LLMExtractionResponse.model_validate(repaired)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Gemini client (lazy init — validated at startup by main.py lifespan)
 # ---------------------------------------------------------------------------
 
@@ -254,24 +400,26 @@ def lint_scan(pages: list[str]) -> LintScanResponse:
 
     prompt = f"{_LINT_SYSTEM_PROMPT}\n\n---\n\n" + "\n\n".join(pages)
 
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-
     client = get_client()
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                thinking_config=types.ThinkingConfig(thinking_budget=1024),
-                max_output_tokens=4096,  # lint responses are short
+        response = _with_retry(
+            lambda: client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                    max_output_tokens=4096,  # lint responses are short
+                ),
             ),
+            step="lint",
         )
+    except LLMRateLimitedError:
+        raise
     except Exception as e:
         raise LLMCompileError(f"lint_scan_failed: {e}") from e
+
+    _log_usage("lint", response)
 
     usage: Any = response.usage_metadata
     if usage is not None:
@@ -379,6 +527,8 @@ Return JSON with these fields:
 6. summary       — 2-4 sentence summary of the source
 
 Keep lists focused: 5-15 entities, 3-10 concepts, 3-15 claims, 3-10 relationships.
+Each entity appears once. Stop as soon as the source is covered — do NOT
+repeat names or pad the output.
 """
 
 
@@ -414,11 +564,6 @@ def extract_source(
         last_para = truncated.rfind("\n\n")
         markdown = truncated[:last_para] if last_para > 0 else truncated
 
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted after max_delay")
-
     ner_section = _json.dumps(ner_output, ensure_ascii=False)
     keyphrase_section = _json.dumps(keyphrase_output, ensure_ascii=False) if keyphrase_output else "N/A — no keyphrase output"
     tfidf_section = _json.dumps(tfidf_output, ensure_ascii=False) if tfidf_output else "N/A — first compile, no existing wiki pages"
@@ -437,19 +582,26 @@ def extract_source(
 
     client = get_client()
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=LLMExtractionResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=512),
-                max_output_tokens=32768,
-                temperature=0.0,
+        response = _with_retry(
+            lambda: client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=LLMExtractionResponse,
+                    thinking_config=types.ThinkingConfig(thinking_budget=512),
+                    max_output_tokens=32768,
+                    temperature=0.0,
+                ),
             ),
+            step="extract",
         )
+    except LLMRateLimitedError:
+        raise
     except Exception as e:
         raise LLMCompileError(f"extract_llm_call_failed: {e}") from e
+
+    _log_usage("extract", response)
 
     usage: Any = response.usage_metadata
     if usage is not None:
@@ -463,8 +615,108 @@ def extract_source(
 
     try:
         return LLMExtractionResponse.model_validate_json(raw_text)
-    except Exception as e:
-        raise LLMCompileError(f"extract_llm_parse_failed: {e}") from e
+    except Exception as first_err:
+        # Recovery path for the Gemini 2.5 Flash structured-output repetition
+        # loop (upstream bug, see repo issue). Three attempts in order of cost:
+        #
+        # (1) Salvage the truncated prefix via json-repair — zero extra Gemini
+        #     cost, recovers the majority of repetition-loop responses because
+        #     the valid entities came before the stuck "AI","AI","AI",... tail.
+        # (2) If finish_reason=MAX_TOKENS AND salvage failed, retry once with
+        #     halved input — different prompt path usually escapes the loop.
+        # (3) On all-fail, chain both errors so we can see what each attempt hit.
+        salvaged = _salvage_extraction(raw_text)
+        if salvaged is not None:
+            print(
+                f"[extract] salvaged truncated response via json-repair "
+                f"(entities={len(salvaged.entities)}, concepts={len(salvaged.concepts)})",
+                file=sys.stderr,
+                flush=True,
+            )
+            return salvaged
+
+        if not _was_truncated(response):
+            # Not a truncation — parse error is something else (schema drift,
+            # malformed response). No point retrying with halved input.
+            raise LLMCompileError(f"extract_llm_parse_failed: {first_err}") from first_err
+
+        print(
+            f"[extract] MAX_TOKENS truncation + salvage failed — "
+            f"retrying with halved input",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        half_markdown = markdown[: len(markdown) // 2]
+        last_para = half_markdown.rfind("\n\n")
+        if last_para > 0:
+            half_markdown = half_markdown[:last_para]
+
+        fallback_prompt = (
+            f"{_EXTRACTION_SYSTEM_PROMPT}\n\n"
+            f"---\n\n"
+            f"Source ID: {source_id}\n\n"
+            f"NLP extraction results:\n"
+            f"Named entities (spaCy NER):\n{ner_section}\n\n"
+            f"Keyphrases:\n{keyphrase_section}\n\n"
+            f"TF-IDF overlap with existing wiki:\n{tfidf_section}\n\n"
+            f"---\n\n"
+            f"Source document:\n\n{half_markdown}"
+        )
+
+        try:
+            fallback_response = _with_retry(
+                lambda: client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=fallback_prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=LLMExtractionResponse,
+                        thinking_config=types.ThinkingConfig(thinking_budget=512),
+                        max_output_tokens=32768,
+                        temperature=0.0,
+                    ),
+                ),
+                step="extract-fallback",
+            )
+        except LLMRateLimitedError:
+            raise
+        except Exception as fallback_call_err:
+            raise LLMCompileError(
+                f"extract_llm_parse_failed_after_fallback: "
+                f"first={first_err}; fallback_call={fallback_call_err}"
+            ) from first_err
+
+        _log_usage("extract-fallback", fallback_response)
+
+        fallback_usage: Any = fallback_response.usage_metadata
+        if fallback_usage is not None:
+            input_tok = getattr(fallback_usage, "prompt_token_count", 0) or 0
+            output_tok = getattr(fallback_usage, "candidates_token_count", 0) or 0
+            _check_and_record_cost(int(input_tok), int(output_tok))
+
+        fallback_raw = fallback_response.text
+        if not fallback_raw:
+            raise LLMCompileError(
+                f"extract_llm_parse_failed_after_fallback: "
+                f"first={first_err}; fallback=empty"
+            ) from first_err
+
+        try:
+            return LLMExtractionResponse.model_validate_json(fallback_raw)
+        except Exception as fallback_parse_err:
+            salvaged_fallback = _salvage_extraction(fallback_raw)
+            if salvaged_fallback is not None:
+                print(
+                    f"[extract] salvaged fallback response via json-repair",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return salvaged_fallback
+            raise LLMCompileError(
+                f"extract_llm_parse_failed_after_fallback: "
+                f"first={first_err}; second={fallback_parse_err}"
+            ) from first_err
 
 
 # ---------------------------------------------------------------------------
@@ -526,11 +778,6 @@ def disambiguate_entities(pairs: list[dict[str, Any]]) -> DisambiguationResponse
     if not pairs:
         return DisambiguationResponse(results=[])
 
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted after max_delay")
-
     pairs_json = _json.dumps(pairs, ensure_ascii=False, indent=2)
     prompt = (
         f"{_DISAMBIGUATION_SYSTEM_PROMPT}\n\n"
@@ -540,19 +787,26 @@ def disambiguate_entities(pairs: list[dict[str, Any]]) -> DisambiguationResponse
 
     client = get_client()
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=DisambiguationResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=512),
-                max_output_tokens=2048,
-                temperature=0.0,
+        response = _with_retry(
+            lambda: client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=DisambiguationResponse,
+                    thinking_config=types.ThinkingConfig(thinking_budget=512),
+                    max_output_tokens=2048,
+                    temperature=0.0,
+                ),
             ),
+            step="disambiguate",
         )
+    except LLMRateLimitedError:
+        raise
     except Exception as e:
         raise LLMCompileError(f"disambiguate_llm_call_failed: {e}") from e
+
+    _log_usage("disambiguate", response)
 
     usage: Any = response.usage_metadata
     if usage is not None:
@@ -886,27 +1140,29 @@ def crossref_pages(pages: list[dict[str, Any]]) -> CrossrefResponse:
     if len(prompt) > _GEMINI_INPUT_TOKEN_CAP:
         prompt = prompt[:_GEMINI_INPUT_TOKEN_CAP]
 
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-
     client = get_client()
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=_CROSSREF_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=CrossrefResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-                max_output_tokens=32768,
-                temperature=0.0,
+        response = _with_retry(
+            lambda: client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=_CROSSREF_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_schema=CrossrefResponse,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    max_output_tokens=32768,
+                    temperature=0.0,
+                ),
             ),
+            step="crossref",
         )
+    except LLMRateLimitedError:
+        raise
     except Exception as e:
         raise LLMCompileError(f"crossref_llm_failed: {e}") from e
+
+    _log_usage("crossref", response)
 
     usage: Any = response.usage_metadata
     if usage is not None:
@@ -972,11 +1228,6 @@ def triage_page_update(
     """
     import json as _json
 
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-
     prompt = (
         f'You are a wiki maintenance assistant deciding whether a wiki page needs updating.\n\n'
         f'Wiki page: "{page_title}"\n'
@@ -994,19 +1245,26 @@ def triage_page_update(
 
     client = get_client()
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=TriageResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-                max_output_tokens=512,
-                temperature=0.0,
+        response = _with_retry(
+            lambda: client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=TriageResponse,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    max_output_tokens=512,
+                    temperature=0.0,
+                ),
             ),
+            step="triage",
         )
+    except LLMRateLimitedError:
+        raise
     except Exception as e:
         raise LLMCompileError(f"triage_llm_call_failed: {e}") from e
+
+    _log_usage("triage", response)
 
     usage: Any = response.usage_metadata
     if usage is not None:
@@ -1047,25 +1305,27 @@ def generate_schema(pages_summary: list[dict[str, Any]]) -> str:
         + _json.dumps(pages_summary, ensure_ascii=False, indent=2)
     )
 
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-
     client = get_client()
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=_SCHEMA_SYSTEM_PROMPT,
-                thinking_config=types.ThinkingConfig(thinking_budget=2048),
-                max_output_tokens=8192,
-                temperature=0.0,
+        response = _with_retry(
+            lambda: client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=_SCHEMA_SYSTEM_PROMPT,
+                    thinking_config=types.ThinkingConfig(thinking_budget=2048),
+                    max_output_tokens=8192,
+                    temperature=0.0,
+                ),
             ),
+            step="schema",
         )
+    except LLMRateLimitedError:
+        raise
     except Exception as e:
         raise LLMCompileError(f"generate_schema_llm_failed: {e}") from e
+
+    _log_usage("schema", response)
 
     usage: Any = response.usage_metadata
     if usage is not None:
@@ -1125,11 +1385,6 @@ def select_pages_for_query(
     if not index:
         return []
 
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-
     index_text = _json.dumps(index, ensure_ascii=False)
     if len(index_text) > _GEMINI_INPUT_TOKEN_CAP:
         index_text = index_text[:_GEMINI_INPUT_TOKEN_CAP]
@@ -1142,19 +1397,26 @@ def select_pages_for_query(
 
     client = get_client()
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=SelectPagesResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=1024),
-                max_output_tokens=1024,
-                temperature=0.0,
+        response = _with_retry(
+            lambda: client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=SelectPagesResponse,
+                    thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                    max_output_tokens=1024,
+                    temperature=0.0,
+                ),
             ),
+            step="select_pages",
         )
+    except LLMRateLimitedError:
+        raise
     except Exception as e:
         raise LLMCompileError(f"select_pages_llm_failed: {e}") from e
+
+    _log_usage("select_pages", response)
 
     usage: Any = response.usage_metadata
     if usage is not None:
