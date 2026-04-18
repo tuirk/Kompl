@@ -33,7 +33,15 @@ COPY requirements.txt /app/requirements.txt
 # Install CPU-only torch first. Without this, pip resolves the CUDA wheel
 # (~2 GB) from PyPI, bloating the image to 10 GB+. sentence-transformers and
 # keybert find torch already installed and skip their own resolution.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+#
+# Torch MUST be pinned. sentence-transformers==3.3.1 (Nov 2024) calls
+# `.to(device)` on meta-device-initialised weights; torch >=2.7 raises
+# NotImplementedError("Cannot copy out of meta tensor") and requires
+# `.to_empty()` instead. An unpinned install after a --no-cache rebuild
+# pulls the latest torch and breaks /resolve/embedding + /extract/keybert
+# at runtime — and the unit tests stub sentence_transformers, so nothing
+# catches the drift.
+RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 
 RUN pip install --no-cache-dir -r requirements.txt
 
