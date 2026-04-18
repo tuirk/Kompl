@@ -1221,18 +1221,23 @@ export function reconcileStuckCompileSessions(olderThanMinutes: number): number 
 
   if (stuckRows.length === 0) return 0;
 
+  const ERROR_MSG =
+    `Compile did not start — background worker was unreachable after ${olderThanMinutes} min. Click Retry.`;
+
   const tx = db.transaction(() => {
     const update = db.prepare(
       `UPDATE compile_progress
           SET status = 'failed', error = ?
         WHERE session_id = ? AND status = 'queued'`
     );
+    // activity_log column is `timestamp`, not `created_at`; it has a
+    // CURRENT_TIMESTAMP default so we omit it from the INSERT entirely.
     const activity = db.prepare(
-      `INSERT INTO activity_log (action_type, source_id, details, created_at)
-       VALUES ('compile_failed', NULL, ?, CURRENT_TIMESTAMP)`
+      `INSERT INTO activity_log (action_type, source_id, details)
+       VALUES ('compile_failed', NULL, ?)`
     );
     for (const row of stuckRows) {
-      update.run('never_started', row.session_id);
+      update.run(ERROR_MSG, row.session_id);
       activity.run(JSON.stringify({ session_id: row.session_id, reason: 'never_started' }));
     }
   });
