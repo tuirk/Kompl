@@ -126,6 +126,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'canonical_entities must be an array' }, { status: 422 });
   }
 
+  try {
   const canonicalEntities = body.canonical_entities as ResolvedGroup[];
   const matches = Array.isArray(body.matches)
     ? (body.matches as Array<{
@@ -425,4 +426,10 @@ export async function POST(request: Request) {
   };
 
   return NextResponse.json({ session_id, pages: plans, stats }, { status: 200 });
+  } catch (err) {
+    // Own the stack trace here — orchestrator only sees the serialised message.
+    console.error('[plan]', err);
+    const msg = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
 }

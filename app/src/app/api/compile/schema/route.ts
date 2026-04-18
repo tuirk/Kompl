@@ -83,6 +83,7 @@ export async function POST(request: Request) {
     const detail = await genRes.text().catch(() => '');
     if (genRes.status === 429) return NextResponse.json({ error: 'llm_rate_limited' }, { status: 429 });
     if (genRes.status === 503) return NextResponse.json({ error: 'daily_cost_ceiling' }, { status: 503 });
+    console.error('[schema] generate failed:', genRes.status, detail);
     return NextResponse.json({ error: `generate_schema_failed: ${genRes.status} ${detail}` }, { status: 500 });
   }
 
@@ -98,6 +99,7 @@ export async function POST(request: Request) {
 
   if (!writeRes.ok) {
     const detail = await writeRes.text().catch(() => '');
+    console.error('[schema] write failed:', detail);
     return NextResponse.json({ error: `schema_write_failed: ${detail}` }, { status: 500 });
   }
 

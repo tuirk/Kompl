@@ -55,7 +55,7 @@ export async function GET() {
       nlpOk = nlpRes.ok;
     } catch { /* non-fatal */ }
 
-    const dbOk = dbWritable && allExpectedPresent && schemaVersion === 15;
+    const dbOk = dbWritable && allExpectedPresent && schemaVersion === 16;
 
     // status:'ok' requires DB healthy + NLP reachable + no vector backlog.
     // status:'degraded' means the app is serving but something needs attention.

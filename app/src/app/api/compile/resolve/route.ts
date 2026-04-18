@@ -299,6 +299,8 @@ export async function POST(request: Request) {
     if (e.status === 503) {
       return NextResponse.json({ error: 'daily_cost_ceiling' }, { status: 503 });
     }
+    // Own the stack trace here — orchestrator only sees the serialised message.
+    console.error('[resolve]', err);
     return NextResponse.json({ error: e.message ?? 'unknown_error' }, { status: 500 });
   }
 }

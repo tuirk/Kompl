@@ -38,14 +38,36 @@ import {
 
 const APP_URL = process.env.APP_URL ?? 'http://app:3000';
 
-async function callExtract(sourceId: string): Promise<void> {
+// Shared error surfacer. On !res.ok, read the response body (race-capped at
+// 3 s so a hung chunked response doesn't stall the orchestrator) and embed
+// the first 2 000 chars into the thrown Error message so failCompileProgress
+// stores the actual cause in compile_progress.error — visible in the UI
+// banner and in activity feed extract-failure rows (no more raw UUID noise).
+// Stack-trace logging is owned by each sub-route's own catch block; this
+// side only writes a short marker line to keep logs non-duplicative.
+async function throwOnError(
+  step: string,
+  res: Response,
+  sessionId: string
+): Promise<void> {
+  if (res.ok) return;
+  const body = await Promise.race<string>([
+    res.text().catch(() => ''),
+    new Promise<string>((resolve) => setTimeout(() => resolve('<body read timed out>'), 3000)),
+  ]);
+  const snippet = body.replace(/\s+/g, ' ').trim().slice(0, 2000);
+  console.error(`[compile:${sessionId}] ${step} HTTP ${res.status}`);
+  throw new Error(`${step} failed: ${res.status}${snippet ? ` — ${snippet}` : ''}`);
+}
+
+async function callExtract(sourceId: string, sessionId: string): Promise<void> {
   const res = await fetch(`${APP_URL}/api/compile/extract`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_id: sourceId }),
     signal: AbortSignal.timeout(180_000),
   });
-  if (!res.ok) throw new Error(`extract failed for ${sourceId}: ${res.status}`);
+  await throwOnError('extract', res, sessionId);
 }
 
 async function callResolve(sessionId: string): Promise<{ canonical_entities: unknown[] }> {
@@ -55,7 +77,7 @@ async function callResolve(sessionId: string): Promise<{ canonical_entities: unk
     body: JSON.stringify({ session_id: sessionId }),
     signal: AbortSignal.timeout(180_000),
   });
-  if (!res.ok) throw new Error(`resolve failed: ${res.status}`);
+  await throwOnError('resolve', res, sessionId);
   return res.json() as Promise<{ canonical_entities: unknown[] }>;
 }
 
@@ -69,7 +91,7 @@ async function callMatch(
     body: JSON.stringify({ session_id: sessionId, canonical_entities: canonicalEntities }),
     signal: AbortSignal.timeout(300_000), // triage calls can stack up
   });
-  if (!res.ok) throw new Error(`match failed: ${res.status}`);
+  await throwOnError('match', res, sessionId);
   return res.json() as Promise<{ skipped: boolean; matches: unknown[]; stats: Record<string, number> }>;
 }
 
@@ -84,7 +106,7 @@ async function callPlan(
     body: JSON.stringify({ session_id: sessionId, canonical_entities: canonicalEntities, matches }),
     signal: AbortSignal.timeout(30_000),
   });
-  if (!res.ok) throw new Error(`plan failed: ${res.status}`);
+  await throwOnError('plan', res, sessionId);
   return res.json() as Promise<{ stats: { total: number } }>;
 }
 
@@ -95,7 +117,7 @@ async function callDraft(sessionId: string): Promise<{ drafted: number; failed: 
     body: JSON.stringify({ session_id: sessionId }),
     signal: AbortSignal.timeout(900_000),
   });
-  if (!res.ok) throw new Error(`draft failed: ${res.status}`);
+  await throwOnError('draft', res, sessionId);
   return res.json() as Promise<{ drafted: number; failed: number }>;
 }
 
@@ -106,7 +128,7 @@ async function callCrossref(sessionId: string): Promise<{ wikilinks_added: numbe
     body: JSON.stringify({ session_id: sessionId }),
     signal: AbortSignal.timeout(600_000),
   });
-  if (!res.ok) throw new Error(`crossref failed: ${res.status}`);
+  await throwOnError('crossref', res, sessionId);
   return res.json() as Promise<{ wikilinks_added: number }>;
 }
 
@@ -117,7 +139,7 @@ async function callCommit(sessionId: string): Promise<{ committed: number; thin_
     body: JSON.stringify({ session_id: sessionId }),
     signal: AbortSignal.timeout(120_000),
   });
-  if (!res.ok) throw new Error(`commit failed: ${res.status}`);
+  await throwOnError('commit', res, sessionId);
   return res.json() as Promise<{ committed: number; thin_drafts_skipped: number }>;
 }
 
@@ -128,7 +150,7 @@ async function callSchema(sessionId: string): Promise<unknown> {
     body: JSON.stringify({ session_id: sessionId }),
     signal: AbortSignal.timeout(120_000),
   });
-  if (!res.ok) throw new Error(`schema failed: ${res.status}`);
+  await throwOnError('schema', res, sessionId);
   return res.json();
 }
 
@@ -142,6 +164,17 @@ class CompileCancelledError extends Error {
 function assertNotCancelled(sessionId: string): void {
   const p = getCompileProgress(sessionId);
   if (p?.status === 'cancelled') throw new CompileCancelledError();
+}
+
+// Log step-done timing on success so cold-start latency (first-call spaCy /
+// sentence-transformer lazy load in nlp-service, better-sqlite3 WAL warm-up)
+// shows up clearly. On failure the caller throws and the top-level .catch in
+// POST owns the error line — no duplicate logging here.
+async function timed<T>(sessionId: string, step: string, fn: () => Promise<T>): Promise<T> {
+  const t = Date.now();
+  const r = await fn();
+  console.log(`[compile:${sessionId}] ${step} ${Date.now() - t}ms`);
+  return r;
 }
 
 async function runCompilePipeline(sessionId: string): Promise<void> {
@@ -164,7 +197,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     let extractSucceeded = sources.length - unextracted.length;
     for (const src of unextracted) {
       try {
-        await callExtract(src.source_id);
+        await callExtract(src.source_id, sessionId);
         extractSucceeded++;
       } catch (err) {
         insertActivity({
@@ -191,14 +224,14 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
 
   // Step 2: resolve — ALWAYS re-run (cheap: reads extractions table directly).
   updateCompileStep(sessionId, 'resolve', 'running');
-  const resolveResult = await callResolve(sessionId);
+  const resolveResult = await timed(sessionId, 'resolve', () => callResolve(sessionId));
   const canonicalEntities = resolveResult.canonical_entities;
   updateCompileStep(sessionId, 'resolve', 'done', `${canonicalEntities.length} canonical entities`);
   assertNotCancelled(sessionId);
 
   // Step 3: match — ALWAYS re-run (cheap: TF-IDF, no LLM unless triage).
   updateCompileStep(sessionId, 'match', 'running');
-  const matchResult = await callMatch(sessionId, canonicalEntities);
+  const matchResult = await timed(sessionId, 'match', () => callMatch(sessionId, canonicalEntities));
   if (matchResult.skipped) {
     updateCompileStep(sessionId, 'match', 'done', 'First compile — no existing pages');
   } else {
@@ -227,12 +260,14 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   if (!planExists) {
     // Fresh run: plan then draft.
     updateCompileStep(sessionId, 'plan', 'running');
-    const planResult = await callPlan(sessionId, canonicalEntities, matchResult.matches);
+    const planResult = await timed(sessionId, 'plan', () =>
+      callPlan(sessionId, canonicalEntities, matchResult.matches)
+    );
     updateCompileStep(sessionId, 'plan', 'done', `${planResult.stats.total} pages planned`);
     assertNotCancelled(sessionId);
 
     updateCompileStep(sessionId, 'draft', 'running');
-    const draftResult = await callDraft(sessionId);
+    const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId));
     updateCompileStep(
       sessionId,
       'draft',
@@ -247,7 +282,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     // 'failed' on a prior Gemini error. Re-draft only those.
     console.log(`[compile:${sessionId}] ${pendingDraftCount} plans pending — re-drafting without re-planning`);
     updateCompileStep(sessionId, 'draft', 'running');
-    const draftResult = await callDraft(sessionId);
+    const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId));
     updateCompileStep(
       sessionId,
       'draft',
@@ -266,7 +301,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   // plans are already 'crossreffed' (commit-failure retry), this returns 0
   // wikilinks as a safe no-op — plans stay 'crossreffed' for commit to consume.
   updateCompileStep(sessionId, 'crossref', 'running');
-  const crossrefResult = await callCrossref(sessionId);
+  const crossrefResult = await timed(sessionId, 'crossref', () => callCrossref(sessionId));
   updateCompileStep(sessionId, 'crossref', 'done', `${crossrefResult.wikilinks_added} wikilinks added`);
   assertNotCancelled(sessionId);
 
@@ -274,13 +309,13 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   // Pass 5 is a synchronous better-sqlite3 transaction — cancel is blocked at
   // the route level once this step is 'running'. No mid-transaction abort.
   updateCompileStep(sessionId, 'commit', 'running');
-  const commitResult = await callCommit(sessionId);
+  const commitResult = await timed(sessionId, 'commit', () => callCommit(sessionId));
   const thinMsg = commitResult.thin_drafts_skipped > 0 ? `, ${commitResult.thin_drafts_skipped} thin drafts skipped` : '';
   updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages committed${thinMsg}`);
 
   // Step 8: schema — ALWAYS re-run (idempotent, schema route handles already_exists).
   updateCompileStep(sessionId, 'schema', 'running');
-  await callSchema(sessionId);
+  await timed(sessionId, 'schema', () => callSchema(sessionId));
   updateCompileStep(sessionId, 'schema', 'done');
 
   completeCompileProgress(sessionId);
@@ -319,6 +354,7 @@ export async function POST(request: Request) {
       console.log(`[compile:${session_id}] cancelled by user — pipeline exited cleanly`);
       return;
     }
+    console.error(`[compile:${session_id}] pipeline error:`, err);
     failCompileProgress(session_id, err instanceof Error ? err.message : String(err));
   });
 

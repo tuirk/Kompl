@@ -99,6 +99,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'session_id required' }, { status: 400 });
   }
 
+  try {
   // Short-circuit for first compile (no existing pages)
   const pageCount = getPageCount();
   if (pageCount === 0) {
@@ -189,4 +190,10 @@ export async function POST(request: Request) {
       skips,
     },
   });
+  } catch (err) {
+    // Own the stack trace here — orchestrator only sees the serialised message.
+    console.error('[match]', err);
+    const msg = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
 }

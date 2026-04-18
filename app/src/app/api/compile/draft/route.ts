@@ -244,6 +244,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'session_id required' }, { status: 400 });
   }
 
+  try {
   const db = getDb();
 
   // Get all sources for this session (for reading markdown)
@@ -454,4 +455,16 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ session_id, drafted, failed, by_type: byType }, { status: 200 });
+  } catch (err) {
+    const e = err as Error & { status?: number };
+    if (e.status === 429) {
+      return NextResponse.json({ error: 'llm_rate_limited' }, { status: 429 });
+    }
+    if (e.status === 503) {
+      return NextResponse.json({ error: 'daily_cost_ceiling' }, { status: 503 });
+    }
+    // Own the stack trace here — orchestrator only sees the serialised message.
+    console.error('[draft]', err);
+    return NextResponse.json({ error: e.message ?? 'unknown_error' }, { status: 500 });
+  }
 }
