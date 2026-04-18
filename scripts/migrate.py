@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -269,6 +269,48 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_page_links_unique
 # ingest-failure time so the Saved Links page shows real context, not a bare URL.
 MIGRATION_V16_SQL = "ALTER TABLE ingest_failures ADD COLUMN metadata JSON"
 
+# V17: wiki-wide mention indexes — entities, concepts, and relationships.
+# Lets the plan step ask "how many distinct sources have ever mentioned X?"
+# against the entire wiki, not just the current compile session. Required for
+# Karpathy-style compounding — source #47 mentioning something first seen in
+# source #12 should be able to promote it to a page.
+#
+# entity_mentions: one row per (canonical_name, source_id). Concepts live here
+# too with entity_type='CONCEPT'. COLLATE NOCASE so "GPT-4" and "gpt-4" collide.
+#
+# relationship_mentions: one row per (from, to, type, source_id). Pairs are
+# stored in canonical-sorted order (from_canonical <= to_canonical lowercase)
+# for competes_with / contradicts which are direction-agnostic, so "A vs B"
+# and "B vs A" collapse to one bucket.
+#
+# ON DELETE CASCADE keeps counts honest when a source is removed.
+MIGRATION_V17_SQL = """
+CREATE TABLE IF NOT EXISTS entity_mentions (
+  canonical_name TEXT NOT NULL COLLATE NOCASE,
+  source_id TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  entity_type TEXT,
+  first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (canonical_name, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_canonical
+  ON entity_mentions(canonical_name);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_source
+  ON entity_mentions(source_id);
+
+CREATE TABLE IF NOT EXISTS relationship_mentions (
+  from_canonical TEXT NOT NULL COLLATE NOCASE,
+  to_canonical TEXT NOT NULL COLLATE NOCASE,
+  relationship_type TEXT NOT NULL,
+  source_id TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (from_canonical, to_canonical, relationship_type, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_relationship_mentions_pair
+  ON relationship_mentions(from_canonical, to_canonical, relationship_type);
+CREATE INDEX IF NOT EXISTS idx_relationship_mentions_source
+  ON relationship_mentions(source_id);
+"""
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -395,6 +437,10 @@ def migrate():
         }
         if "metadata" not in existing_cols:
             conn.execute(MIGRATION_V16_SQL)
+
+    if current < 17:
+        print("  applying migration v17 (entity_mentions table)...")
+        conn.executescript(MIGRATION_V17_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

@@ -19,6 +19,7 @@ import {
   getLastLintAt, getLastBackupAt,
   getMinSourceChars, setMinSourceChars,
   getMinDraftChars, setMinDraftChars,
+  getEntityPromotionThreshold, setEntityPromotionThreshold,
   getDailyCapUsd, setDailyCapUsd,
 } from '../../../lib/db';
 
@@ -38,6 +39,7 @@ function buildResponse() {
     last_backup_at: getLastBackupAt(),
     min_source_chars: getMinSourceChars(),
     min_draft_chars: getMinDraftChars(),
+    entity_promotion_threshold: getEntityPromotionThreshold(),
     daily_cap_usd: getDailyCapUsd(),
   };
 }
@@ -58,6 +60,7 @@ export async function POST(request: Request) {
     deployment_mode?: 'personal-device' | 'always-on';
     min_source_chars?: number;
     min_draft_chars?: number;
+    entity_promotion_threshold?: number;
     daily_cap_usd?: number;
   };
 
@@ -67,6 +70,7 @@ export async function POST(request: Request) {
     'digest_enabled', 'digest_telegram_token', 'digest_telegram_chat_id',
     'lint_enabled', 'deployment_mode',
     'min_source_chars', 'min_draft_chars',
+    'entity_promotion_threshold',
     'daily_cap_usd',
   ];
   if (!knownFields.some((f) => f in body)) {
@@ -156,6 +160,16 @@ export async function POST(request: Request) {
       );
     }
     setMinDraftChars(body.min_draft_chars);
+  }
+
+  if (body.entity_promotion_threshold !== undefined) {
+    if (!Number.isInteger(body.entity_promotion_threshold) || body.entity_promotion_threshold < 1) {
+      return NextResponse.json(
+        { error: 'entity_promotion_threshold must be an integer ≥ 1' },
+        { status: 422 },
+      );
+    }
+    setEntityPromotionThreshold(body.entity_promotion_threshold);
   }
 
   if (body.daily_cap_usd !== undefined) {

@@ -23,10 +23,15 @@ import { NextResponse } from 'next/server';
 
 import {
   clearStagedPagePlans,
+  countSourcesForRelationship,
+  countSourcesMentioning,
   getDb,
+  getEntityPromotionThreshold,
   getExtractionsBySession,
   getMinSourceChars,
   getPageByTitle,
+  getSourceIdsForRelationship,
+  getSourceIdsMentioning,
   insertPagePlan,
   readRawMarkdown,
 } from '../../../../lib/db';
@@ -56,6 +61,8 @@ export interface PlannedPage {
 // many distinct sources. One article saying "X competes with Y" is just that
 // article's opinion — three sources noting the same rivalry is a pattern
 // worth synthesising into its own page.
+// Deliberately NOT user-tunable — this is the load-bearing evidence signal,
+// not a noise knob.
 export const COMPARISON_SOURCE_THRESHOLD = 3;
 
 // ── Levenshtein distance (simple, sufficient for short concept names) ─────────
@@ -181,52 +188,54 @@ export async function POST(request: Request) {
 
   const plans: PlannedPage[] = [];
 
-  // Dynamic threshold: entity/concept page requires mentions in >= this many sources.
-  // Math.ceil(10% of session sources), minimum 2. Prevents a single dense source
-  // from creating dozens of entity pages and burning LLM budget.
-  const entityThreshold = Math.max(2, Math.ceil(sessionSources.length * 0.1));
+  // Wiki-wide promotion threshold (schema v17). An entity/concept gets its own
+  // page when the number of distinct sources that have EVER mentioned it
+  // crosses the threshold — not just sources in this compile session.
+  // Reads entity_mentions which was written at extract time. Enables the
+  // Karpathy-style compounding: source #47 mentioning an entity first seen in
+  // source #12 is the tipping point that promotes it, even when ingested alone.
+  const entityThreshold = getEntityPromotionThreshold();
 
   // ── Rule 1: Source summaries ─────────────────────────────────────────────────
   // All sources get a page. Short sources (<min_source_chars) become 'original-source'
   // pages that display raw content without LLM drafting. Long sources are 'source-summary'.
+  // On retry, a source may already have a committed page from an earlier run —
+  // getPageByTitle flips the action to 'update' so commit reuses the existing
+  // page_id instead of minting a duplicate.
   const minSourceChars = getMinSourceChars();
   for (const src of sessionSources) {
     const isShort = minSourceChars > 0 &&
       (readRawMarkdown(src.source_id)?.length ?? 0) < minSourceChars;
+    const existing = getPageByTitle(src.title);
     plans.push({
       plan_id: randomUUID(),
       title: src.title,
       page_type: isShort ? 'original-source' : 'source-summary',
-      action: 'create',
+      action: existing ? 'update' : 'create',
       source_ids: [src.source_id],
+      existing_page_id: existing?.page_id,
       related_plan_ids: [],
     });
   }
 
   // ── Rule 2: Entity pages ─────────────────────────────────────────────────────
+  // Gate is wiki-wide: countSourcesMentioning reads entity_mentions across the
+  // full corpus. When threshold is crossed for the first time, source_ids on
+  // the plan is seeded from the full historical mention set so the new page
+  // is created with provenance for every source that ever named it — not just
+  // the session sources that happened to trigger the promotion.
   const entityPlanIds: string[] = [];
   const entityPlansByCanonical = new Map<string, string>(); // canonical → plan_id
 
   for (const entity of canonicalEntities) {
-    if (!entity.canonical || entity.source_ids.length === 0) continue;
-    if (entity.source_ids.length < entityThreshold) continue;
+    if (!entity.canonical) continue;
+    if (countSourcesMentioning(entity.canonical) < entityThreshold) continue;
 
     const canonicalKey = entity.canonical.toLowerCase();
 
-    // Within-session dedup: same canonical name seen again → merge source_ids
-    // instead of creating a second plan entry. Mirrors the concept loop pattern.
-    if (entityPlansByCanonical.has(canonicalKey)) {
-      const existingPlanId = entityPlansByCanonical.get(canonicalKey)!;
-      const existingPlan = plans.find((p) => p.plan_id === existingPlanId);
-      if (existingPlan) {
-        for (const sid of entity.source_ids) {
-          if (!existingPlan.source_ids.includes(sid)) {
-            existingPlan.source_ids.push(sid);
-          }
-        }
-      }
-      continue;
-    }
+    // Within-session dedup: same canonical name seen again → skip; source_ids
+    // were already seeded from the full mention history on first insert.
+    if (entityPlansByCanonical.has(canonicalKey)) continue;
 
     const existing = getPageByTitle(entity.canonical);
     const plan_id = randomUUID();
@@ -237,7 +246,7 @@ export async function POST(request: Request) {
       title: entity.canonical,
       page_type: 'entity',
       action: existing ? 'update' : 'create',
-      source_ids: [...new Set(entity.source_ids)],
+      source_ids: getSourceIdsMentioning(entity.canonical),
       existing_page_id: existing?.page_id,
       related_plan_ids: [],
     });
@@ -270,7 +279,10 @@ export async function POST(request: Request) {
 
   const conceptPlanIds: string[] = [];
   for (const group of conceptGroups) {
-    if (group.source_ids.length < entityThreshold) continue;
+    // Wiki-wide gate (same rationale as Rule 2). Concepts are stored in
+    // entity_mentions under entity_type='CONCEPT' by the extract-time hook,
+    // so the same COUNT works for both entities and concepts.
+    if (countSourcesMentioning(group.canonical) < entityThreshold) continue;
 
     const existing = getPageByTitle(group.canonical);
     plans.push({
@@ -278,7 +290,7 @@ export async function POST(request: Request) {
       title: group.canonical,
       page_type: 'concept',
       action: existing ? 'update' : 'create',
-      source_ids: group.source_ids,
+      source_ids: getSourceIdsMentioning(group.canonical),
       existing_page_id: existing?.page_id,
       related_plan_ids: [],
     });
@@ -286,50 +298,56 @@ export async function POST(request: Request) {
   }
 
   // ── Rule 4: Comparison pages ─────────────────────────────────────────────────
-  // Threshold (COMPARISON_SOURCE_THRESHOLD) is module-level so tests can pin it.
+  // Wiki-wide counting: relationship_mentions was written at extract time with
+  // direction-agnostic types (competes_with, contradicts) already normalized
+  // to from/to lowercase-sorted order. We still enumerate THIS session's
+  // relationships to seed the candidate list (a pair nobody mentioned in the
+  // current session isn't worth re-evaluating), but the gate reads the full
+  // corpus so a pair that hit threshold across historical sources finally
+  // earns its page when the current session corroborates it.
   const entityNameSet = new Set(canonicalEntities.map((e) => e.canonical.toLowerCase()));
 
-  // Phase 1: count distinct sources that extracted each relationship pair.
-  // Key uses sorted, lower-cased names with '|||' so "A vs B" and "B vs A"
-  // collapse into the same bucket. Display names are stored separately.
-  const relationshipSourceCounts = new Map<string, Set<string>>();
-  const relationshipDisplayNames = new Map<string, [string, string]>(); // key → [nameA, nameB]
-
-  for (const [sourceId, ext] of extractionMap.entries()) {
+  const candidatePairs = new Map<string, { from: string; to: string; type: string }>();
+  for (const ext of extractionMap.values()) {
     for (const rel of ext.relationships) {
       if (rel.type !== 'competes_with' && rel.type !== 'contradicts') continue;
       if (!entityNameSet.has(rel.from_entity.toLowerCase())) continue;
       if (!entityNameSet.has(rel.to.toLowerCase())) continue;
 
-      const [nameA, nameB] = [rel.from_entity, rel.to].sort();
-      const key = `${nameA.toLowerCase()}|||${nameB.toLowerCase()}`;
-      if (!relationshipSourceCounts.has(key)) {
-        relationshipSourceCounts.set(key, new Set());
-        relationshipDisplayNames.set(key, [nameA, nameB]);
+      // Normalize to match the sort rule used by extract when writing
+      // relationship_mentions, so the lookup key lines up.
+      const [nameA, nameB] = rel.from_entity.toLowerCase() <= rel.to.toLowerCase()
+        ? [rel.from_entity, rel.to]
+        : [rel.to, rel.from_entity];
+      const key = `${nameA.toLowerCase()}|||${nameB.toLowerCase()}|||${rel.type}`;
+      if (!candidatePairs.has(key)) {
+        candidatePairs.set(key, { from: nameA, to: nameB, type: rel.type });
       }
-      relationshipSourceCounts.get(key)!.add(sourceId);
     }
   }
 
-  // Phase 2: emit a comparison page only for pairs that crossed the threshold.
-  for (const [key, sourceSet] of relationshipSourceCounts.entries()) {
-    if (sourceSet.size < COMPARISON_SOURCE_THRESHOLD) continue;
+  let relationshipsBelowThreshold = 0;
+  for (const { from, to, type } of candidatePairs.values()) {
+    const count = countSourcesForRelationship(from, to, type);
+    if (count < COMPARISON_SOURCE_THRESHOLD) {
+      relationshipsBelowThreshold++;
+      continue;
+    }
 
-    const [nameA, nameB] = relationshipDisplayNames.get(key)!;
-    const planIdA = entityPlansByCanonical.get(nameA.toLowerCase());
-    const planIdB = entityPlansByCanonical.get(nameB.toLowerCase());
+    const planIdA = entityPlansByCanonical.get(from.toLowerCase());
+    const planIdB = entityPlansByCanonical.get(to.toLowerCase());
     const related: string[] = [];
     if (planIdA) related.push(planIdA);
     if (planIdB) related.push(planIdB);
 
-    const compTitle = `${nameA} vs ${nameB}`;
+    const compTitle = `${from} vs ${to}`;
     const existingComp = getPageByTitle(compTitle);
     plans.push({
       plan_id: randomUUID(),
       title: compTitle,
       page_type: 'comparison',
       action: existingComp ? 'update' : 'create',
-      source_ids: [...sourceSet],
+      source_ids: getSourceIdsForRelationship(from, to, type),
       related_plan_ids: related,
       existing_page_id: existingComp?.page_id,
     });
@@ -421,8 +439,8 @@ export async function POST(request: Request) {
     total: plans.length,
     entity_threshold: entityThreshold,
     comparison_threshold: COMPARISON_SOURCE_THRESHOLD,
-    relationships_found: relationshipSourceCounts.size,
-    relationships_below_threshold: [...relationshipSourceCounts.values()].filter((s) => s.size < COMPARISON_SOURCE_THRESHOLD).length,
+    relationships_found: candidatePairs.size,
+    relationships_below_threshold: relationshipsBelowThreshold,
   };
 
   return NextResponse.json({ session_id, pages: plans, stats }, { status: 200 });

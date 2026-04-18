@@ -200,13 +200,13 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":16'; then
-        echo "  FAIL: schema_version != 16"
+    if ! echo "$response" | grep -q '"schema_version":17'; then
+        echo "  FAIL: schema_version != 17"
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"table_count":15'; then
-        echo "  FAIL: table_count != 15"
+    if ! echo "$response" | grep -q '"table_count":17'; then
+        echo "  FAIL: table_count != 17"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -217,6 +217,16 @@ stage_1_migration_schema() {
     fi
     if ! echo "$response" | grep -q '"vector_backfill_queue"'; then
         echo "  FAIL: vector_backfill_queue table missing from /api/health tables list"
+        record_stage 1 REAL FAIL
+        return 1
+    fi
+    if ! echo "$response" | grep -q '"entity_mentions"'; then
+        echo "  FAIL: entity_mentions table missing from /api/health tables list"
+        record_stage 1 REAL FAIL
+        return 1
+    fi
+    if ! echo "$response" | grep -q '"relationship_mentions"'; then
+        echo "  FAIL: relationship_mentions table missing from /api/health tables list"
         record_stage 1 REAL FAIL
         return 1
     fi

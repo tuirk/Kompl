@@ -134,6 +134,8 @@ const EXPECTED_TABLES = [
   'chat_messages',
   'ingest_failures',
   'vector_backfill_queue',
+  'entity_mentions',
+  'relationship_mentions',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -868,6 +870,153 @@ export function getExtractionsBySession(sessionId: string): ExtractionRow[] {
         ORDER BY e.created_at ASC`
     )
     .all(sessionId) as ExtractionRow[];
+}
+
+// ---------------------------------------------------------------------------
+// entity_mentions — wiki-wide entity mention index (schema v17)
+// ---------------------------------------------------------------------------
+//
+// Lets the plan step answer "how many distinct sources have ever mentioned
+// this entity?" as a single indexed COUNT, independent of compile session
+// boundaries. Writes happen at extract-commit time with alias pinning so
+// "GPT-4" and "GPT4" collapse to one canonical before counting.
+
+/**
+ * Bulk insert (canonical_name, source_id, entity_type) rows. Uses INSERT OR
+ * IGNORE so a re-extracted source can't double-count (PRIMARY KEY is the
+ * (canonical, source) pair). Runs in a single transaction.
+ */
+export function insertEntityMentions(
+  mentions: Array<{ canonical_name: string; source_id: string; entity_type: string | null }>
+): void {
+  if (mentions.length === 0) return;
+  const db = openDb();
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO entity_mentions (canonical_name, source_id, entity_type)
+     VALUES (@canonical_name, @source_id, @entity_type)`
+  );
+  db.transaction((rows: typeof mentions) => {
+    for (const row of rows) stmt.run(row);
+  })(mentions);
+}
+
+/**
+ * Remove all mention rows for a source. Called when a source is re-extracted
+ * so the mention set reflects the latest llm_output (canonicals may shift if
+ * aliases were edited between extracts).
+ */
+export function deleteEntityMentionsForSource(sourceId: string): void {
+  openDb()
+    .prepare(`DELETE FROM entity_mentions WHERE source_id = ?`)
+    .run(sourceId);
+}
+
+/**
+ * COUNT(DISTINCT source_id) for a canonical name. Case-insensitive via the
+ * COLLATE NOCASE on the column. Returns 0 if the entity has never been
+ * mentioned (e.g. first extraction just happened but the write hasn't
+ * committed yet).
+ */
+export function countSourcesMentioning(canonicalName: string): number {
+  const row = openDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM entity_mentions WHERE canonical_name = ?`
+    )
+    .get(canonicalName) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
+/**
+ * All source_ids that have ever mentioned a canonical entity name. Used by
+ * the plan step when a session-new entity crosses the wiki-wide threshold —
+ * the new page needs provenance for every historical source that mentioned
+ * the entity, not just the sources in the current compile session.
+ */
+export function getSourceIdsMentioning(canonicalName: string): string[] {
+  return (openDb()
+    .prepare(
+      `SELECT DISTINCT source_id FROM entity_mentions WHERE canonical_name = ?`
+    )
+    .all(canonicalName) as Array<{ source_id: string }>).map((r) => r.source_id);
+}
+
+/**
+ * Bulk insert (from, to, type, source_id) rows into relationship_mentions.
+ * Caller is responsible for normalizing from/to order for direction-agnostic
+ * relationships (competes_with, contradicts) so the PK collapses "A vs B"
+ * and "B vs A" to one row.
+ */
+export function insertRelationshipMentions(
+  mentions: Array<{
+    from_canonical: string;
+    to_canonical: string;
+    relationship_type: string;
+    source_id: string;
+  }>
+): void {
+  if (mentions.length === 0) return;
+  const db = openDb();
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO relationship_mentions
+       (from_canonical, to_canonical, relationship_type, source_id)
+     VALUES (@from_canonical, @to_canonical, @relationship_type, @source_id)`
+  );
+  db.transaction((rows: typeof mentions) => {
+    for (const row of rows) stmt.run(row);
+  })(mentions);
+}
+
+/** Remove relationship_mentions rows for a source (used before re-extract). */
+export function deleteRelationshipMentionsForSource(sourceId: string): void {
+  openDb()
+    .prepare(`DELETE FROM relationship_mentions WHERE source_id = ?`)
+    .run(sourceId);
+}
+
+/**
+ * COUNT(DISTINCT source_id) for a specific relationship pair+type.
+ * Callers pass from/to already sorted (for direction-agnostic types).
+ */
+export function countSourcesForRelationship(
+  fromCanonical: string,
+  toCanonical: string,
+  relationshipType: string
+): number {
+  const row = openDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM relationship_mentions
+        WHERE from_canonical = ? AND to_canonical = ? AND relationship_type = ?`
+    )
+    .get(fromCanonical, toCanonical, relationshipType) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
+/** All source_ids that witnessed a specific relationship. Mirrors getSourceIdsMentioning. */
+export function getSourceIdsForRelationship(
+  fromCanonical: string,
+  toCanonical: string,
+  relationshipType: string
+): string[] {
+  return (openDb()
+    .prepare(
+      `SELECT DISTINCT source_id FROM relationship_mentions
+        WHERE from_canonical = ? AND to_canonical = ? AND relationship_type = ?`
+    )
+    .all(fromCanonical, toCanonical, relationshipType) as Array<{ source_id: string }>
+  ).map((r) => r.source_id);
+}
+
+/**
+ * Total count of sources that have successfully contributed to the wiki.
+ * Used as the denominator for percentage-based promotion thresholds.
+ * Counts only sources with compile_status='active' — ingested-but-failed
+ * sources don't belong in the denominator.
+ */
+export function getCorpusActiveSourceCount(): number {
+  const row = openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM sources WHERE compile_status = 'active'`)
+    .get() as { n: number } | undefined;
+  return row?.n ?? 0;
 }
 
 /** Fetch all extraction rows — used for kompl backup export. */
@@ -2107,6 +2256,24 @@ export function getMinDraftChars(): number {
 
 export function setMinDraftChars(value: number): void {
   setSetting('min_draft_chars', String(Math.max(0, Math.floor(value))));
+}
+
+/**
+ * Wiki-wide entity promotion threshold — minimum distinct sources that must
+ * mention an entity (or concept) before it gets its own page. Counted across
+ * the full corpus via entity_mentions, not just the current compile session,
+ * so ingests compound over time (Karpathy compile-wiki thesis).
+ *
+ * Default 2: one repeat mention is enough evidence. Set to 1 to promote on
+ * first sighting (noisy). Set higher to require more corroboration.
+ */
+export function getEntityPromotionThreshold(): number {
+  const v = getSetting('entity_promotion_threshold');
+  return v !== null ? Math.max(1, parseInt(v, 10)) : 2;
+}
+
+export function setEntityPromotionThreshold(value: number): void {
+  setSetting('entity_promotion_threshold', String(Math.max(1, Math.floor(value))));
 }
 
 const LLM_CONFIG_PATH = path.join(DATA_ROOT, 'llm-config.json');

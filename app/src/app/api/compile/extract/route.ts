@@ -29,12 +29,17 @@
 
 import { NextResponse } from 'next/server';
 import {
+  deleteEntityMentionsForSource,
+  deleteRelationshipMentionsForSource,
+  getAliases,
   getAllPageIds,
   getExtraction,
   getPageCount,
   getSource,
   insertActivity,
+  insertEntityMentions,
   insertExtraction,
+  insertRelationshipMentions,
   markSourceExtracted,
   readRawMarkdown,
 } from '../../../../lib/db';
@@ -258,6 +263,75 @@ export async function POST(request: Request) {
       llm_output: llmOutput,
     });
     markSourceExtracted(source_id);
+
+    // Step 7b: record entity/concept mentions for wiki-wide threshold counting.
+    // Alias-pin against the HISTORICAL aliases table so variants discovered in
+    // prior sessions ("GPT4" → "GPT-4") collapse to the existing canonical at
+    // write time. New aliases minted by this session's resolve apply to
+    // subsequent sources, not this one — the usual incremental-graph tradeoff.
+    // Re-extraction wipes + reinserts so the mention set reflects latest llm_output.
+    deleteEntityMentionsForSource(source_id);
+    deleteRelationshipMentionsForSource(source_id);
+    const aliasMap = new Map<string, string>();
+    for (const { alias, canonical_name } of getAliases()) {
+      aliasMap.set(alias.toLowerCase(), canonical_name);
+    }
+    const pin = (name: string): string => aliasMap.get(name.toLowerCase()) ?? name;
+
+    const llm = llmOutput as {
+      entities?: Array<{ name?: string; type?: string }>;
+      concepts?: Array<{ name?: string }>;
+      relationships?: Array<{ from_entity?: string; to?: string; type?: string }>;
+    };
+    const mentionRows: Array<{ canonical_name: string; source_id: string; entity_type: string | null }> = [];
+    const seen = new Set<string>();
+    for (const ent of llm.entities ?? []) {
+      const raw = (ent.name ?? '').trim();
+      if (!raw) continue;
+      const canonical = pin(raw);
+      const key = canonical.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      mentionRows.push({
+        canonical_name: canonical,
+        source_id,
+        entity_type: (ent.type ?? '').trim() || null,
+      });
+    }
+    for (const con of llm.concepts ?? []) {
+      const raw = (con.name ?? '').trim();
+      if (!raw) continue;
+      const canonical = pin(raw);
+      const key = canonical.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      mentionRows.push({ canonical_name: canonical, source_id, entity_type: 'CONCEPT' });
+    }
+    insertEntityMentions(mentionRows);
+
+    // Relationship mentions. Direction-agnostic types (competes_with,
+    // contradicts) are stored with from/to sorted lowercase so "A vs B" and
+    // "B vs A" share one PK. Directional types keep their natural order.
+    const DIRECTION_AGNOSTIC = new Set(['competes_with', 'contradicts']);
+    const relRows: Array<{
+      from_canonical: string;
+      to_canonical: string;
+      relationship_type: string;
+      source_id: string;
+    }> = [];
+    for (const rel of llm.relationships ?? []) {
+      const fromRaw = (rel.from_entity ?? '').trim();
+      const toRaw = (rel.to ?? '').trim();
+      const type = (rel.type ?? '').trim();
+      if (!fromRaw || !toRaw || !type) continue;
+      let from = pin(fromRaw);
+      let to = pin(toRaw);
+      if (DIRECTION_AGNOSTIC.has(type) && from.toLowerCase() > to.toLowerCase()) {
+        [from, to] = [to, from];
+      }
+      relRows.push({ from_canonical: from, to_canonical: to, relationship_type: type, source_id });
+    }
+    insertRelationshipMentions(relRows);
 
     insertActivity({
       action_type: 'extraction_complete',
