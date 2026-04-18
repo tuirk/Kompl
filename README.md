@@ -66,9 +66,13 @@ kompl backup     # download a full backup to ~/.kompl/backups/kompl-backup.kompl
 
 ---
 
-## Use with Claude Code or Claude Desktop
+## Use Kompl as a knowledge base for AI agents
 
-Kompl ships an MCP server that lets AI assistants search and read your wiki while you work. Once set up, you can ask Claude "what does my wiki say about X?" and it will query your compiled knowledge directly.
+Kompl ships an MCP server so any MCP-capable agent — Claude Code, Claude Desktop, Cursor, or a custom agent built on `@modelcontextprotocol/sdk` — can use your wiki as a knowledge source. Ask Claude "what does my wiki say about X?" and it queries your compiled knowledge directly.
+
+**How this differs from RAG:** traditional RAG retrieves raw chunks at query time and asks the LLM to synthesize. Kompl *compiles* knowledge at ingest time — one source may update 10–15 pages, and those pages are pre-synthesized. Agents retrieve finished pages (with provenance back to originals), not raw chunks. Less hallucination, cleaner context, citations to original sources via `provenance`.
+
+Non-MCP systems can hit the Next.js HTTP routes directly (`/api/pages/search`, `/api/wiki/{page_id}/data`, `/api/wiki/index`) for the same data. Single-tenant — assumes you own the host; no multi-user auth yet.
 
 **Claude Code** — the `.mcp.json` in the repo root auto-registers it. Build once, then it's available in every Claude Code session:
 

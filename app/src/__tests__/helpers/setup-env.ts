@@ -12,7 +12,7 @@ import { join } from 'node:path';
 
 const root = join(tmpdir(), `kompl-test-${process.pid}`);
 process.env.DB_PATH = join(root, 'db', 'kompl.db');
-process.env.NODE_ENV = 'test';
+Object.assign(process.env, { NODE_ENV: 'test' });
 
 mkdirSync(join(root, 'db'), { recursive: true });
 mkdirSync(join(root, 'raw'), { recursive: true });
