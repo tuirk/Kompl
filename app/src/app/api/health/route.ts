@@ -7,6 +7,7 @@ import {
   getVectorBacklogCount,
   listUserTables,
   markStaleSessionsFailed,
+  reconcileStuckCompileSessions,
   EXPECTED_TABLES,
 } from '@/lib/db';
 
@@ -30,6 +31,9 @@ export async function GET() {
     // Clean up any sessions left 'running' by a server restart or crash.
     // This runs on every health probe so stale sessions are fixed automatically on startup.
     const staleSessionsFixed = markStaleSessionsFailed(30);
+    // Clean up 'queued' sessions that never got picked up by n8n (silent
+    // webhook drop, n8n down at the time of confirm, process killed mid-flight).
+    const stuckQueuedFixed = reconcileStuckCompileSessions(5);
 
     const db = getDb();
     const tables = listUserTables();
@@ -71,6 +75,7 @@ export async function GET() {
         nlp_ok: nlpOk,
         vector_backlog: vectorBacklog,
         stale_sessions_fixed: staleSessionsFixed,
+        stuck_queued_fixed: stuckQueuedFixed,
       },
       // Return 200 for both 'ok' and 'degraded' so Docker healthcheck only
       // fails on hard errors. The app is usable in degraded state.

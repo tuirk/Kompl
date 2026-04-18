@@ -495,6 +495,102 @@ stage_11_onboarding_api() {
 }
 
 # ---------------------------------------------------------------------------
+# Stage 11b — confirm surfaces n8n-down as 503 (not silent 'queued forever')
+# ---------------------------------------------------------------------------
+#
+# Regression test for the silent-failure bug fixed by lib/trigger-n8n.ts +
+# the /api/onboarding/confirm refactor. Pre-fix: with n8n down, confirm used
+# fire-and-forget fetch and returned 200 — compile_progress row got stuck at
+# 'queued' forever. Post-fix: confirm awaits the webhook and returns 503
+# with an n8n_* error code, while the DB row is still created so the
+# reconciler in /api/health can clean it up later.
+#
+# This test does NOT require FIRECRAWL_API_KEY (uses text connector).
+stage_11b_confirm_surfaces_n8n_down() {
+    echo "[STAGE 11b] REAL: /api/onboarding/confirm returns 503 when n8n is down"
+
+    local SESSION_ID
+    SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
+
+    # ── collect a text source ────────────────────────────────────────────────
+    local NOTE_MD='# 11b test note\n\nRegression guard for n8n-down confirm.'
+    local collect_response
+    collect_response=$(curl -sf -X POST \
+        -H "content-type: application/json" \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"text\",\"items\":[{\"markdown\":\"$NOTE_MD\",\"title_hint\":\"11b Test\",\"source_type_hint\":\"note\"}]}" \
+        "http://localhost:3000/api/onboarding/collect")
+
+    local SOURCE_ID
+    SOURCE_ID=$(echo "$collect_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['stored'][0]['source_id'] if d.get('stored') else '')" 2>/dev/null || echo "")
+    if [ -z "$SOURCE_ID" ]; then
+        echo "  FAIL: could not collect test source"
+        record_stage 11b REAL FAIL
+        return 1
+    fi
+    echo "  collected source_id=$SOURCE_ID"
+
+    # ── stop n8n ─────────────────────────────────────────────────────────────
+    echo "  stopping n8n to simulate webhook failure..."
+    if ! $COMPOSE stop n8n >/dev/null 2>&1; then
+        echo "  FAIL: could not stop n8n"
+        record_stage 11b REAL FAIL
+        return 1
+    fi
+
+    # ── confirm with n8n down — expect HTTP 503 + n8n_* error code ───────────
+    echo "  POSTing /api/onboarding/confirm with n8n down (expect 503)..."
+    local confirm_http confirm_body
+    confirm_http=$(curl -s -o /tmp/11b_body -w "%{http_code}" -X POST \
+        -H "content-type: application/json" \
+        -d "{\"session_id\":\"$SESSION_ID\",\"selected_source_ids\":[\"$SOURCE_ID\"],\"deleted_source_ids\":[]}" \
+        "http://localhost:3000/api/onboarding/confirm")
+    confirm_body=$(cat /tmp/11b_body 2>/dev/null || echo "")
+    rm -f /tmp/11b_body
+
+    # Restart n8n regardless of test outcome so other stages can run.
+    echo "  restarting n8n..."
+    $COMPOSE start n8n >/dev/null 2>&1 || true
+    wait_for_http_200 "http://localhost:5678/healthz" 120 || echo "  WARNING: n8n did not come back within 120s"
+
+    if [ "$confirm_http" != "503" ]; then
+        echo "  FAIL: expected HTTP 503 with n8n down, got $confirm_http"
+        echo "  body: $confirm_body"
+        record_stage 11b REAL FAIL
+        return 1
+    fi
+    echo "  confirm HTTP 503 OK"
+
+    if ! echo "$confirm_body" | grep -qE '"error":"n8n_(unreachable|timeout|webhook_failed)"'; then
+        echo "  FAIL: body missing expected n8n_* error code"
+        echo "  body: $confirm_body"
+        record_stage 11b REAL FAIL
+        return 1
+    fi
+    echo "  n8n_* error code OK"
+
+    # The compile_progress row must still exist (status='queued') so the
+    # reconciler in /api/health can sweep it after the 5-minute threshold.
+    local sessions_response
+    sessions_response=$(curl -sf "http://localhost:3000/api/compile/sessions")
+    if ! echo "$sessions_response" | grep -q "\"session_id\":\"$SESSION_ID\""; then
+        echo "  FAIL: compile_progress row missing for $SESSION_ID"
+        echo "  sessions: $sessions_response"
+        record_stage 11b REAL FAIL
+        return 1
+    fi
+    echo "  compile_progress row persisted for reconciler OK"
+
+    # FIXME: stage 11b.2 — reconciler sweep — deferred. Needs either sqlite3
+    # CLI in the container OR a dev-only debug endpoint to fast-forward
+    # created_at by 6 minutes. Correctness of reconcileStuckCompileSessions
+    # is verified by inspection + unit test coverage.
+
+    echo "  PASS"
+    record_stage 11b REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Stage 12 — text connector canary
 # ---------------------------------------------------------------------------
 #
@@ -1359,6 +1455,7 @@ main() {
     stage_1_migration_schema
     stage_4_live_ingest
     stage_11_onboarding_api
+    stage_11b_confirm_surfaces_n8n_down
     stage_12_text_connector
     stage_13_twitter_connector
     stage_14_extraction

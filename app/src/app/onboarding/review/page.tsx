@@ -128,12 +128,18 @@ function ReviewPageInner() {
         }),
       });
       const body = await res.json() as { queued?: number; error?: string };
-      if (!res.ok) {
+      // n8n_* errors mean the compile_progress row was created but the webhook
+      // didn't land. Navigate to progress anyway so the user lands on UI-A's
+      // danger-state row with a Retry button instead of a dead-end toast.
+      const n8nError = body.error && body.error.startsWith('n8n_') ? body.error : null;
+      if (!res.ok && !n8nError) {
         showToast(body.error ?? `Confirm failed (${res.status})`, 'error');
         return;
       }
+      const queuedCount = body.queued ?? selectedIds.length;
+      const errSuffix = n8nError ? `&n8n_error=${encodeURIComponent(n8nError)}` : '';
       router.push(
-        `/onboarding/progress?session_id=${encodeURIComponent(sessionId)}&queued=${body.queued ?? selectedIds.length}`
+        `/onboarding/progress?session_id=${encodeURIComponent(sessionId)}&queued=${queuedCount}${errSuffix}`
       );
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Network error', 'error');

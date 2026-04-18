@@ -34,6 +34,7 @@ import {
   markSourcesPending,
   setSetting,
 } from '../../../../lib/db';
+import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
 export async function POST(request: Request) {
   let rawBody: unknown;
@@ -115,17 +116,26 @@ export async function POST(request: Request) {
   // Best-effort file cleanup — orphaned gzip is harmless.
   void Promise.allSettled(filePaths.map((fp) => fsPromises.unlink(fp)));
 
-  // Create compile progress record (INSERT OR REPLACE — safe on retry)
+  // Create compile progress record (INSERT OR REPLACE — safe on retry).
+  // The row is created BEFORE the n8n POST so the reconciler in /api/health
+  // can recover it if the POST fails or this process dies mid-flight.
   createCompileProgress(session_id, selectedIds.length);
 
-  // Trigger n8n session-compile workflow (fire-and-forget)
-  const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL ?? 'http://n8n:5678/webhook';
-  fetch(`${N8N_WEBHOOK_URL}/session-compile`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id }),
-    signal: AbortSignal.timeout(10_000),
-  }).catch((err: unknown) => console.error('n8n session-compile trigger failed (non-fatal):', err));
+  // Await the n8n webhook trigger. Previously fire-and-forget; a silent
+  // 404/timeout would leave the compile_progress row stuck at 'queued'
+  // forever. Surface the failure so the UI can show a "try again" hint.
+  const trigger = await triggerSessionCompile(session_id);
+  if (!trigger.ok) {
+    insertActivity({
+      action_type: 'compile_failed',
+      source_id: null,
+      details: { session_id, reason: trigger.reason, upstream_status: trigger.upstreamStatus },
+    });
+    return NextResponse.json(
+      { error: trigger.reason, session_id, queued: selectedIds.length, upstream_status: trigger.upstreamStatus },
+      { status: 503 }
+    );
+  }
 
   return NextResponse.json({ session_id, queued: selectedIds.length });
 }

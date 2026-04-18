@@ -1199,6 +1199,48 @@ export function markStaleSessionsFailed(olderThanMinutes: number): number {
 }
 
 /**
+ * Mark 'queued' sessions that never got picked up by n8n as failed.
+ * Runs on every health probe alongside markStaleSessionsFailed. Covers the
+ * case where /api/onboarding/confirm created the row but the n8n webhook
+ * POST dropped (process killed, n8n unreachable, silent 404 pre-fix).
+ *
+ * Writes a compile_failed activity row for each reconciled session so the
+ * user sees "why" on the dashboard feed.
+ *
+ * Returns the number of rows reconciled.
+ */
+export function reconcileStuckCompileSessions(olderThanMinutes: number): number {
+  const db = openDb();
+  const stuckRows = db
+    .prepare(
+      `SELECT session_id FROM compile_progress
+        WHERE status = 'queued'
+          AND datetime(created_at) < datetime('now', ? || ' minutes')`
+    )
+    .all(`-${olderThanMinutes}`) as Array<{ session_id: string }>;
+
+  if (stuckRows.length === 0) return 0;
+
+  const tx = db.transaction(() => {
+    const update = db.prepare(
+      `UPDATE compile_progress
+          SET status = 'failed', error = ?
+        WHERE session_id = ? AND status = 'queued'`
+    );
+    const activity = db.prepare(
+      `INSERT INTO activity_log (action_type, source_id, details, created_at)
+       VALUES ('compile_failed', NULL, ?, CURRENT_TIMESTAMP)`
+    );
+    for (const row of stuckRows) {
+      update.run('never_started', row.session_id);
+      activity.run(JSON.stringify({ session_id: row.session_id, reason: 'never_started' }));
+    }
+  });
+  tx();
+  return stuckRows.length;
+}
+
+/**
  * Reset compile_progress for a retry, preserving completed steps.
  * Only resets from the first non-done step onwards — completed expensive
  * steps (extract, draft) keep their 'done' status so runCompilePipeline

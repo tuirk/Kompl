@@ -7,8 +7,7 @@
  */
 import { NextResponse } from 'next/server';
 import { getCompileProgress, resetForRetry } from '@/lib/db';
-
-const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL ?? 'http://n8n:5678/webhook';
+import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
 export async function POST(request: Request) {
   let rawBody: unknown;
@@ -27,26 +26,12 @@ export async function POST(request: Request) {
   // can skip expensive steps (extract, draft) that already succeeded.
   resetForRetry(session_id);
 
-  // Re-trigger n8n. Surface failures so the UI can tell the user why retry didn't
-  // take — silent swallowing leaves the session stuck at 'queued' forever.
-  try {
-    const res = await fetch(`${N8N_WEBHOOK_URL}/session-compile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: 'n8n_webhook_failed', upstream_status: res.status },
-        { status: 502 }
-      );
-    }
-  } catch (err) {
-    const isTimeout = err instanceof Error && err.name === 'TimeoutError';
+  const trigger = await triggerSessionCompile(session_id);
+  if (!trigger.ok) {
+    const httpStatus = trigger.reason === 'n8n_timeout' ? 504 : 502;
     return NextResponse.json(
-      { error: isTimeout ? 'n8n_timeout' : 'n8n_unreachable' },
-      { status: isTimeout ? 504 : 502 }
+      { error: trigger.reason, upstream_status: trigger.upstreamStatus },
+      { status: httpStatus }
     );
   }
 

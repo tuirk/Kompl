@@ -23,8 +23,7 @@ import {
   createCompileProgress,
   insertActivity,
 } from '@/lib/db';
-
-const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL ?? 'http://n8n:5678/webhook';
+import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
 export async function POST(
   _request: Request,
@@ -58,20 +57,23 @@ export async function POST(
     );
   }
 
-  // Reset progress record + trigger the session-compile pipeline via n8n
+  // Reset progress record + trigger the session-compile pipeline via n8n.
+  // Row is created BEFORE the trigger so the /api/health reconciler can
+  // recover it if the webhook POST fails.
   createCompileProgress(sessionId, 1);
-  await fetch(`${N8N_WEBHOOK_URL}/session-compile`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId }),
-    signal: AbortSignal.timeout(10_000),
-  }).catch((err: unknown) => {
+
+  const trigger = await triggerSessionCompile(sessionId);
+  if (!trigger.ok) {
     insertActivity({
       action_type: 'compile_trigger_failed',
       source_id,
-      details: { event: 'session-compile', error: err instanceof Error ? err.message : 'timeout' },
+      details: { event: 'session-compile', reason: trigger.reason, upstream_status: trigger.upstreamStatus },
     });
-  });
+    return NextResponse.json(
+      { error: trigger.reason, source_id, session_id: sessionId, upstream_status: trigger.upstreamStatus },
+      { status: 503 }
+    );
+  }
 
   return NextResponse.json({ source_id, session_id: sessionId, status: 'queued' });
 }

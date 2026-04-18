@@ -12,6 +12,7 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
+import { toUserMessage } from '@/lib/service-errors';
 
 const POLL_INTERVAL_MS    = 2000;
 const PATIENCE_TIMEOUT_MS = 15 * 60 * 1000;
@@ -102,6 +103,9 @@ function ProgressPageInner() {
   const sourceCount  = parseInt(searchParams.get('queued') ?? '0', 10);
   // Overestimate: ~2 min/source, minimum 2 min — always computed from URL params, never changes
   const estimateMins = sourceCount > 0 ? Math.max(2, sourceCount * 2) : null;
+  // If confirm returned 503 n8n_*, review page passed the reason through.
+  // UI-A pre-step row starts in danger state so the user can retry immediately.
+  const n8nErrorFromUrl = searchParams.get('n8n_error');
 
   const [progress,        setProgress]        = useState<ProgressResponse | null>(null);
   const [retrying,        setRetrying]        = useState(false);
@@ -109,6 +113,8 @@ function ProgressPageInner() {
   const [patienceVisible, setPatienceVisible] = useState(false);
   const [queuedRetry,     setQueuedRetry]     = useState(false);
   const [actionError,     setActionError]     = useState<string | null>(null);
+  const [queuedStartMs,   setQueuedStartMs]   = useState<number | null>(null);
+  const [elapsedSec,      setElapsedSec]      = useState(0);
 
   const intervalRef      = useRef<ReturnType<typeof setInterval>  | null>(null);
   const patienceTimerRef = useRef<ReturnType<typeof setTimeout>   | null>(null);
@@ -180,6 +186,23 @@ function ProgressPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  // UI-A: track elapsed seconds while status === 'queued'. Reset when we leave queued.
+  const status = progress?.status ?? 'queued';
+  const isQueued = status === 'queued';
+  useEffect(() => {
+    if (isQueued && queuedStartMs === null) setQueuedStartMs(Date.now());
+    else if (!isQueued && queuedStartMs !== null) { setQueuedStartMs(null); setElapsedSec(0); }
+  }, [isQueued, queuedStartMs]);
+  useEffect(() => {
+    if (!isQueued || queuedStartMs === null) return;
+    setElapsedSec(Math.floor((Date.now() - queuedStartMs) / 1000));
+    const id = setInterval(
+      () => setElapsedSec(Math.floor((Date.now() - queuedStartMs) / 1000)),
+      1000
+    );
+    return () => clearInterval(id);
+  }, [isQueued, queuedStartMs]);
+
   async function handleRetry() {
     if (!sessionId) return;
     setRetrying(true);
@@ -244,14 +267,19 @@ function ProgressPageInner() {
 
   // ── Derived state ────────────────────────────────────────────────────────────
 
-  const status         = progress?.status ?? 'queued';
   const steps          = progress?.steps  ?? {};
 
   const isComplete     = status === 'completed';
   const isFailedStatus = status === 'failed';
   const isCancelled    = status === 'cancelled';
   const isRunning      = status === 'running';
-  const isQueued       = status === 'queued';
+
+  // UI-A pre-step row state: neutral (0-15s), amber (15-30s), danger (>30s or n8n_error from URL).
+  const forceDanger = !!n8nErrorFromUrl;
+  const uiAState: 'neutral' | 'amber' | 'danger' =
+    forceDanger || elapsedSec >= 30 ? 'danger' :
+    elapsedSec >= 15                ? 'amber'  :
+                                      'neutral';
 
   const { pages: committedPages, sources: committedSources } =
     parseCommittedCount(steps['commit']?.detail);
@@ -377,6 +405,85 @@ function ProgressPageInner() {
             top: 40, bottom: 40,
             background: 'var(--separator)', opacity: 0.2, pointerEvents: 'none',
           }} />
+
+          {/* UI-A — pre-step queued-state row. Progressive escalation:
+                 0-15s neutral, 15-30s amber, >30s (or 503 from confirm) danger. */}
+          {isQueued && (() => {
+            const rowColor =
+              uiAState === 'danger' ? 'var(--danger)' :
+              uiAState === 'amber'  ? '#E6B800'       :
+                                      'var(--fg-subtle)';
+            const rowBg =
+              uiAState === 'danger' ? 'rgba(var(--danger-rgb),0.15)' :
+              uiAState === 'amber'  ? 'rgba(230,184,0,0.15)'         :
+                                      'var(--bg-track)';
+            const rowLabel =
+              uiAState === 'danger' ? 'Compile engine not responding'
+                                    : 'Queuing — waiting for compile engine';
+            const subline =
+              uiAState === 'danger' && n8nErrorFromUrl ? toUserMessage(n8nErrorFromUrl) :
+              uiAState === 'danger'                    ? 'n8n did not pick up this session. Click Retry to resend.' :
+              uiAState === 'amber'                     ? 'n8n may be starting up — this usually takes a few seconds.' :
+                                                         null;
+            return (
+              <div style={{
+                display: 'flex', flexDirection: 'row',
+                alignItems: subline ? 'flex-start' : 'center',
+                gap: 24,
+              }}>
+                <div style={{
+                  width: 40, height: 40, flexShrink: 0,
+                  background: rowBg,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  position: 'relative', zIndex: 1,
+                }}>
+                  <IconSpinner />
+                </div>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, paddingTop: subline ? 4 : 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                    <span style={{
+                      fontFamily: 'var(--font-heading)', fontWeight: 500,
+                      fontSize: 16, lineHeight: '24px', color: 'var(--fg)',
+                    }}>
+                      {rowLabel}
+                    </span>
+                    {uiAState === 'danger' ? (
+                      <button
+                        onClick={handleRetry}
+                        disabled={retrying}
+                        style={{
+                          background: 'transparent', border: `1px solid ${rowColor}`,
+                          cursor: retrying ? 'not-allowed' : 'pointer',
+                          padding: '4px 14px',
+                          fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                          letterSpacing: '2px', textTransform: 'uppercase', color: rowColor,
+                          opacity: retrying ? 0.5 : 1, flexShrink: 0,
+                        }}
+                      >
+                        {retrying ? 'Retrying…' : 'Retry'}
+                      </button>
+                    ) : (
+                      <span style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                        letterSpacing: '1px', textTransform: 'uppercase', color: rowColor,
+                        flexShrink: 0,
+                      }}>
+                        {elapsedSec}s
+                      </span>
+                    )}
+                  </div>
+                  {subline && (
+                    <span style={{
+                      fontFamily: 'var(--font-heading)', fontSize: 13,
+                      lineHeight: '18px', color: 'var(--fg-subtle)',
+                    }}>
+                      {subline}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {STEPS.map(step => {
             const stepState  = steps[step.key];
