@@ -47,98 +47,13 @@ import {
   storeRawMarkdown,
 } from '../../../../lib/db';
 import { regenerateSavedLinksPage } from '../../../../lib/saved-links';
-
-const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function isYouTubeUrl(url: string): boolean {
-  return /^https?:\/\/(www\.)?(youtube\.com\/watch|youtu\.be\/)/.test(url);
-}
-
-interface ConvertResponse {
-  source_id: string;
-  source_type: string;
-  title: string;
-  source_url: string | null;
-  markdown: string;
-  content_hash: string;
-  metadata: Record<string, unknown>;
-}
-
-type ConvertResult =
-  | { ok: true; data: ConvertResponse }
-  | { ok: false; code: 'nlp_unreachable' | 'nlp_convert_failed'; detail: string };
-
-async function callConvertUrl(sourceId: string, url: string): Promise<ConvertResult> {
-  let res: Response;
-  try {
-    res = await fetch(`${NLP_SERVICE_URL}/convert/url`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source_id: sourceId, url }),
-      signal: AbortSignal.timeout(60_000),
-    });
-  } catch (e) {
-    return { ok: false, code: 'nlp_unreachable', detail: e instanceof Error ? e.message : 'fetch failed' };
-  }
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    const code = res.status >= 502 && res.status <= 504 ? 'nlp_unreachable' : 'nlp_convert_failed';
-    return { ok: false, code, detail: `${res.status} ${detail}`.trim() };
-  }
-  return { ok: true, data: (await res.json()) as ConvertResponse };
-}
-
-async function callConvertFilePath(
-  sourceId: string,
-  filePath: string,
-  titleHint?: string
-): Promise<ConvertResult> {
-  let res: Response;
-  try {
-    res = await fetch(`${NLP_SERVICE_URL}/convert/file-path`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source_id: sourceId, file_path: filePath, title_hint: titleHint }),
-      signal: AbortSignal.timeout(60_000),
-    });
-  } catch (e) {
-    return { ok: false, code: 'nlp_unreachable', detail: e instanceof Error ? e.message : 'fetch failed' };
-  }
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    const code = res.status >= 502 && res.status <= 504 ? 'nlp_unreachable' : 'nlp_convert_failed';
-    return { ok: false, code, detail: `${res.status} ${detail}`.trim() };
-  }
-  return { ok: true, data: (await res.json()) as ConvertResponse };
-}
-
-interface MetadataPeek {
-  title: string | null;
-  description: string | null;
-  og_image: string | null;
-}
-
-// Best-effort og-tag fetch for URLs whose primary conversion failed.
-// Always resolves — never throws — so the failure path stays linear.
-async function peekMetadata(url: string): Promise<MetadataPeek> {
-  const empty: MetadataPeek = { title: null, description: null, og_image: null };
-  try {
-    const res = await fetch(`${NLP_SERVICE_URL}/metadata/peek`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-      signal: AbortSignal.timeout(3_500),
-    });
-    if (!res.ok) return empty;
-    return (await res.json()) as MetadataPeek;
-  } catch {
-    return empty;
-  }
-}
+import {
+  callConvertUrl,
+  callConvertFilePath,
+  peekMetadata,
+  isYouTubeUrl,
+  type ConvertResult,
+} from '../../../../lib/nlp-convert';
 
 // ---------------------------------------------------------------------------
 // Route handler

@@ -33,10 +33,15 @@ import {
   failCompileProgress,
   getSourcesBySession,
   getExtractionsBySession,
+  getStagingBySession,
   countPagePlansByStatus,
   insertActivity,
   markStaleSessionsFailed,
 } from '@/lib/db';
+import { runHealthCheckStep } from '@/lib/compile/steps/health-check';
+import { runIngestFilesStep } from '@/lib/compile/steps/ingest-files';
+import { runIngestUrlsStep } from '@/lib/compile/steps/ingest-urls';
+import { runIngestTextsStep } from '@/lib/compile/steps/ingest-texts';
 
 const APP_URL = process.env.APP_URL ?? 'http://app:3000';
 
@@ -200,6 +205,53 @@ async function timed<T>(sessionId: string, step: string, fn: () => Promise<T>): 
 
 async function runCompilePipeline(sessionId: string): Promise<void> {
   assertNotCancelled(sessionId);
+
+  // ── Prelude (v18 onboarding v2 staging flow) ───────────────────────────
+  // Only runs when the session has collect_staging rows. Legacy sessions
+  // (pre-v18 /confirm) + source-recompile flows hit the else-branch which
+  // marks the 4 prelude steps done-but-skipped. Critical: without that,
+  // resetForRetry() would walk COMPILE_STEP_KEYS, hit the 'pending' prelude
+  // as first non-done, and reset all downstream compile steps — wiping
+  // already-done extract/draft/commit on any legacy retry.
+  const staged = getStagingBySession(sessionId).filter(
+    (s) => s.included && s.status === 'pending'
+  );
+
+  if (staged.length > 0) {
+    const fileItems = staged.filter((s) => s.connector === 'file-upload');
+    const urlItems = staged.filter((s) => s.connector === 'url');
+    const textItems = staged.filter(
+      (s) => s.connector === 'text' || s.connector === 'saved-link'
+    );
+
+    await timed(sessionId, 'health_check', () =>
+      runHealthCheckStep(sessionId, urlItems.length > 0)
+    );
+    assertNotCancelled(sessionId);
+
+    await timed(sessionId, 'ingest_files', () =>
+      runIngestFilesStep(sessionId, fileItems, assertNotCancelled)
+    );
+    assertNotCancelled(sessionId);
+
+    await timed(sessionId, 'ingest_urls', () =>
+      runIngestUrlsStep(sessionId, urlItems, assertNotCancelled)
+    );
+    assertNotCancelled(sessionId);
+
+    await timed(sessionId, 'ingest_texts', () =>
+      runIngestTextsStep(sessionId, textItems, assertNotCancelled)
+    );
+    assertNotCancelled(sessionId);
+  } else {
+    // No staging rows → legacy flow. Mark prelude steps 'done (skipped)'
+    // so resetForRetry treats them as completed and retries from the first
+    // non-done compile step instead of wiping everything.
+    updateCompileStep(sessionId, 'health_check', 'done', 'skipped (legacy session)');
+    updateCompileStep(sessionId, 'ingest_files', 'done', 'skipped (no items)');
+    updateCompileStep(sessionId, 'ingest_urls', 'done', 'skipped (no items)');
+    updateCompileStep(sessionId, 'ingest_texts', 'done', 'skipped (no items)');
+  }
 
   // Step 1: extract. State is derived from the DB (extractions table), not
   // from compile_progress.steps, so a prior partial failure (e.g. Gemini 429

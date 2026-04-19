@@ -15,7 +15,7 @@
 #
 # Stage state at commit 8:
 #   Stage 0  — REAL (cold start)
-#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=16)
+#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=18)
 #   Stage 4  — REAL (text connector collect end-to-end + failure-path canary, no API key needed)
 #   Stage 11 — REAL (onboarding API canary)
 #   Stage 11b — REAL (confirm surfaces n8n-down as 503)
@@ -202,13 +202,13 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":17'; then
-        echo "  FAIL: schema_version != 17"
+    if ! echo "$response" | grep -q '"schema_version":18'; then
+        echo "  FAIL: schema_version != 18"
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"table_count":17'; then
-        echo "  FAIL: table_count != 17"
+    if ! echo "$response" | grep -q '"table_count":18'; then
+        echo "  FAIL: table_count != 18"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -1542,6 +1542,8 @@ main() {
     stage_21_wiki_data_canary
     stage_22_original_source_gate2
     stage_23_zombie_cleanup_endpoint
+    stage_24_staging_crud
+    stage_25_finalize_end_to_end
 
     echo
     echo "=== Stage summary ==="
@@ -1549,7 +1551,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 16 stages (0, 1, 4, 11–23) executed, all passed ==="
+    echo "=== All 18 stages (0, 1, 4, 11–25) executed, all passed ==="
     exit 0
 }
 
@@ -1982,6 +1984,291 @@ print(d['deleted'])
     echo "  GET count=$count_field, POST deleted=$deleted_field, second POST deleted=0"
     echo "  stage 23 PASS — admin cleanup endpoint shape + idempotent"
     record_stage 23 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 24: collect_staging CRUD (v18 onboarding v2 foundation)
+#   REAL — no external services needed. Pure DB + Next.js.
+#   1. POST /api/onboarding/stage with 2 URL items → expect 2 stage_ids
+#   2. GET /api/onboarding/staging — expect total=2, included=2
+#   3. PATCH one row included=false — expect included=1
+#   4. DELETE /api/onboarding/session — expect staging_rows=2
+#   5. GET /api/onboarding/staging — expect total=0 (idempotent cleanup)
+# ---------------------------------------------------------------------------
+stage_24_staging_crud() {
+    echo "--- stage 24: collect_staging CRUD ---"
+
+    local SESSION_ID
+    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+
+    # 1. Stage 2 URL rows
+    local stage_response
+    stage_response=$(curl -sf --max-time 10 -X POST \
+        http://localhost:3000/api/onboarding/stage \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"url\",\"items\":[{\"url\":\"https://a.test\"},{\"url\":\"https://b.test\"}]}")
+
+    local stage_count
+    stage_count=$(echo "$stage_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(len(d.get('stage_ids', [])))
+" 2>/dev/null)
+
+    if [ "$stage_count" != "2" ]; then
+        echo "  FAIL: POST /stage returned stage_ids count=$stage_count, expected 2"
+        echo "  response: $stage_response"
+        record_stage 24 REAL FAIL
+        return 1
+    fi
+
+    local first_stage_id
+    first_stage_id=$(echo "$stage_response" | python3 -c "
+import sys, json
+print(json.load(sys.stdin)['stage_ids'][0])
+" 2>/dev/null)
+
+    # 2. GET /staging — expect total=2, included=2
+    local staging_response
+    staging_response=$(curl -sf --max-time 10 \
+        "http://localhost:3000/api/onboarding/staging?session_id=$SESSION_ID")
+
+    local total included
+    total=$(echo "$staging_response" | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('totals', {}).get('total', -1))
+" 2>/dev/null)
+    included=$(echo "$staging_response" | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('totals', {}).get('included', -1))
+" 2>/dev/null)
+
+    if [ "$total" != "2" ] || [ "$included" != "2" ]; then
+        echo "  FAIL: GET /staging total=$total included=$included, expected 2/2"
+        record_stage 24 REAL FAIL
+        return 1
+    fi
+
+    # 3. PATCH one row included=false
+    curl -sf --max-time 10 -X PATCH \
+        "http://localhost:3000/api/onboarding/staging/$first_stage_id" \
+        -H 'Content-Type: application/json' \
+        -d '{"included":false}' > /dev/null
+
+    local included_after
+    included_after=$(curl -sf --max-time 10 \
+        "http://localhost:3000/api/onboarding/staging?session_id=$SESSION_ID" \
+        | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('totals', {}).get('included', -1))
+" 2>/dev/null)
+
+    if [ "$included_after" != "1" ]; then
+        echo "  FAIL: after PATCH, included=$included_after, expected 1"
+        record_stage 24 REAL FAIL
+        return 1
+    fi
+
+    # 4. DELETE /session
+    local delete_response
+    delete_response=$(curl -sf --max-time 10 -X DELETE \
+        "http://localhost:3000/api/onboarding/session?session_id=$SESSION_ID")
+
+    local staging_rows
+    staging_rows=$(echo "$delete_response" | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('removed', {}).get('staging_rows', -1))
+" 2>/dev/null)
+
+    if [ "$staging_rows" != "2" ]; then
+        echo "  FAIL: DELETE removed.staging_rows=$staging_rows, expected 2"
+        echo "  response: $delete_response"
+        record_stage 24 REAL FAIL
+        return 1
+    fi
+
+    # 5. GET after DELETE — expect total=0 (idempotent)
+    local final_total
+    final_total=$(curl -sf --max-time 10 \
+        "http://localhost:3000/api/onboarding/staging?session_id=$SESSION_ID" \
+        | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('totals', {}).get('total', -1))
+" 2>/dev/null)
+
+    if [ "$final_total" != "0" ]; then
+        echo "  FAIL: after DELETE, total=$final_total, expected 0"
+        record_stage 24 REAL FAIL
+        return 1
+    fi
+
+    echo "  staged=2, patched included=1, deleted=2, final=0"
+    echo "  stage 24 PASS — collect_staging CRUD round-trip"
+    record_stage 24 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 25: finalize → pipeline prelude end-to-end (text connector only)
+#   REAL — requires GEMINI_API_KEY (drives extract/draft/commit).
+#   Doesn't hit Firecrawl (text connector is local hash + DB insert).
+#   1. POST /stage with a text item
+#   2. POST /finalize → expect queued=1
+#   3. Poll /api/compile/progress until status='completed' (2 min timeout)
+#   4. Assert prelude steps walked through:
+#      health_check.status='done', ingest_texts.status='done', extract.status='done'
+#   5. Assert sources row exists for the session with compile_status='active'
+# ---------------------------------------------------------------------------
+stage_25_finalize_end_to_end() {
+    echo "--- stage 25: finalize → pipeline prelude end-to-end ---"
+
+    if [ -z "${GEMINI_API_KEY:-}" ]; then
+        echo "  SKIPPED: GEMINI_API_KEY not set"
+        record_stage 25 REAL SKIPPED
+        return 0
+    fi
+
+    local SESSION_ID
+    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+
+    local TEST_MARKDOWN='# Stage 25 canary
+
+This is a test note for integration stage 25. It must exceed min_source_chars
+(default 500) so it goes through the full LLM draft path rather than hitting
+the Gate 1 raw-content bypass. Stage 25 verifies that the new onboarding v2
+prelude steps (health_check, ingest_texts) run cleanly ahead of the existing
+extract → resolve → match → plan → draft → crossref → commit → schema chain
+without breaking any part of the downstream pipeline. The goal is a single
+wiki page at the end with a real content hash and a sources row in the
+active compile status. If any of the prelude steps fail, the overall
+compile_progress.status should surface failed, not silently stall. This note
+should comfortably exceed 500 characters in length so Gate 1 routes it to
+the LLM draft step rather than the raw-content fallback path.'
+
+    # 1. Stage the text item
+    local stage_response
+    stage_response=$(curl -sf --max-time 10 -X POST \
+        http://localhost:3000/api/onboarding/stage \
+        -H 'Content-Type: application/json' \
+        -d "$(python3 -c "
+import json, sys
+md = '''$TEST_MARKDOWN'''
+print(json.dumps({
+    'session_id': '$SESSION_ID',
+    'connector': 'text',
+    'items': [{
+        'markdown': md,
+        'title_hint': 'Stage 25 canary',
+        'source_type_hint': 'note',
+    }],
+}))
+")")
+
+    local stage_count
+    stage_count=$(echo "$stage_response" | python3 -c "
+import sys, json
+print(len(json.load(sys.stdin).get('stage_ids', [])))
+" 2>/dev/null)
+
+    if [ "$stage_count" != "1" ]; then
+        echo "  FAIL: POST /stage returned stage_ids count=$stage_count, expected 1"
+        record_stage 25 REAL FAIL
+        return 1
+    fi
+
+    # 2. Finalize — kicks off n8n → /api/compile/run
+    local finalize_response
+    finalize_response=$(curl -sf --max-time 15 -X POST \
+        http://localhost:3000/api/onboarding/finalize \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}")
+
+    local queued
+    queued=$(echo "$finalize_response" | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('queued', -1))
+" 2>/dev/null)
+
+    if [ "$queued" != "1" ]; then
+        echo "  FAIL: /finalize queued=$queued, expected 1"
+        echo "  response: $finalize_response"
+        record_stage 25 REAL FAIL
+        return 1
+    fi
+
+    # 3. Poll up to 120s for completion
+    local status=""
+    for i in $(seq 1 60); do
+        status=$(curl -sf --max-time 5 \
+            "http://localhost:3000/api/compile/progress?session_id=$SESSION_ID" \
+            | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('status', ''))
+" 2>/dev/null)
+        if [ "$status" = "completed" ]; then break; fi
+        if [ "$status" = "failed" ]; then
+            local err
+            err=$(curl -sf --max-time 5 \
+                "http://localhost:3000/api/compile/progress?session_id=$SESSION_ID" \
+                | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('error', ''))
+" 2>/dev/null)
+            echo "  FAIL: pipeline reported status=failed. error=$err"
+            record_stage 25 REAL FAIL
+            return 1
+        fi
+        sleep 2
+    done
+
+    if [ "$status" != "completed" ]; then
+        echo "  FAIL: pipeline did not reach 'completed' within 120s (last status=$status)"
+        record_stage 25 REAL FAIL
+        return 1
+    fi
+
+    # 4. Assert prelude steps walked through
+    local progress_response
+    progress_response=$(curl -sf --max-time 5 \
+        "http://localhost:3000/api/compile/progress?session_id=$SESSION_ID")
+
+    local all_ok
+    all_ok=$(echo "$progress_response" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+steps = d.get('steps', {})
+required = ['health_check', 'ingest_texts', 'extract']
+missing = [s for s in required if steps.get(s, {}).get('status') != 'done']
+if missing:
+    print('MISSING:' + ','.join(missing))
+else:
+    print('OK')
+")
+
+    if [ "$all_ok" != "OK" ]; then
+        echo "  FAIL: prelude steps not all 'done': $all_ok"
+        echo "  progress: $progress_response"
+        record_stage 25 REAL FAIL
+        return 1
+    fi
+
+    # 5. Verify a source row materialised for this session
+    local source_count
+    source_count=$(docker compose exec -T app sqlite3 /data/db/kompl.db \
+        "SELECT count(*) FROM sources WHERE onboarding_session_id = '$SESSION_ID' AND compile_status = 'active'" \
+        2>/dev/null | tr -d '[:space:]')
+
+    if [ "$source_count" != "1" ]; then
+        echo "  FAIL: expected 1 active source for session, got $source_count"
+        record_stage 25 REAL FAIL
+        return 1
+    fi
+
+    echo "  prelude steps: health_check + ingest_texts + extract all done"
+    echo "  source_count=1 (compile_status=active)"
+    echo "  stage 25 PASS — v18 staging → finalize → pipeline end-to-end"
+    record_stage 25 REAL PASS
     return 0
 }
 

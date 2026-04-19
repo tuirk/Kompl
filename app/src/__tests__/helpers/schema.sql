@@ -134,7 +134,8 @@ CREATE TABLE ingest_failures (
   error TEXT NOT NULL,
   source_type TEXT NOT NULL DEFAULT 'url',
   resolved_source_id TEXT,
-  metadata JSON
+  metadata JSON,
+  session_id TEXT
 );
 
 CREATE TABLE vector_backfill_queue (
@@ -157,6 +158,20 @@ CREATE TABLE relationship_mentions (
   source_id TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
   first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (from_canonical, to_canonical, relationship_type, source_id)
+);
+
+CREATE TABLE collect_staging (
+  stage_id    TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL,
+  connector   TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  included    INTEGER NOT NULL DEFAULT 1,
+  status      TEXT NOT NULL DEFAULT 'pending',
+  resolved_source_id TEXT,
+  error_code  TEXT,
+  error_message TEXT,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  ingested_at DATETIME
 );
 
 CREATE VIRTUAL TABLE pages_fts USING fts5(
@@ -191,9 +206,12 @@ CREATE INDEX idx_page_plans_status ON page_plans(draft_status);
 CREATE INDEX idx_chat_session ON chat_messages(session_id);
 CREATE INDEX idx_ingest_failures_url ON ingest_failures(source_url);
 CREATE INDEX idx_ingest_failures_resolved ON ingest_failures(resolved_source_id);
+CREATE INDEX idx_ingest_failures_session ON ingest_failures(session_id);
 CREATE INDEX idx_entity_mentions_canonical ON entity_mentions(canonical_name);
 CREATE INDEX idx_entity_mentions_source ON entity_mentions(source_id);
 CREATE INDEX idx_relationship_mentions_pair ON relationship_mentions(from_canonical, to_canonical, relationship_type);
 CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id);
+CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
+CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '17');
+INSERT INTO settings (key, value) VALUES ('schema_version', '18');

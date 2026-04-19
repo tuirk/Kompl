@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -311,6 +311,99 @@ CREATE INDEX IF NOT EXISTS idx_relationship_mentions_source
   ON relationship_mentions(source_id);
 """
 
+# v18: collect_staging table — holds pre-ingestion intent from onboarding
+# connectors. Connectors write rows at user click-time with no scraping;
+# the compile pipeline's new prelude steps (ingest_files/ingest_urls/
+# ingest_texts) consume them and promote to sources. status lifecycle:
+# pending → ingesting → ingested (resolved_source_id set) | failed | discarded.
+# Also adds session_id to ingest_failures so retry-failed can scope by session.
+# Also backfills compile_progress.steps JSON so legacy rows don't trip the
+# resetForRetry walk (prelude 'pending' would otherwise wipe done steps).
+MIGRATION_V18_SQL = """
+CREATE TABLE IF NOT EXISTS collect_staging (
+  stage_id    TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL,
+  connector   TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  included    INTEGER NOT NULL DEFAULT 1,
+  status      TEXT NOT NULL DEFAULT 'pending',
+  resolved_source_id TEXT,
+  error_code  TEXT,
+  error_message TEXT,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  ingested_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_collect_staging_session
+  ON collect_staging(session_id);
+CREATE INDEX IF NOT EXISTS idx_collect_staging_session_status
+  ON collect_staging(session_id, status);
+"""
+
+MIGRATION_V18_INGEST_FAILURES_SQL = """
+ALTER TABLE ingest_failures ADD COLUMN session_id TEXT;
+"""
+
+MIGRATION_V18_INGEST_FAILURES_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_ingest_failures_session
+  ON ingest_failures(session_id);
+"""
+
+# Move any legacy sources stuck at compile_status='collected' into the new
+# staging table as already-ingested, then flip the source to 'pending' so
+# the compile pipeline picks it up on the next finalize/retry. Idempotent
+# via OR IGNORE + status-guarded UPDATE.
+MIGRATION_V18_LEGACY_COLLECTED_SQL = """
+INSERT OR IGNORE INTO collect_staging
+  (stage_id, session_id, connector, payload, status,
+   resolved_source_id, created_at, ingested_at)
+SELECT
+  source_id,
+  onboarding_session_id,
+  CASE WHEN source_url IS NOT NULL THEN 'url'
+       WHEN source_type IN ('note','tweet') THEN 'text'
+       ELSE 'file-upload' END,
+  json_object(
+    'resumed_from_legacy', 1,
+    'title', title,
+    'source_url', source_url
+  ),
+  'ingested',
+  source_id,
+  date_ingested,
+  date_ingested
+FROM sources
+WHERE compile_status = 'collected'
+  AND onboarding_session_id IS NOT NULL;
+
+UPDATE sources
+   SET compile_status = 'pending'
+ WHERE compile_status = 'collected';
+"""
+
+# Backfill compile_progress.steps JSON for rows created before v18 so the
+# new prelude step keys default to 'done' (not missing/pending). Critical
+# for resetForRetry — it walks COMPILE_STEP_KEYS and resets from the first
+# non-done step. Without this, any legacy retry would reset all 12 steps
+# and force a full recompile of extract/draft/commit.
+MIGRATION_V18_COMPILE_PROGRESS_BACKFILL_SQL = """
+UPDATE compile_progress
+   SET steps = json_set(
+     json_set(
+       json_set(
+         json_set(
+           steps,
+           '$.health_check', json_object('status', 'done', 'detail', 'legacy')
+         ),
+         '$.ingest_files', json_object('status', 'done', 'detail', 'legacy')
+       ),
+       '$.ingest_urls',  json_object('status', 'done', 'detail', 'legacy')
+     ),
+     '$.ingest_texts', json_object('status', 'done', 'detail', 'legacy')
+   )
+ WHERE json_extract(steps, '$.health_check') IS NULL;
+"""
+
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -441,6 +534,20 @@ def migrate():
     if current < 17:
         print("  applying migration v17 (entity_mentions table)...")
         conn.executescript(MIGRATION_V17_SQL)
+
+    if current < 18:
+        print("  applying migration v18 (collect_staging + ingest_failures.session_id + backfills)...")
+        conn.executescript(MIGRATION_V18_SQL)
+        # Only add session_id column if it's missing (PRAGMA-guarded for re-runs).
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(ingest_failures)").fetchall()
+        }
+        if "session_id" not in existing_cols:
+            conn.execute(MIGRATION_V18_INGEST_FAILURES_SQL)
+        conn.executescript(MIGRATION_V18_INGEST_FAILURES_INDEX_SQL)
+        conn.executescript(MIGRATION_V18_LEGACY_COLLECTED_SQL)
+        conn.executescript(MIGRATION_V18_COMPILE_PROGRESS_BACKFILL_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

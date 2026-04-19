@@ -137,6 +137,7 @@ const EXPECTED_TABLES = [
   'vector_backfill_queue',
   'entity_mentions',
   'relationship_mentions',
+  'collect_staging',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -2349,15 +2350,19 @@ export interface InsertIngestFailureArgs {
   error: string;
   source_type?: string;
   metadata?: string | null;
+  // v18: scope failures to the onboarding session so retry-failed can
+  // filter per-session. Nullable for backward compat with legacy rows
+  // and the n8n POST /api/activity path (which doesn't carry session).
+  session_id?: string | null;
 }
 
 export function insertIngestFailure(args: InsertIngestFailureArgs): void {
   openDb()
     .prepare(
       `INSERT OR IGNORE INTO ingest_failures
-         (failure_id, source_url, title_hint, date_saved, error, source_type, metadata)
+         (failure_id, source_url, title_hint, date_saved, error, source_type, metadata, session_id)
        VALUES
-         (@failure_id, @source_url, @title_hint, @date_saved, @error, @source_type, @metadata)`
+         (@failure_id, @source_url, @title_hint, @date_saved, @error, @source_type, @metadata, @session_id)`
     )
     .run({
       failure_id: args.failure_id,
@@ -2367,6 +2372,7 @@ export function insertIngestFailure(args: InsertIngestFailureArgs): void {
       error: args.error,
       source_type: args.source_type ?? 'url',
       metadata: args.metadata ?? null,
+      session_id: args.session_id ?? null,
     });
 }
 
@@ -2723,4 +2729,248 @@ export function getPageTitleMap(): Map<string, string> {
     map.set(row.title.toLowerCase(), row.page_id);
   }
   return map;
+}
+
+// ============================================================================
+// Staging helpers (schema v18)
+// ============================================================================
+//
+// collect_staging holds pre-ingestion intent from onboarding connectors.
+// Connectors write rows at user click-time (no scraping); the compile
+// pipeline's new prelude steps (ingest_files / ingest_urls / ingest_texts)
+// consume them and promote to `sources` rows via the existing NLP convert
+// helpers. Status lifecycle:
+//   pending   — just staged, awaiting finalize
+//   ingesting — prelude step picked it up (lock window)
+//   ingested  — source row created; resolved_source_id set
+//   failed    — conversion or insert failed; error_* populated
+//   discarded — user unchecked on review page; skipped by finalize
+
+export type StagingConnector = 'url' | 'file-upload' | 'text' | 'saved-link';
+export type StagingStatus =
+  | 'pending'
+  | 'ingesting'
+  | 'ingested'
+  | 'failed'
+  | 'discarded';
+
+export interface StagingRow {
+  stage_id: string;
+  session_id: string;
+  connector: StagingConnector;
+  payload: Record<string, unknown>; // parsed from JSON on read
+  included: boolean;                // stored as 0/1 INTEGER
+  status: StagingStatus;
+  resolved_source_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  ingested_at: string | null;
+}
+
+interface StagingRowRaw {
+  stage_id: string;
+  session_id: string;
+  connector: StagingConnector;
+  payload: string;
+  included: number;
+  status: StagingStatus;
+  resolved_source_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  ingested_at: string | null;
+}
+
+function parseStagingRow(r: StagingRowRaw): StagingRow {
+  return {
+    stage_id: r.stage_id,
+    session_id: r.session_id,
+    connector: r.connector,
+    payload: JSON.parse(r.payload) as Record<string, unknown>,
+    included: r.included === 1,
+    status: r.status,
+    resolved_source_id: r.resolved_source_id,
+    error_code: r.error_code,
+    error_message: r.error_message,
+    created_at: r.created_at,
+    ingested_at: r.ingested_at,
+  };
+}
+
+export interface InsertCollectStagingArgs {
+  stage_id: string;
+  session_id: string;
+  connector: StagingConnector;
+  payload: Record<string, unknown>;
+  included?: boolean; // defaults to true
+}
+
+export function insertCollectStaging(args: InsertCollectStagingArgs): void {
+  openDb()
+    .prepare(
+      `INSERT INTO collect_staging
+         (stage_id, session_id, connector, payload, included)
+       VALUES
+         (@stage_id, @session_id, @connector, @payload, @included)`
+    )
+    .run({
+      stage_id: args.stage_id,
+      session_id: args.session_id,
+      connector: args.connector,
+      payload: JSON.stringify(args.payload),
+      included: args.included === false ? 0 : 1,
+    });
+}
+
+export function getStagingBySession(session_id: string): StagingRow[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT stage_id, session_id, connector, payload, included, status,
+              resolved_source_id, error_code, error_message,
+              created_at, ingested_at
+         FROM collect_staging
+        WHERE session_id = ?
+        ORDER BY created_at ASC`
+    )
+    .all(session_id) as StagingRowRaw[];
+  return rows.map(parseStagingRow);
+}
+
+export function getStagingByStageId(stage_id: string): StagingRow | null {
+  const row = openDb()
+    .prepare(
+      `SELECT stage_id, session_id, connector, payload, included, status,
+              resolved_source_id, error_code, error_message,
+              created_at, ingested_at
+         FROM collect_staging
+        WHERE stage_id = ?`
+    )
+    .get(stage_id) as StagingRowRaw | undefined;
+  return row ? parseStagingRow(row) : null;
+}
+
+export function updateStagingIncluded(stage_id: string, included: boolean): void {
+  openDb()
+    .prepare(`UPDATE collect_staging SET included = ? WHERE stage_id = ?`)
+    .run(included ? 1 : 0, stage_id);
+}
+
+export function markStagingIngesting(stage_id: string): void {
+  openDb()
+    .prepare(
+      `UPDATE collect_staging
+          SET status = 'ingesting'
+        WHERE stage_id = ? AND status = 'pending'`
+    )
+    .run(stage_id);
+}
+
+export function markStagingIngested(
+  stage_id: string,
+  resolved_source_id: string
+): void {
+  openDb()
+    .prepare(
+      `UPDATE collect_staging
+          SET status             = 'ingested',
+              resolved_source_id = ?,
+              ingested_at        = CURRENT_TIMESTAMP,
+              error_code         = NULL,
+              error_message      = NULL
+        WHERE stage_id = ?`
+    )
+    .run(resolved_source_id, stage_id);
+}
+
+export function markStagingFailed(
+  stage_id: string,
+  error_code: string,
+  error_message: string
+): void {
+  openDb()
+    .prepare(
+      `UPDATE collect_staging
+          SET status        = 'failed',
+              error_code    = ?,
+              error_message = ?
+        WHERE stage_id = ?`
+    )
+    .run(error_code, error_message, stage_id);
+}
+
+/**
+ * Delete all staging rows for a session and return the file-upload
+ * payload paths so the caller can unlink them post-transaction.
+ * Staging is the source of truth for "files staged but not yet ingested,"
+ * so the file is owned by the staging row until it gets promoted to a
+ * source (whose own lifecycle then owns the raw gzip path).
+ */
+export function deleteStagingBySession(
+  session_id: string
+): { deleted: number; file_paths: string[] } {
+  const db = openDb();
+  const rows = db
+    .prepare(
+      `SELECT connector, payload FROM collect_staging WHERE session_id = ?`
+    )
+    .all(session_id) as Array<{ connector: StagingConnector; payload: string }>;
+
+  const file_paths: string[] = [];
+  for (const row of rows) {
+    if (row.connector !== 'file-upload') continue;
+    try {
+      const payload = JSON.parse(row.payload) as { file_path?: unknown };
+      if (typeof payload.file_path === 'string' && payload.file_path.length > 0) {
+        file_paths.push(payload.file_path);
+      }
+    } catch {
+      // Malformed payload — skip the unlink attempt rather than crash.
+    }
+  }
+
+  const result = db
+    .prepare(`DELETE FROM collect_staging WHERE session_id = ?`)
+    .run(session_id);
+
+  return { deleted: result.changes as number, file_paths };
+}
+
+// ============================================================================
+// Source dedup helpers (moved from inline SQL in /api/onboarding/collect)
+// ============================================================================
+//
+// The current collect route does cross-session dedup via two queries:
+//   1. SELECT source_id FROM sources WHERE source_url = ? AND compile_status != 'collected'
+//   2. SELECT source_id FROM sources WHERE content_hash = ? AND compile_status != 'collected'
+// With v18, collect-time dedup moves into the ingest_urls / ingest_files
+// steps so these helpers can be shared cleanly. The 'collected' filter
+// stays for back-compat with any legacy rows that never got migrated.
+
+export function findSourceByUrl(url: string): { source_id: string } | null {
+  const row = openDb()
+    .prepare(
+      `SELECT source_id
+         FROM sources
+        WHERE source_url = ?
+          AND compile_status != 'collected'
+        LIMIT 1`
+    )
+    .get(url) as { source_id: string } | undefined;
+  return row ?? null;
+}
+
+export function findSourceByContentHash(
+  content_hash: string
+): { source_id: string } | null {
+  const row = openDb()
+    .prepare(
+      `SELECT source_id
+         FROM sources
+        WHERE content_hash = ?
+          AND compile_status != 'collected'
+        LIMIT 1`
+    )
+    .get(content_hash) as { source_id: string } | undefined;
+  return row ?? null;
 }
