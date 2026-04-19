@@ -219,6 +219,12 @@ function ActiveCompileBanner() {
   /* ── Running state ── */
   const stepIndex = currentStep ? Math.max(1, STEP_KEYS.indexOf(currentStep) + 1) : 1;
   const stepLabel = currentStep ? (STEP_LABELS[currentStep] ?? currentStep) : null;
+  // v18 prelude steps fetch/convert content before the classic LLM compile
+  // begins. Use "Ingesting" during that window so the user's mental model
+  // matches what's actually running.
+  const PRELUDE_KEYS = new Set(['health_check', 'ingest_files', 'ingest_urls', 'ingest_texts']);
+  const isPrelude = currentStep ? PRELUDE_KEYS.has(currentStep) : false;
+  const verb = isPrelude ? 'Ingesting' : 'Compiling';
 
   return (
     <div style={{
@@ -228,7 +234,7 @@ function ActiveCompileBanner() {
       display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
     }}>
       <span style={{ fontSize: 13, color: 'var(--fg-secondary)' }}>
-        ⏳ {sc > 0 ? `Compiling ${sc} source${sc !== 1 ? 's' : ''}` : 'Compiling'}…
+        ⏳ {sc > 0 ? `${verb} ${sc} source${sc !== 1 ? 's' : ''}` : verb}…
         {stepLabel && (
           <span style={{ color: 'var(--fg-muted)', marginLeft: 8 }}>
             (Step {stepIndex}/{STEP_KEYS.length}: {stepLabel})

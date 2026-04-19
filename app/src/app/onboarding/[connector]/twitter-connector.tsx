@@ -19,9 +19,44 @@ import {
   type ConnectorProps,
   navigateNext,
   navigateBack,
+  stageItems,
   BTN_PRIMARY, BTN_PRIMARY_DISABLED, BTN_GHOST,
   BottomNav,
 } from './_shared';
+
+/** Small inline resume banner — mirrors the one in page.tsx but scoped
+ * to twitter connector so the import graph stays flat. */
+function TwitterResumeBanner({ sessionId }: { sessionId: string }) {
+  return (
+    <div style={{
+      marginBottom: 24,
+      padding: '12px 16px',
+      background: 'rgba(var(--accent-rgb), 0.08)',
+      border: '1px solid rgba(var(--accent-rgb), 0.2)',
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
+    }}>
+      <span style={{
+        fontFamily: 'var(--font-mono)', fontSize: 11,
+        letterSpacing: '0.5px', color: 'var(--fg-dim)',
+      }}>
+        Adding more tweets to an existing session.
+      </span>
+      <a
+        href={`/onboarding/review?session_id=${encodeURIComponent(sessionId)}`}
+        style={{
+          fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
+          textTransform: 'uppercase', color: 'var(--accent)', textDecoration: 'none',
+        }}
+      >
+        Review what you have →
+      </a>
+    </div>
+  );
+}
+
+function hostnameOf(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+}
 
 // ── Bookmarklet (DOM scraper for twitter.com/i/bookmarks) ─────────────────────
 // DOM scraper that runs on twitter.com/i/bookmarks. Uses stable data-testid
@@ -232,9 +267,12 @@ function TweetPreviewCard({ tweet }: { tweet: ParsedTweet }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-type Phase = 'idle' | 'preview' | 'collecting' | 'done';
+// 'preview' stays — user genuinely interacts with parsed tweet cards before
+// stage. 'collecting' stays — the 1-3 sequential stage calls need visible
+// progress. 'done' dropped — no post-stage screen; we navigate to review.
+type Phase = 'idle' | 'preview' | 'collecting';
 
-export default function TwitterConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
+export default function TwitterConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bookmarkletRef = useRef<HTMLAnchorElement>(null);
@@ -253,8 +291,7 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
   const [fetchLinks, setFetchLinks] = useState(false);
   const [phase, setPhase] = useState<Phase>('idle');
   const [collectingStep, setCollectingStep] = useState('');
-  const [storedCount, setStoredCount] = useState(0);
-  const [skippedTweetUrls, setSkippedTweetUrls] = useState<string[]>([]);
+  const [skippedTweets, setSkippedTweets] = useState<ParsedTweet[]>([]);
 
   const articleUrls = [...new Set(
     tweets.flatMap(t => t.urls).filter(u => !isTwitterUrl(u))
@@ -270,7 +307,7 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
         return;
       }
       setTweets(parsed);
-      setSkippedTweetUrls(skipped.map(t => t.tweet_url!));
+      setSkippedTweets(skipped.filter((t) => t.tweet_url));
       setGuideCollapsed(true);
       setPhase('preview');
     } catch (e) {
@@ -314,126 +351,101 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
     setPhase('collecting');
 
     try {
-      // Phase 1: store tweet text
-      setCollectingStep('Storing tweets…');
-      const tweetItems = tweets.map(t => ({
-        markdown: formatTweetMarkdown(t),
-        title_hint: t.author ? `Tweet by ${t.author}` : 'Tweet',
-        source_type_hint: 'tweet',
-        metadata: {
-          ...(t.date ? { date_saved: t.date } : {}),
-          ...(t.author ? { author: t.author } : {}),
-          ...(t.tweet_url ? { tweet_url: t.tweet_url } : {}),
-          ...(t.urls.length > 0 ? { linked_urls: t.urls } : {}),
-        },
-      }));
-
-      const r1 = await fetch('/api/onboarding/collect', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, connector: 'text', items: tweetItems }),
+      // Phase 1: stage tweet text (connector='text')
+      setCollectingStep('Staging tweets…');
+      const tweetItems = tweets.map((t) => {
+        const author = t.author ?? '@unknown';
+        const excerpt = t.text.length > 120 ? t.text.slice(0, 117) + '…' : t.text;
+        const linkedCount = t.urls.filter((u) => !isTwitterUrl(u)).length;
+        return {
+          markdown: formatTweetMarkdown(t),
+          title_hint: t.author ? `Tweet by ${t.author}` : 'Tweet',
+          source_type_hint: 'tweet',
+          metadata: {
+            ...(t.date ? { date_saved: t.date } : {}),
+            ...(t.author ? { author: t.author } : {}),
+            ...(t.tweet_url ? { tweet_url: t.tweet_url } : {}),
+            ...(t.urls.length > 0 ? { linked_urls: t.urls } : {}),
+          },
+          display: {
+            kind: 'text',
+            source_origin: 'twitter',
+            author,
+            excerpt,
+            ...(t.date ? { date_saved: t.date } : {}),
+            ...(t.tweet_url ? { tweet_url: t.tweet_url } : {}),
+            linked_count: linkedCount,
+          },
+        };
       });
-      const b1 = await r1.json() as { stored: { source_id: string }[]; error?: string; error_code?: string };
-      if (!r1.ok) {
-        const msg = b1.error_code ? toUserMessage(b1.error_code) : b1.error ?? `Collect failed (${r1.status})`;
-        showToast(msg, 'error');
-        setPhase('preview');
-        return;
-      }
-      let total = b1.stored.length;
+      await stageItems(sessionId, 'text', tweetItems);
 
-      // Phase 1b: media-only tweets — no text, but tweet_url worth preserving
-      if (skippedTweetUrls.length > 0) {
+      // Phase 1b: media-only tweets → saved-link rows (no source row, just a
+      // durable URL on the Saved Links wiki page).
+      if (skippedTweets.length > 0) {
         setCollectingStep(
-          `Saving ${skippedTweetUrls.length} media-only tweet link${skippedTweetUrls.length !== 1 ? 's' : ''} to Saved Links…`
+          `Staging ${skippedTweets.length} media-only tweet link${skippedTweets.length !== 1 ? 's' : ''}…`
         );
-        await fetch('/api/onboarding/collect', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            session_id: sessionId,
-            connector: 'saved-link',
-            items: skippedTweetUrls.map(url => ({ url, title_hint: 'Saved tweet' })),
-          }),
-        });
-        // Don't abort on failure — Phase 1 tweets are already stored
+        await stageItems(
+          sessionId,
+          'saved-link',
+          skippedTweets.map((t) => ({
+            url: t.tweet_url!,
+            title_hint: 'Saved tweet',
+            ...(t.date ? { metadata_hint: { date_saved: t.date } } : {}),
+            display: {
+              kind: 'saved-link',
+              source_origin: 'twitter-media',
+              tweet_url: t.tweet_url,
+              ...(t.author ? { author: t.author } : {}),
+              ...(t.date ? { date_saved: t.date } : {}),
+            },
+          })),
+        );
       }
 
-      // Phase 2: linked article URLs (opt-in)
+      // Phase 2: linked article URLs (opt-in). Each article keeps a hint
+      // about which tweet it was linked from for the review page display.
       if (fetchLinks && articleUrls.length > 0) {
-        setCollectingStep(`Fetching linked articles… (${articleUrls.length} URLs)`);
-        const r2 = await fetch('/api/onboarding/collect', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            session_id: sessionId,
-            connector: 'url',
-            items: articleUrls.map(url => ({ url })),
-          }),
-        });
-        const b2 = await r2.json() as { stored: { source_id: string }[]; error?: string; error_code?: string };
-        if (!r2.ok) {
-          const msg = b2.error_code ? toUserMessage(b2.error_code) : b2.error ?? `URL collect failed (${r2.status})`;
-          showToast(msg, 'error');
-          // Don't abort — tweets are already stored
-        } else {
-          total += b2.stored.length;
+        setCollectingStep(`Staging ${articleUrls.length} linked article${articleUrls.length !== 1 ? 's' : ''}…`);
+        // Build a url → originating tweet_url map so display can show provenance.
+        const originMap = new Map<string, string>();
+        for (const t of tweets) {
+          for (const u of t.urls) {
+            if (!isTwitterUrl(u) && !originMap.has(u) && t.tweet_url) {
+              originMap.set(u, t.tweet_url);
+            }
+          }
         }
+        await stageItems(
+          sessionId,
+          'url',
+          articleUrls.map((url) => ({
+            url,
+            display: {
+              kind: 'url',
+              source_origin: 'twitter-link',
+              hostname: hostnameOf(url),
+              url,
+              ...(originMap.get(url) ? { linked_from_tweet: originMap.get(url) } : {}),
+            },
+          })),
+        );
       }
 
-      setStoredCount(total);
-      setPhase('done');
+      navigateNext(sessionId, connectors, connectorIdx, router, mode);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Network error', 'error');
+      showToast(toUserMessage(e instanceof Error ? e.message : 'stage_failed'), 'error');
       setPhase('preview');
     }
   }
 
   function handleSkip() {
-    navigateNext(sessionId, connectors, connectorIdx, router);
-  }
-
-  function handleContinue() {
-    navigateNext(sessionId, connectors, connectorIdx, router);
+    navigateNext(sessionId, connectors, connectorIdx, router, mode);
   }
 
   function handleBack() {
-    navigateBack(sessionId, connectors, connectorIdx, router);
-  }
-
-  // ── Done state ───────────────────────────────────────────────────────────────
-  if (phase === 'done') {
-    return (
-      <div>
-        <div
-          style={{
-            padding: '1.5rem',
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            marginBottom: '1.5rem',
-          }}
-        >
-          <p style={{ margin: 0, fontWeight: 600, fontSize: '1.05rem' }}>
-            ✅ {storedCount} source{storedCount !== 1 ? 's' : ''} saved
-          </p>
-          <p style={{ margin: '0.4rem 0 0', fontSize: '0.88rem', color: 'var(--fg-muted)' }}>
-            {tweets.length} tweet{tweets.length !== 1 ? 's' : ''}
-            {fetchLinks && articleUrls.length > 0 ? ` + ${articleUrls.length} linked article${articleUrls.length !== 1 ? 's' : ''}` : ''}
-            {skippedTweetUrls.length > 0 ? ` · ${skippedTweetUrls.length} link${skippedTweetUrls.length !== 1 ? 's' : ''} → Saved Links` : ''}
-            {' '}queued for compilation.
-          </p>
-        </div>
-        <BottomNav
-          phase="done"
-          hasInput={false}
-          onIngest={() => {}}
-          onSkip={() => {}}
-          onContinue={handleContinue}
-          onBack={handleBack}
-        />
-      </div>
-    );
+    navigateBack(sessionId, connectors, connectorIdx, router, mode);
   }
 
   // ── Collecting state ─────────────────────────────────────────────────────────
@@ -447,6 +459,8 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
 
   return (
     <div>
+      {mode === 'resume' && <TwitterResumeBanner sessionId={sessionId} />}
+
       {/* Export guide */}
       <ExportGuide collapsed={guideCollapsed} onToggle={() => setGuideCollapsed(v => !v)} bookmarkletRef={bookmarkletRef} />
 
@@ -578,9 +592,9 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
             )}
           </div>
 
-          {skippedTweetUrls.length > 0 && (
+          {skippedTweets.length > 0 && (
             <p style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', color: 'var(--fg-muted)' }}>
-              {skippedTweetUrls.length} media-only tweet{skippedTweetUrls.length !== 1 ? 's' : ''} (no text) will be saved to your <strong>Saved Links</strong> page.
+              {skippedTweets.length} media-only tweet{skippedTweets.length !== 1 ? 's' : ''} (no text) will be saved to your <strong>Saved Links</strong> page.
             </p>
           )}
 
@@ -623,7 +637,6 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
         hasInput={phase === 'preview' && tweets.length > 0}
         onIngest={handleIngest}
         onSkip={handleSkip}
-        onContinue={handleContinue}
         onBack={handleBack}
       />
     </div>

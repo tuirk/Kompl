@@ -20,6 +20,7 @@ import {
   type ConnectorProps,
   navigateNext,
   navigateBack,
+  stageItems,
   BottomNav,
 } from './_shared';
 import { toUserMessage } from '@/lib/service-errors';
@@ -27,6 +28,8 @@ import { toUserMessage } from '@/lib/service-errors';
 interface UploadedFile {
   file_path: string;
   filename: string;
+  size_bytes: number;
+  mtime_ms: number;
 }
 
 const APPLE_NOTES_ACCEPT = '.md,.html,.htm,.txt,.pdf,.rtfd';
@@ -35,19 +38,47 @@ function isMdFile(f: File) {
   return f.name.toLowerCase().endsWith('.md');
 }
 
+function AppleNotesResumeBanner({ sessionId }: { sessionId: string }) {
+  return (
+    <div style={{
+      marginBottom: 24,
+      padding: '12px 16px',
+      background: 'rgba(var(--accent-rgb), 0.08)',
+      border: '1px solid rgba(var(--accent-rgb), 0.2)',
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
+    }}>
+      <span style={{
+        fontFamily: 'var(--font-mono)', fontSize: 11,
+        letterSpacing: '0.5px', color: 'var(--fg-dim)',
+      }}>
+        Adding more Apple Notes to an existing session.
+      </span>
+      <a
+        href={`/onboarding/review?session_id=${encodeURIComponent(sessionId)}`}
+        style={{
+          fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
+          textTransform: 'uppercase', color: 'var(--accent)', textDecoration: 'none',
+        }}
+      >
+        Review what you have →
+      </a>
+    </div>
+  );
+}
+
 export default function AppleNotesConnector({
   sessionId,
   connectors,
   connectorIdx,
   showToast,
+  mode,
 }: ConnectorProps) {
   const router = useRouter();
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [phase, setPhase] = useState<'idle' | 'loading' | 'done'>('idle');
+  const [saving, setSaving] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('');
-  const [result, setResult] = useState<{ stored: number; failed: number } | null>(null);
 
   function addFiles(fileList: FileList | null) {
     if (!fileList) return;
@@ -74,60 +105,54 @@ export default function AppleNotesConnector({
       showToast('Select at least one file.', 'error');
       return;
     }
-    setPhase('loading');
+    setSaving(true);
 
     const mdFiles = selectedFiles.filter(isMdFile);
     const otherFiles = selectedFiles.filter(f => !isMdFile(f));
-    let totalStored = 0;
-    let totalFailed = 0;
 
-    // Phase A: .md files → connector: 'text' (already markdown)
+    // Phase A: .md files → stage as connector='text' (already markdown)
     if (mdFiles.length > 0) {
-      setLoadingMsg(`Saving ${mdFiles.length} note${mdFiles.length !== 1 ? 's' : ''}…`);
+      setLoadingMsg(`Staging ${mdFiles.length} note${mdFiles.length !== 1 ? 's' : ''}…`);
       try {
-        const items = await Promise.all(
+        const readResults = await Promise.all(
           mdFiles.map(
-            f =>
-              new Promise<{ markdown: string; title_hint: string; source_type_hint: string }>(
-                (resolve, reject) => {
-                  const reader = new FileReader();
-                  reader.onload = e =>
-                    resolve({
-                      markdown: e.target?.result as string,
-                      title_hint: f.name.replace(/\.md$/i, ''),
-                      source_type_hint: 'note',
-                    });
-                  reader.onerror = () => reject(new Error(`Failed to read ${f.name}`));
-                  reader.readAsText(f);
-                }
-              )
+            f => new Promise<{ file: File; markdown: string }>(
+              (resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = e => resolve({ file: f, markdown: e.target?.result as string });
+                reader.onerror = () => reject(new Error(`Failed to read ${f.name}`));
+                reader.readAsText(f);
+              }
+            )
           )
         );
-
-        const res = await fetch('/api/onboarding/collect', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId, connector: 'text', items }),
-        });
-        const body = await res.json() as {
-          stored: { source_id: string }[];
-          failed: { item: unknown; error: string }[];
-          error?: string;
-          error_code?: string;
-        };
-        if (!res.ok) {
-          const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Collect failed (${res.status})`;
-          showToast(msg, 'error');
-        } else {
-          totalStored += body.stored.length;
-          totalFailed += body.failed.length;
-        }
+        await stageItems(
+          sessionId,
+          'text',
+          readResults.map(({ file, markdown }) => {
+            const excerpt = markdown.split('\n').find((l) => l.trim())?.trim().slice(0, 120) ?? '';
+            return {
+              markdown,
+              title_hint: file.name.replace(/\.md$/i, ''),
+              source_type_hint: 'note',
+              display: {
+                kind: 'text',
+                source_origin: 'apple-notes',
+                filename: file.name,
+                excerpt,
+                line_count: markdown.split('\n').length,
+              },
+            };
+          }),
+        );
       } catch (e) {
-        showToast(e instanceof Error ? e.message : 'Error saving notes', 'error');
+        showToast(toUserMessage(e instanceof Error ? e.message : 'stage_failed'), 'error');
+        setSaving(false);
+        return;
       }
     }
 
-    // Phase B: other files → /api/onboarding/upload → connector: 'file-upload'
+    // Phase B: non-md files → /api/onboarding/upload → stage as connector='file-upload'
     if (otherFiles.length > 0) {
       setLoadingMsg(`Uploading ${otherFiles.length} file${otherFiles.length !== 1 ? 's' : ''}…`);
       try {
@@ -145,89 +170,42 @@ export default function AppleNotesConnector({
         if (!uploadRes.ok || uploadBody.files.length === 0) {
           const msg = uploadBody.error_code ? toUserMessage(uploadBody.error_code) : uploadBody.error ?? 'Upload failed';
           showToast(msg, 'error');
-          totalFailed += otherFiles.length;
-        } else {
-          if (uploadBody.failed.length > 0) {
-            showToast(`${uploadBody.failed.length} file(s) could not be saved — continuing with the rest.`);
-            totalFailed += uploadBody.failed.length;
-          }
-
-          setLoadingMsg(`Converting ${uploadBody.files.length} file${uploadBody.files.length !== 1 ? 's' : ''}…`);
-          const collectRes = await fetch('/api/onboarding/collect', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              session_id: sessionId,
-              connector: 'file-upload',
-              items: uploadBody.files.map(({ file_path, filename }) => ({
-                file_path,
-                title_hint: filename.replace(/\.[^.]+$/, ''),
-              })),
-            }),
-          });
-          const collectBody = await collectRes.json() as {
-            stored: { source_id: string }[];
-            failed: { item: unknown; error: string }[];
-            error?: string;
-            error_code?: string;
-          };
-          if (!collectRes.ok) {
-            const msg = collectBody.error_code ? toUserMessage(collectBody.error_code) : collectBody.error ?? `Convert failed (${collectRes.status})`;
-            showToast(msg, 'error');
-            totalFailed += uploadBody.files.length;
-          } else {
-            totalStored += collectBody.stored.length;
-            totalFailed += collectBody.failed.length;
-          }
+          setSaving(false);
+          return;
         }
+        if (uploadBody.failed.length > 0) {
+          showToast(`${uploadBody.failed.length} file(s) could not be saved — continuing with the rest.`);
+        }
+
+        setLoadingMsg(`Staging ${uploadBody.files.length} file${uploadBody.files.length !== 1 ? 's' : ''}…`);
+        await stageItems(
+          sessionId,
+          'file-upload',
+          uploadBody.files.map(({ file_path, filename, size_bytes, mtime_ms }) => ({
+            file_path,
+            title_hint: filename.replace(/\.[^.]+$/, ''),
+            display: {
+              kind: 'file-upload',
+              source_origin: 'apple-notes',
+              filename,
+              size_bytes,
+              mtime_ms,
+              ext: filename.includes('.') ? filename.split('.').pop()?.toLowerCase() ?? '' : '',
+            },
+          })),
+        );
       } catch (e) {
-        showToast(e instanceof Error ? e.message : 'Network error', 'error');
+        showToast(toUserMessage(e instanceof Error ? e.message : 'stage_failed'), 'error');
+        setSaving(false);
+        return;
       }
     }
 
-    setResult({ stored: totalStored, failed: totalFailed });
-    setPhase('done');
-  }
-
-  // ── Done state ────────────────────────────────────────────────────────────────
-  if (phase === 'done' && result) {
-    return (
-      <div>
-        <div
-          style={{
-            padding: '1.5rem',
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            marginBottom: '1.5rem',
-          }}
-        >
-          <p style={{ margin: 0, fontWeight: 600, fontSize: '1.05rem' }}>
-            ✅ {result.stored} source{result.stored !== 1 ? 's' : ''} saved
-          </p>
-          {result.failed > 0 && (
-            <p style={{ margin: '0.4rem 0 0', fontSize: '0.88rem', color: 'var(--fg-muted)' }}>
-              {result.failed} file{result.failed !== 1 ? 's' : ''} could not be processed.
-            </p>
-          )}
-          <p style={{ margin: '0.4rem 0 0', fontSize: '0.88rem', color: 'var(--fg-muted)' }}>
-            Queued for compilation.
-          </p>
-        </div>
-        <BottomNav
-          phase="done"
-          hasInput={false}
-          onIngest={() => {}}
-          onSkip={() => {}}
-          onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-          onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
-        />
-      </div>
-    );
+    navigateNext(sessionId, connectors, connectorIdx, router, mode);
   }
 
   // ── Loading state ─────────────────────────────────────────────────────────────
-  if (phase === 'loading') {
+  if (saving) {
     return (
       <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--fg-muted)' }}>
         <p>⏳ {loadingMsg}</p>
@@ -238,6 +216,8 @@ export default function AppleNotesConnector({
   // ── Main screen ───────────────────────────────────────────────────────────────
   return (
     <div>
+      {mode === 'resume' && <AppleNotesResumeBanner sessionId={sessionId} />}
+
       {/* Step 1 — Export guide */}
       <div style={{ marginBottom: '2rem' }}>
         <h2 style={{ margin: '0 0 1rem', fontSize: '1rem', fontWeight: 600 }}>
@@ -383,12 +363,11 @@ export default function AppleNotesConnector({
       </div>
 
       <BottomNav
-        phase={phase}
+        phase={saving ? 'loading' : 'idle'}
         hasInput={selectedFiles.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
       />
     </div>
   );

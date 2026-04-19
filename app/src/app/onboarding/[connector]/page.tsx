@@ -28,6 +28,7 @@ import {
   type ConnectorProps,
   navigateNext,
   navigateBack,
+  stageItems,
   BTN_PRIMARY, BTN_PRIMARY_DISABLED, BTN_GHOST,
   BottomNav,
 } from './_shared';
@@ -67,178 +68,156 @@ function parseUrls(raw: string): { urls: string[]; invalid: string[] } {
   return { urls, invalid };
 }
 
-interface CollectResult {
-  stored: number;
-  failed: number;
-  youtubeWarnings: number;
-}
-
 interface UploadedFile {
   file_path: string;
   filename: string;
+  size_bytes: number;
+  mtime_ms: number;
 }
 
 // ── Shared sub-components ─────────────────────────────────────────────────────
 
-function SummaryCard({ result }: { result: CollectResult }) {
+/**
+ * Renders above the connector input when the user navigates here via the
+ * review page's per-group "Add more" link (mode='resume'). Gives the user
+ * a visible hint that they're appending to an existing staging session
+ * rather than starting fresh.
+ */
+function ResumeBanner({ sessionId, connectorLabel }: { sessionId: string; connectorLabel: string }) {
   return (
-    <div
-      style={{
-        padding: '1.5rem',
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border)',
-        borderRadius: 8,
-        marginBottom: '1.5rem',
-      }}
-    >
-      <p style={{ margin: 0, fontWeight: 600, fontSize: '1.05rem' }}>
-        ✅ {result.stored} source{result.stored !== 1 ? 's' : ''} saved
-        {result.failed > 0 && ` · ${result.failed} failed`}
-      </p>
-      {result.youtubeWarnings > 0 && (
-        <p style={{ margin: '0.5rem 0 0', fontSize: '0.85rem', color: 'var(--fg-muted)' }}>
-          ⚠ {result.youtubeWarnings} YouTube URL
-          {result.youtubeWarnings !== 1 ? 's' : ''} processed via fallback — no transcript available for this video.
-        </p>
-      )}
-      {result.failed > 0 && (
-        <p style={{ margin: '0.5rem 0 0', fontSize: '0.85rem', color: 'var(--fg-muted)' }}>
-          Failed sources were skipped. You can add them again later.
-        </p>
-      )}
+    <div style={{
+      marginBottom: 24,
+      padding: '12px 16px',
+      background: 'rgba(var(--accent-rgb), 0.08)',
+      border: '1px solid rgba(var(--accent-rgb), 0.2)',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 16,
+    }}>
+      <span style={{
+        fontFamily: 'var(--font-mono)', fontSize: 11,
+        letterSpacing: '0.5px', color: 'var(--fg-dim)',
+      }}>
+        Adding more {connectorLabel.toLowerCase()} to an existing session.
+      </span>
+      <Link
+        href={`/onboarding/review?session_id=${encodeURIComponent(sessionId)}`}
+        style={{
+          fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
+          textTransform: 'uppercase', color: 'var(--accent)', textDecoration: 'none',
+        }}
+      >
+        Review what you have →
+      </Link>
     </div>
   );
 }
 
+// Pure helper: extract hostname or fall back to the input string on parse fail.
+function hostnameOf(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+}
+
 // ── URL Connector ─────────────────────────────────────────────────────────────
 
-function UrlConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
+function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const [urlInput, setUrlInput] = useState('');
-  const [phase, setPhase] = useState<'idle' | 'loading' | 'done'>('idle');
-  const [result, setResult] = useState<CollectResult | null>(null);
-
+  const [saving, setSaving] = useState(false);
   const { urls } = parseUrls(urlInput);
 
   async function handleIngest() {
     const { urls: validUrls, invalid } = parseUrls(urlInput);
     if (validUrls.length === 0) { showToast('Paste at least one http(s) URL.', 'error'); return; }
     if (invalid.length > 0) showToast(`Skipping ${invalid.length} invalid line(s).`);
-    setPhase('loading');
+    setSaving(true);
     try {
-      const res = await fetch('/api/onboarding/collect', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, connector: 'url', items: validUrls.map(url => ({ url })) }),
-      });
-      const body = await res.json() as {
-        stored: { source_id: string }[];
-        failed: { item: unknown; error: string }[];
-        warnings: { source_id: string; warning: string }[];
-        error?: string;
-        error_code?: string;
-      };
-      if (!res.ok) {
-        const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Collect failed (${res.status})`;
-        showToast(msg, 'error');
-        setPhase('idle');
-        return;
-      }
-      setResult({
-        stored: body.stored.length,
-        failed: body.failed.length,
-        youtubeWarnings: body.warnings.filter(w => w.warning === 'youtube_no_transcript').length,
-      });
-      setPhase('done');
+      await stageItems(
+        sessionId,
+        'url',
+        validUrls.map((url) => ({
+          url,
+          display: { kind: 'url', source_origin: 'paste', hostname: hostnameOf(url), url },
+        })),
+      );
+      navigateNext(sessionId, connectors, connectorIdx, router, mode);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Network error', 'error');
-      setPhase('idle');
+      showToast(toUserMessage(e instanceof Error ? e.message : 'stage_failed'), 'error');
+      setSaving(false);
     }
   }
 
   return (
     <>
-      {phase === 'done' && result && <SummaryCard result={result} />}
+      {mode === 'resume' && <ResumeBanner sessionId={sessionId} connectorLabel="URLs" />}
 
-      {phase !== 'done' && (
-        <>
-          {phase === 'loading' ? (
-            <div style={{
-              padding: '2rem 0', fontFamily: 'var(--font-mono)', fontSize: 12,
-              textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--fg-muted)',
+      <div style={{ position: 'relative', background: 'var(--bg-card)', padding: 32, isolation: 'isolate' }}>
+        {/* Top-right ghost badge */}
+        <span style={{
+          position: 'absolute', top: 16, right: 16,
+          fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '1.8px',
+          textTransform: 'uppercase', color: 'rgba(var(--accent-rgb), 0.3)',
+        }}>URL IMPORT</span>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Label row */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 10,
+              letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--accent)',
+            }}>URLS</span>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
+              textTransform: 'uppercase', color: 'var(--fg-dim)', opacity: 0.5,
             }}>
-              Processing {urls.length} URL{urls.length !== 1 ? 's' : ''}…
-            </div>
-          ) : (
-            <div style={{ position: 'relative', background: 'var(--bg-card)', padding: 32, isolation: 'isolate' }}>
-              {/* Top-right ghost badge */}
-              <span style={{
-                position: 'absolute', top: 16, right: 16,
-                fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '1.8px',
-                textTransform: 'uppercase', color: 'rgba(var(--accent-rgb), 0.3)',
-              }}>URL IMPORT</span>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                {/* Label row */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{
-                    fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 10,
-                    letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--accent)',
-                  }}>URLS</span>
-                  <span style={{
-                    fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
-                    textTransform: 'uppercase', color: 'var(--fg-dim)', opacity: 0.5,
-                  }}>
-                    {urls.length > 0 ? `${urls.length} URL${urls.length !== 1 ? 's' : ''} detected` : 'one per line'}
-                  </span>
-                </div>
-
-                {/* Textarea wrapper */}
-                <div style={{ position: 'relative' }}>
-                  <textarea
-                    className="connector-textarea"
-                    placeholder={`https://paulgraham.com/read.html\nhttps://www.youtube.com/watch?v=dQw4w9WgXcQ`}
-                    value={urlInput}
-                    onChange={e => setUrlInput(e.target.value)}
-                    style={{ height: 192, padding: '16px 16px 116px', fontFamily: 'var(--font-mono)', fontSize: 14, width: '100%', boxSizing: 'border-box' }}
-                  />
-                  {/* Paste icon — decorative, bottom-right */}
-                  <svg
-                    width="32" height="32" viewBox="0 0 32 32" fill="none"
-                    style={{ position: 'absolute', bottom: 16, right: 16, opacity: 0.2, pointerEvents: 'none' }}
-                  >
-                    <rect x="8" y="4" width="16" height="4" rx="1" stroke="white" strokeWidth="1.5"/>
-                    <rect x="4" y="8" width="24" height="20" rx="2" stroke="white" strokeWidth="1.5"/>
-                    <path d="M10 16H22M10 21H18" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-                  </svg>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Hint rows */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
-            <div style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: '50%', flexShrink: 0 }} />
-            <span style={{ fontFamily: 'var(--font-heading)', fontSize: 12, color: 'var(--fg-dim)' }}>
-              YouTube videos are supported — transcripts extracted automatically when available.
+              {urls.length > 0 ? `${urls.length} URL${urls.length !== 1 ? 's' : ''} detected` : 'one per line'}
             </span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 6 }}>
-            <div style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: '50%', flexShrink: 0, marginTop: 2 }} />
-            <span style={{ fontFamily: 'var(--font-heading)', fontSize: 12, color: 'var(--fg-dim)' }}>
-              GitHub repo links are enriched automatically (title, description, README). Issues, PRs, and file links are scraped as regular pages — results may vary.
-            </span>
+
+          {/* Textarea wrapper */}
+          <div style={{ position: 'relative' }}>
+            <textarea
+              className="connector-textarea"
+              placeholder={`https://paulgraham.com/read.html\nhttps://www.youtube.com/watch?v=dQw4w9WgXcQ`}
+              value={urlInput}
+              onChange={e => setUrlInput(e.target.value)}
+              disabled={saving}
+              style={{ height: 192, padding: '16px 16px 116px', fontFamily: 'var(--font-mono)', fontSize: 14, width: '100%', boxSizing: 'border-box' }}
+            />
+            {/* Paste icon — decorative, bottom-right */}
+            <svg
+              width="32" height="32" viewBox="0 0 32 32" fill="none"
+              style={{ position: 'absolute', bottom: 16, right: 16, opacity: 0.2, pointerEvents: 'none' }}
+            >
+              <rect x="8" y="4" width="16" height="4" rx="1" stroke="white" strokeWidth="1.5"/>
+              <rect x="4" y="8" width="24" height="20" rx="2" stroke="white" strokeWidth="1.5"/>
+              <path d="M10 16H22M10 21H18" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
           </div>
-        </>
-      )}
+        </div>
+      </div>
+
+      {/* Hint rows */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+        <div style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: '50%', flexShrink: 0 }} />
+        <span style={{ fontFamily: 'var(--font-heading)', fontSize: 12, color: 'var(--fg-dim)' }}>
+          YouTube videos are supported — transcripts extracted automatically when available.
+        </span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 6 }}>
+        <div style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: '50%', flexShrink: 0, marginTop: 2 }} />
+        <span style={{ fontFamily: 'var(--font-heading)', fontSize: 12, color: 'var(--fg-dim)' }}>
+          GitHub repo links are enriched automatically (title, description, README). Issues, PRs, and file links are scraped as regular pages — results may vary.
+        </span>
+      </div>
 
       <BottomNav
-        phase={phase}
+        phase={saving ? 'loading' : 'idle'}
         hasInput={urls.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
       />
     </>
   );
@@ -246,14 +225,13 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast }: Connec
 
 // ── File Upload Connector ─────────────────────────────────────────────────────
 
-function FileConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
+function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [phase, setPhase] = useState<'idle' | 'loading' | 'done'>('idle');
+  const [saving, setSaving] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('');
-  const [result, setResult] = useState<CollectResult | null>(null);
 
   function addFiles(fileList: FileList | null) {
     if (!fileList) return;
@@ -266,7 +244,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
 
   async function handleIngest() {
     if (selectedFiles.length === 0) { showToast('Select at least one file.', 'error'); return; }
-    setPhase('loading');
+    setSaving(true);
     setLoadingMsg('Uploading files…');
 
     const fd = new FormData();
@@ -284,49 +262,39 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
       if (!uploadRes.ok || uploadBody.files.length === 0) {
         const msg = uploadBody.error_code ? toUserMessage(uploadBody.error_code) : uploadBody.error ?? 'Upload failed';
         showToast(msg, 'error');
-        setPhase('idle');
+        setSaving(false);
         return;
       }
       if (uploadBody.failed.length > 0) showToast(`${uploadBody.failed.length} file(s) could not be saved — continuing with the rest.`);
       uploaded = uploadBody.files;
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Upload error', 'error');
-      setPhase('idle');
+      setSaving(false);
       return;
     }
 
-    setLoadingMsg(`Converting ${uploaded.length} file${uploaded.length !== 1 ? 's' : ''}…`);
+    setLoadingMsg(`Staging ${uploaded.length} file${uploaded.length !== 1 ? 's' : ''}…`);
     try {
-      const collectRes = await fetch('/api/onboarding/collect', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          session_id: sessionId,
-          connector: 'file-upload',
-          items: uploaded.map(({ file_path, filename }) => ({
-            file_path,
-            title_hint: filename.replace(/\.[^.]+$/, ''),
-          })),
-        }),
-      });
-      const body = await collectRes.json() as {
-        stored: { source_id: string }[];
-        failed: { item: unknown; error: string }[];
-        warnings: { source_id: string; warning: string }[];
-        error?: string;
-        error_code?: string;
-      };
-      if (!collectRes.ok) {
-        const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Convert failed (${collectRes.status})`;
-        showToast(msg, 'error');
-        setPhase('idle');
-        return;
-      }
-      setResult({ stored: body.stored.length, failed: body.failed.length, youtubeWarnings: 0 });
-      setPhase('done');
+      await stageItems(
+        sessionId,
+        'file-upload',
+        uploaded.map(({ file_path, filename, size_bytes, mtime_ms }) => ({
+          file_path,
+          title_hint: filename.replace(/\.[^.]+$/, ''),
+          display: {
+            kind: 'file-upload',
+            source_origin: 'file',
+            filename,
+            size_bytes,
+            mtime_ms,
+            ext: filename.includes('.') ? filename.split('.').pop()?.toLowerCase() ?? '' : '',
+          },
+        })),
+      );
+      navigateNext(sessionId, connectors, connectorIdx, router, mode);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Network error', 'error');
-      setPhase('idle');
+      showToast(toUserMessage(e instanceof Error ? e.message : 'stage_failed'), 'error');
+      setSaving(false);
     }
   }
 
@@ -342,31 +310,19 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
         onChange={e => addFiles(e.target.files)}
       />
 
-      {phase === 'done' && result ? (
-        <>
-          <SummaryCard result={result} />
-          <BottomNav
-            phase={phase}
-            hasInput={selectedFiles.length > 0}
-            onIngest={handleIngest}
-            onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-            onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-            onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
-          />
-        </>
-      ) : (
-        <>
-          {/* Two-column asymmetric layout */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 408px', gap: 32, alignItems: 'flex-start' }}>
+      {mode === 'resume' && <ResumeBanner sessionId={sessionId} connectorLabel="Files" />}
 
-            {/* LEFT COL — Drop zone */}
+      {/* Two-column asymmetric layout */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 408px', gap: 32, alignItems: 'flex-start' }}>
+
+        {/* LEFT COL — Drop zone */}
             <div>
               <div style={{ background: 'var(--bg-card)', padding: 4 }}>
                 <div
                   onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
                   onDragLeave={() => setIsDragging(false)}
                   onDrop={e => { e.preventDefault(); setIsDragging(false); addFiles(e.dataTransfer.files); }}
-                  onClick={() => phase !== 'loading' && fileInputRef.current?.click()}
+                  onClick={() => !saving && fileInputRef.current?.click()}
                   style={{
                     background: '#000000',
                     border: `2px dashed ${isDragging ? 'var(--accent)' : 'var(--separator)'}`,
@@ -380,7 +336,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
                     isolation: 'isolate',
                     boxSizing: 'border-box',
                     minHeight: 400,
-                    cursor: phase === 'loading' ? 'default' : 'pointer',
+                    cursor: saving ? 'default' : 'pointer',
                   }}
                 >
                   {/* Top-left decor */}
@@ -397,13 +353,13 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
                     textTransform: 'uppercase', color: 'var(--separator)',
                   }}>MAX 50 MB / FILE</span>
 
-                  {phase === 'loading' ? (
-                    /* Loading state — drop zone shows processing text */
+                  {saving ? (
+                    /* Loading state — drop zone shows upload/stage progress */
                     <p style={{
                       fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg-dim)',
                       margin: 0, position: 'relative', zIndex: 1,
                     }}>
-                      Processing {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''}…
+                      {loadingMsg || `Processing ${selectedFiles.length} file${selectedFiles.length !== 1 ? 's' : ''}…`}
                     </p>
                   ) : (
                     /* Idle state — drop zone content */
@@ -559,27 +515,23 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
           </div>
 
           <BottomNav
-            phase={phase}
+            phase={saving ? 'loading' : 'idle'}
             hasInput={selectedFiles.length > 0}
             onIngest={handleIngest}
-            onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-            onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-            onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
+            onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+            onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
           />
-        </>
-      )}
     </>
   );
 }
 
 // ── Bookmarks Connector ───────────────────────────────────────────────────────
 
-function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
+function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const [bookmarkFile, setBookmarkFile] = useState<File | null>(null);
   const [parsedItems, setParsedItems] = useState<{ url: string; title: string; dateSaved: string | null }[]>([]);
-  const [phase, setPhase] = useState<'idle' | 'loading' | 'done'>('idle');
-  const [result, setResult] = useState<CollectResult | null>(null);
+  const [saving, setSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function parseBookmarksHtml(html: string): { url: string; title: string; dateSaved: string | null }[] {
@@ -613,107 +565,88 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast }: 
 
   async function handleIngest() {
     if (parsedItems.length === 0) { showToast('No valid bookmarks found in this file.', 'error'); return; }
-    setPhase('loading');
+    setSaving(true);
     try {
-      const res = await fetch('/api/onboarding/collect', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          session_id: sessionId,
-          connector: 'url',
-          items: parsedItems.map(({ url, title, dateSaved }) => ({
+      await stageItems(
+        sessionId,
+        'url',
+        parsedItems.map(({ url, title, dateSaved }) => ({
+          url,
+          title_hint: title,
+          ...(dateSaved ? { metadata_hint: { date_saved: dateSaved } } : {}),
+          display: {
+            kind: 'url',
+            source_origin: 'bookmarks',
+            hostname: hostnameOf(url),
             url,
-            title_hint: title,
-            ...(dateSaved ? { metadata_hint: { date_saved: dateSaved } } : {}),
-          })),
-        }),
-      });
-      const body = await res.json() as {
-        stored: { source_id: string }[];
-        failed: { item: unknown; error: string }[];
-        warnings: { source_id: string; warning: string }[];
-        error?: string;
-        error_code?: string;
-      };
-      if (!res.ok) {
-        const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Collect failed (${res.status})`;
-        showToast(msg, 'error');
-        setPhase('idle');
-        return;
-      }
-      setResult({
-        stored: body.stored.length,
-        failed: body.failed.length,
-        youtubeWarnings: body.warnings.filter(w => w.warning === 'youtube_no_transcript').length,
-      });
-      setPhase('done');
+            title,
+            ...(dateSaved ? { date_saved: dateSaved } : {}),
+          },
+        })),
+      );
+      navigateNext(sessionId, connectors, connectorIdx, router, mode);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Network error', 'error');
-      setPhase('idle');
+      showToast(toUserMessage(e instanceof Error ? e.message : 'stage_failed'), 'error');
+      setSaving(false);
     }
   }
 
   return (
     <>
-      {phase !== 'done' && (
-        <>
-          <div
-            onClick={() => fileInputRef.current?.click()}
-            style={{
-              border: '2px dashed var(--border)', borderRadius: 8, padding: '2rem',
-              textAlign: 'center', cursor: 'pointer',
-              background: 'var(--bg-card)', color: 'var(--fg-muted)', marginBottom: '1rem',
-            }}
-          >
-            <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🔖</div>
-            {bookmarkFile ? (
-              <div>
-                <strong>{bookmarkFile.name}</strong>
-                {parsedItems.length > 0 && (
-                  <div style={{ marginTop: '0.4rem', color: 'var(--accent)', fontWeight: 500 }}>
-                    Found {parsedItems.length} bookmark{parsedItems.length !== 1 ? 's' : ''}
-                  </div>
-                )}
-                {parsedItems.length === 0 && (
-                  <div style={{ marginTop: '0.4rem', color: 'var(--warning)' }}>
-                    No http/https bookmarks found — is this a valid bookmarks export?
-                  </div>
-                )}
+      {mode === 'resume' && <ResumeBanner sessionId={sessionId} connectorLabel="Bookmarks" />}
+
+      <div
+        onClick={() => !saving && fileInputRef.current?.click()}
+        style={{
+          border: '2px dashed var(--border)', borderRadius: 8, padding: '2rem',
+          textAlign: 'center', cursor: saving ? 'default' : 'pointer',
+          background: 'var(--bg-card)', color: 'var(--fg-muted)', marginBottom: '1rem',
+        }}
+      >
+        <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🔖</div>
+        {bookmarkFile ? (
+          <div>
+            <strong>{bookmarkFile.name}</strong>
+            {parsedItems.length > 0 && (
+              <div style={{ marginTop: '0.4rem', color: 'var(--accent)', fontWeight: 500 }}>
+                Found {parsedItems.length} bookmark{parsedItems.length !== 1 ? 's' : ''}
               </div>
-            ) : (
-              <>
-                <div>Click to select your bookmarks <code>.html</code> file</div>
-                <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: 'var(--fg-dim)' }}>
-                  Chrome: Bookmarks → ⋮ → Export bookmarks · Firefox: Bookmarks → Manage → Import &amp; Backup → Export
-                </div>
-              </>
+            )}
+            {parsedItems.length === 0 && (
+              <div style={{ marginTop: '0.4rem', color: 'var(--warning)' }}>
+                No http/https bookmarks found — is this a valid bookmarks export?
+              </div>
             )}
           </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".html,.htm"
-            style={{ display: 'none' }}
-            onChange={e => handleFileSelect(e.target.files?.[0] ?? null)}
-          />
-        </>
-      )}
+        ) : (
+          <>
+            <div>Click to select your bookmarks <code>.html</code> file</div>
+            <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: 'var(--fg-dim)' }}>
+              Chrome: Bookmarks → ⋮ → Export bookmarks · Firefox: Bookmarks → Manage → Import &amp; Backup → Export
+            </div>
+          </>
+        )}
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".html,.htm"
+        style={{ display: 'none' }}
+        onChange={e => handleFileSelect(e.target.files?.[0] ?? null)}
+      />
 
-      {phase === 'loading' && (
+      {saving && (
         <div style={{ padding: '2rem 0', color: 'var(--fg-muted)' }}>
-          ⏳ Processing {parsedItems.length} bookmark{parsedItems.length !== 1 ? 's' : ''}…
+          ⏳ Staging {parsedItems.length} bookmark{parsedItems.length !== 1 ? 's' : ''}…
         </div>
       )}
 
-      {phase === 'done' && result && <SummaryCard result={result} />}
-
       <BottomNav
-        phase={phase}
+        phase={saving ? 'loading' : 'idle'}
         hasInput={parsedItems.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
       />
     </>
   );
@@ -721,13 +654,12 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast }: 
 
 // ── Upnote Connector ──────────────────────────────────────────────────────────
 
-function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast }: ConnectorProps) {
+function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [phase, setPhase] = useState<'idle' | 'loading' | 'done'>('idle');
-  const [result, setResult] = useState<CollectResult | null>(null);
+  const [saving, setSaving] = useState(false);
 
   function addFiles(fileList: FileList | null) {
     if (!fileList) return;
@@ -741,18 +673,14 @@ function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast }: Con
 
   async function handleIngest() {
     if (selectedFiles.length === 0) { showToast('Select at least one .md file.', 'error'); return; }
-    setPhase('loading');
+    setSaving(true);
     try {
-      const items = await Promise.all(
+      const readResults = await Promise.all(
         selectedFiles.map(
-          f => new Promise<{ markdown: string; title_hint: string; source_type_hint: string }>(
+          f => new Promise<{ file: File; markdown: string }>(
             (resolve, reject) => {
               const reader = new FileReader();
-              reader.onload = e => resolve({
-                markdown: e.target?.result as string,
-                title_hint: f.name.replace(/\.md$/i, ''),
-                source_type_hint: 'note',
-              });
+              reader.onload = e => resolve({ file: f, markdown: e.target?.result as string });
               reader.onerror = () => reject(new Error(`Failed to read ${f.name}`));
               reader.readAsText(f);
             }
@@ -760,102 +688,104 @@ function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast }: Con
         )
       );
 
-      const res = await fetch('/api/onboarding/collect', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, connector: 'text', items }),
-      });
-      const body = await res.json() as {
-        stored: { source_id: string }[];
-        failed: { item: unknown; error: string }[];
-        warnings: { source_id: string; warning: string }[];
-        error?: string;
-        error_code?: string;
-      };
-      if (!res.ok) {
-        const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Collect failed (${res.status})`;
-        showToast(msg, 'error');
-        setPhase('idle');
-        return;
-      }
-      setResult({ stored: body.stored.length, failed: body.failed.length, youtubeWarnings: 0 });
-      setPhase('done');
+      await stageItems(
+        sessionId,
+        'text',
+        readResults.map(({ file, markdown }) => {
+          // First non-empty ~120 chars — rendered as preview excerpt on review.
+          const excerpt = markdown
+            .split('\n')
+            .find((l) => l.trim())
+            ?.trim()
+            .slice(0, 120) ?? '';
+          const line_count = markdown.split('\n').length;
+          return {
+            markdown,
+            title_hint: file.name.replace(/\.md$/i, ''),
+            source_type_hint: 'note',
+            display: {
+              kind: 'text',
+              source_origin: 'upnote',
+              filename: file.name,
+              excerpt,
+              line_count,
+            },
+          };
+        }),
+      );
+      navigateNext(sessionId, connectors, connectorIdx, router, mode);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Network error', 'error');
-      setPhase('idle');
+      showToast(toUserMessage(e instanceof Error ? e.message : 'stage_failed'), 'error');
+      setSaving(false);
     }
   }
 
   return (
     <>
-      {phase !== 'done' && (
-        <>
-          <div
-            onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={e => { e.preventDefault(); setIsDragging(false); addFiles(e.dataTransfer.files); }}
-            onClick={() => fileInputRef.current?.click()}
-            style={{
-              border: `2px dashed ${isDragging ? 'var(--accent)' : 'var(--border)'}`,
-              borderRadius: 8, padding: '2rem', textAlign: 'center', cursor: 'pointer',
-              background: isDragging ? 'var(--bg-card-hover)' : 'var(--bg-card)',
-              color: 'var(--fg-muted)', marginBottom: '1rem',
-            }}
-          >
-            <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>📔</div>
-            <div>Drag <code>.md</code> files here or <span style={{ color: 'var(--accent)' }}>click to browse</span></div>
-            <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: 'var(--fg-dim)' }}>
-              In Upnote: select notes → Export → Markdown
-            </div>
+      {mode === 'resume' && <ResumeBanner sessionId={sessionId} connectorLabel="Notes" />}
+
+      <div
+        onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={e => { e.preventDefault(); setIsDragging(false); addFiles(e.dataTransfer.files); }}
+        onClick={() => !saving && fileInputRef.current?.click()}
+        style={{
+          border: `2px dashed ${isDragging ? 'var(--accent)' : 'var(--border)'}`,
+          borderRadius: 8, padding: '2rem', textAlign: 'center',
+          cursor: saving ? 'default' : 'pointer',
+          background: isDragging ? 'var(--bg-card-hover)' : 'var(--bg-card)',
+          color: 'var(--fg-muted)', marginBottom: '1rem',
+        }}
+      >
+        <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>📔</div>
+        <div>Drag <code>.md</code> files here or <span style={{ color: 'var(--accent)' }}>click to browse</span></div>
+        <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: 'var(--fg-dim)' }}>
+          In Upnote: select notes → Export → Markdown
+        </div>
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".md"
+        style={{ display: 'none' }}
+        onChange={e => addFiles(e.target.files)}
+      />
+
+      {selectedFiles.length > 0 && (
+        <div style={{ marginBottom: '1rem' }}>
+          <p style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
+            {selectedFiles.length} note{selectedFiles.length !== 1 ? 's' : ''} selected
+          </p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+            {selectedFiles.map((f, i) => (
+              <span
+                key={i}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0.6rem', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 999, fontSize: '0.8rem' }}
+              >
+                {f.name.slice(0, 40)}{f.name.length > 40 ? '…' : ''}
+                <button
+                  onClick={e => { e.stopPropagation(); removeFile(i); }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-dim)', padding: 0, lineHeight: 1, fontSize: '0.9rem' }}
+                >×</button>
+              </span>
+            ))}
           </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept=".md"
-            style={{ display: 'none' }}
-            onChange={e => addFiles(e.target.files)}
-          />
-
-          {selectedFiles.length > 0 && (
-            <div style={{ marginBottom: '1rem' }}>
-              <p style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
-                {selectedFiles.length} note{selectedFiles.length !== 1 ? 's' : ''} selected
-              </p>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-                {selectedFiles.map((f, i) => (
-                  <span
-                    key={i}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0.6rem', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 999, fontSize: '0.8rem' }}
-                  >
-                    {f.name.slice(0, 40)}{f.name.length > 40 ? '…' : ''}
-                    <button
-                      onClick={e => { e.stopPropagation(); removeFile(i); }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-dim)', padding: 0, lineHeight: 1, fontSize: '0.9rem' }}
-                    >×</button>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </>
-      )}
-
-      {phase === 'loading' && (
-        <div style={{ padding: '2rem 0', color: 'var(--fg-muted)' }}>
-          ⏳ Saving {selectedFiles.length} note{selectedFiles.length !== 1 ? 's' : ''}…
         </div>
       )}
 
-      {phase === 'done' && result && <SummaryCard result={result} />}
+      {saving && (
+        <div style={{ padding: '2rem 0', color: 'var(--fg-muted)' }}>
+          ⏳ Staging {selectedFiles.length} note{selectedFiles.length !== 1 ? 's' : ''}…
+        </div>
+      )}
 
       <BottomNav
-        phase={phase}
+        phase={saving ? 'loading' : 'idle'}
         hasInput={selectedFiles.length > 0}
         onIngest={handleIngest}
-        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onContinue={() => navigateNext(sessionId, connectors, connectorIdx, router)}
-        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router)}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
       />
     </>
   );
@@ -893,6 +823,11 @@ function ConnectorPageInner() {
 
   const connector = params.connector;
   const urlSessionId = searchParams.get('session_id') ?? '';
+  // resume=1 means user arrived via review page's "Add more" link. Hides
+  // the step-tracker + reroutes navigateNext/navigateBack to go back to
+  // /onboarding/review rather than advancing in the wizard.
+  const mode: 'wizard' | 'resume' =
+    searchParams.get('resume') === '1' ? 'resume' : 'wizard';
 
   const [sessionId, setSessionId] = useState('');
   const [connectors, setConnectors] = useState<string[]>([]);
@@ -909,7 +844,9 @@ function ConnectorPageInner() {
 
   const Component = CONNECTOR_COMPONENTS[connector];
   const meta = CONNECTOR_META[connector];
-  const hasProgress = connectors.length > 0 && connectorIdx < connectors.length;
+  // In resume mode, hide the step tracker — user is branching off the wizard.
+  const hasProgress =
+    mode === 'wizard' && connectors.length > 0 && connectorIdx < connectors.length;
 
   if (!Component) {
     return (
@@ -997,6 +934,7 @@ function ConnectorPageInner() {
         connectors={connectors}
         connectorIdx={connectorIdx}
         showToast={showToast}
+        mode={mode}
       />
 
       {toast}

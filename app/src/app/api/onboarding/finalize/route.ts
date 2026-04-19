@@ -45,12 +45,20 @@ export async function POST(request: Request) {
   }
   const session_id = body.session_id;
 
+  // Accept both 'pending' (fresh staging) and 'ingested' (legacy-lifted
+  // by v18 migration — already have a sources row at compile_status='pending'
+  // and need the pipeline to run extract → schema on them). The downstream
+  // extract step reads sources.compile_status regardless of how they got
+  // there, so both kinds finalize cleanly.
   const staged = getStagingBySession(session_id).filter(
-    (s) => s.included && s.status === 'pending'
+    (s) => s.included && (s.status === 'pending' || s.status === 'ingested')
   );
   if (staged.length === 0) {
     return NextResponse.json(
-      { error: 'no_items_staged', message: 'No included pending staging rows for this session.' },
+      {
+        error_code: 'no_items_staged',
+        error: 'No included pending staging rows for this session.',
+      },
       { status: 400 }
     );
   }

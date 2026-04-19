@@ -289,8 +289,16 @@ function ProgressPageInner() {
   const { pages: committedPages, sources: committedSources } =
     parseCommittedCount(steps['commit']?.detail);
 
-  const doneCount  = STEPS.filter(s => steps[s.key]?.status === 'done').length;
-  const totalSteps = STEPS.length;
+  // Step counter excludes hidden skipped steps so a text-only session's
+  // counter reads 0/8 → 8/8 instead of a confusing 0/12 → 8/12 (4 prelude
+  // steps get hidden on render).
+  const isSkippedDone = (key: string) => {
+    const s = steps[key];
+    return s?.status === 'done' && s.detail?.startsWith('skipped');
+  };
+  const visibleSteps = STEPS.filter(s => !isSkippedDone(s.key));
+  const doneCount  = visibleSteps.filter(s => steps[s.key]?.status === 'done').length;
+  const totalSteps = visibleSteps.length;
 
   const headingText =
     isComplete     ? 'Wiki Ready.'           :
@@ -516,6 +524,14 @@ function ProgressPageInner() {
             const stepState  = steps[step.key];
             const stepStatus = isComplete ? 'done' : (stepState?.status ?? 'pending');
             const detail     = stepState?.detail;
+
+            // Hide v18 prelude steps that completed as skipped (no items
+            // for that connector). `detail='skipped (no items)'` /
+            // 'skipped (legacy session)' is the convention written by
+            // runPerItemStep + the orchestrator's legacy else-branch.
+            if (stepStatus === 'done' && detail?.startsWith('skipped')) {
+              return null;
+            }
 
             const isStepDone    = stepStatus === 'done';
             const isStepActive  = stepStatus === 'running';

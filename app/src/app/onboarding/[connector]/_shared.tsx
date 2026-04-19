@@ -15,6 +15,46 @@ export interface ConnectorProps {
   connectors: string[];
   connectorIdx: number;
   showToast: (msg: string, type?: 'error') => void;
+  /**
+   * 'wizard' (default) — linear onboarding flow with step progress tracker.
+   * 'resume' — user arrived here from the review page's "Add more" link;
+   * hide the progress tracker, show an "you've already added N" banner,
+   * and navigate back to /onboarding/review instead of the next connector.
+   */
+  mode?: 'wizard' | 'resume';
+}
+
+// ── Staging helper ────────────────────────────────────────────────────────────
+
+/**
+ * POST items to /api/onboarding/stage. Shared by all 6 connectors so they
+ * don't duplicate fetch/error-unwrap logic. Throws an Error whose message is
+ * the server's `error_code` (if present) else `error` else `stage_failed_<status>`
+ * so callers can pass it straight to `toUserMessage()`.
+ *
+ * display-payload construction stays per-connector — each connector knows
+ * its own display-worthy fields (filename+size vs hostname vs @author+excerpt).
+ */
+export async function stageItems(
+  sessionId: string,
+  connector: 'url' | 'file-upload' | 'text' | 'saved-link',
+  items: Array<Record<string, unknown>>,
+): Promise<{ stage_ids: string[] }> {
+  const res = await fetch('/api/onboarding/stage', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, connector, items }),
+  });
+  const body = (await res.json()) as {
+    session_id?: string;
+    stage_ids?: string[];
+    error?: string;
+    error_code?: string;
+  };
+  if (!res.ok) {
+    throw new Error(body.error_code ?? body.error ?? `stage_failed_${res.status}`);
+  }
+  return { stage_ids: body.stage_ids ?? [] };
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -24,7 +64,15 @@ export function navigateNext(
   connectors: string[],
   connectorIdx: number,
   router: AppRouterInstance,
+  mode: 'wizard' | 'resume' = 'wizard',
 ) {
+  // In resume mode (came from review's "Add more" link), the wizard
+  // sequence is bypassed — save returns the user to the review page
+  // rather than advancing to the next connector.
+  if (mode === 'resume') {
+    router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}`);
+    return;
+  }
   const nextIdx = connectorIdx + 1;
   if (nextIdx >= connectors.length) {
     router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}`);
@@ -39,7 +87,13 @@ export function navigateBack(
   connectors: string[],
   connectorIdx: number,
   router: AppRouterInstance,
+  mode: 'wizard' | 'resume' = 'wizard',
 ) {
+  // In resume mode, Back returns to review — symmetric with Save.
+  if (mode === 'resume') {
+    router.push(`/onboarding/review?session_id=${encodeURIComponent(sessionId)}`);
+    return;
+  }
   if (connectorIdx <= 0) {
     // First connector — go back to selector, preserving session so the landing
     // page resumes the existing UUID rather than generating a fresh one.
@@ -80,20 +134,26 @@ export const BTN_GHOST: React.CSSProperties = {
 
 // ── BottomNav ─────────────────────────────────────────────────────────────────
 
+/**
+ * Two phases only in Phase 2: idle (user can click Save) and loading
+ * (upload or multi-POST in flight). The legacy 'done' phase went away
+ * when connectors stopped rendering post-scrape SummaryCards — staging
+ * is <50ms and the review page is the real confirmation surface.
+ */
 export function BottomNav({
   phase,
   hasInput,
   onIngest,
   onSkip,
-  onContinue,
   onBack,
+  primaryLabel = 'Save & Continue',
 }: {
-  phase: 'idle' | 'loading' | 'done';
+  phase: 'idle' | 'loading';
   hasInput: boolean;
   onIngest: () => void;
   onSkip: () => void;
-  onContinue: () => void;
   onBack: () => void;
+  primaryLabel?: string;
 }) {
   return (
     <div style={{
@@ -126,41 +186,28 @@ export function BottomNav({
 
       {/* Right: skip + primary action */}
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 16 }}>
-        {phase !== 'done' && (
-          <button
-            onClick={onSkip}
-            disabled={phase === 'loading'}
-            style={phase === 'loading' ? { ...BTN_GHOST, opacity: 0.4, cursor: 'not-allowed' } : BTN_GHOST}
-          >
-            Skip
-          </button>
-        )}
+        <button
+          onClick={onSkip}
+          disabled={phase === 'loading'}
+          style={phase === 'loading' ? { ...BTN_GHOST, opacity: 0.4, cursor: 'not-allowed' } : BTN_GHOST}
+        >
+          Skip
+        </button>
 
-        {phase === 'idle' && (
+        {phase === 'idle' ? (
           <button
             onClick={onIngest}
             disabled={!hasInput}
             style={!hasInput ? BTN_PRIMARY_DISABLED : BTN_PRIMARY}
           >
-            Save &amp; Continue
+            {primaryLabel}
             <svg width="9" height="12" viewBox="0 0 9 12" fill="none">
               <path d="M1 1L8 6L1 11" stroke="var(--accent-text)" strokeWidth="1.5" strokeLinecap="square"/>
             </svg>
           </button>
-        )}
-
-        {phase === 'loading' && (
+        ) : (
           <button disabled style={BTN_PRIMARY_DISABLED}>
             Saving…
-          </button>
-        )}
-
-        {phase === 'done' && (
-          <button onClick={onContinue} style={BTN_PRIMARY}>
-            Continue
-            <svg width="9" height="12" viewBox="0 0 9 12" fill="none">
-              <path d="M1 1L8 6L1 11" stroke="var(--accent-text)" strokeWidth="1.5" strokeLinecap="square"/>
-            </svg>
           </button>
         )}
       </div>

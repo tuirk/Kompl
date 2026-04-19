@@ -21,6 +21,8 @@ export const SERVICE_ERROR_MESSAGES = {
   commit_failed:        'Could not save your changes. Try again.',
   chat_synthesis_failed:'Chat could not generate an answer. Try again.',
   file_upload_failed:   'File upload failed. Try again.',
+  no_items_staged:      'No sources to compile. Add at least one, or uncheck fewer items.',
+  stage_insert_failed:  'Could not save your selection. Try again.',
 } as const;
 
 export type ServiceErrorCode = keyof typeof SERVICE_ERROR_MESSAGES;

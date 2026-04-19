@@ -28,7 +28,12 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 
-import { insertCollectStaging, type StagingConnector } from '../../../../lib/db';
+import {
+  getDb,
+  insertActivity,
+  insertCollectStaging,
+  type StagingConnector,
+} from '../../../../lib/db';
 
 const VALID_CONNECTORS: readonly StagingConnector[] = [
   'url',
@@ -75,55 +80,56 @@ export async function POST(request: Request) {
   const connector = body.connector as StagingConnector;
   const items = body.items as unknown[];
 
-  // Per-connector payload presence check. Full payload validation (shape,
-  // types) lives inside the ingest step modules — this route does minimum
-  // gating so obviously-broken client calls fail fast rather than at
-  // pipeline dispatch time.
-  const stage_ids: string[] = [];
-  try {
-    for (const raw of items) {
-      if (typeof raw !== 'object' || raw === null) {
+  // Phase 1 — validate everything before opening a transaction. Validation
+  // failures return 422 without any partial inserts to roll back. Full
+  // payload validation (shape, types) lives in the ingest step modules;
+  // this route does minimum gating so obviously-broken client calls fail
+  // fast rather than at pipeline dispatch time.
+  const validatedItems: Array<{ stage_id: string; item: Record<string, unknown> }> = [];
+  for (const raw of items) {
+    if (typeof raw !== 'object' || raw === null) {
+      return NextResponse.json(
+        { error: 'each item must be an object' },
+        { status: 422 }
+      );
+    }
+    const item = raw as Record<string, unknown>;
+
+    if (connector === 'url' || connector === 'saved-link') {
+      if (typeof item.url !== 'string' || !item.url) {
         return NextResponse.json(
-          { error: 'each item must be an object' },
+          { error: `connector='${connector}' requires item.url` },
           { status: 422 }
         );
       }
-      const item = raw as Record<string, unknown>;
-
-      // Connector-specific required-field checks.
-      if (connector === 'url' || connector === 'saved-link') {
-        if (typeof item.url !== 'string' || !item.url) {
-          return NextResponse.json(
-            { error: `connector='${connector}' requires item.url` },
-            { status: 422 }
-          );
-        }
-      } else if (connector === 'file-upload') {
-        if (typeof item.file_path !== 'string' || !item.file_path) {
-          return NextResponse.json(
-            { error: "connector='file-upload' requires item.file_path" },
-            { status: 422 }
-          );
-        }
-      } else {
-        // connector === 'text'
-        if (typeof item.markdown !== 'string' || !item.markdown) {
-          return NextResponse.json(
-            { error: "connector='text' requires item.markdown" },
-            { status: 422 }
-          );
-        }
+    } else if (connector === 'file-upload') {
+      if (typeof item.file_path !== 'string' || !item.file_path) {
+        return NextResponse.json(
+          { error: "connector='file-upload' requires item.file_path" },
+          { status: 422 }
+        );
       }
-
-      const stage_id = randomUUID();
-      insertCollectStaging({
-        stage_id,
-        session_id,
-        connector,
-        payload: item,
-      });
-      stage_ids.push(stage_id);
+    } else {
+      // connector === 'text'
+      if (typeof item.markdown !== 'string' || !item.markdown) {
+        return NextResponse.json(
+          { error: "connector='text' requires item.markdown" },
+          { status: 422 }
+        );
+      }
     }
+
+    validatedItems.push({ stage_id: randomUUID(), item });
+  }
+
+  // Phase 2 — batch insert in one transaction. Matters for bulk imports
+  // (200-bookmark exports go from ~100 individual transactions to 1).
+  try {
+    getDb().transaction(() => {
+      for (const { stage_id, item } of validatedItems) {
+        insertCollectStaging({ stage_id, session_id, connector, payload: item });
+      }
+    })();
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'unknown';
     return NextResponse.json(
@@ -132,5 +138,14 @@ export async function POST(request: Request) {
     );
   }
 
+  // Observability parallel to the legacy /collect's 'onboarding_collected'
+  // activity row — gives the feed a timeline of "user staged X at 14:02".
+  insertActivity({
+    action_type: 'onboarding_staged',
+    source_id: null,
+    details: { session_id, connector, count: validatedItems.length },
+  });
+
+  const stage_ids = validatedItems.map((v) => v.stage_id);
   return NextResponse.json({ session_id, stage_ids }, { status: 200 });
 }

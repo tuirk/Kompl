@@ -6,8 +6,14 @@
  * caller can pass them to POST /api/onboarding/collect.
  *
  * Request:  FormData with one or more "files" keys
- * Response: { files: Array<{ file_path: string; filename: string }>;
+ * Response: { files: Array<{ file_path: string; filename: string;
+ *                           size_bytes: number; mtime_ms: number }>;
  *             failed: Array<{ filename: string; error: string }> }
+ *
+ * size_bytes + mtime_ms land in the response so the onboarding v2 review
+ * page can render filename / size / last-modified per file without the NLP
+ * service having converted the file yet. Both are pass-throughs from the
+ * browser File object (File.size, File.lastModified).
  */
 
 import { NextResponse } from 'next/server';
@@ -49,6 +55,8 @@ function sanitizeFilename(name: string): string {
 interface UploadedFile {
   file_path: string;
   filename: string;
+  size_bytes: number;
+  mtime_ms: number;
 }
 
 interface FailedFile {
@@ -100,7 +108,25 @@ export async function POST(request: Request) {
     try {
       const buf = Buffer.from(await file.arrayBuffer());
       await fs.writeFile(targetPath, buf);
-      uploaded.push({ file_path: targetPath, filename: rawName });
+      // file.lastModified is epoch ms from the browser's File object; Node's
+      // fetch-spec FormData preserves it. On the off chance it lands as 0
+      // (some synthesized File objects, older Node versions), fall back to
+      // the filesystem mtime of what we just wrote — close enough for UI.
+      let mtime_ms = file.lastModified;
+      if (!mtime_ms || mtime_ms <= 0) {
+        try {
+          const stat = await fs.stat(targetPath);
+          mtime_ms = Math.trunc(stat.mtimeMs);
+        } catch {
+          mtime_ms = Date.now();
+        }
+      }
+      uploaded.push({
+        file_path: targetPath,
+        filename: rawName,
+        size_bytes: file.size,
+        mtime_ms,
+      });
     } catch (e) {
       const error = e instanceof Error ? e.message : 'unknown';
       failed.push({ filename: rawName, error: `write_failed: ${error}` });

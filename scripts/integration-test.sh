@@ -560,9 +560,20 @@ stage_11b_confirm_surfaces_n8n_down() {
     rm -f /tmp/11b_body
 
     # Restart n8n regardless of test outcome so other stages can run.
+    # Use `up -d` not `start`: stage 1's `down -v` already removed the n8n
+    # container before we got here, and `docker compose start` errors
+    # out with exit 1 + "service \"n8n\" has no container to start" in
+    # that case — which gets silenced by `>/dev/null 2>&1 || true` and
+    # surfaces 120s later as a mysterious wait_for_http_200 timeout.
+    # `up -d` creates-if-missing AND starts, covering both paths.
     echo "  restarting n8n..."
-    $COMPOSE start n8n >/dev/null 2>&1 || true
+    $COMPOSE up -d n8n >/dev/null 2>&1 || true
     wait_for_http_200 "http://localhost:5678/healthz" 120 || echo "  WARNING: n8n did not come back within 120s"
+    # Guard: ensure the container actually exists post-restart. Catches
+    # any future regression where the restart verb silently no-ops again.
+    if [ -z "$($COMPOSE ps -q n8n 2>/dev/null)" ]; then
+        echo "  WARNING: n8n container is missing after restart — silent-failure regression"
+    fi
 
     if [ "$confirm_http" != "503" ]; then
         echo "  FAIL: expected HTTP 503 with n8n down, got $confirm_http"
@@ -1544,6 +1555,8 @@ main() {
     stage_23_zombie_cleanup_endpoint
     stage_24_staging_crud
     stage_25_finalize_end_to_end
+    stage_26_finalize_accepts_ingested
+    stage_27_patch_excludes_from_finalize
 
     echo
     echo "=== Stage summary ==="
@@ -1551,7 +1564,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 18 stages (0, 1, 4, 11–25) executed, all passed ==="
+    echo "=== All 20 stages (0, 1, 4, 11–27) executed, all passed ==="
     exit 0
 }
 
@@ -2253,11 +2266,16 @@ else:
         return 1
     fi
 
-    # 5. Verify a source row materialised for this session
+    # 5. Verify a source row materialised for this session.
+    # App container has python3 + stdlib sqlite3; doesn't ship the sqlite3 CLI.
     local source_count
-    source_count=$(docker compose exec -T app sqlite3 /data/db/kompl.db \
-        "SELECT count(*) FROM sources WHERE onboarding_session_id = '$SESSION_ID' AND compile_status = 'active'" \
-        2>/dev/null | tr -d '[:space:]')
+    source_count=$(docker compose exec -T app python3 -c "
+import sqlite3
+db = sqlite3.connect('/data/db/kompl.db')
+row = db.execute(\"SELECT count(*) FROM sources WHERE onboarding_session_id = ? AND compile_status = 'active'\", ('$SESSION_ID',)).fetchone()
+print(row[0])
+db.close()
+" 2>&1 | tr -d '[:space:]')
 
     if [ "$source_count" != "1" ]; then
         echo "  FAIL: expected 1 active source for session, got $source_count"
@@ -2269,6 +2287,160 @@ else:
     echo "  source_count=1 (compile_status=active)"
     echo "  stage 25 PASS — v18 staging → finalize → pipeline end-to-end"
     record_stage 25 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 26: /finalize accepts status='ingested' staging rows (Phase 2 safety net)
+#   REAL — no external services. Seeds DB directly to simulate the v18 migration
+#   that lifts legacy compile_status='collected' sources into staging.
+#   1. SQL-insert a sources row (compile_status='pending')
+#   2. SQL-insert a collect_staging row (status='ingested', resolved_source_id=<source_id>)
+#   3. POST /api/onboarding/finalize → expect queued=1 (NOT no_items_staged)
+#   4. Assert compile_progress row was created
+# ---------------------------------------------------------------------------
+stage_26_finalize_accepts_ingested() {
+    echo "--- stage 26: /finalize accepts 'ingested' rows (legacy-lifted safety) ---"
+
+    local SESSION_ID
+    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    local SOURCE_ID
+    SOURCE_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    local STAGE_ID
+    STAGE_ID=$(node -e "console.log(require('crypto').randomUUID())")
+
+    # The app container ships python3 (migrate.py runs on boot) but not the
+    # sqlite3 CLI. Use python3 -c with the stdlib sqlite3 module to seed.
+    # On any DB-seed failure, dump the error to stdout and bail early with
+    # a clear message rather than letting the finalize curl mask it.
+    local seed_out
+    seed_out=$(docker compose exec -T app python3 -c "
+import sqlite3, sys
+db = sqlite3.connect('/data/db/kompl.db')
+db.execute('''
+  INSERT INTO sources (source_id, title, source_type, source_url, content_hash, file_path, compile_status, onboarding_session_id)
+  VALUES (?, ?, ?, NULL, ?, ?, 'pending', ?)
+''', ('$SOURCE_ID', 'Stage 26 canary', 'note', 'sha256-stage26', '/data/raw/$SOURCE_ID.md.gz', '$SESSION_ID'))
+db.execute('''
+  INSERT INTO collect_staging (stage_id, session_id, connector, payload, included, status, resolved_source_id, created_at, ingested_at)
+  VALUES (?, ?, 'text', '{\"resumed_from_legacy\":1}', 1, 'ingested', ?, datetime('now'), datetime('now'))
+''', ('$STAGE_ID', '$SESSION_ID', '$SOURCE_ID'))
+db.commit()
+db.close()
+print('seeded')
+" 2>&1)
+    if [ "$seed_out" != "seeded" ]; then
+        echo "  FAIL: DB seeding failed: $seed_out"
+        record_stage 26 REAL FAIL
+        return 1
+    fi
+
+    # POST /finalize. Even with zero 'pending' rows, the ingested row should
+    # qualify — Phase 2.1 expanded the filter to status IN ('pending','ingested').
+    # Accept both 200 (n8n up) and 503 (n8n unreachable from prior stages)
+    # — both include queued=1 in the body which is what this stage tests.
+    local finalize_response
+    finalize_response=$(curl --max-time 15 -s -X POST \
+        http://localhost:3000/api/onboarding/finalize \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}" 2>&1)
+
+    local queued
+    queued=$(echo "$finalize_response" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('queued', -1))
+except Exception:
+    print(-1)
+" 2>/dev/null)
+
+    if [ "$queued" != "1" ]; then
+        echo "  FAIL: /finalize rejected ingested row. queued=$queued response=$finalize_response"
+        record_stage 26 REAL FAIL
+        return 1
+    fi
+
+    # Verify compile_progress row was created (proves finalize proceeded past
+    # the 'no_items_staged' 400 guard).
+    local progress_count
+    progress_count=$(docker compose exec -T app python3 -c "
+import sqlite3
+db = sqlite3.connect('/data/db/kompl.db')
+row = db.execute('SELECT count(*) FROM compile_progress WHERE session_id = ?', ('$SESSION_ID',)).fetchone()
+print(row[0])
+db.close()
+" 2>&1 | tr -d '[:space:]')
+
+    if [ "$progress_count" != "1" ]; then
+        echo "  FAIL: compile_progress row not created (count=$progress_count)"
+        record_stage 26 REAL FAIL
+        return 1
+    fi
+
+    echo "  queued=1 + compile_progress row created — ingested-row safety net works"
+    echo "  stage 26 PASS"
+    record_stage 26 REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 27: PATCH included=false removes a row from /finalize's queue
+#   REAL — no external services.
+#   1. POST /stage with 2 URL rows
+#   2. PATCH one row to included=false
+#   3. POST /finalize → expect queued=1 (not 2)
+#   4. DELETE /session to clean up
+# ---------------------------------------------------------------------------
+stage_27_patch_excludes_from_finalize() {
+    echo "--- stage 27: PATCH included=false excludes from /finalize ---"
+
+    local SESSION_ID
+    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+
+    local stage_response
+    stage_response=$(curl -sf --max-time 10 -X POST \
+        http://localhost:3000/api/onboarding/stage \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"url\",\"items\":[{\"url\":\"https://a.test\"},{\"url\":\"https://b.test\"}]}")
+    local first_id
+    first_id=$(echo "$stage_response" | python3 -c "import sys, json; print(json.load(sys.stdin)['stage_ids'][0])" 2>/dev/null)
+
+    curl -sf --max-time 10 -X PATCH \
+        "http://localhost:3000/api/onboarding/staging/$first_id" \
+        -H 'Content-Type: application/json' \
+        -d '{"included":false}' > /dev/null
+
+    # Finalize. n8n may be unreachable (from prior stages) — accept 503 as long
+    # as queued=1 is in the response body.
+    local finalize_response
+    finalize_response=$(curl --max-time 15 -s -X POST \
+        http://localhost:3000/api/onboarding/finalize \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$SESSION_ID\"}")
+
+    local queued
+    queued=$(echo "$finalize_response" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('queued', -1))
+except Exception:
+    print(-1)
+" 2>/dev/null)
+
+    if [ "$queued" != "1" ]; then
+        echo "  FAIL: expected queued=1, got queued=$queued response=$finalize_response"
+        record_stage 27 REAL FAIL
+        return 1
+    fi
+
+    curl -sf --max-time 10 -X DELETE \
+        "http://localhost:3000/api/onboarding/session?session_id=$SESSION_ID" > /dev/null
+
+    echo "  2 staged, 1 unchecked → queued=1"
+    echo "  stage 27 PASS — PATCH filter respected by finalize"
+    record_stage 27 REAL PASS
     return 0
 }
 
