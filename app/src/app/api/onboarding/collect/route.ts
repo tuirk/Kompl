@@ -68,36 +68,52 @@ interface ConvertResponse {
   metadata: Record<string, unknown>;
 }
 
-async function callConvertUrl(sourceId: string, url: string): Promise<ConvertResponse> {
-  const res = await fetch(`${NLP_SERVICE_URL}/convert/url`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_id: sourceId, url }),
-    signal: AbortSignal.timeout(60_000),
-  });
+type ConvertResult =
+  | { ok: true; data: ConvertResponse }
+  | { ok: false; code: 'nlp_unreachable' | 'nlp_convert_failed'; detail: string };
+
+async function callConvertUrl(sourceId: string, url: string): Promise<ConvertResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${NLP_SERVICE_URL}/convert/url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_id: sourceId, url }),
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (e) {
+    return { ok: false, code: 'nlp_unreachable', detail: e instanceof Error ? e.message : 'fetch failed' };
+  }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    throw new Error(`convert_url_failed: ${res.status} ${detail}`);
+    const code = res.status >= 502 && res.status <= 504 ? 'nlp_unreachable' : 'nlp_convert_failed';
+    return { ok: false, code, detail: `${res.status} ${detail}`.trim() };
   }
-  return res.json() as Promise<ConvertResponse>;
+  return { ok: true, data: (await res.json()) as ConvertResponse };
 }
 
 async function callConvertFilePath(
   sourceId: string,
   filePath: string,
   titleHint?: string
-): Promise<ConvertResponse> {
-  const res = await fetch(`${NLP_SERVICE_URL}/convert/file-path`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_id: sourceId, file_path: filePath, title_hint: titleHint }),
-    signal: AbortSignal.timeout(60_000),
-  });
+): Promise<ConvertResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${NLP_SERVICE_URL}/convert/file-path`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_id: sourceId, file_path: filePath, title_hint: titleHint }),
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (e) {
+    return { ok: false, code: 'nlp_unreachable', detail: e instanceof Error ? e.message : 'fetch failed' };
+  }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    throw new Error(`convert_file_failed: ${res.status} ${detail}`);
+    const code = res.status >= 502 && res.status <= 504 ? 'nlp_unreachable' : 'nlp_convert_failed';
+    return { ok: false, code, detail: `${res.status} ${detail}`.trim() };
   }
-  return res.json() as Promise<ConvertResponse>;
+  return { ok: true, data: (await res.json()) as ConvertResponse };
 }
 
 interface MetadataPeek {
@@ -168,7 +184,7 @@ export async function POST(request: Request) {
   const items = body.items as CollectItem[];
 
   const stored: object[] = [];
-  const failed: Array<{ item: CollectItem; error: string }> = [];
+  const failed: Array<{ item: CollectItem; error: string; error_code?: string }> = [];
   const warnings: Array<{ source_id: string; warning: string }> = [];
 
   const db = getDb();
@@ -261,7 +277,7 @@ export async function POST(request: Request) {
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'unknown';
-        failed.push({ item, error: msg });
+        failed.push({ item, error: msg, error_code: 'ingest_failed' });
         // For tweet text failures, preserve tweet_url + title_hint so the link
         // is not lost even when the DB insert itself fails.
         const tweetUrl = typeof item.metadata?.tweet_url === 'string' ? item.metadata.tweet_url : null;
@@ -292,12 +308,14 @@ export async function POST(request: Request) {
 
     try {
       // Call nlp-service for conversion
-      let convertResult: ConvertResponse;
-      if (connector === 'url') {
-        convertResult = await callConvertUrl(sourceId, item.url!);
-      } else {
-        convertResult = await callConvertFilePath(sourceId, item.file_path!, item.title_hint);
+      const convertResultOrError: ConvertResult =
+        connector === 'url'
+          ? await callConvertUrl(sourceId, item.url!)
+          : await callConvertFilePath(sourceId, item.file_path!, item.title_hint);
+      if (!convertResultOrError.ok) {
+        throw new Error(`${convertResultOrError.code}: ${convertResultOrError.detail}`);
       }
+      const convertResult = convertResultOrError.data;
 
       // Merge metadata_hint (e.g. date_saved from browser bookmarks) into NLP metadata
       const finalMetadata: Record<string, unknown> = item.metadata_hint
@@ -356,7 +374,12 @@ export async function POST(request: Request) {
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'unknown';
-      failed.push({ item, error: msg });
+      // Errors thrown from callConvertUrl/callConvertFilePath are prefixed
+      // with the structured error_code (e.g. 'nlp_unreachable: 502 ...').
+      // Extract the code so the UI can route through toUserMessage().
+      const codeMatch = msg.match(/^(nlp_unreachable|nlp_convert_failed):/);
+      const error_code = codeMatch ? codeMatch[1] : undefined;
+      failed.push({ item, error: msg, error_code });
       // Persist the link so it appears on the Saved Links wiki page even if
       // scraping failed. URL bookmarks have url + optional title_hint +
       // optional date_saved from browser export. Best-effort og-peek captures
@@ -385,5 +408,33 @@ export async function POST(request: Request) {
     }
   }
 
+  // If the entire batch failed, surface a single authoritative top-level
+  // code so the UI can show one toast instead of per-item failure counts.
+  // nlp_unreachable wins over convert-failed wins over generic ingest_failed.
+  // Partial failures stay 200 with failed[].
+  if (stored.length === 0 && failed.length > 0) {
+    const allNlpUnreachable = failed.every((f) => f.error_code === 'nlp_unreachable');
+    const allNlpLayer = failed.every(
+      (f) => f.error_code === 'nlp_unreachable' || f.error_code === 'nlp_convert_failed'
+    );
+    if (allNlpUnreachable) {
+      return NextResponse.json(
+        { session_id, stored, failed, warnings, error_code: 'nlp_unreachable' },
+        { status: 502 }
+      );
+    }
+    if (allNlpLayer) {
+      return NextResponse.json(
+        { session_id, stored, failed, warnings, error_code: 'nlp_convert_failed' },
+        { status: 502 }
+      );
+    }
+    // Text-only / mixed / DB-insert failures — return 502 with generic code
+    // so the UI still gets a single toast rather than silent partial success.
+    return NextResponse.json(
+      { session_id, stored, failed, warnings, error_code: 'ingest_failed' },
+      { status: 502 }
+    );
+  }
   return NextResponse.json({ session_id, stored, failed, warnings }, { status: 200 });
 }

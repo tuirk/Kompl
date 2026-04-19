@@ -13,6 +13,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { toUserMessage } from '@/lib/service-errors';
+import { COMPILE_STEPS } from '@/lib/compile-steps';
 
 const POLL_INTERVAL_MS    = 2000;
 const PATIENCE_TIMEOUT_MS = 15 * 60 * 1000;
@@ -33,16 +34,7 @@ interface ProgressResponse {
   completed_at: string | null;
 }
 
-const STEPS = [
-  { key: 'extract',  label: 'Extracting knowledge'     },
-  { key: 'resolve',  label: 'Resolving entities'       },
-  { key: 'match',    label: 'Checking existing wiki'   },
-  { key: 'plan',     label: 'Planning wiki structure'  },
-  { key: 'draft',    label: 'Writing pages'            },
-  { key: 'crossref', label: 'Cross-referencing'        },
-  { key: 'commit',   label: 'Finalizing'               },
-  { key: 'schema',   label: 'Setting up wiki structure'},
-];
+const STEPS = COMPILE_STEPS;
 
 function parseCommittedCount(detail: string | undefined): { pages: number; sources: number } {
   if (!detail) return { pages: 0, sources: 0 };

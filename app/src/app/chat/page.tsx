@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { ChatMessage, Citation } from '@/lib/chat-types';
+import { toUserMessage } from '@/lib/service-errors';
 
 interface WikiStatsSnapshot {
   source_count: number;
@@ -273,12 +274,14 @@ export default function ChatPage() {
         answer?: string;
         citations?: Citation[];
         error?: string;
+        error_code?: string;
       };
+      const errMsg = data.error_code ? toUserMessage(data.error_code) : data.error;
       const assistantMsg: ChatMessage = {
         id: Date.now() + 1,
         role: 'assistant',
-        content: data.error
-          ? `Error: ${data.error}`
+        content: errMsg
+          ? `Error: ${errMsg}`
           : (data.answer ?? 'No answer returned.'),
         citations: data.citations ?? [],
         created_at: new Date().toISOString(),

@@ -21,6 +21,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 
 import { useToast } from '../../../components/Toast';
+import { toUserMessage } from '@/lib/service-errors';
 import TwitterConnector from './twitter-connector';
 import AppleNotesConnector from './apple-notes-connector';
 import {
@@ -135,8 +136,14 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast }: Connec
         failed: { item: unknown; error: string }[];
         warnings: { source_id: string; warning: string }[];
         error?: string;
+        error_code?: string;
       };
-      if (!res.ok) { showToast(body.error ?? `Collect failed (${res.status})`, 'error'); setPhase('idle'); return; }
+      if (!res.ok) {
+        const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Collect failed (${res.status})`;
+        showToast(msg, 'error');
+        setPhase('idle');
+        return;
+      }
       setResult({
         stored: body.stored.length,
         failed: body.failed.length,
@@ -272,9 +279,13 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
         files: UploadedFile[];
         failed: { filename: string; error: string }[];
         error?: string;
+        error_code?: string;
       };
       if (!uploadRes.ok || uploadBody.files.length === 0) {
-        showToast(uploadBody.error ?? 'Upload failed', 'error'); setPhase('idle'); return;
+        const msg = uploadBody.error_code ? toUserMessage(uploadBody.error_code) : uploadBody.error ?? 'Upload failed';
+        showToast(msg, 'error');
+        setPhase('idle');
+        return;
       }
       if (uploadBody.failed.length > 0) showToast(`${uploadBody.failed.length} file(s) could not be saved — continuing with the rest.`);
       uploaded = uploadBody.files;
@@ -303,8 +314,14 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast }: Conne
         failed: { item: unknown; error: string }[];
         warnings: { source_id: string; warning: string }[];
         error?: string;
+        error_code?: string;
       };
-      if (!collectRes.ok) { showToast(body.error ?? `Convert failed (${collectRes.status})`, 'error'); setPhase('idle'); return; }
+      if (!collectRes.ok) {
+        const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Convert failed (${collectRes.status})`;
+        showToast(msg, 'error');
+        setPhase('idle');
+        return;
+      }
       setResult({ stored: body.stored.length, failed: body.failed.length, youtubeWarnings: 0 });
       setPhase('done');
     } catch (e) {
@@ -616,8 +633,14 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast }: 
         failed: { item: unknown; error: string }[];
         warnings: { source_id: string; warning: string }[];
         error?: string;
+        error_code?: string;
       };
-      if (!res.ok) { showToast(body.error ?? `Collect failed (${res.status})`, 'error'); setPhase('idle'); return; }
+      if (!res.ok) {
+        const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Collect failed (${res.status})`;
+        showToast(msg, 'error');
+        setPhase('idle');
+        return;
+      }
       setResult({
         stored: body.stored.length,
         failed: body.failed.length,
@@ -747,8 +770,14 @@ function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast }: Con
         failed: { item: unknown; error: string }[];
         warnings: { source_id: string; warning: string }[];
         error?: string;
+        error_code?: string;
       };
-      if (!res.ok) { showToast(body.error ?? `Collect failed (${res.status})`, 'error'); setPhase('idle'); return; }
+      if (!res.ok) {
+        const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Collect failed (${res.status})`;
+        showToast(msg, 'error');
+        setPhase('idle');
+        return;
+      }
       setResult({ stored: body.stored.length, failed: body.failed.length, youtubeWarnings: 0 });
       setPhase('done');
     } catch (e) {

@@ -109,7 +109,7 @@ export async function POST(request: Request) {
 
   if (uploaded.length === 0) {
     return NextResponse.json(
-      { error: 'all uploads failed', files: [], failed },
+      { error_code: 'file_upload_failed', error: 'all uploads failed', files: [], failed },
       { status: 502 }
     );
   }

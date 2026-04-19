@@ -110,7 +110,10 @@ export async function POST(request: Request) {
     filePaths = txn();
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'unknown';
-    return NextResponse.json({ error: `commit_failed: ${msg}` }, { status: 500 });
+    return NextResponse.json(
+      { error_code: 'commit_failed', error: `commit_failed: ${msg}` },
+      { status: 500 }
+    );
   }
 
   // Best-effort file cleanup — orphaned gzip is harmless.

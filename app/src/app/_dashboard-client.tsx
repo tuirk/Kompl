@@ -14,22 +14,15 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Upload, BookOpen, MessageSquare, AlertTriangle } from 'lucide-react';
+import { COMPILE_STEP_KEYS, COMPILE_STEP_LABELS } from '@/lib/compile-steps';
+import { toUserMessage } from '@/lib/service-errors';
 
 // ── Active compile banner constants ────────────────────────────────────────
 const LS_KEY = 'kompl_active_compile';
 const BANNER_POLL_MS = 3000;
 
-const STEP_LABELS: Record<string, string> = {
-  extract:  'Extracting knowledge',
-  resolve:  'Resolving entities',
-  match:    'Checking existing wiki',
-  plan:     'Planning wiki structure',
-  draft:    'Writing pages',
-  crossref: 'Cross-referencing',
-  commit:   'Finalizing',
-  schema:   'Setting up wiki structure',
-};
-const STEP_KEYS = ['extract', 'resolve', 'match', 'plan', 'draft', 'crossref', 'commit', 'schema'];
+const STEP_LABELS: Record<string, string> = COMPILE_STEP_LABELS;
+const STEP_KEYS: readonly string[] = COMPILE_STEP_KEYS;
 
 interface ActiveCompileInfo {
   session_id: string;
@@ -330,6 +323,65 @@ function StaleBanner() {
   );
 }
 
+// ── Service health banner ──────────────────────────────────────────────────
+
+const SERVICE_HEALTH_DISMISS_KEY = 'kompl_service_health_dismissed';
+const HEALTH_POLL_MS = 30000;
+
+function ServiceStatusBanner() {
+  const [isDown, setIsDown] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    if (sessionStorage.getItem(SERVICE_HEALTH_DISMISS_KEY)) {
+      setDismissed(true);
+    }
+    let alive = true;
+    async function check() {
+      try {
+        const res = await fetch('/api/health', { cache: 'no-store' });
+        if (!alive) return;
+        if (!res.ok) { setIsDown(true); return; }
+        const data = (await res.json()) as { nlp_ok?: boolean };
+        setIsDown(data.nlp_ok === false);
+      } catch {
+        if (alive) setIsDown(true);
+      }
+    }
+    void check();
+    const id = setInterval(() => void check(), HEALTH_POLL_MS);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  if (dismissed || !isDown) return null;
+
+  function dismiss() {
+    sessionStorage.setItem(SERVICE_HEALTH_DISMISS_KEY, '1');
+    setDismissed(true);
+  }
+
+  return (
+    <div style={{
+      background: 'rgba(var(--danger-rgb),0.08)',
+      borderLeft: '2px solid var(--danger)',
+      padding: '12px 20px', marginBottom: 24,
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
+    }}>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--danger)', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <AlertTriangle size={13} />
+        {toUserMessage('nlp_unreachable').toUpperCase()}
+      </span>
+      <button onClick={dismiss} style={{
+        background: 'transparent', border: 'none', cursor: 'pointer',
+        color: 'var(--fg-dim)', padding: '0 4px', lineHeight: 1,
+        fontSize: 16, display: 'flex', alignItems: 'center',
+      }}>
+        ×
+      </button>
+    </div>
+  );
+}
+
 // ── Process queue ──────────────────────────────────────────────────────────
 
 interface SourceQueueRow {
@@ -361,11 +413,19 @@ const QUEUE_POLL_MS = 5000;
 function ProcessQueue() {
   const [sources, setSources] = useState<SourceQueueRow[]>([]);
   const [retrying, setRetrying] = useState<Set<string>>(new Set());
+  const [loadError, setLoadError] = useState(false);
 
   const fetchSources = useCallback(() => {
     void fetch('/api/sources?limit=4&sort_by=date_ingested&sort_order=desc')
-      .then(r => r.json())
-      .then((data: { sources: SourceQueueRow[] }) => setSources((data.sources ?? []).slice(0, 4)));
+      .then(r => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json();
+      })
+      .then((data: { sources: SourceQueueRow[] }) => {
+        setSources((data.sources ?? []).slice(0, 4));
+        setLoadError(false);
+      })
+      .catch(() => setLoadError(true));
   }, []);
 
   useEffect(() => {
@@ -392,6 +452,18 @@ function ProcessQueue() {
     }
   }, []);
 
+  if (loadError && sources.length === 0) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <p style={{ color: 'var(--danger)', fontSize: '0.9rem', margin: 0 }}>Couldn&apos;t load sources.</p>
+        <button onClick={() => fetchSources()} style={{
+          background: 'transparent', border: '1px solid var(--border)', color: 'var(--fg-secondary)',
+          padding: '4px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, cursor: 'pointer',
+          textTransform: 'uppercase', letterSpacing: '0.5px',
+        }}>Retry</button>
+      </div>
+    );
+  }
   if (sources.length === 0) {
     return <p style={{ color: 'var(--fg-muted)', fontSize: '0.9rem', margin: 0 }}>No sources yet.</p>;
   }
@@ -481,6 +553,7 @@ function PendingDrafts() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [loadError, setLoadError] = useState(false);
 
   function toggleExpand(planId: string) {
     setExpanded(prev => {
@@ -492,8 +565,15 @@ function PendingDrafts() {
 
   function refresh() {
     void fetch('/api/drafts/pending')
-      .then((r) => r.json())
-      .then((data: { drafts: DraftRow[] }) => setDrafts(data.drafts));
+      .then((r) => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json();
+      })
+      .then((data: { drafts: DraftRow[] }) => {
+        setDrafts(data.drafts);
+        setLoadError(false);
+      })
+      .catch(() => setLoadError(true));
   }
 
   useEffect(() => { refresh(); }, []);
@@ -540,6 +620,18 @@ function PendingDrafts() {
     }
   }
 
+  if (loadError && drafts.length === 0) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <p style={{ color: 'var(--danger)', fontSize: '0.9rem', margin: 0 }}>Couldn&apos;t load drafts.</p>
+        <button onClick={() => refresh()} style={{
+          background: 'transparent', border: '1px solid var(--border)', color: 'var(--fg-secondary)',
+          padding: '4px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, cursor: 'pointer',
+          textTransform: 'uppercase', letterSpacing: '0.5px',
+        }}>Retry</button>
+      </div>
+    );
+  }
   if (drafts.length === 0) {
     return (
       <p style={{ color: 'var(--fg-muted)', fontSize: '0.9rem', margin: 0 }}>
@@ -672,6 +764,9 @@ function PendingDrafts() {
 export default function DashboardClient() {
   return (
     <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px calc(5rem + 32px)' }}>
+
+      {/* Service health banner — red bar when nlp-service is down */}
+      <ServiceStatusBanner />
 
       {/* Active compile banner — only rendered when localStorage has a running session */}
       <ActiveCompileBanner />

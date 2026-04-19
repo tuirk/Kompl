@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { detectAndParseAll, formatTweetMarkdown, isTwitterUrl, type ParsedTweet } from '../../../lib/twitter-parser';
+import { toUserMessage } from '@/lib/service-errors';
 import {
   type ConnectorProps,
   navigateNext,
@@ -332,9 +333,10 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, connector: 'text', items: tweetItems }),
       });
-      const b1 = await r1.json() as { stored: { source_id: string }[]; error?: string };
+      const b1 = await r1.json() as { stored: { source_id: string }[]; error?: string; error_code?: string };
       if (!r1.ok) {
-        showToast(b1.error ?? `Collect failed (${r1.status})`, 'error');
+        const msg = b1.error_code ? toUserMessage(b1.error_code) : b1.error ?? `Collect failed (${r1.status})`;
+        showToast(msg, 'error');
         setPhase('preview');
         return;
       }
@@ -369,9 +371,10 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
             items: articleUrls.map(url => ({ url })),
           }),
         });
-        const b2 = await r2.json() as { stored: { source_id: string }[]; error?: string };
+        const b2 = await r2.json() as { stored: { source_id: string }[]; error?: string; error_code?: string };
         if (!r2.ok) {
-          showToast(b2.error ?? `URL collect failed (${r2.status})`, 'error');
+          const msg = b2.error_code ? toUserMessage(b2.error_code) : b2.error ?? `URL collect failed (${r2.status})`;
+          showToast(msg, 'error');
           // Don't abort — tweets are already stored
         } else {
           total += b2.stored.length;

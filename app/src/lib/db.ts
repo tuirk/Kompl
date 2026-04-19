@@ -32,6 +32,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { COMPILE_STEP_KEYS, type CompileStepKey } from './compile-steps';
 
 const DB_PATH = process.env.DB_PATH ?? '/data/db/kompl.db';
 export const DATA_ROOT = path.dirname(path.dirname(DB_PATH)); // /data
@@ -1268,11 +1269,8 @@ export function markSourcesActive(sourceIds: string[]): void {
 // Compile progress helpers (Part 2c-ii)
 // ============================================================================
 
-const COMPILE_STEPS = ['extract', 'resolve', 'match', 'plan', 'draft', 'crossref', 'commit', 'schema'] as const;
-type CompileStep = (typeof COMPILE_STEPS)[number];
-
 const DEFAULT_STEPS = () =>
-  Object.fromEntries(COMPILE_STEPS.map((s) => [s, { status: 'pending' }]));
+  Object.fromEntries(COMPILE_STEP_KEYS.map((s) => [s, { status: 'pending' }]));
 
 export interface CompileProgressRow {
   session_id: string;
@@ -1316,7 +1314,7 @@ export function createCompileProgress(sessionId: string, sourceCount = 0): void 
  */
 export function updateCompileStep(
   sessionId: string,
-  step: string,
+  step: CompileStepKey,
   status: 'running' | 'done' | 'failed',
   detail?: string
 ): void {
@@ -1472,12 +1470,11 @@ export function resetForRetry(sessionId: string): void {
   if (!progress) return;
 
   const steps = JSON.parse(progress.steps) as Record<string, { status: string; detail?: string }>;
-  const stepOrder = ['extract', 'resolve', 'match', 'plan', 'draft', 'crossref', 'commit', 'schema'];
 
   // Find the first non-done step
   let resetFrom = -1;
-  for (let i = 0; i < stepOrder.length; i++) {
-    if (steps[stepOrder[i]]?.status !== 'done') {
+  for (let i = 0; i < COMPILE_STEP_KEYS.length; i++) {
+    if (steps[COMPILE_STEP_KEYS[i]]?.status !== 'done') {
       resetFrom = i;
       break;
     }
@@ -1486,8 +1483,8 @@ export function resetForRetry(sessionId: string): void {
   if (resetFrom === -1) return; // all steps done — nothing to retry
 
   // Reset from the first non-done step forward
-  for (let i = resetFrom; i < stepOrder.length; i++) {
-    steps[stepOrder[i]] = { status: 'pending' };
+  for (let i = resetFrom; i < COMPILE_STEP_KEYS.length; i++) {
+    steps[COMPILE_STEP_KEYS[i]] = { status: 'pending' };
   }
 
   openDb()

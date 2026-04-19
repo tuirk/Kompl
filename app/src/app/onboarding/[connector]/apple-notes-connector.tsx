@@ -22,6 +22,7 @@ import {
   navigateBack,
   BottomNav,
 } from './_shared';
+import { toUserMessage } from '@/lib/service-errors';
 
 interface UploadedFile {
   file_path: string;
@@ -112,9 +113,11 @@ export default function AppleNotesConnector({
           stored: { source_id: string }[];
           failed: { item: unknown; error: string }[];
           error?: string;
+          error_code?: string;
         };
         if (!res.ok) {
-          showToast(body.error ?? `Collect failed (${res.status})`, 'error');
+          const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Collect failed (${res.status})`;
+          showToast(msg, 'error');
         } else {
           totalStored += body.stored.length;
           totalFailed += body.failed.length;
@@ -136,10 +139,12 @@ export default function AppleNotesConnector({
           files: UploadedFile[];
           failed: { filename: string; error: string }[];
           error?: string;
+          error_code?: string;
         };
 
         if (!uploadRes.ok || uploadBody.files.length === 0) {
-          showToast(uploadBody.error ?? 'Upload failed', 'error');
+          const msg = uploadBody.error_code ? toUserMessage(uploadBody.error_code) : uploadBody.error ?? 'Upload failed';
+          showToast(msg, 'error');
           totalFailed += otherFiles.length;
         } else {
           if (uploadBody.failed.length > 0) {
@@ -164,9 +169,11 @@ export default function AppleNotesConnector({
             stored: { source_id: string }[];
             failed: { item: unknown; error: string }[];
             error?: string;
+            error_code?: string;
           };
           if (!collectRes.ok) {
-            showToast(collectBody.error ?? `Convert failed (${collectRes.status})`, 'error');
+            const msg = collectBody.error_code ? toUserMessage(collectBody.error_code) : collectBody.error ?? `Convert failed (${collectRes.status})`;
+            showToast(msg, 'error');
             totalFailed += uploadBody.files.length;
           } else {
             totalStored += collectBody.stored.length;

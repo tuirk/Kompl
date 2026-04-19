@@ -18,6 +18,8 @@
 #   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=16)
 #   Stage 4  — REAL (text connector collect end-to-end + failure-path canary, no API key needed)
 #   Stage 11 — REAL (onboarding API canary)
+#   Stage 11b — REAL (confirm surfaces n8n-down as 503)
+#   Stage 11c — REAL (collect surfaces nlp-down as 502 + error_code='nlp_unreachable')
 #   Stage 12 — REAL (text connector canary)
 #   Stage 13 — REAL (twitter connector canary)
 #   Stage 14 — REAL (extraction pipeline canary, skipped without GEMINI_API_KEY)
@@ -597,6 +599,67 @@ stage_11b_confirm_surfaces_n8n_down() {
 
     echo "  PASS"
     record_stage 11b REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 11c — collect surfaces nlp-unreachable as 502 (issue #3 acceptance)
+# ---------------------------------------------------------------------------
+#
+# Regression test for the error-code refactor at /api/onboarding/collect. With
+# nlp-service down, the URL connector must return HTTP 502 with top-level
+# error_code='nlp_unreachable' (instead of raw 'convert_url_failed: 502 ...'
+# per-item strings). The UI uses that code to render a registry-backed toast.
+#
+# Does NOT require FIRECRAWL_API_KEY (uses url connector pointed at a local
+# unreachable URL; nlp-service being stopped is the source of failure).
+stage_11c_collect_surfaces_nlp_down() {
+    echo "[STAGE 11c] REAL: /api/onboarding/collect returns 502 + error_code='nlp_unreachable' when nlp is down"
+
+    local SESSION_ID
+    SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
+
+    # ── stop nlp-service ─────────────────────────────────────────────────────
+    echo "  stopping nlp-service to simulate unreachable..."
+    if ! $COMPOSE stop nlp-service >/dev/null 2>&1; then
+        echo "  FAIL: could not stop nlp-service"
+        record_stage 11c REAL FAIL
+        return 1
+    fi
+
+    # ── collect a URL with nlp-service down — expect HTTP 502 + error_code ───
+    echo "  POSTing /api/onboarding/collect with nlp down (expect 502)..."
+    local collect_http collect_body
+    collect_http=$(curl -s -o /tmp/11c_body -w "%{http_code}" -X POST \
+        -H "content-type: application/json" \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"url\",\"items\":[{\"url\":\"https://example.com/11c-test\"}]}" \
+        "http://localhost:3000/api/onboarding/collect")
+    collect_body=$(cat /tmp/11c_body 2>/dev/null || echo "")
+    rm -f /tmp/11c_body
+
+    # Restart nlp-service regardless of test outcome so other stages can run.
+    echo "  restarting nlp-service..."
+    $COMPOSE start nlp-service >/dev/null 2>&1 || true
+    wait_for_http_200 "http://localhost:8000/health" 120 || echo "  WARNING: nlp-service did not come back within 120s"
+
+    if [ "$collect_http" != "502" ]; then
+        echo "  FAIL: expected HTTP 502 with nlp down, got $collect_http"
+        echo "  body: $collect_body"
+        record_stage 11c REAL FAIL
+        return 1
+    fi
+    echo "  collect HTTP 502 OK"
+
+    if ! echo "$collect_body" | grep -q '"error_code":"nlp_unreachable"'; then
+        echo "  FAIL: body missing expected error_code='nlp_unreachable'"
+        echo "  body: $collect_body"
+        record_stage 11c REAL FAIL
+        return 1
+    fi
+    echo "  error_code='nlp_unreachable' present OK"
+
+    echo "  PASS"
+    record_stage 11c REAL PASS
     return 0
 }
 
@@ -1466,6 +1529,7 @@ main() {
     stage_4_live_ingest
     stage_11_onboarding_api
     stage_11b_confirm_surfaces_n8n_down
+    stage_11c_collect_surfaces_nlp_down
     stage_12_text_connector
     stage_13_twitter_connector
     stage_14_extraction

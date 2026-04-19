@@ -13,9 +13,25 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { useToast } from '../../components/Toast';
+import { toUserMessage } from '@/lib/service-errors';
+
+async function saveSettingToApi(body: Record<string, unknown>): Promise<boolean> {
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 export default function SettingsPage() {
   const router = useRouter();
+  const { toast, showToast } = useToast();
 
   const [autoApprove, setAutoApprove] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
@@ -132,11 +148,8 @@ export default function SettingsPage() {
     const newVal = !autoApprove;
     setSaving(true);
     setSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ auto_approve: newVal }),
-    });
+    const _ok = await saveSettingToApi({ auto_approve: newVal });
+    if (!_ok) { setSaving(false); showToast(toUserMessage('settings_save_failed'), 'error'); return; }
     setAutoApprove(newVal);
     setSaving(false);
     setSaved(true);
@@ -147,11 +160,8 @@ export default function SettingsPage() {
     if (relatedMinSources === null) return;
     setRelatedSaving(true);
     setRelatedSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ related_pages_min_sources: relatedMinSources }),
-    });
+    const _ok = await saveSettingToApi({ related_pages_min_sources: relatedMinSources });
+    if (!_ok) { setRelatedSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setRelatedSaving(false);
     setRelatedSaved(true);
     setTimeout(() => setRelatedSaved(false), 2000);
@@ -161,11 +171,8 @@ export default function SettingsPage() {
     if (staleThreshold === null) return;
     setStaleSaving(true);
     setStaleSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stale_threshold_days: staleThreshold }),
-    });
+    const _ok = await saveSettingToApi({ stale_threshold_days: staleThreshold });
+    if (!_ok) { setStaleSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setStaleSaving(false);
     setStaleSaved(true);
     setTimeout(() => setStaleSaved(false), 2000);
@@ -224,11 +231,8 @@ export default function SettingsPage() {
     const newVal = !digestEnabled;
     setDigestSaving(true);
     setDigestSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ digest_enabled: newVal }),
-    });
+    const _ok = await saveSettingToApi({ digest_enabled: newVal });
+    if (!_ok) { setDigestSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setDigestEnabled(newVal);
     setDigestSaving(false);
     setDigestSaved(true);
@@ -239,11 +243,8 @@ export default function SettingsPage() {
     if (!digestToken.trim() || digestTokenSaving) return;
     setDigestTokenSaving(true);
     setDigestTokenSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ digest_telegram_token: digestToken.trim() }),
-    });
+    const _ok = await saveSettingToApi({ digest_telegram_token: digestToken.trim() });
+    if (!_ok) { setDigestTokenSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setDigestToken('');
     setDigestTokenIsSet(true);
     setDigestShowToken(false);
@@ -256,11 +257,8 @@ export default function SettingsPage() {
     if (!digestChatId.trim() || digestChatIdSaving) return;
     setDigestChatIdSaving(true);
     setDigestChatIdSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ digest_telegram_chat_id: digestChatId.trim() }),
-    });
+    const _ok = await saveSettingToApi({ digest_telegram_chat_id: digestChatId.trim() });
+    if (!_ok) { setDigestChatIdSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setDigestChatIdSaving(false);
     setDigestChatIdSaved(true);
     setTimeout(() => setDigestChatIdSaved(false), 2000);
@@ -271,11 +269,8 @@ export default function SettingsPage() {
     const newVal = deploymentMode === 'personal-device' ? 'always-on' : 'personal-device';
     setDeploymentSaving(true);
     setDeploymentSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deployment_mode: newVal }),
-    });
+    const _ok = await saveSettingToApi({ deployment_mode: newVal });
+    if (!_ok) { setDeploymentSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setDeploymentModeState(newVal);
     setDeploymentSaving(false);
     setDeploymentSaved(true);
@@ -298,11 +293,8 @@ export default function SettingsPage() {
     const newVal = !lintEnabled;
     setLintSaving(true);
     setLintSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lint_enabled: newVal }),
-    });
+    const _ok = await saveSettingToApi({ lint_enabled: newVal });
+    if (!_ok) { setLintSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setLintEnabledState(newVal);
     setLintSaving(false);
     setLintSaved(true);
@@ -348,11 +340,8 @@ export default function SettingsPage() {
     if (minSourceChars === null) return;
     setMinSourceCharsSaving(true);
     setMinSourceCharsSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ min_source_chars: minSourceChars }),
-    });
+    const _ok = await saveSettingToApi({ min_source_chars: minSourceChars });
+    if (!_ok) { setMinSourceCharsSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setMinSourceCharsSaving(false);
     setMinSourceCharsSaved(true);
     setTimeout(() => setMinSourceCharsSaved(false), 2000);
@@ -362,11 +351,8 @@ export default function SettingsPage() {
     if (minDraftChars === null) return;
     setMinDraftCharsSaving(true);
     setMinDraftCharsSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ min_draft_chars: minDraftChars }),
-    });
+    const _ok = await saveSettingToApi({ min_draft_chars: minDraftChars });
+    if (!_ok) { setMinDraftCharsSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setMinDraftCharsSaving(false);
     setMinDraftCharsSaved(true);
     setTimeout(() => setMinDraftCharsSaved(false), 2000);
@@ -376,11 +362,8 @@ export default function SettingsPage() {
     if (entityThreshold === null) return;
     setEntityThresholdSaving(true);
     setEntityThresholdSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entity_promotion_threshold: entityThreshold }),
-    });
+    const _ok = await saveSettingToApi({ entity_promotion_threshold: entityThreshold });
+    if (!_ok) { setEntityThresholdSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setEntityThresholdSaving(false);
     setEntityThresholdSaved(true);
     setTimeout(() => setEntityThresholdSaved(false), 2000);
@@ -390,11 +373,8 @@ export default function SettingsPage() {
     if (dailyCapUsd === null) return;
     setDailyCapSaving(true);
     setDailyCapSaved(false);
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ daily_cap_usd: dailyCapUsd }),
-    });
+    const _ok = await saveSettingToApi({ daily_cap_usd: dailyCapUsd });
+    if (!_ok) { setDailyCapSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
     setDailyCapSaving(false);
     setDailyCapSaved(true);
     setTimeout(() => setDailyCapSaved(false), 2000);
@@ -436,7 +416,9 @@ export default function SettingsPage() {
   };
 
   return (
-    <main
+    <>
+      {toast}
+      <main
       style={{
         maxWidth: 1260,
         margin: '0 auto',
@@ -1697,5 +1679,6 @@ export default function SettingsPage() {
         </section>
       </div>
     </main>
+    </>
   );
 }

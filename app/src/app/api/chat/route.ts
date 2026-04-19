@@ -166,7 +166,7 @@ export async function POST(request: Request) {
     if (!synthRes.ok) {
       const errText = await synthRes.text().catch(() => 'unknown');
       return NextResponse.json(
-        { error: `synthesis_failed: ${errText}` },
+        { error_code: 'chat_synthesis_failed', error: `synthesis_failed: ${errText}` },
         { status: 502 },
       );
     }

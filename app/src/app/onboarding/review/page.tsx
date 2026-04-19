@@ -14,6 +14,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
 import { useToast } from '../../../components/Toast';
+import { toUserMessage } from '@/lib/service-errors';
 
 interface SourceRow {
   source_id: string;
@@ -127,13 +128,14 @@ function ReviewPageInner() {
           deleted_source_ids: deletedIds,
         }),
       });
-      const body = await res.json() as { queued?: number; error?: string };
+      const body = await res.json() as { queued?: number; error?: string; error_code?: string };
       // n8n_* errors mean the compile_progress row was created but the webhook
       // didn't land. Navigate to progress anyway so the user lands on UI-A's
       // danger-state row with a Retry button instead of a dead-end toast.
       const n8nError = body.error && body.error.startsWith('n8n_') ? body.error : null;
       if (!res.ok && !n8nError) {
-        showToast(body.error ?? `Confirm failed (${res.status})`, 'error');
+        const msg = body.error_code ? toUserMessage(body.error_code) : body.error ?? `Confirm failed (${res.status})`;
+        showToast(msg, 'error');
         return;
       }
       const queuedCount = body.queued ?? selectedIds.length;

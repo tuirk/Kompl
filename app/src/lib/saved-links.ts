@@ -70,6 +70,7 @@ function buildMarkdown(links: SavedLinkRow[]): string {
     const dateStr = link.date_saved ?? link.date_attempted.slice(0, 10);
     // Trim verbose error prefixes so the page stays readable
     const reason = link.error
+      .replace(/^(nlp_unreachable|nlp_convert_failed):\s*(\d+\s*)?/i, '')
       .replace(/^convert_url_failed:\s*\d+\s*/i, '')
       .replace(/^ingest_failed:\s*/i, '')
       .slice(0, 80);
