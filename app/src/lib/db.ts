@@ -2088,7 +2088,17 @@ export function getProvenanceForPage(pageId: string): Array<{ source_id: string;
 
 /**
  * Archive a page (page_type → 'archived') and remove it from the FTS index.
- * Called when a delete cascade leaves a page with no remaining sources.
+ *
+ * Cascade-only: no user-facing "archive this page" UI exists, by design.
+ * Kompl follows the Karpathy model — "you never write the wiki yourself; the LLM
+ * writes and maintains all of it." Users own sources; pages are a derived view.
+ * Giving users a direct archive-page button would also force a whole second UX
+ * surface (re-draft on un-archive, provenance reconciliation, orphaned wikilinks,
+ * graph-view state) that we don't want to carry.
+ *
+ * The only caller is recompilePage() when a source delete leaves a page with no
+ * remaining provenance. If you're looking for the missing UI — it is intentionally
+ * missing.
  */
 export function archivePage(pageId: string): void {
   const db = openDb();

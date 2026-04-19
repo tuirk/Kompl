@@ -343,8 +343,12 @@ function ProgressPageInner() {
   /* Footer stats: SELECTED SOURCES + EST are fixed (from URL params, never change).
      ELAPSED ticks every second while running and freezes on terminal status.
      When complete, also show PAGES CREATED. */
+  const selectedSourcesValue =
+    isComplete && committedSources > 0 ? String(committedSources) :
+    sourceCount > 0                    ? String(sourceCount)      :
+                                         '—';
   const footerStats: { label: string; value: string }[] = [
-    { label: 'SELECTED SOURCES', value: sourceCount  > 0 ? String(sourceCount)              : '—' },
+    { label: isComplete && committedSources > 0 ? 'SOURCES COMPILED' : 'SELECTED SOURCES', value: selectedSourcesValue },
     { label: 'EST.',              value: estimateMins !== null ? `~${estimateMins} min`      : '—' },
     { label: 'ELAPSED',           value: formatElapsed(runElapsedMs) },
     ...(isComplete && committedPages > 0

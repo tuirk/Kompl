@@ -67,7 +67,7 @@ export async function POST(
     insertActivity({
       action_type: 'compile_trigger_failed',
       source_id,
-      details: { event: 'session-compile', reason: trigger.reason, upstream_status: trigger.upstreamStatus },
+      details: { title: source.title, event: 'session-compile', reason: trigger.reason, upstream_status: trigger.upstreamStatus },
     });
     return NextResponse.json(
       { error: trigger.reason, source_id, session_id: sessionId, upstream_status: trigger.upstreamStatus },

@@ -153,7 +153,7 @@ async function callCrossref(sessionId: string): Promise<{ wikilinks_added: numbe
   return res.json() as Promise<{ wikilinks_added: number }>;
 }
 
-async function callCommit(sessionId: string): Promise<{ committed: number; thin_drafts_skipped: number }> {
+async function callCommit(sessionId: string): Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number }> {
   const res = await fetch(`${APP_URL}/api/compile/commit`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -161,7 +161,7 @@ async function callCommit(sessionId: string): Promise<{ committed: number; thin_
     signal: AbortSignal.timeout(120_000),
   });
   await throwOnError('commit', res, sessionId);
-  return res.json() as Promise<{ committed: number; thin_drafts_skipped: number }>;
+  return res.json() as Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number }>;
 }
 
 async function callSchema(sessionId: string): Promise<unknown> {
@@ -224,7 +224,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
         insertActivity({
           action_type: 'extraction_failed',
           source_id: src.source_id,
-          details: { error: err instanceof Error ? err.message : String(err) },
+          details: { title: src.title, error: err instanceof Error ? err.message : String(err) },
         });
       }
       updateCompileStep(
@@ -332,7 +332,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   updateCompileStep(sessionId, 'commit', 'running');
   const commitResult = await timed(sessionId, 'commit', () => callCommit(sessionId));
   const thinMsg = commitResult.thin_drafts_skipped > 0 ? `, ${commitResult.thin_drafts_skipped} thin drafts skipped` : '';
-  updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages committed${thinMsg}`);
+  updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages, ${commitResult.sources_activated} sources committed${thinMsg}`);
 
   // Step 8: schema — ALWAYS re-run (idempotent, schema route handles already_exists).
   updateCompileStep(sessionId, 'schema', 'running');

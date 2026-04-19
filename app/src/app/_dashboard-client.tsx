@@ -44,10 +44,11 @@ interface ProgressResponse {
 
 type BannerDoneState = 'completed' | 'failed' | 'cancelled' | null;
 
-function parsePages(steps: ProgressResponse['steps']): number {
+function parseCommitCounts(steps: ProgressResponse['steps']): { pages: number; sources: number } {
   const detail = steps?.commit?.detail ?? '';
-  const m = detail.match(/(\d+)\s+pages?/i);
-  return m ? parseInt(m[1], 10) : 0;
+  const pM = detail.match(/(\d+)\s+pages?/i);
+  const sM = detail.match(/(\d+)\s+sources?/i);
+  return { pages: pM ? parseInt(pM[1], 10) : 0, sources: sM ? parseInt(sM[1], 10) : 0 };
 }
 
 function ActiveCompileBanner() {
@@ -55,6 +56,7 @@ function ActiveCompileBanner() {
   const [currentStep, setCurrentStep] = useState<string | null>(null);
   const [doneState, setDoneState] = useState<BannerDoneState>(null);
   const [pages,     setPages]     = useState(0);
+  const [committedSources, setCommittedSources] = useState(0);
   const intervalRef   = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function stopPolling() {
@@ -74,7 +76,9 @@ function ActiveCompileBanner() {
 
       if (data.status === 'completed') {
         stopPolling();
-        setPages(parsePages(data.steps ?? {}));
+        const counts = parseCommitCounts(data.steps ?? {});
+        setPages(counts.pages);
+        setCommittedSources(counts.sources);
         setDoneState('completed');
         return;
       }
@@ -127,7 +131,7 @@ function ActiveCompileBanner() {
           COMPILE COMPLETE
           {pages > 0 && <span style={{ color: 'var(--fg-muted)', marginLeft: 12 }}>
             {pages} page{pages !== 1 ? 's' : ''} compiled
-            {sc > 0 ? ` from ${sc} source${sc !== 1 ? 's' : ''}` : ''}
+            {committedSources > 0 ? ` from ${committedSources} source${committedSources !== 1 ? 's' : ''}` : ''}
           </span>}
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
