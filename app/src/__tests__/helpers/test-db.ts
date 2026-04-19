@@ -89,6 +89,57 @@ export function seedExtraction(db: Database.Database, args: SeedExtractionArgs):
     args.profile ?? 'default',
     JSON.stringify(args.llm_output ?? { concepts: [], relationships: [] })
   );
+
+  // Mirror extract route's v17 write-through to entity_mentions +
+  // relationship_mentions. Without this, plan-route threshold queries see
+  // zero mentions and emit no entity/comparison pages even when tests seed
+  // the underlying extraction rows. Alias pinning is a no-op in tests
+  // (no aliases seeded), so canonical = raw name.
+  const llm = (args.llm_output ?? { entities: [], concepts: [], relationships: [] }) as {
+    entities?: Array<{ name?: string; type?: string }>;
+    concepts?: Array<{ name?: string }>;
+    relationships?: Array<{ from_entity?: string; to?: string; type?: string }>;
+  };
+  const entStmt = db.prepare(
+    `INSERT OR IGNORE INTO entity_mentions (canonical_name, source_id, entity_type)
+     VALUES (?, ?, ?)`
+  );
+  const seen = new Set<string>();
+  for (const ent of llm.entities ?? []) {
+    const name = (ent.name ?? '').trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entStmt.run(name, args.source_id, (ent.type ?? '').trim() || null);
+  }
+  for (const con of llm.concepts ?? []) {
+    const name = (con.name ?? '').trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entStmt.run(name, args.source_id, 'CONCEPT');
+  }
+
+  const DIRECTION_AGNOSTIC = new Set(['competes_with', 'contradicts']);
+  const relStmt = db.prepare(
+    `INSERT OR IGNORE INTO relationship_mentions
+       (from_canonical, to_canonical, relationship_type, source_id)
+     VALUES (?, ?, ?, ?)`
+  );
+  for (const rel of llm.relationships ?? []) {
+    const fromRaw = (rel.from_entity ?? '').trim();
+    const toRaw = (rel.to ?? '').trim();
+    const type = (rel.type ?? '').trim();
+    if (!fromRaw || !toRaw || !type) continue;
+    let from = fromRaw;
+    let to = toRaw;
+    if (DIRECTION_AGNOSTIC.has(type) && from.toLowerCase() > to.toLowerCase()) {
+      [from, to] = [to, from];
+    }
+    relStmt.run(from, to, type, args.source_id);
+  }
 }
 
 export interface SeedPageArgs {

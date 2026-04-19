@@ -142,6 +142,23 @@ CREATE TABLE vector_backfill_queue (
   queued_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE entity_mentions (
+  canonical_name TEXT NOT NULL COLLATE NOCASE,
+  source_id TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  entity_type TEXT,
+  first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (canonical_name, source_id)
+);
+
+CREATE TABLE relationship_mentions (
+  from_canonical TEXT NOT NULL COLLATE NOCASE,
+  to_canonical TEXT NOT NULL COLLATE NOCASE,
+  relationship_type TEXT NOT NULL,
+  source_id TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (from_canonical, to_canonical, relationship_type, source_id)
+);
+
 CREATE VIRTUAL TABLE pages_fts USING fts5(
   page_id,
   title,
@@ -174,5 +191,9 @@ CREATE INDEX idx_page_plans_status ON page_plans(draft_status);
 CREATE INDEX idx_chat_session ON chat_messages(session_id);
 CREATE INDEX idx_ingest_failures_url ON ingest_failures(source_url);
 CREATE INDEX idx_ingest_failures_resolved ON ingest_failures(resolved_source_id);
+CREATE INDEX idx_entity_mentions_canonical ON entity_mentions(canonical_name);
+CREATE INDEX idx_entity_mentions_source ON entity_mentions(source_id);
+CREATE INDEX idx_relationship_mentions_pair ON relationship_mentions(from_canonical, to_canonical, relationship_type);
+CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '16');
+INSERT INTO settings (key, value) VALUES ('schema_version', '17');
