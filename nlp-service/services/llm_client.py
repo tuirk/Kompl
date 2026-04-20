@@ -1488,13 +1488,16 @@ def synthesize_answer(
     question: str,
     pages: list[dict[str, Any]],
     history: list[dict[str, Any]],
+    chat_model: str = "gemini-2.5-flash-lite",
 ) -> SynthesizeResponse:
-    """Synthesize a wiki-grounded answer to a question using Gemini 2.5 Flash.
+    """Synthesize a wiki-grounded answer using the caller-selected Gemini model.
 
     Args:
-        question: The user's question.
-        pages:    List of {page_id, title, page_type, markdown} dicts.
-        history:  List of {role, content} dicts (conversation history).
+        question:   The user's question.
+        pages:      List of {page_id, title, page_type, markdown} dicts.
+        history:    List of {role, content} dicts (conversation history).
+        chat_model: Gemini model id. The router validates against the allowed
+                    Literal union; this function trusts its input.
 
     Returns SynthesizeResponse with answer markdown and citations.
 
@@ -1540,7 +1543,7 @@ def synthesize_answer(
     client = get_client()
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=chat_model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=_SYNTHESIZE_SYSTEM_PROMPT,

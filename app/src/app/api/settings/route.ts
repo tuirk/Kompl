@@ -21,6 +21,7 @@ import {
   getMinDraftChars, setMinDraftChars,
   getEntityPromotionThreshold, setEntityPromotionThreshold,
   getDailyCapUsd, setDailyCapUsd,
+  getChatModel, setChatModel, isChatModel,
 } from '../../../lib/db';
 
 function buildResponse() {
@@ -41,6 +42,7 @@ function buildResponse() {
     min_draft_chars: getMinDraftChars(),
     entity_promotion_threshold: getEntityPromotionThreshold(),
     daily_cap_usd: getDailyCapUsd(),
+    chat_model: getChatModel(),
   };
 }
 
@@ -62,6 +64,7 @@ export async function POST(request: Request) {
     min_draft_chars?: number;
     entity_promotion_threshold?: number;
     daily_cap_usd?: number;
+    chat_model?: string;
   };
 
   const knownFields = [
@@ -72,6 +75,7 @@ export async function POST(request: Request) {
     'min_source_chars', 'min_draft_chars',
     'entity_promotion_threshold',
     'daily_cap_usd',
+    'chat_model',
   ];
   if (!knownFields.some((f) => f in body)) {
     return NextResponse.json({ error: 'no recognized setting field in request body' }, { status: 422 });
@@ -180,6 +184,16 @@ export async function POST(request: Request) {
       );
     }
     setDailyCapUsd(body.daily_cap_usd);
+  }
+
+  if (body.chat_model !== undefined) {
+    if (!isChatModel(body.chat_model)) {
+      return NextResponse.json(
+        { error: 'chat_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro' },
+        { status: 422 },
+      );
+    }
+    setChatModel(body.chat_model);
   }
 
   return NextResponse.json(buildResponse());

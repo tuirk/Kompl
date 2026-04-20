@@ -65,7 +65,7 @@ fi
 # vitest. Guard equality on the version number.
 if [ -f "$TEST_SCHEMA_SQL" ]; then
     # Match the schema_version INSERT line; capture the trailing '<N>' value.
-    # The row shape is: INSERT INTO settings (key, value) VALUES ('schema_version', '18');
+    # The row shape is: INSERT INTO settings (key, value) VALUES ('schema_version', '19');
     test_schema_ver=$(grep -E "INSERT INTO settings.*'schema_version'" "$TEST_SCHEMA_SQL" \
         | grep -oE "'[0-9]+'" | tr -d "'" | tail -1)
     if [ -z "$test_schema_ver" ]; then

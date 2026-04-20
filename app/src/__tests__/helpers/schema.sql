@@ -1,4 +1,4 @@
--- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=18.
+-- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=19.
 -- If migrate.py changes, update this file. Tests will fail loudly on drift.
 
 CREATE TABLE sources (
@@ -122,6 +122,7 @@ CREATE TABLE chat_messages (
   content TEXT NOT NULL,
   citations JSON,
   pages_used JSON,
+  chat_model TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -214,4 +215,4 @@ CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id
 CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '18');
+INSERT INTO settings (key, value) VALUES ('schema_version', '19');

@@ -68,6 +68,10 @@ export default function SettingsPage() {
   const [dailyCapSaving, setDailyCapSaving] = useState(false);
   const [dailyCapSaved, setDailyCapSaved] = useState(false);
 
+  const [chatModel, setChatModelState] = useState<string | null>(null);
+  const [chatModelSaving, setChatModelSaving] = useState(false);
+  const [chatModelSaved, setChatModelSaved] = useState(false);
+
   const [deploymentMode, setDeploymentModeState] = useState<'personal-device' | 'always-on' | null>(null);
   const [deploymentSaving, setDeploymentSaving] = useState(false);
   const [deploymentSaved, setDeploymentSaved] = useState(false);
@@ -124,6 +128,7 @@ export default function SettingsPage() {
         min_draft_chars: number;
         entity_promotion_threshold: number;
         daily_cap_usd: number;
+        chat_model: string;
       }) => {
         setAutoApprove(data.auto_approve);
         setRelatedMinSources(data.related_pages_min_sources);
@@ -140,6 +145,7 @@ export default function SettingsPage() {
         setMinDraftChars(data.min_draft_chars);
         setEntityThreshold(data.entity_promotion_threshold);
         setDailyCapUsd(data.daily_cap_usd);
+        setChatModelState(data.chat_model);
       });
   }, []);
 
@@ -378,6 +384,17 @@ export default function SettingsPage() {
     setDailyCapSaving(false);
     setDailyCapSaved(true);
     setTimeout(() => setDailyCapSaved(false), 2000);
+  }
+
+  async function saveChatModel(next: string) {
+    setChatModelSaving(true);
+    setChatModelSaved(false);
+    const _ok = await saveSettingToApi({ chat_model: next });
+    if (!_ok) { setChatModelSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
+    setChatModelState(next);
+    setChatModelSaving(false);
+    setChatModelSaved(true);
+    setTimeout(() => setChatModelSaved(false), 2000);
   }
 
   const MCP_CONFIG_JSON = `{
@@ -770,6 +787,97 @@ export default function SettingsPage() {
               }}
             >
               Saved — takes effect within 30 seconds.
+            </div>
+          )}
+        </section>
+
+        {/* Chat model */}
+        <section
+          style={{
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            overflow: 'hidden',
+            marginTop: '1rem',
+          }}
+        >
+          <div
+            style={{
+              padding: '1.25rem 1.5rem',
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: '1.5rem',
+            }}
+          >
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
+                Chat model
+              </div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+                Which Gemini model the <strong>Chat</strong> page uses to synthesise answers.
+                Flash Lite is cheapest and a good default; Pro is the most capable but the most
+                expensive. Changes apply to <strong>new chats only</strong> — conversations
+                already in progress keep the model they started with.
+              </div>
+            </div>
+            <div style={{ flexShrink: 0 }}>
+              <select
+                value={chatModel ?? ''}
+                onChange={(e) => void saveChatModel(e.target.value)}
+                disabled={chatModel === null || chatModelSaving}
+                style={{
+                  padding: '0.45rem 0.6rem',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-card)',
+                  color: 'var(--fg)',
+                  fontSize: '0.9rem',
+                  opacity: chatModel === null ? 0.5 : 1,
+                }}
+              >
+                <option value="gemini-2.5-flash-lite">Flash Lite (default)</option>
+                <option value="gemini-2.5-flash">Flash</option>
+                <option value="gemini-2.5-pro">Pro</option>
+              </select>
+            </div>
+          </div>
+          <div
+            style={{
+              padding: '0 1.5rem 1.25rem',
+              fontSize: '0.82rem',
+              color: 'var(--fg-muted)',
+              lineHeight: 1.5,
+            }}
+          >
+            <div style={{ marginBottom: '0.4rem' }}>
+              Not every Gemini API key has access to every model. To list what your key can use, run:
+            </div>
+            <pre
+              style={{
+                margin: 0,
+                padding: '0.6rem 0.8rem',
+                background: 'var(--bg-card)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                color: 'var(--fg)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '0.8rem',
+                overflowX: 'auto',
+                whiteSpace: 'pre',
+              }}
+            >{`curl -s -H "x-goog-api-key: $GEMINI_API_KEY" https://generativelanguage.googleapis.com/v1beta/models | jq '.models[].name'`}</pre>
+          </div>
+          {chatModelSaved && (
+            <div
+              style={{
+                padding: '0.6rem 1.5rem',
+                background: 'var(--success-bg, #ecfdf5)',
+                borderTop: '1px solid var(--success-border, #a7f3d0)',
+                color: 'var(--success, #059669)',
+                fontSize: 13,
+              }}
+            >
+              Saved — applies to new chats.
             </div>
           )}
         </section>

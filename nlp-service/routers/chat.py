@@ -13,9 +13,16 @@ This router NEVER opens kompl.db. Rule #1 in CLAUDE.md.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
+
+ChatModel = Literal[
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+]
 
 from services.llm_client import (
     LLMCompileError,
@@ -70,6 +77,7 @@ class SynthesizeRequest(BaseModel):
     question: str
     pages: list[SynthesizePage]
     history: list[HistoryMessage]
+    chat_model: ChatModel = "gemini-2.5-flash-lite"
 
 
 class Citation(BaseModel):
@@ -121,7 +129,12 @@ def chat_synthesize(req: SynthesizeRequest) -> SynthesizeResponse:
     history_dicts = [h.model_dump() for h in req.history]
 
     try:
-        result = synthesize_answer(req.question, pages_dicts, history_dicts)
+        result = synthesize_answer(
+            req.question,
+            pages_dicts,
+            history_dicts,
+            chat_model=req.chat_model,
+        )
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     except CostCeilingError as e:

@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   content TEXT NOT NULL,
   citations JSON,
   pages_used JSON,
+  chat_model TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_messages(session_id);
@@ -403,6 +404,10 @@ UPDATE compile_progress
  WHERE json_extract(steps, '$.health_check') IS NULL;
 """
 
+MIGRATION_V19_SQL = """
+ALTER TABLE chat_messages ADD COLUMN chat_model TEXT;
+"""
+
 
 
 def migrate():
@@ -548,6 +553,15 @@ def migrate():
         conn.executescript(MIGRATION_V18_INGEST_FAILURES_INDEX_SQL)
         conn.executescript(MIGRATION_V18_LEGACY_COLLECTED_SQL)
         conn.executescript(MIGRATION_V18_COMPILE_PROGRESS_BACKFILL_SQL)
+
+    if current < 19:
+        print("  applying migration v19 (chat_messages.chat_model column)...")
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(chat_messages)").fetchall()
+        }
+        if "chat_model" not in existing_cols:
+            conn.executescript(MIGRATION_V19_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

@@ -14,7 +14,7 @@
 
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { getChatHistory, getPageCategories, getWikiStats, insertChatDraft, insertChatMessage } from '@/lib/db';
+import { getChatHistory, getChatModel, getPageCategories, getSessionChatModel, getWikiStats, insertChatDraft, insertChatMessage } from '@/lib/db';
 import { retrievePages } from '@/lib/retrieval';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -111,8 +111,21 @@ export async function POST(request: Request) {
       );
     }
 
-    // 1. Persist user message
-    insertChatMessage({ session_id: sessionId, role: 'user', content: question });
+    // Resolve the model for this session BEFORE inserting anything. If the
+    // session has prior rows, its first row already carries the stamped model
+    // (per-session lock — Settings changes don't hot-swap a running chat). If
+    // there are no prior rows, this turn *is* the session's first — read the
+    // current Settings value and stamp it onto the user-row insert below.
+    const existingModel = getSessionChatModel(sessionId);
+    const resolvedModel = existingModel ?? getChatModel();
+
+    // 1. Persist user message (stamp chat_model only on the first row)
+    insertChatMessage({
+      session_id: sessionId,
+      role: 'user',
+      content: question,
+      chat_model: existingModel === null ? resolvedModel : undefined,
+    });
 
     // 1b. Meta query bypass — instant DB answer, no LLM needed
     const metaAnswer = detectMetaQuery(question);
@@ -159,7 +172,7 @@ export async function POST(request: Request) {
     const synthRes = await fetch(`${NLP_SERVICE_URL}/chat/synthesize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, pages: synthPages, history }),
+      body: JSON.stringify({ question, pages: synthPages, history, chat_model: resolvedModel }),
       signal: AbortSignal.timeout(60_000),
     });
 

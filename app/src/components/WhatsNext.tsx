@@ -3,15 +3,13 @@
 import { useState, useRef, useEffect } from 'react';
 
 const DEFERRED = [
-  'Google Drive connector',
-  'Notion connector',
+  'Google Drive and Notion connectors',
   'Image support via LLM vision',
   'Custom LLM provider support',
   'Tauri tray app — one-click Start/Stop/Open from the system tray',
   'Basic schema editing (moving sources under other topics, renaming topics, etc.)',
   'Improved Wiki Health Checks',
   'Precleaning for misc pages (cookies, privacy policy etc)',
-  'Manual page deleting functionality',
 ];
 
 const NOTES = [

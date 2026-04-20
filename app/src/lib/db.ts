@@ -1678,6 +1678,7 @@ export interface ChatMessageRow {
   content: string;
   citations: string | null;   // JSON: Array<{page_id, page_title}>
   pages_used: string | null;  // JSON: string[]
+  chat_model: string | null;  // stamped only on the first row of each session
   created_at: string;
 }
 
@@ -1687,11 +1688,12 @@ export function insertChatMessage(data: {
   content: string;
   citations?: Array<{ page_id: string; page_title: string }>;
   pages_used?: string[];
+  chat_model?: string;
 }): void {
   openDb()
     .prepare(
-      `INSERT INTO chat_messages (session_id, role, content, citations, pages_used)
-       VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO chat_messages (session_id, role, content, citations, pages_used, chat_model)
+       VALUES (?, ?, ?, ?, ?, ?)`
     )
     .run(
       data.session_id,
@@ -1699,7 +1701,20 @@ export function insertChatMessage(data: {
       data.content,
       data.citations ? JSON.stringify(data.citations) : null,
       data.pages_used ? JSON.stringify(data.pages_used) : null,
+      data.chat_model ?? null,
     );
+}
+
+export function getSessionChatModel(sessionId: string): string | null {
+  const row = openDb()
+    .prepare(
+      `SELECT chat_model FROM chat_messages
+       WHERE session_id = ?
+       ORDER BY id ASC
+       LIMIT 1`
+    )
+    .get(sessionId) as { chat_model: string | null } | undefined;
+  return row?.chat_model ?? null;
 }
 
 export function getChatHistory(sessionId: string, limit = 20): ChatMessageRow[] {
@@ -2305,6 +2320,30 @@ export function getEntityPromotionThreshold(): number {
 
 export function setEntityPromotionThreshold(value: number): void {
   setSetting('entity_promotion_threshold', String(Math.max(1, Math.floor(value))));
+}
+
+export const CHAT_MODELS = [
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+] as const;
+export type ChatModel = typeof CHAT_MODELS[number];
+export const DEFAULT_CHAT_MODEL: ChatModel = 'gemini-2.5-flash-lite';
+
+export function isChatModel(v: unknown): v is ChatModel {
+  return typeof v === 'string' && (CHAT_MODELS as readonly string[]).includes(v);
+}
+
+export function getChatModel(): ChatModel {
+  const v = getSetting('chat_model');
+  return isChatModel(v) ? v : DEFAULT_CHAT_MODEL;
+}
+
+export function setChatModel(value: string): void {
+  if (!isChatModel(value)) {
+    throw new Error(`invalid chat_model: ${value}`);
+  }
+  setSetting('chat_model', value);
 }
 
 const LLM_CONFIG_PATH = path.join(DATA_ROOT, 'llm-config.json');

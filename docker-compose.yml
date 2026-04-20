@@ -39,6 +39,12 @@ services:
       NODE_ENV: production
       # Internal DNS name of the n8n service on the compose network.
       N8N_URL: http://n8n:5678
+      # Onboarding v2 prelude health check reads these from process.env to
+      # gate compile up-front. Next.js itself makes no Gemini/Firecrawl
+      # calls — the downstream work runs inside nlp-service, which has its
+      # own copies above. Presence-only check, no SDK import.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
     volumes:
       - kompl-data:/data
     depends_on:
