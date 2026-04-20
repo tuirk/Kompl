@@ -6,7 +6,7 @@ import path from 'path';
 import zlib from 'zlib';
 import { NextResponse } from 'next/server';
 
-import { getDb, DATA_ROOT, insertActivity } from '@/lib/db';
+import { getDb, DATA_ROOT, logActivity } from '@/lib/db';
 
 // System-generated pages that don't count as "user data" for the import
 // emptiness check. The Saved Links overview page is rebuilt any time an
@@ -273,8 +273,7 @@ export async function POST(request: Request) {
     }).catch(() => {});
   }
 
-  insertActivity({
-    action_type: 'wiki_imported',
+  logActivity('wiki_imported', {
     source_id: null,
     details: {
       source_count: sources.length,

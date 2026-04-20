@@ -23,7 +23,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import {
   findSourceByContentHash,
-  insertActivity,
+  logActivity,
   insertIngestFailure,
   insertSource,
   markStagingFailed,
@@ -171,8 +171,7 @@ export async function runIngestTextsStep(
       const msg = error.message;
       markStagingFailed(row.stage_id, 'ingest_text_failed', msg);
 
-      insertActivity({
-        action_type: 'ingest_text_failed',
+      logActivity('ingest_text_failed', {
         source_id: null,
         details: {
           stage_id: row.stage_id,

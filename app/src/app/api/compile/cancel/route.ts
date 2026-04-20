@@ -7,7 +7,7 @@
  * corrupts the DB).
  */
 import { NextResponse } from 'next/server';
-import { cancelCompileProgress, getCompileProgress, insertActivity } from '@/lib/db';
+import { cancelCompileProgress, getCompileProgress, logActivity } from '@/lib/db';
 
 export async function POST(request: Request) {
   let rawBody: unknown;
@@ -43,8 +43,7 @@ export async function POST(request: Request) {
   }
 
   cancelCompileProgress(session_id, 'Cancelled by user');
-  insertActivity({
-    action_type: 'compile_cancelled',
+  logActivity('compile_cancelled', {
     source_id: null,
     details: { session_id, current_step: progress.current_step },
   });

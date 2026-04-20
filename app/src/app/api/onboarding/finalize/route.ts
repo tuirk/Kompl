@@ -22,7 +22,7 @@ import {
   createCompileProgress,
   getSetting,
   getStagingBySession,
-  insertActivity,
+  logActivity,
   setSetting,
 } from '../../../../lib/db';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
@@ -72,16 +72,14 @@ export async function POST(request: Request) {
   // Create the compile_progress row BEFORE the n8n trigger so a POST failure
   // still leaves a row for the reconciler to find. Same ordering as /confirm.
   createCompileProgress(session_id, staged.length);
-  insertActivity({
-    action_type: 'onboarding_confirmed',
+  logActivity('onboarding_confirmed', {
     source_id: null,
     details: { session_id, queued: staged.length, deleted: 0 },
   });
 
   const trigger = await triggerSessionCompile(session_id);
   if (!trigger.ok) {
-    insertActivity({
-      action_type: 'compile_trigger_failed',
+    logActivity('compile_trigger_failed', {
       source_id: null,
       details: {
         session_id,

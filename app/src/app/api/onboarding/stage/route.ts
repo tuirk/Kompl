@@ -30,7 +30,7 @@ import { NextResponse } from 'next/server';
 
 import {
   getDb,
-  insertActivity,
+  logActivity,
   insertCollectStaging,
   type StagingConnector,
 } from '../../../../lib/db';
@@ -140,8 +140,7 @@ export async function POST(request: Request) {
 
   // Observability parallel to the legacy /collect's 'onboarding_collected'
   // activity row — gives the feed a timeline of "user staged X at 14:02".
-  insertActivity({
-    action_type: 'onboarding_staged',
+  logActivity('onboarding_staged', {
     source_id: null,
     details: { session_id, connector, count: validatedItems.length },
   });

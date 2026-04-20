@@ -33,6 +33,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { COMPILE_STEP_KEYS, type CompileStepKey } from './compile-steps';
+import type { ActivityEventType } from './activity-events';
 
 const DB_PATH = process.env.DB_PATH ?? '/data/db/kompl.db';
 export const DATA_ROOT = path.dirname(path.dirname(DB_PATH)); // /data
@@ -353,6 +354,12 @@ export interface InsertActivityArgs {
   details: Record<string, unknown> | null;
 }
 
+/**
+ * @deprecated Use `logActivity(type, {...})` instead. Only allowed direct
+ * caller is [app/src/app/api/activity/route.ts](app/src/app/api/activity/route.ts) — the n8n open-string
+ * escape hatch. The typed wrapper enforces ActivityEventType at the call
+ * site so a new event without a registry entry is a compile error.
+ */
 export function insertActivity(args: InsertActivityArgs): number {
   const info = openDb()
     .prepare(
@@ -365,6 +372,22 @@ export function insertActivity(args: InsertActivityArgs): number {
       details: args.details ? JSON.stringify(args.details) : null,
     });
   return Number(info.lastInsertRowid);
+}
+
+/**
+ * Typed activity-log writer. The `type` argument is narrowed to the keys
+ * of the ACTIVITY_EVENTS registry in [lib/activity-events.tsx](app/src/lib/activity-events.tsx); passing a
+ * string not in the registry is a compile error.
+ */
+export function logActivity(
+  type: ActivityEventType,
+  args: { source_id: string | null; details?: Record<string, unknown> | null }
+): number {
+  return insertActivity({
+    action_type: type,
+    source_id: args.source_id,
+    details: args.details ?? null,
+  });
 }
 
 /**
@@ -2549,7 +2572,11 @@ export function setDigestSettings(data: {
   }
 }
 
-export interface ActivityRow {
+// Narrower shape than ActivityRow (lib/db.ts:175) — getActivitySince only
+// selects the 4 columns the digest consumer needs. Declared separately so
+// TS doesn't merge with ActivityRow (which advertises id/source_title that
+// this query doesn't fetch — callers would see undefined at runtime).
+export interface DigestActivityRow {
   action_type: string;
   source_id: string | null;
   details: string | null;
@@ -2561,7 +2588,7 @@ export interface ActivityRow {
  * Uses datetime() wrapping to avoid the SQLite lexicographic timestamp gotcha
  * (CURRENT_TIMESTAMP stores 'YYYY-MM-DD HH:MM:SS', not ISO 8601).
  */
-export function getActivitySince(since: string): ActivityRow[] {
+export function getActivitySince(since: string): DigestActivityRow[] {
   return openDb()
     .prepare(
       `SELECT action_type, source_id, details, timestamp
@@ -2569,7 +2596,7 @@ export function getActivitySince(since: string): ActivityRow[] {
        WHERE datetime(timestamp) > datetime(?)
        ORDER BY timestamp DESC`
     )
-    .all(since) as ActivityRow[];
+    .all(since) as DigestActivityRow[];
 }
 
 // ============================================================================

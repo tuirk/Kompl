@@ -35,7 +35,7 @@ import {
   setPageSourceCount,
   readRawMarkdown,
   setSourceStatus,
-  insertActivity,
+  logActivity,
   cleanupPendingPlansForDeletedSource,
 } from '../../../../lib/db';
 import { recompilePage } from '../../../../lib/recompile';
@@ -145,8 +145,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   }
 
   setSourceStatus(source_id, status as 'active' | 'archived');
-  insertActivity({
-    action_type: status === 'archived' ? 'source_archived' : 'source_unarchived',
+  logActivity(status === 'archived' ? 'source_archived' : 'source_unarchived', {
     source_id,
     details: { title: existing.title },
   });
@@ -181,8 +180,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   // a page back to life (zombie resurrection via commitSinglePlan).
   const planCleanup = cleanupPendingPlansForDeletedSource(source_id);
   if (planCleanup.rewritten > 0 || planCleanup.deleted > 0) {
-    insertActivity({
-      action_type: 'pending_drafts_cleaned',
+    logActivity('pending_drafts_cleaned', {
       source_id,
       details: {
         title: source.title,
@@ -205,8 +203,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
       const chatCleanup = deletePage(page.page_id);
       void deleteFromVectorStore(page.page_id).catch(() => {});
       void deletePageFile(page.page_id).catch(() => {});
-      insertActivity({
-        action_type: 'page_deleted',
+      logActivity('page_deleted', {
         source_id,
         details: {
           page_id: page.page_id,
@@ -216,8 +213,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
         },
       });
       if (chatCleanup.chatDraftsRewritten > 0 || chatCleanup.chatDraftsDeleted > 0) {
-        insertActivity({
-          action_type: 'chat_drafts_cleaned',
+        logActivity('chat_drafts_cleaned', {
           source_id: null,
           details: {
             page_id: page.page_id,
@@ -238,8 +234,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
         `Source "${source.title}" deleted on ${today}.`
       ).catch(() => {});
       setPageSourceCount(page.page_id, remainingCount);
-      insertActivity({
-        action_type: 'page_provenance_updated',
+      logActivity('page_provenance_updated', {
         source_id,
         details: {
           page_id: page.page_id,
@@ -259,8 +254,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
         // wiki/graph stats reflect reality immediately, not on next session commit.
         setPageSourceCount(page.page_id, remainingCount);
         if (outcome === 'archived') {
-          insertActivity({
-            action_type: 'page_archived',
+          logActivity('page_archived', {
             source_id,
             details: {
               page_id: page.page_id,
@@ -272,8 +266,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
           });
           results.pages_archived++;
         } else {
-          insertActivity({
-            action_type: 'page_recompiled',
+          logActivity('page_recompiled', {
             source_id,
             details: {
               page_id: page.page_id,
@@ -293,8 +286,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
           `Source "${source.title}" deleted on ${today}. Rewrite failed.`
         ).catch(() => {});
         setPageSourceCount(page.page_id, remainingCount);
-        insertActivity({
-          action_type: 'page_recompile_failed',
+        logActivity('page_recompile_failed', {
           source_id,
           details: {
             page_id: page.page_id,
@@ -311,8 +303,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   const rawFilePath = deleteSource(source_id);
   if (rawFilePath) void fsPromises.unlink(rawFilePath).catch(() => {});
 
-  insertActivity({
-    action_type: 'source_deleted',
+  logActivity('source_deleted', {
     source_id,
     details: {
       title: source.title,

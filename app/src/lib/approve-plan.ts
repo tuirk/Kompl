@@ -21,7 +21,7 @@ import {
   getDb,
   insertPage,
   insertProvenance,
-  insertActivity,
+  logActivity,
   updatePlanStatus,
   setPendingContent,
   clearPendingContent,
@@ -132,8 +132,7 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
         ftsBody
       );
 
-      insertActivity({
-        action_type: 'draft_approved',
+      logActivity('draft_approved', {
         source_id: sourceIds[0] ?? null,
         details: { page_id, title: plan.title, plan_id },
       });

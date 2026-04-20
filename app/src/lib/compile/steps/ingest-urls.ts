@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto';
 import {
   findSourceByContentHash,
   findSourceByUrl,
-  insertActivity,
+  logActivity,
   insertIngestFailure,
   insertSource,
   markStagingFailed,
@@ -141,8 +141,7 @@ export async function runIngestUrlsStep(
       // that fires the page body is usually the watch-page HTML not a
       // transcript. Surface as an activity row — UI can badge it.
       if (isYouTubeUrl(payload.url)) {
-        insertActivity({
-          action_type: 'ingest_url_warning',
+        logActivity('ingest_url_warning', {
           source_id: sourceId,
           details: { warning: 'youtube_no_transcript', url: payload.url },
         });
@@ -190,8 +189,7 @@ export async function runIngestUrlsStep(
         void regenerateSavedLinksPage().catch(() => {});
       }
 
-      insertActivity({
-        action_type: 'ingest_url_failed',
+      logActivity('ingest_url_failed', {
         source_id: null,
         details: {
           stage_id: row.stage_id,

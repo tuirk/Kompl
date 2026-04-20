@@ -21,7 +21,7 @@ import {
   getSource,
   resetSourceForRecompile,
   createCompileProgress,
-  insertActivity,
+  logActivity,
 } from '@/lib/db';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
@@ -42,8 +42,7 @@ export async function POST(
   // Reset compile_status so the pipeline picks it up again
   resetSourceForRecompile(source_id);
 
-  insertActivity({
-    action_type: 'source_recompile_triggered',
+  logActivity('source_recompile_triggered', {
     source_id,
     details: { title: source.title },
   });
@@ -64,8 +63,7 @@ export async function POST(
 
   const trigger = await triggerSessionCompile(sessionId);
   if (!trigger.ok) {
-    insertActivity({
-      action_type: 'compile_trigger_failed',
+    logActivity('compile_trigger_failed', {
       source_id,
       details: { title: source.title, event: 'session-compile', reason: trigger.reason, upstream_status: trigger.upstreamStatus },
     });

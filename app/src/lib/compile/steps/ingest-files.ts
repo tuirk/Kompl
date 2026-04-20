@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   findSourceByContentHash,
-  insertActivity,
+  logActivity,
   insertSource,
   markStagingFailed,
   markStagingIngested,
@@ -128,8 +128,7 @@ export async function runIngestFilesStep(
 
       markStagingFailed(row.stage_id, error_code, msg);
 
-      insertActivity({
-        action_type: 'ingest_file_failed',
+      logActivity('ingest_file_failed', {
         source_id: null,
         details: {
           stage_id: row.stage_id,

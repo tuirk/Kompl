@@ -30,7 +30,7 @@ import {
   getCollectedSources,
   getDb,
   getSetting,
-  insertActivity,
+  logActivity,
   markSourcesPending,
   setSetting,
 } from '../../../../lib/db';
@@ -97,8 +97,7 @@ export async function POST(request: Request) {
     if (!getSetting('onboarding_completed')) {
       setSetting('onboarding_completed', '1');
     }
-    insertActivity({
-      action_type: 'onboarding_confirmed',
+    logActivity('onboarding_confirmed', {
       source_id: null,
       details: { session_id, queued: selectedIds.length, deleted: deletedIds.length },
     });
@@ -129,8 +128,7 @@ export async function POST(request: Request) {
   // forever. Surface the failure so the UI can show a "try again" hint.
   const trigger = await triggerSessionCompile(session_id);
   if (!trigger.ok) {
-    insertActivity({
-      action_type: 'compile_failed',
+    logActivity('compile_failed', {
       source_id: null,
       details: { session_id, reason: trigger.reason, upstream_status: trigger.upstreamStatus },
     });

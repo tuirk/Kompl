@@ -31,7 +31,7 @@ import { NextResponse } from 'next/server';
 import {
   getDb,
   getAutoApprove,
-  insertActivity,
+  logActivity,
   insertPage,
   insertProvenance,
   markSourcesActive,
@@ -166,8 +166,7 @@ async function commitSession(session_id: string): Promise<Response> {
       const bodyLength = stripFrontmatter(markdown).length;
       if (bodyLength < minDraftChars) {
         updatePlanStatus(plan.plan_id, 'draft_too_thin');
-        insertActivity({
-          action_type: 'draft_too_thin',
+        logActivity('draft_too_thin', {
           source_id: sourceIds[0] ?? null,
           details: {
             plan_id: plan.plan_id,
@@ -187,8 +186,7 @@ async function commitSession(session_id: string): Promise<Response> {
     // Approve route will run insertPage / write-page / vector upsert from scratch.
     if (!autoApprove) {
       updatePlanStatus(plan.plan_id, 'pending_approval');
-      insertActivity({
-        action_type: 'draft_queued_for_approval',
+      logActivity('draft_queued_for_approval', {
         source_id: sourceIds[0] ?? null,
         details: { plan_id: plan.plan_id, title: plan.title, page_type: plan.page_type, session_id },
       });
@@ -269,8 +267,7 @@ async function commitSession(session_id: string): Promise<Response> {
         ).run(page_id, plan.title, stripFrontmatter(markdown));
 
         // Log to activity
-        insertActivity({
-          action_type: 'page_compiled',
+        logActivity('page_compiled', {
           source_id: sourceIds[0] ?? null,
           details: {
             page_id,

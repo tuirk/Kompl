@@ -12,7 +12,8 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getDigestSettings, getActivitySince, insertActivity, getLastLintResult } from '../../../../lib/db';
+import { getDigestSettings, getActivitySince, logActivity, getLastLintResult } from '../../../../lib/db';
+import { readPageAction } from '../../../../lib/activity-events';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -32,10 +33,19 @@ export async function POST() {
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const activity = getActivitySince(since);
 
-  const sourcesIngested = activity.filter((a) => a.action_type === 'source_compiled').length;
-  const pagesCreated = activity.filter((a) => a.action_type === 'page_created').length;
-  const pagesUpdated = activity.filter((a) => a.action_type === 'page_updated').length;
-  const draftsCreated = activity.filter((a) => a.action_type === 'draft_created').length;
+  // page_compiled fires once per PAGE; a single source produces many pages.
+  // Count distinct source_ids contributing to compile events to avoid a
+  // page-count/source-count conflation in the user-facing "N sources ingested"
+  // line. source_id may be null on multi-source plans that fan out — those
+  // rows are excluded (the plan was driven by a set, not a single source).
+  const sourcesIngested = new Set(
+    activity
+      .filter((a) => a.action_type === 'page_compiled' && a.source_id !== null)
+      .map((a) => a.source_id as string)
+  ).size;
+  const pagesCreated = activity.filter((a) => a.action_type === 'page_compiled' && readPageAction(a) === 'create').length;
+  const pagesUpdated = activity.filter((a) => a.action_type === 'page_compiled' && readPageAction(a) === 'update').length;
+  const draftsCreated = activity.filter((a) => a.action_type === 'draft_queued_for_approval').length;
   const draftsApproved = activity.filter((a) => a.action_type === 'draft_approved').length;
 
   // Cleanup events — surface curation work in the digest. source_unarchived
@@ -48,7 +58,7 @@ export async function POST() {
   ).length;
 
   const newPageTitles = activity
-    .filter((a) => a.action_type === 'page_created' && a.details)
+    .filter((a) => a.action_type === 'page_compiled' && readPageAction(a) === 'create' && a.details)
     .map((a) => {
       try {
         return (JSON.parse(a.details!) as { title?: string }).title ?? null;
@@ -59,7 +69,7 @@ export async function POST() {
     .filter((t): t is string => t !== null);
 
   const updatedPageTitles = activity
-    .filter((a) => a.action_type === 'page_updated' && a.details)
+    .filter((a) => a.action_type === 'page_compiled' && readPageAction(a) === 'update' && a.details)
     .map((a) => {
       try {
         return (JSON.parse(a.details!) as { title?: string }).title ?? null;
@@ -164,8 +174,7 @@ export async function POST() {
     );
   }
 
-  insertActivity({
-    action_type: 'digest_sent',
+  logActivity('digest_sent', {
     source_id: null,
     details: {
       channel: 'telegram',

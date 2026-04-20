@@ -674,6 +674,34 @@ stage_11c_collect_surfaces_nlp_down() {
     return 0
 }
 
+# ──────────────────────────────────────────────────────────────────────────
+# Stage 11d: no direct insertActivity writers outside the n8n escape hatch.
+# Catches any new code that bypasses the typed logActivity() wrapper from
+# lib/db.ts. Exclusions:
+#   - api/activity/route.ts (legit n8n open-string writer)
+#   - lib/db.ts (logActivity wraps insertActivity there — internal callsite)
+# ──────────────────────────────────────────────────────────────────────────
+stage_11d_insertactivity_guard() {
+  echo "=== Stage 11d: insertActivity writer discipline ==="
+  local hits
+  # -U --multiline-dotall: let . match newlines so we catch multi-line callsites.
+  hits=$(rg -U --multiline-dotall -n \
+    'insertActivity\s*\(\s*\{[^}]*action_type\s*:' \
+    app/src/ \
+    --glob '!app/src/app/api/activity/**' \
+    --glob '!app/src/lib/db.ts' 2>/dev/null || true)
+  if [ -n "$hits" ]; then
+    echo "FAIL: direct insertActivity(...) writers found outside the n8n escape hatch:"
+    echo "$hits"
+    echo "Use logActivity(type, {...}) from @/lib/db instead."
+    record_stage 11d REAL FAIL
+    return 1
+  fi
+  echo "OK: no unguarded insertActivity writers"
+  record_stage 11d REAL PASS
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Stage 12 — text connector canary
 # ---------------------------------------------------------------------------
@@ -1541,6 +1569,7 @@ main() {
     stage_11_onboarding_api
     stage_11b_confirm_surfaces_n8n_down
     stage_11c_collect_surfaces_nlp_down
+    stage_11d_insertactivity_guard
     stage_12_text_connector
     stage_13_twitter_connector
     stage_14_extraction

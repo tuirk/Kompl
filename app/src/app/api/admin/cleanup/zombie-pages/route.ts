@@ -19,7 +19,7 @@ import path from 'node:path';
 import { promises as fsPromises } from 'fs';
 import { NextResponse } from 'next/server';
 
-import { DATA_ROOT, deletePage, findZombiePages, insertActivity } from '../../../../../lib/db';
+import { DATA_ROOT, deletePage, findZombiePages, logActivity } from '../../../../../lib/db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 const PAGES_DIR = path.join(DATA_ROOT, 'pages');
@@ -58,8 +58,7 @@ export async function POST() {
     const chatCleanup = deletePage(page.page_id);
     void deleteFromVectorStore(page.page_id).catch(() => {});
     void deletePageFile(page.page_id).catch(() => {});
-    insertActivity({
-      action_type: 'page_deleted',
+    logActivity('page_deleted', {
       source_id: null,
       details: {
         page_id: page.page_id,
@@ -69,8 +68,7 @@ export async function POST() {
       },
     });
     if (chatCleanup.chatDraftsRewritten > 0 || chatCleanup.chatDraftsDeleted > 0) {
-      insertActivity({
-        action_type: 'chat_drafts_cleaned',
+      logActivity('chat_drafts_cleaned', {
         source_id: null,
         details: {
           page_id: page.page_id,

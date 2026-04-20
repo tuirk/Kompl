@@ -36,7 +36,7 @@ import {
   getExtraction,
   getPageCount,
   getSource,
-  insertActivity,
+  logActivity,
   insertEntityMentions,
   insertExtraction,
   insertRelationshipMentions,
@@ -185,8 +185,7 @@ export async function POST(request: Request) {
   // Read source markdown
   const markdown = readRawMarkdown(source_id);
   if (!markdown) {
-    insertActivity({
-      action_type: 'extraction_failed',
+    logActivity('extraction_failed', {
       source_id,
       details: { error: 'raw_markdown_not_found', title: source.title },
     });
@@ -333,8 +332,7 @@ export async function POST(request: Request) {
     }
     insertRelationshipMentions(relRows);
 
-    insertActivity({
-      action_type: 'extraction_complete',
+    logActivity('extraction_complete', {
       source_id,
       details: {
         title: source.title,

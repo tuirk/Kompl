@@ -5,7 +5,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getDb, updatePlanStatus, insertActivity } from '@/lib/db';
+import { getDb, updatePlanStatus, logActivity } from '@/lib/db';
 
 interface RouteContext {
   params: Promise<{ plan_id: string }>;
@@ -27,8 +27,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
   }
 
   updatePlanStatus(plan_id, 'rejected');
-  insertActivity({
-    action_type: 'draft_rejected',
+  logActivity('draft_rejected', {
     source_id: null,
     details: { plan_id, title: plan.title },
   });

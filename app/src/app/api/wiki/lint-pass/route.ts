@@ -28,7 +28,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getDb, insertActivity, getLintEnabled, setLastLintAt } from '../../../../lib/db';
+import { getDb, logActivity, getLintEnabled, setLastLintAt } from '../../../../lib/db';
 import { regenerateSavedLinksPage } from '../../../../lib/saved-links';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -164,8 +164,7 @@ export async function POST(request: Request) {
 
   // Log to activity_log — full missing_cross_refs list stored so settings page
   // can show names + links without a second query.
-  insertActivity({
-    action_type: 'lint_complete',
+  logActivity('lint_complete', {
     source_id: null,
     details: {
       orphan_pages: orphan_pages.length,
