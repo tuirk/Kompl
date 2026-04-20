@@ -2458,6 +2458,47 @@ export function deleteIngestFailure(failureId: string): boolean {
 }
 
 /**
+ * Delete ingest_failures rows matching (session_id, source_url) pairs.
+ * Called by /api/compile/retry-failed before flipping the corresponding
+ * staging rows back to 'pending', so a successful retry leaves no ghost
+ * row in the Saved Links / /api/sources/failures surfaces (which filter
+ * by resolved_source_id IS NULL). If the retry fails again, ingest-urls
+ * re-inserts the row. Idempotent — missing rows are fine.
+ */
+export function deleteIngestFailuresBySourceUrls(
+  sessionId: string,
+  sourceUrls: string[]
+): number {
+  if (sourceUrls.length === 0) return 0;
+  const placeholders = sourceUrls.map(() => '?').join(', ');
+  const info = openDb()
+    .prepare(
+      `DELETE FROM ingest_failures
+        WHERE session_id = ?
+          AND source_url IN (${placeholders})`
+    )
+    .run(sessionId, ...sourceUrls);
+  return info.changes;
+}
+
+/**
+ * Count included staging rows in 'failed' state for a session.
+ * Powers the "Retry N failed items" button on the progress page.
+ */
+export function countFailedStagingBySession(sessionId: string): number {
+  const row = openDb()
+    .prepare(
+      `SELECT COUNT(*) AS n
+         FROM collect_staging
+        WHERE session_id = ?
+          AND status     = 'failed'
+          AND included   = 1`
+    )
+    .get(sessionId) as { n: number };
+  return row.n;
+}
+
+/**
  * Return active sources older than thresholdDays, ordered oldest-first.
  * Uses julianday() for correct date arithmetic — avoids the SQLite
  * lexicographic timestamp gotcha.

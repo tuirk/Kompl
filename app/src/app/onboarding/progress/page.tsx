@@ -32,6 +32,10 @@ interface ProgressResponse {
   error:        string | null;
   started_at:   string | null;
   completed_at: string | null;
+  // Phase 4: count of collect_staging rows in 'failed' state for this
+  // session. When > 0 AND status is terminal, the "Retry N failed items"
+  // button is shown so the user can re-fire only those items.
+  failed_stage_count?: number;
 }
 
 const STEPS = COMPILE_STEPS;
@@ -101,6 +105,7 @@ function ProgressPageInner() {
 
   const [progress,        setProgress]        = useState<ProgressResponse | null>(null);
   const [retrying,        setRetrying]        = useState(false);
+  const [retryingFailed,  setRetryingFailed]  = useState(false);
   const [cancelling,      setCancelling]      = useState(false);
   const [patienceVisible, setPatienceVisible] = useState(false);
   const [queuedRetry,     setQueuedRetry]     = useState(false);
@@ -241,6 +246,47 @@ function ProgressPageInner() {
     }
   }
 
+  async function handleRetryFailed() {
+    if (!sessionId) return;
+    setRetryingFailed(true);
+    setActionError(null);
+    localStorage.removeItem(LS_KEY);
+    try {
+      const res = await fetch('/api/compile/retry-failed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        setActionError(
+          body.error === 'n8n_unreachable'
+            ? 'Retry failed — background worker (n8n) is unreachable. Check Docker and try again.'
+            : body.error === 'pipeline_active'
+              ? 'A pipeline is already running for this session — wait for it to finish.'
+              : `Retry failed (${res.status}). ${body.error ?? ''}`
+        );
+        setRetryingFailed(false);
+        return;
+      }
+      const body = await res.json().catch(() => ({})) as { retried?: number; status?: string };
+      if (body.status === 'noop') {
+        setActionError('Nothing to retry — no failed items in this session.');
+        setRetryingFailed(false);
+        return;
+      }
+      isActiveRef.current = true;
+      setProgress(null);
+      setRetryingFailed(false);
+      setQueuedRetry(false);
+      void fetchProgress();
+      intervalRef.current = setInterval(fetchProgress, POLL_INTERVAL_MS);
+    } catch {
+      setActionError('Retry failed — network error.');
+      setRetryingFailed(false);
+    }
+  }
+
   async function handleCancel() {
     if (!sessionId) return;
     setCancelling(true);
@@ -364,7 +410,7 @@ function ProgressPageInner() {
 
       {/* Card — centered within the shell */}
       <div style={{
-        maxWidth: 624,
+        maxWidth: 1040,
         margin: '0 auto',
         background: 'var(--bg-card)',
         border: '1px solid rgba(var(--separator-rgb),0.1)',
@@ -724,6 +770,31 @@ function ProgressPageInner() {
                 {retrying ? 'Retrying…' : 'Retry'}
               </button>
             )}
+
+            {/* Phase 4: retry only per-item failed staging rows. Shows when
+                the session reached a terminal state but some items inside
+                ingest_{urls,files,texts} skipped. Distinct from the
+                session-level Retry above — that one resumes from first
+                non-done step, which is a no-op on completed sessions. */}
+            {(isComplete || isFailedStatus || isCancelled) &&
+             (progress?.failed_stage_count ?? 0) > 0 && (
+              <button
+                onClick={handleRetryFailed}
+                disabled={retryingFailed}
+                style={{
+                  background: 'transparent', border: '1px solid var(--accent)',
+                  cursor: retryingFailed ? 'not-allowed' : 'pointer',
+                  padding: '8px 24px',
+                  fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                  letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--accent)',
+                  opacity: retryingFailed ? 0.5 : 1,
+                }}
+              >
+                {retryingFailed
+                  ? 'Retrying…'
+                  : `Retry ${progress?.failed_stage_count} failed`}
+              </button>
+            )}
           </div>
         </div>
 
@@ -767,7 +838,7 @@ function ProgressPageInner() {
       {/* Background hint — below the card, always visible while in-flight */}
       {!isComplete && !isFailedStatus && (
         <p style={{
-          maxWidth: 624, margin: '12px auto 0',
+          maxWidth: 1040, margin: '12px auto 0',
           fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
           letterSpacing: '0.5px', color: 'var(--fg-subtle)', textAlign: 'center',
         }}>
@@ -786,7 +857,7 @@ export default function ProgressPage() {
       fallback={
         <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 2.5rem' }}>
           <p style={{
-            maxWidth: 624, margin: '0 auto',
+            maxWidth: 1040, margin: '0 auto',
             fontFamily: 'var(--font-mono)', fontSize: 10,
             textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--fg-dim)',
           }}>

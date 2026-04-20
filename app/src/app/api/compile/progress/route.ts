@@ -8,13 +8,17 @@
  * 2 seconds while status is 'queued' or 'running'.
  *
  * Response shape:
- *   { session_id, status, current_step, steps, error, started_at, completed_at }
+ *   { session_id, status, current_step, steps, error, started_at,
+ *     completed_at, failed_stage_count }
  *   where steps is an object: { extract: { status, detail? }, resolve: {...}, ... }
+ *   and failed_stage_count is the count of collect_staging rows with
+ *   status='failed' + included=1 for this session — powers the
+ *   "Retry N failed items" button (Phase 4).
  *
  * Returns 404 { status: 'not_found' } if session_id not found.
  */
 import { NextResponse } from 'next/server';
-import { getCompileProgress } from '@/lib/db';
+import { countFailedStagingBySession, getCompileProgress } from '@/lib/db';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -34,5 +38,6 @@ export async function GET(request: Request) {
     error: row.error,
     started_at: row.started_at,
     completed_at: row.completed_at,
+    failed_stage_count: countFailedStagingBySession(sessionId),
   });
 }
