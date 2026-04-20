@@ -2298,13 +2298,15 @@ else:
     # 5. Verify a source row materialised for this session.
     # App container has python3 + stdlib sqlite3; doesn't ship the sqlite3 CLI.
     local source_count
+    # tail -n 1 isolates the python print() output from any stderr warning
+    # that docker compose emits (e.g. unset FIRECRAWL_API_KEY on CI).
     source_count=$(docker compose exec -T app python3 -c "
 import sqlite3
 db = sqlite3.connect('/data/db/kompl.db')
 row = db.execute(\"SELECT count(*) FROM sources WHERE onboarding_session_id = ? AND compile_status = 'active'\", ('$SESSION_ID',)).fetchone()
 print(row[0])
 db.close()
-" 2>&1 | tr -d '[:space:]')
+" 2>&1 | tail -n 1 | tr -d '[:space:]')
 
     if [ "$source_count" != "1" ]; then
         echo "  FAIL: expected 1 active source for session, got $source_count"
@@ -2343,6 +2345,8 @@ stage_26_finalize_accepts_ingested() {
     # On any DB-seed failure, dump the error to stdout and bail early with
     # a clear message rather than letting the finalize curl mask it.
     local seed_out
+    # tail -n 1 isolates the python print() output from any stderr warning
+    # that docker compose emits (e.g. unset FIRECRAWL_API_KEY on CI).
     seed_out=$(docker compose exec -T app python3 -c "
 import sqlite3, sys
 db = sqlite3.connect('/data/db/kompl.db')
@@ -2357,7 +2361,7 @@ db.execute('''
 db.commit()
 db.close()
 print('seeded')
-" 2>&1)
+" 2>&1 | tail -n 1)
     if [ "$seed_out" != "seeded" ]; then
         echo "  FAIL: DB seeding failed: $seed_out"
         record_stage 26 REAL FAIL
@@ -2393,13 +2397,15 @@ except Exception:
     # Verify compile_progress row was created (proves finalize proceeded past
     # the 'no_items_staged' 400 guard).
     local progress_count
+    # tail -n 1 isolates the python print() output from any stderr warning
+    # that docker compose emits (e.g. unset FIRECRAWL_API_KEY on CI).
     progress_count=$(docker compose exec -T app python3 -c "
 import sqlite3
 db = sqlite3.connect('/data/db/kompl.db')
 row = db.execute('SELECT count(*) FROM compile_progress WHERE session_id = ?', ('$SESSION_ID',)).fetchone()
 print(row[0])
 db.close()
-" 2>&1 | tr -d '[:space:]')
+" 2>&1 | tail -n 1 | tr -d '[:space:]')
 
     if [ "$progress_count" != "1" ]; then
         echo "  FAIL: compile_progress row not created (count=$progress_count)"
