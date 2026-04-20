@@ -58,12 +58,19 @@ function planRequestWith(
 
 // Helper: stand up N source rows and seed each with a relationship between
 // `from` and `to` of the given type. Returns the list of source_ids.
+// Entities default to both relationship endpoints so comparison-page plans
+// can look up planIds — pass a narrower list to simulate asymmetric promotion.
 function seedSourcesWithRelationship(
   db: TestDbHandle['db'],
   session_id: string,
   count: number,
-  rel: { from_entity: string; to: string; type: string }
+  rel: { from_entity: string; to: string; type: string },
+  entities?: Array<{ name: string; type?: string }>
 ): string[] {
+  const entList = entities ?? [
+    { name: rel.from_entity, type: 'PRODUCT' },
+    { name: rel.to, type: 'PRODUCT' },
+  ];
   const ids: string[] = [];
   for (let i = 0; i < count; i++) {
     const source_id = seedSource(db, {
@@ -74,7 +81,7 @@ function seedSourcesWithRelationship(
     });
     seedExtraction(db, {
       source_id,
-      llm_output: { concepts: [], relationships: [rel] },
+      llm_output: { entities: entList, concepts: [], relationships: [rel] },
     });
     ids.push(source_id);
   }
@@ -178,6 +185,10 @@ describe('Comparison page threshold', () => {
       seedExtraction(handle.db, {
         source_id,
         llm_output: {
+          entities: [
+            { name: 'Alpha', type: 'PRODUCT' },
+            { name: 'Beta', type: 'PRODUCT' },
+          ],
           concepts: [],
           relationships: [{ from_entity: 'Alpha', to: 'Beta', type: 'competes_with' }],
         },
@@ -193,6 +204,10 @@ describe('Comparison page threshold', () => {
     seedExtraction(handle.db, {
       source_id: reverse_id,
       llm_output: {
+        entities: [
+          { name: 'Alpha', type: 'PRODUCT' },
+          { name: 'Beta', type: 'PRODUCT' },
+        ],
         concepts: [],
         relationships: [{ from_entity: 'Beta', to: 'Alpha', type: 'competes_with' }],
       },
@@ -208,6 +223,31 @@ describe('Comparison page threshold', () => {
     const body = (await res.json()) as PlanResponse;
 
     expect(body.stats.comparison_pages).toBe(1);
+  });
+
+  it('skips comparison page when one entity is below entityThreshold', async () => {
+    handle = setupTestDb();
+    const session_id = 'sess-cmp-unpromoted';
+    // 3 sources mention the Alpha-vs-Beta relationship (clears COMPARISON_SOURCE_THRESHOLD),
+    // but only Alpha appears in entity_mentions — Beta never makes its own entity page.
+    // Emitting a comparison here would leave [[Beta]] as a dangling wikilink.
+    seedSourcesWithRelationship(
+      handle.db,
+      session_id,
+      3,
+      { from_entity: 'Alpha', to: 'Beta', type: 'competes_with' },
+      [{ name: 'Alpha', type: 'PRODUCT' }]
+    );
+
+    const res = await planPOST(planRequestWith(session_id, [ALPHA, BETA]));
+    const body = (await res.json()) as PlanResponse;
+
+    expect(body.stats.comparison_pages).toBe(0);
+    expect(body.pages.find((p) => p.page_type === 'comparison')).toBeUndefined();
+    // Alpha was promoted, Beta was not — sanity check that the fixture hit the
+    // asymmetric path we intended to exercise.
+    expect(body.pages.find((p) => p.title === 'Alpha' && p.page_type === 'entity')).toBeDefined();
+    expect(body.pages.find((p) => p.title === 'Beta' && p.page_type === 'entity')).toBeUndefined();
   });
 
   it("ignores relationships whose entities aren't in canonical_entities", async () => {

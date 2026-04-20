@@ -336,9 +336,8 @@ export async function POST(request: Request) {
 
     const planIdA = entityPlansByCanonical.get(from.toLowerCase());
     const planIdB = entityPlansByCanonical.get(to.toLowerCase());
-    const related: string[] = [];
-    if (planIdA) related.push(planIdA);
-    if (planIdB) related.push(planIdB);
+    if (!planIdA || !planIdB) continue;
+    const related: string[] = [planIdA, planIdB];
 
     const compTitle = `${from} vs ${to}`;
     const existingComp = getPageByTitle(compTitle);
