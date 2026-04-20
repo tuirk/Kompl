@@ -138,8 +138,8 @@ export async function POST(request: Request) {
     );
   }
 
-  // Observability parallel to the legacy /collect's 'onboarding_collected'
-  // activity row — gives the feed a timeline of "user staged X at 14:02".
+  // Observability: emitted once per batch so the feed shows a timeline of
+  // "user staged X at 14:02".
   logActivity('onboarding_staged', {
     source_id: null,
     details: { session_id, connector, count: validatedItems.length },

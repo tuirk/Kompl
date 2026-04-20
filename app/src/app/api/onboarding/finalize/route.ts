@@ -1,17 +1,15 @@
 /**
  * POST /api/onboarding/finalize
  *
- * Promotes staging rows into a real compile pipeline run. Mirror of the
- * legacy /api/onboarding/confirm for the staging-based flow:
+ * Promotes staging rows into a real compile pipeline run:
  *   - Read included/pending staging rows for the session
  *   - Create compile_progress (creates the 'queued' row the orchestrator
  *     + reconciler + dashboard banner all observe)
  *   - Log an onboarding_confirmed activity row
  *   - Trigger n8n /webhook/session-compile which hits /api/compile/run
  *
- * 503 is returned on n8n trigger failure — same contract as /confirm so
- * the existing progress-page retry UX works unchanged. The compile_progress
- * row stays 'queued' so the reconciler (markStaleSessionsFailed +
+ * 503 is returned on n8n trigger failure. The compile_progress row stays
+ * 'queued' so the reconciler (markStaleSessionsFailed +
  * reconcileStuckCompileSessions) recovers it if this process dies before
  * the trigger POST.
  */

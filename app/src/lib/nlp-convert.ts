@@ -1,9 +1,6 @@
 /**
- * NLP-service convert helpers — shared between /api/onboarding/collect (legacy
- * sync path) and the new v18 ingest-* pipeline steps (ingest-urls, ingest-files).
- *
- * Extracted from /api/onboarding/collect/route.ts as part of the onboarding v2
- * backend foundation. No behavior change — these helpers are a 1:1 move.
+ * NLP-service convert helpers — called by the ingest-* pipeline steps
+ * (ingest-urls, ingest-files) of the unified compile pipeline.
  *
  * Every function resolves to a discriminated union (never throws) so callers
  * can handle the code-paths linearly without try/catch around each invocation.

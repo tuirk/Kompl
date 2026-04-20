@@ -1,13 +1,14 @@
 /**
  * Shared helper to trigger the n8n session-compile webhook.
  *
- * Both /api/onboarding/confirm and /api/compile/retry call into n8n. Before
- * this helper existed, confirm used fire-and-forget (silent-swallowed errors
- * left compile_progress rows stuck at 'queued' forever) while retry had its
- * own inline probe+surface pattern. This consolidates both.
+ * Both /api/onboarding/finalize and /api/compile/retry call into n8n. Before
+ * this helper existed, the onboarding confirm path used fire-and-forget
+ * (silent-swallowed errors left compile_progress rows stuck at 'queued'
+ * forever) while retry had its own inline probe+surface pattern. This
+ * consolidates both.
  *
  * Returns a discriminated union so callers can map failure modes to different
- * HTTP status codes (confirm → 503, retry → 502/504) without try/catch
+ * HTTP status codes (finalize → 503, retry → 502/504) without try/catch
  * ceremony and without losing the specific failure reason.
  */
 

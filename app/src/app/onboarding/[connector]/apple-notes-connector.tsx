@@ -11,7 +11,7 @@
  *   everything else (.html, .txt, .pdf, .rtfd) → connector: 'file-upload' (MarkItDown)
  *
  * No backend changes — existing /api/onboarding/upload and
- * /api/onboarding/collect handle everything.
+ * /api/onboarding/stage handle everything.
  */
 
 import { useRef, useState } from 'react';

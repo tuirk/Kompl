@@ -15,8 +15,7 @@
  *    code executes."
  *   — https://github.com/WiseLibs/better-sqlite3/blob/master/docs/api.md
  *
- * The Pass-5 three-phase commit pattern used by /api/onboarding/collect (and
- * /api/compile/commit) is:
+ * The Pass-5 three-phase commit pattern used by /api/compile/commit is:
  *
  *   Phase 1 — async pre-work (httpx calls, hashing, gzipping)
  *   Phase 2 — synchronous db.transaction(() => { ... writes ... })
@@ -236,7 +235,7 @@ export interface InsertSourceArgs {
   content_hash: string;
   file_path: string;
   metadata: Record<string, unknown> | null;
-  compile_status?: 'pending' | 'collected';
+  compile_status?: 'pending';
   onboarding_session_id?: string | null;
 }
 
@@ -285,44 +284,6 @@ export function getSource(sourceId: string): SourceRow | null {
   return row ?? null;
 }
 
-
-// ============================================================================
-// Onboarding helpers (Part 1a)
-// ============================================================================
-
-/**
- * Fetch all sources in a given onboarding session that are still in the
- * 'collected' state. Used by /api/onboarding/review.
- */
-export function getCollectedSources(sessionId: string): SourceRow[] {
-  return openDb()
-    .prepare(
-      `SELECT source_id, title, source_type, source_url, content_hash,
-              file_path, status, date_ingested, metadata, onboarding_session_id,
-              compile_status, compile_attempts
-         FROM sources
-        WHERE onboarding_session_id = ?
-          AND compile_status = 'collected'
-        ORDER BY date_ingested ASC`
-    )
-    .all(sessionId) as SourceRow[];
-}
-
-/**
- * Transition collected sources to 'pending' so the compile drain picks them up.
- * Only updates rows that are still 'collected' — safe to call idempotently.
- */
-export function markSourcesPending(sourceIds: string[]): void {
-  if (sourceIds.length === 0) return;
-  const placeholders = sourceIds.map(() => '?').join(', ');
-  openDb()
-    .prepare(
-      `UPDATE sources SET compile_status = 'pending'
-        WHERE source_id IN (${placeholders})
-          AND compile_status = 'collected'`
-    )
-    .run(...sourceIds);
-}
 
 /**
  * Delete a source row and return its file_path for cleanup by the caller.
@@ -1068,9 +1029,6 @@ export function getExportableSettings(): Array<{ key: string; value: string }> {
 
 /**
  * Set compile_status = 'extracted' for a source after successful extraction.
- * Includes 'collected' so onboarding-path sources (which enter with that
- * status) actually transition — without it the UPDATE is a silent no-op for
- * every onboarding source.
  */
 export function markSourceExtracted(sourceId: string): void {
   openDb()
@@ -1078,7 +1036,7 @@ export function markSourceExtracted(sourceId: string): void {
       `UPDATE sources
           SET compile_status = 'extracted'
         WHERE source_id = ?
-          AND compile_status IN ('pending', 'in_progress', 'collected')`
+          AND compile_status IN ('pending', 'in_progress')`
     )
     .run(sourceId);
 }
@@ -1437,7 +1395,7 @@ export function markStaleSessionsFailed(olderThanMinutes: number): number {
 /**
  * Mark 'queued' sessions that never got picked up by n8n as failed.
  * Runs on every health probe alongside markStaleSessionsFailed. Covers the
- * case where /api/onboarding/confirm created the row but the n8n webhook
+ * case where /api/onboarding/finalize created the row but the n8n webhook
  * POST dropped (process killed, n8n unreachable, silent 404 pre-fix).
  *
  * Writes a compile_failed activity row for each reconciled session so the
@@ -3003,15 +2961,13 @@ export function deleteStagingBySession(
 }
 
 // ============================================================================
-// Source dedup helpers (moved from inline SQL in /api/onboarding/collect)
+// Source dedup helpers — called by the ingest_urls / ingest_files prelude steps
 // ============================================================================
 //
-// The current collect route does cross-session dedup via two queries:
-//   1. SELECT source_id FROM sources WHERE source_url = ? AND compile_status != 'collected'
-//   2. SELECT source_id FROM sources WHERE content_hash = ? AND compile_status != 'collected'
-// With v18, collect-time dedup moves into the ingest_urls / ingest_files
-// steps so these helpers can be shared cleanly. The 'collected' filter
-// stays for back-compat with any legacy rows that never got migrated.
+// Two queries, matching on source_url first then content_hash. The
+// `compile_status != 'collected'` filter is vestigial: post-Phase-3 no TS
+// writes 'collected' any more, but the filter stays defensively to ignore
+// any stale legacy row that somehow survived the v18 migration.
 
 export function findSourceByUrl(url: string): { source_id: string } | null {
   const row = openDb()

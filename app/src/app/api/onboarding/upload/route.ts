@@ -3,7 +3,7 @@
  *
  * Saves uploaded files to /data/raw/uploads/<uuid>-<safename> WITHOUT
  * triggering n8n or inserting any DB records. Returns file paths so the
- * caller can pass them to POST /api/onboarding/collect.
+ * caller can pass them to POST /api/onboarding/stage.
  *
  * Request:  FormData with one or more "files" keys
  * Response: { files: Array<{ file_path: string; filename: string;
