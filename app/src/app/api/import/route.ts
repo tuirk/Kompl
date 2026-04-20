@@ -80,6 +80,14 @@ export async function POST(request: Request) {
   const provenance  = JSON.parse((await zip.file('db/provenance.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
   const aliases     = JSON.parse((await zip.file('db/aliases.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
   const extractions = JSON.parse((await zip.file('db/extractions.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
+  const pageLinks            = JSON.parse((await zip.file('db/page_links.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
+  const entityMentions       = JSON.parse((await zip.file('db/entity_mentions.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
+  const relationshipMentions = JSON.parse((await zip.file('db/relationship_mentions.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
+  const drafts               = JSON.parse((await zip.file('db/drafts.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
+  const activityLog          = JSON.parse((await zip.file('db/activity_log.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
+  const compileProgress      = JSON.parse((await zip.file('db/compile_progress.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
+  const chatMessages         = JSON.parse((await zip.file('db/chat_messages.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
+  const pagePlans            = JSON.parse((await zip.file('db/page_plans.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
   const settings    = JSON.parse((await zip.file('db/settings.json')?.async('string')) ?? '[]') as Record<string, string>[];
   const schemaContent = (await zip.file('schema.md')?.async('string')) ?? null;
 
@@ -223,6 +231,131 @@ export async function POST(request: Request) {
         (e.tfidf_output as string | null) ?? null,
         (e.llm_output as string | null) ?? null,
         e.created_at as string
+      );
+    }
+
+    for (const l of pageLinks) {
+      db.prepare(
+        `INSERT OR IGNORE INTO page_links
+           (source_page_id, target_page_id, link_type, created_at)
+         VALUES (?, ?, ?, ?)`
+      ).run(
+        l.source_page_id as string,
+        l.target_page_id as string,
+        l.link_type as string,
+        l.created_at as string
+      );
+    }
+
+    for (const m of entityMentions) {
+      db.prepare(
+        `INSERT OR IGNORE INTO entity_mentions
+           (canonical_name, source_id, entity_type, first_seen_at)
+         VALUES (?, ?, ?, ?)`
+      ).run(
+        m.canonical_name as string,
+        m.source_id as string,
+        (m.entity_type as string | null) ?? null,
+        m.first_seen_at as string
+      );
+    }
+
+    for (const r of relationshipMentions) {
+      db.prepare(
+        `INSERT OR IGNORE INTO relationship_mentions
+           (from_canonical, to_canonical, relationship_type, source_id, first_seen_at)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(
+        r.from_canonical as string,
+        r.to_canonical as string,
+        r.relationship_type as string,
+        r.source_id as string,
+        r.first_seen_at as string
+      );
+    }
+
+    for (const d of drafts) {
+      db.prepare(
+        `INSERT OR IGNORE INTO drafts
+           (draft_id, page_id, draft_content, draft_type, source_id, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        d.draft_id as string,
+        (d.page_id as string | null) ?? null,
+        d.draft_content as string,
+        d.draft_type as string,
+        (d.source_id as string | null) ?? null,
+        (d.status as string | null) ?? 'pending',
+        d.created_at as string
+      );
+    }
+
+    for (const a of activityLog) {
+      db.prepare(
+        `INSERT INTO activity_log (timestamp, action_type, source_id, details)
+         VALUES (?, ?, ?, ?)`
+      ).run(
+        a.timestamp as string,
+        a.action_type as string,
+        (a.source_id as string | null) ?? null,
+        (a.details as string | null) ?? null
+      );
+    }
+
+    for (const cp of compileProgress) {
+      db.prepare(
+        `INSERT OR IGNORE INTO compile_progress
+           (session_id, status, current_step, steps, error,
+            started_at, completed_at, created_at, source_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        cp.session_id as string,
+        cp.status as string,
+        (cp.current_step as string | null) ?? null,
+        cp.steps as string,
+        (cp.error as string | null) ?? null,
+        (cp.started_at as string | null) ?? null,
+        (cp.completed_at as string | null) ?? null,
+        cp.created_at as string,
+        (cp.source_count as number | null) ?? 0
+      );
+    }
+
+    for (const cm of chatMessages) {
+      db.prepare(
+        `INSERT INTO chat_messages
+           (session_id, role, content, citations, pages_used, chat_model, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        cm.session_id as string,
+        cm.role as string,
+        cm.content as string,
+        (cm.citations as string | null) ?? null,
+        (cm.pages_used as string | null) ?? null,
+        (cm.chat_model as string | null) ?? null,
+        cm.created_at as string
+      );
+    }
+
+    for (const pp of pagePlans) {
+      db.prepare(
+        `INSERT OR IGNORE INTO page_plans
+           (plan_id, session_id, title, page_type, action,
+            source_ids, existing_page_id, related_plan_ids,
+            draft_content, draft_status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        pp.plan_id as string,
+        pp.session_id as string,
+        pp.title as string,
+        pp.page_type as string,
+        (pp.action as string | null) ?? 'create',
+        pp.source_ids as string,
+        (pp.existing_page_id as string | null) ?? null,
+        (pp.related_plan_ids as string | null) ?? null,
+        (pp.draft_content as string | null) ?? null,
+        (pp.draft_status as string | null) ?? 'planned',
+        pp.created_at as string
       );
     }
 

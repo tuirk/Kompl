@@ -6,10 +6,18 @@ import path from 'path';
 import { NextResponse } from 'next/server';
 
 import {
+  getAllActivityLog,
   getAllAliases,
+  getAllChatMessages,
+  getAllCompileProgress,
+  getAllDrafts,
+  getAllEntityMentions,
   getAllExtractions,
+  getAllPageLinks,
+  getAllPagePlans,
   getAllPages,
   getAllProvenance,
+  getAllRelationshipMentions,
   getAllSources,
   getExportableSettings,
   getSchemaVersion,
@@ -270,6 +278,14 @@ export async function GET(request: Request) {
     dbFolder.file('provenance.json', JSON.stringify(getAllProvenance(), null, 2));
     dbFolder.file('aliases.json', JSON.stringify(getAllAliases(), null, 2));
     dbFolder.file('extractions.json', JSON.stringify(getAllExtractions(), null, 2));
+    dbFolder.file('page_links.json', JSON.stringify(getAllPageLinks(), null, 2));
+    dbFolder.file('entity_mentions.json', JSON.stringify(getAllEntityMentions(), null, 2));
+    dbFolder.file('relationship_mentions.json', JSON.stringify(getAllRelationshipMentions(), null, 2));
+    dbFolder.file('drafts.json', JSON.stringify(getAllDrafts(), null, 2));
+    dbFolder.file('activity_log.json', JSON.stringify(getAllActivityLog(), null, 2));
+    dbFolder.file('compile_progress.json', JSON.stringify(getAllCompileProgress(), null, 2));
+    dbFolder.file('chat_messages.json', JSON.stringify(getAllChatMessages(), null, 2));
+    dbFolder.file('page_plans.json', JSON.stringify(getAllPagePlans(), null, 2));
     dbFolder.file('settings.json', JSON.stringify(getExportableSettings(), null, 2));
 
     const rawFolder = zip.folder('raw')!;

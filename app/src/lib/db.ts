@@ -3040,3 +3040,168 @@ export function findSourceByContentHash(
     .get(content_hash) as { source_id: string } | undefined;
   return row ?? null;
 }
+
+// ============================================================================
+// Bulk export readers — used by /api/export (kompl format) to serialize
+// every persistent user-visible or correctness-critical table so the
+// /api/import round-trip restores the wiki in full. Autoincrement `id`
+// columns are intentionally excluded so SQLite reassigns on re-insert.
+// ============================================================================
+
+export interface PageLinkRow {
+  source_page_id: string;
+  target_page_id: string;
+  link_type: string;
+  created_at: string;
+}
+
+export function getAllPageLinks(): PageLinkRow[] {
+  return openDb()
+    .prepare(
+      `SELECT source_page_id, target_page_id, link_type, created_at
+         FROM page_links
+        ORDER BY id`
+    )
+    .all() as PageLinkRow[];
+}
+
+export interface EntityMentionRow {
+  canonical_name: string;
+  source_id: string;
+  entity_type: string | null;
+  first_seen_at: string;
+}
+
+export function getAllEntityMentions(): EntityMentionRow[] {
+  return openDb()
+    .prepare(
+      `SELECT canonical_name, source_id, entity_type, first_seen_at
+         FROM entity_mentions
+        ORDER BY first_seen_at, canonical_name`
+    )
+    .all() as EntityMentionRow[];
+}
+
+export interface RelationshipMentionRow {
+  from_canonical: string;
+  to_canonical: string;
+  relationship_type: string;
+  source_id: string;
+  first_seen_at: string;
+}
+
+export function getAllRelationshipMentions(): RelationshipMentionRow[] {
+  return openDb()
+    .prepare(
+      `SELECT from_canonical, to_canonical, relationship_type, source_id, first_seen_at
+         FROM relationship_mentions
+        ORDER BY first_seen_at`
+    )
+    .all() as RelationshipMentionRow[];
+}
+
+export interface DraftRow {
+  draft_id: string;
+  page_id: string | null;
+  draft_content: string;
+  draft_type: string;
+  source_id: string | null;
+  status: string;
+  created_at: string;
+}
+
+export function getAllDrafts(): DraftRow[] {
+  return openDb()
+    .prepare(
+      `SELECT draft_id, page_id, draft_content, draft_type, source_id, status, created_at
+         FROM drafts
+        ORDER BY created_at`
+    )
+    .all() as DraftRow[];
+}
+
+export interface ActivityLogRow {
+  timestamp: string;
+  action_type: string;
+  source_id: string | null;
+  details: string | null;
+}
+
+export function getAllActivityLog(): ActivityLogRow[] {
+  return openDb()
+    .prepare(
+      `SELECT timestamp, action_type, source_id, details
+         FROM activity_log
+        ORDER BY timestamp`
+    )
+    .all() as ActivityLogRow[];
+}
+
+export interface CompileProgressExportRow {
+  session_id: string;
+  status: string;
+  current_step: string | null;
+  steps: string;
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  source_count: number;
+}
+
+export function getAllCompileProgress(): CompileProgressExportRow[] {
+  return openDb()
+    .prepare(
+      `SELECT session_id, status, current_step, steps, error,
+              started_at, completed_at, created_at, source_count
+         FROM compile_progress
+        ORDER BY created_at`
+    )
+    .all() as CompileProgressExportRow[];
+}
+
+export interface ChatMessageExportRow {
+  session_id: string;
+  role: string;
+  content: string;
+  citations: string | null;
+  pages_used: string | null;
+  chat_model: string | null;
+  created_at: string;
+}
+
+export function getAllChatMessages(): ChatMessageExportRow[] {
+  return openDb()
+    .prepare(
+      `SELECT session_id, role, content, citations, pages_used, chat_model, created_at
+         FROM chat_messages
+        ORDER BY id`
+    )
+    .all() as ChatMessageExportRow[];
+}
+
+export interface PagePlanExportRow {
+  plan_id: string;
+  session_id: string;
+  title: string;
+  page_type: string;
+  action: string;
+  source_ids: string;
+  existing_page_id: string | null;
+  related_plan_ids: string | null;
+  draft_content: string | null;
+  draft_status: string;
+  created_at: string;
+}
+
+export function getAllPagePlans(): PagePlanExportRow[] {
+  return openDb()
+    .prepare(
+      `SELECT plan_id, session_id, title, page_type, action,
+              source_ids, existing_page_id, related_plan_ids,
+              draft_content, draft_status, created_at
+         FROM page_plans
+        ORDER BY created_at`
+    )
+    .all() as PagePlanExportRow[];
+}
