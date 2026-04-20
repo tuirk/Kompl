@@ -391,8 +391,12 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
           'saved-link',
           skippedTweets.map((t) => ({
             url: t.tweet_url!,
-            title_hint: 'Saved tweet',
-            ...(t.date ? { metadata_hint: { date_saved: t.date } } : {}),
+            title_hint: t.author ? `Tweet by ${t.author}` : 'Saved tweet',
+            metadata_hint: {
+              tweet_url: t.tweet_url!,
+              ...(t.author ? { author: t.author } : {}),
+              ...(t.date ? { date_saved: t.date } : {}),
+            },
             display: {
               kind: 'saved-link',
               source_origin: 'twitter-media',

@@ -113,6 +113,9 @@ export async function runIngestTextsStep(
           typeof payload.metadata_hint?.date_saved === 'string'
             ? payload.metadata_hint.date_saved
             : null;
+        const metadata = payload.metadata_hint
+          ? JSON.stringify(payload.metadata_hint)
+          : null;
         insertIngestFailure({
           failure_id: randomUUID(),
           source_url: payload.url,
@@ -120,6 +123,7 @@ export async function runIngestTextsStep(
           date_saved: dateSaved,
           error: 'saved_link_no_content',
           source_type: 'tweet',
+          metadata,
           session_id: sessionId,
         });
         void regenerateSavedLinksPage().catch(() => {});

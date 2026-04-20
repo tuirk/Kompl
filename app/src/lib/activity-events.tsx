@@ -361,6 +361,20 @@ function renderChatDraftsCleaned(row: FeedActivityRow): RowContent {
   return { primary: <strong>{page_title}</strong>, secondary, action: null, isError: false };
 }
 
+function renderSavedLinkDismissed(row: FeedActivityRow): RowContent {
+  const { str, num } = makeGetters(row);
+  const count = num('count');
+  const title = str('title');
+  const source_url = str('source_url');
+  const primary = count !== null && count > 1
+    ? <>Dismissed {count} saved links</>
+    : <strong>{title ?? source_url ?? 'Saved link dismissed'}</strong>;
+  const secondary = count !== null && count > 1
+    ? null
+    : (source_url && title ? <span style={MONO_DIM}>{source_url}</span> : null);
+  return { primary, secondary, action: null, isError: false };
+}
+
 function renderDigestSent(row: FeedActivityRow): RowContent {
   const { str, num } = makeGetters(row);
   const channel = str('channel');
@@ -524,6 +538,7 @@ export const ACTIVITY_EVENTS = {
   // ── Cleanup ─────────────────────────────────────────────────────────────
   pending_drafts_cleaned: { key: 'pending_drafts_cleaned', badge: { label: 'CLEANED',    tone: 'dim'  as Tone }, render: renderPendingDraftsCleaned },
   chat_drafts_cleaned:    { key: 'chat_drafts_cleaned',    badge: { label: 'CLEANED',    tone: 'dim'  as Tone }, render: renderChatDraftsCleaned },
+  saved_link_dismissed:   { key: 'saved_link_dismissed',   badge: { label: 'DISMISSED',  tone: 'dim'  as Tone }, render: renderSavedLinkDismissed },
   // ── Wiki / system ───────────────────────────────────────────────────────
   wiki_imported:          { key: 'wiki_imported',          badge: { label: 'IMPORTED',   tone: 'mint' as Tone }, render: renderWikiImported },
   lint_complete:          { key: 'lint_complete',          badge: { label: 'LINT',       tone: 'neut' as Tone }, render: renderLintComplete },

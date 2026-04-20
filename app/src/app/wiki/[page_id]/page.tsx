@@ -22,11 +22,15 @@ import {
   getBacklinks,
   getPage,
   getPageTitleMap,
+  getUnresolvedLinks,
   readPageMarkdown,
   type PageRow,
 } from '../../../lib/db';
 import { renderMarkdown, stripFrontmatter } from '../../../lib/markdown';
 import WikiSidebar from '../../../components/WikiSidebar';
+import SavedLinksInteractive from './SavedLinksInteractive';
+
+const SAVED_LINKS_PAGE_ID = 'saved-links';
 
 interface PageProps {
   params: Promise<{ page_id: string }>;
@@ -245,7 +249,9 @@ export default async function WikiPageDetail({ params }: PageProps) {
           )}
         </div>
 
-        {html ? (
+        {page_id === SAVED_LINKS_PAGE_ID ? (
+          <SavedLinksInteractive initialLinks={getUnresolvedLinks()} />
+        ) : html ? (
           <article dangerouslySetInnerHTML={{ __html: html }} style={{ fontSize: 14 }} />
         ) : (
           <div

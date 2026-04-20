@@ -1,12 +1,13 @@
 /**
  * regenerateSavedLinksPage — builds and writes the "Saved Links" wiki page.
  *
- * Called fire-and-forget after every insertIngestFailure or resolveIngestFailures
- * so the page always reflects the current set of unresolved links.
+ * Called fire-and-forget after every insertIngestFailure or DELETE via
+ * /api/saved-links so the page always reflects the current set of unresolved links.
  *
  * The page (page_id: 'saved-links') lists every bookmark/URL the user saved that
- * could not be automatically imported. Once a link is successfully ingested it
- * drops off. If all links are imported the page shows a cleared state.
+ * could not be automatically imported. Once a link is successfully ingested (or
+ * manually dismissed) it drops off. If all links are cleared the page shows a
+ * cleared state.
  */
 
 import {

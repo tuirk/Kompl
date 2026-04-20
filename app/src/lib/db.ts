@@ -2421,6 +2421,7 @@ export function getIngestFailures(): IngestFailureRow[] {
  * `{title, description, og_image}` — any field may be null.
  */
 export interface SavedLinkRow {
+  failure_id: string;
   source_url: string;
   title: string | null;
   date_saved: string | null;
@@ -2433,7 +2434,8 @@ export interface SavedLinkRow {
 export function getUnresolvedLinks(): SavedLinkRow[] {
   return openDb()
     .prepare(
-      `SELECT source_url,
+      `SELECT failure_id,
+              source_url,
               title_hint  AS title,
               date_saved,
               date_attempted,
@@ -2446,6 +2448,13 @@ export function getUnresolvedLinks(): SavedLinkRow[] {
         ORDER BY date_attempted DESC`
     )
     .all() as SavedLinkRow[];
+}
+
+export function deleteIngestFailure(failureId: string): boolean {
+  const info = openDb()
+    .prepare('DELETE FROM ingest_failures WHERE failure_id = ?')
+    .run(failureId);
+  return info.changes > 0;
 }
 
 /**
