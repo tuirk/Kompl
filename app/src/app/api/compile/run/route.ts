@@ -253,13 +253,34 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     updateCompileStep(sessionId, 'ingest_texts', 'done', 'skipped (no items)');
   }
 
+  // Saved-link-only sessions: every staged item was a media-only tweet
+  // (connector='saved-link'), so the prelude wrote ingest_failures rows but
+  // no `sources`. Extract..schema have nothing to compile — short-circuit to
+  // success with every downstream step marked skipped so the UI shows the
+  // session as completed (not failed) and the Saved Links page reflects the
+  // captured URLs.
+  const preludeSources = getSourcesBySession(sessionId);
+  if (preludeSources.length === 0) {
+    const skippedDetail = 'skipped (no sources)';
+    updateCompileStep(sessionId, 'extract',  'done', skippedDetail);
+    updateCompileStep(sessionId, 'resolve',  'done', skippedDetail);
+    updateCompileStep(sessionId, 'match',    'done', skippedDetail);
+    updateCompileStep(sessionId, 'plan',     'done', skippedDetail);
+    updateCompileStep(sessionId, 'draft',    'done', skippedDetail);
+    updateCompileStep(sessionId, 'crossref', 'done', skippedDetail);
+    updateCompileStep(sessionId, 'commit',   'done', skippedDetail);
+    updateCompileStep(sessionId, 'schema',   'done', skippedDetail);
+    completeCompileProgress(sessionId);
+    return;
+  }
+
   // Step 1: extract. State is derived from the DB (extractions table), not
   // from compile_progress.steps, so a prior partial failure (e.g. Gemini 429
   // on half the sources) is resumable: on retry we only re-attempt the
   // sources that are still missing from extractions. /api/compile/extract is
   // idempotent — a source that IS already extracted short-circuits without a
   // new Gemini call — but we skip the HTTP round-trip by filtering here.
-  const sources = getSourcesBySession(sessionId);
+  const sources = preludeSources;
   const extractedIds = new Set(getExtractionsBySession(sessionId).map((e) => e.source_id));
   const unextracted = sources.filter((s) => !extractedIds.has(s.source_id));
 
