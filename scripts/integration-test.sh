@@ -513,31 +513,33 @@ stage_11b_confirm_surfaces_n8n_down() {
     if [ -z "$($COMPOSE ps -q n8n 2>/dev/null)" ]; then
         echo "  WARNING: n8n container is missing after restart — silent-failure regression"
     fi
-    # healthz returns 200 once n8n HTTP is up, but auto-import.sh needs another
-    # 60-70s on a cold volume to register + activate workflows. Poll the
-    # session-compile webhook with a bogus session_id until it responds with
-    # something other than 404 — that's the workflow-registered signal. Any
-    # non-404 means the webhook is routing, so downstream stages (11c/17/22/25)
-    # that POST to /finalize can rely on n8n being fully ready.
-    # The probe uses a dummy session_id that /api/compile/run will reject
-    # fast since no compile_progress row exists for it.
+    # healthz returns 200 once n8n HTTP is up, but n8n needs extra seconds
+    # to register webhook routes from the active workflows. Probe the webhook
+    # via GET (method mismatch for our POST-only endpoint) — does NOT fire
+    # the workflow, unlike a POST probe which cascades:
+    #   n8n webhook (202) → HTTP: Start Compile → /api/compile/run 404
+    #   → onError branch → POST /api/activity → one 'compile_failed' row
+    # GET is rejected at the webhook router layer. n8n 2.x returns a body
+    # naming the registered method when the route exists, vs. a generic
+    # "not registered" body when it doesn't.
+    # Empirically verified against n8nio/n8n:2.15.0 (2026-04-20):
+    #   Registered: 404 "This webhook is not registered for GET requests.
+    #                    Did you mean to make a POST request?"
+    #   Unregistered / n8n still booting: generic 404 / connection fail.
+    # Body-match on the "POST" keyword is load-bearing on an observable
+    # behavior, not a documented contract; relies on our pin to 2.15.0.
+    # Failure mode is loud (probe times out → stage 11c fails visibly).
     echo "  waiting for n8n webhook registration (auto-import activation)..."
-    # Probe treats these as "not ready":
-    #   "" or "000" — curl couldn't reach n8n (connection refused, timeout)
-    #   "404" — n8n is up but the session-compile workflow isn't registered yet
-    # Anything else (200/202/400/500/...) means the webhook is routing.
     for i in $(seq 1 90); do
-        probe_http=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 -X POST \
-            -H "content-type: application/json" \
-            -d '{"session_id":"webhook-readiness-probe-ignore"}' \
+        probe_body=$(curl -s --max-time 3 -X GET \
             "http://localhost:5678/webhook/session-compile" 2>/dev/null || echo "")
-        case "$probe_http" in
-            ""|"000"|"404")
-                sleep 1
+        case "$probe_body" in
+            *POST*)
+                echo "    webhook ready after ${i}s (method-mismatch 404 returned)"
+                break
                 ;;
             *)
-                echo "    webhook ready after ${i}s (probe HTTP $probe_http)"
-                break
+                sleep 1
                 ;;
         esac
     done
