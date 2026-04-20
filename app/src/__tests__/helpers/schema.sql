@@ -1,4 +1,4 @@
--- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=15.
+-- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=18.
 -- If migrate.py changes, update this file. Tests will fail loudly on drift.
 
 CREATE TABLE sources (
