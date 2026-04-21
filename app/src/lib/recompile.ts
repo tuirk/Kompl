@@ -27,6 +27,7 @@ import {
   setPendingContent,
   clearPendingContent,
   getCategoryGroups,
+  getCompileModel,
   getPageTitleMap,
 } from './db';
 import { syncPageWikilinks } from './wikilinks';
@@ -48,7 +49,8 @@ async function callDraftPage(
   pageType: string,
   title: string,
   sourceContents: SourceContent[],
-  existingCategories: string[]
+  existingCategories: string[],
+  compileModel: string,
 ): Promise<string> {
   const res = await fetch(`${NLP_SERVICE_URL}/pipeline/draft-page`, {
     method: 'POST',
@@ -61,6 +63,7 @@ async function callDraftPage(
       existing_content: null,
       schema: null,
       existing_categories: existingCategories,
+      compile_model: compileModel,
     }),
     signal: AbortSignal.timeout(180_000), // 3 min — Gemini thinking can be slow
   });
@@ -148,7 +151,7 @@ export async function recompilePage(
   const existingCategories = getCategoryGroups()
     .map((g) => g.category)
     .filter((c) => c !== 'Uncategorized');
-  const newMarkdown = await callDraftPage(page.page_type, page.title, sourceContents, existingCategories);
+  const newMarkdown = await callDraftPage(page.page_type, page.title, sourceContents, existingCategories, getCompileModel());
 
   // ── Phase 2: sync transaction — update pages + setPendingContent + FTS5 ──
   // File is NOT written yet. pending_content stores markdown so the boot

@@ -18,6 +18,7 @@ import { NextResponse } from 'next/server';
 
 import {
   createCompileProgress,
+  getCompileModel,
   getSetting,
   getStagingBySession,
   logActivity,
@@ -69,7 +70,10 @@ export async function POST(request: Request) {
 
   // Create the compile_progress row BEFORE the n8n trigger so a POST failure
   // still leaves a row for the reconciler to find. Same ordering as /confirm.
-  createCompileProgress(session_id, staged.length);
+  // v20: lock this session to the current Settings compile_model so a
+  // Settings change mid-run doesn't cause mixed-model output. Preserved
+  // across retries (createCompileProgress ON CONFLICT doesn't overwrite).
+  createCompileProgress(session_id, staged.length, getCompileModel());
   logActivity('onboarding_confirmed', {
     source_id: null,
     details: { session_id, queued: staged.length, deleted: 0 },

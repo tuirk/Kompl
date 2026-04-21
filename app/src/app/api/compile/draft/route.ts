@@ -24,6 +24,7 @@ import { NextResponse } from 'next/server';
 import {
   getAllPages,
   getCategoryGroups,
+  getEffectiveCompileModel,
   getExtractionsBySession,
   getPagePlansByStatus,
   readRawMarkdown,
@@ -70,7 +71,8 @@ async function callDraftPage(
   schema?: string,
   existingPageTitles?: string[],
   extractionDossier?: string,
-  existingCategories?: string[]
+  existingCategories?: string[],
+  compileModel?: string,
 ): Promise<string> {
   const res = await fetch(`${NLP_SERVICE_URL}/pipeline/draft-page`, {
     method: 'POST',
@@ -85,6 +87,7 @@ async function callDraftPage(
       existing_page_titles: existingPageTitles ?? [],
       extraction_dossier: extractionDossier ?? '',
       existing_categories: existingCategories ?? [],
+      ...(compileModel ? { compile_model: compileModel } : {}),
     }),
     signal: AbortSignal.timeout(180_000), // 3 min — Gemini thinking can be slow
   });
@@ -427,7 +430,8 @@ export async function POST(request: Request) {
         schema,
         allKnownTitles,
         dossier || undefined,
-        Array.from(sessionCategorySet)
+        Array.from(sessionCategorySet),
+        getEffectiveCompileModel(session_id),
       );
 
       updatePlanDraft(plan.plan_id, markdown);

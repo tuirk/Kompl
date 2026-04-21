@@ -12,7 +12,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getDigestSettings, getActivitySince, logActivity, getLastLintResult } from '../../../../lib/db';
+import { getDigestSettings, getActivitySince, logActivity, getLastLintResult, getCompileModel } from '../../../../lib/db';
 import { readPageAction } from '../../../../lib/activity-events';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -111,6 +111,7 @@ export async function POST() {
       updated_page_titles: updatedPageTitles.slice(0, 20),
       drafts_created: draftsCreated,
       drafts_approved: draftsApproved,
+      compile_model: getCompileModel(),
     }),
     signal: AbortSignal.timeout(30_000),
   });

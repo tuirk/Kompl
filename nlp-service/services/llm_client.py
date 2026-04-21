@@ -71,11 +71,54 @@ _GEMINI_EXTRACT_INPUT_CAP = int(os.environ.get("GEMINI_EXTRACT_INPUT_CAP", "5000
 # whenever the setting is changed in the Settings UI.
 _DAILY_CAP_FALLBACK = float(os.environ.get("GEMINI_DAILY_USD_CAP", "5.00"))
 
-# Gemini 2.5 Flash approximate pricing ($/M tokens, as of 2026-04).
-# Both caps are env-driven per research artifact section 8 so pricing changes
-# don't require code changes.
-_INPUT_PRICE_PER_M = float(os.environ.get("GEMINI_INPUT_PRICE_PER_M", "0.075"))
-_OUTPUT_PRICE_PER_M = float(os.environ.get("GEMINI_OUTPUT_PRICE_PER_M", "0.300"))
+# Gemini 2.5-family pricing ($/M tokens, 2026-04 public rates).
+# Previous env-driven single-price values ($0.075 / $0.300) were stale 1.5-Flash
+# rates and under-counted actual spend by 3-8× depending on model. We now do
+# per-model lookup because each call site knows its model (compile_model or
+# chat_model from the Next.js settings, forwarded as a request field).
+#
+# cost = (prompt_tokens - cached_tokens) * input_rate
+#      + cached_tokens                   * cache_rate    (≈ 0.1x input)
+#      + (candidates_tokens + thoughts_tokens) * output_rate
+#
+# Thinking tokens are billed at the output rate per
+#   https://ai.google.dev/gemini-api/docs/thinking
+# Cached tokens are still counted in prompt_token_count per
+#   https://ai.google.dev/api/generate-content
+# so we subtract explicitly to avoid double-counting.
+_MODEL_PRICES: dict[str, dict[str, float]] = {
+    "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40, "cache": 0.01},
+    "gemini-2.5-flash":      {"input": 0.30, "output": 2.50, "cache": 0.03},
+    # Pro tiered — ≤200k prompts use the small-context SKU. >200k switches to
+    # $2.50 / $15 / $0.25; we don't auto-detect that boundary here. If Pro is
+    # routinely exercised with >200k prompts, override via env vars below.
+    "gemini-2.5-pro":        {"input": 1.25, "output": 10.00, "cache": 0.125},
+}
+
+# Env overrides — last-resort escape hatch when Gemini changes pricing and
+# the code hasn't been updated yet. Apply to all models.
+_INPUT_PRICE_OVERRIDE  = os.environ.get("GEMINI_INPUT_PRICE_PER_M")
+_OUTPUT_PRICE_OVERRIDE = os.environ.get("GEMINI_OUTPUT_PRICE_PER_M")
+_CACHE_PRICE_OVERRIDE  = os.environ.get("GEMINI_CACHE_PRICE_PER_M")
+
+
+def _get_model_prices(model: str) -> dict[str, float]:
+    """Return {input, output, cache} per-million-token prices for `model`.
+
+    Falls back to gemini-2.5-flash-lite rates for unknown models so an SDK
+    bump to a new model name doesn't silently crash pricing.
+    """
+    base = _MODEL_PRICES.get(model, _MODEL_PRICES["gemini-2.5-flash-lite"])
+    return {
+        "input":  float(_INPUT_PRICE_OVERRIDE)  if _INPUT_PRICE_OVERRIDE  else base["input"],
+        "output": float(_OUTPUT_PRICE_OVERRIDE) if _OUTPUT_PRICE_OVERRIDE else base["output"],
+        "cache":  float(_CACHE_PRICE_OVERRIDE)  if _CACHE_PRICE_OVERRIDE  else base["cache"],
+    }
+
+
+# Default for call sites that haven't been updated to pass `model` — matches
+# the historical hardcode so existing behaviour is preserved as a safety net.
+_DEFAULT_MODEL = "gemini-2.5-flash"
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -162,14 +205,31 @@ def _write_cap(data: dict) -> None:
         pass  # cap still enforced in-memory for this call
 
 
-def _check_and_record_cost(input_tokens: int, output_tokens: int) -> None:
+def _check_and_record_cost(
+    model: str,
+    prompt_tokens: int,
+    cached_tokens: int,
+    output_tokens: int,
+    thought_tokens: int,
+) -> None:
     """Check daily cap then record cost. Raises CostCeilingError if exceeded.
+
+    Per-model pricing via _get_model_prices. Thought tokens billed at the
+    output rate. Cached tokens billed at the cache rate (subtracted from
+    fresh input to avoid double-counting). See module header for formula.
 
     Called after every successful Gemini API call. If GEMINI_DAILY_USD_CAP=0
     the check is skipped (unlimited mode).
     """
-    cost_usd = (input_tokens / 1_000_000) * _INPUT_PRICE_PER_M \
-             + (output_tokens / 1_000_000) * _OUTPUT_PRICE_PER_M
+    prices = _get_model_prices(model)
+    # prompt_token_count includes cached tokens per Gemini API docs.
+    fresh_input = max(0, prompt_tokens - cached_tokens)
+    cost_usd = (
+        (fresh_input      / 1_000_000) * prices["input"]
+      + (cached_tokens    / 1_000_000) * prices["cache"]
+      + (output_tokens    / 1_000_000) * prices["output"]
+      + (thought_tokens   / 1_000_000) * prices["output"]
+    )
     cap_data = _read_cap()
     daily_cap = _read_daily_cap_usd()
     if daily_cap > 0 and cap_data["total_usd"] + cost_usd > daily_cap:
@@ -181,6 +241,30 @@ def _check_and_record_cost(input_tokens: int, output_tokens: int) -> None:
     cap_data["total_usd"] = round(cap_data["total_usd"] + cost_usd, 6)
     cap_data["call_count"] = cap_data.get("call_count", 0) + 1
     _write_cap(cap_data)
+
+
+def _record_usage(step: str, model: str, response: Any) -> None:
+    """Unified wrapper: log one-line usage + record cost. Replaces the 5-line
+    boilerplate that used to live at every call site (_log_usage then manual
+    getattr + _check_and_record_cost).
+
+    Reads from response.usage_metadata:
+      - prompt_token_count   — total effective prompt (INCLUDES cached)
+      - cached_content_token_count — discounted portion
+      - candidates_token_count — output (user-visible response text)
+      - thoughts_token_count   — output (thinking mode, billed)
+
+    Silently skips when usage_metadata is None (rare — error responses,
+    streaming edge cases). Cost recording never fails the caller."""
+    _log_usage(step, response)
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return
+    prompt_tok = int(getattr(usage, "prompt_token_count", 0) or 0)
+    cached_tok = int(getattr(usage, "cached_content_token_count", 0) or 0)
+    output_tok = int(getattr(usage, "candidates_token_count", 0) or 0)
+    thought_tok = int(getattr(usage, "thoughts_token_count", 0) or 0)
+    _check_and_record_cost(model, prompt_tok, cached_tok, output_tok, thought_tok)
 
 
 # ---------------------------------------------------------------------------
@@ -385,10 +469,11 @@ class LintScanResponse(BaseModel):
     contradictions: list[Contradiction]
 
 
-def lint_scan(pages: list[str]) -> LintScanResponse:
+def lint_scan(pages: list[str], model: str = _DEFAULT_MODEL) -> LintScanResponse:
     """Scan page summaries for contradictions.
 
     pages: list of "[page_id] title: summary" formatted strings.
+    model: Gemini model (compile_model from Next.js settings; defaults to Flash).
 
     Raises:
         LLMRateLimitedError  — bucket exhausted
@@ -404,7 +489,7 @@ def lint_scan(pages: list[str]) -> LintScanResponse:
     try:
         response = _with_retry(
             lambda: client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -419,13 +504,7 @@ def lint_scan(pages: list[str]) -> LintScanResponse:
     except Exception as e:
         raise LLMCompileError(f"lint_scan_failed: {e}") from e
 
-    _log_usage("lint", response)
-
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _check_and_record_cost(int(input_tok), int(output_tok))
+    _record_usage("lint", model, response)
 
     raw_text = response.text
     if not raw_text:
@@ -538,6 +617,7 @@ def extract_source(
     ner_output: dict[str, Any],
     keyphrase_output: dict[str, Any] | None,
     tfidf_output: dict[str, Any] | None,
+    model: str = _DEFAULT_MODEL,
 ) -> LLMExtractionResponse:
     """Call Gemini 2.5 Flash to extract structured knowledge from a source.
 
@@ -584,7 +664,7 @@ def extract_source(
     try:
         response = _with_retry(
             lambda: client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -601,13 +681,7 @@ def extract_source(
     except Exception as e:
         raise LLMCompileError(f"extract_llm_call_failed: {e}") from e
 
-    _log_usage("extract", response)
-
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _check_and_record_cost(int(input_tok), int(output_tok))
+    _record_usage("extract", model, response)
 
     raw_text = response.text
     if not raw_text:
@@ -667,7 +741,7 @@ def extract_source(
         try:
             fallback_response = _with_retry(
                 lambda: client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model=model,
                     contents=fallback_prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -687,13 +761,7 @@ def extract_source(
                 f"first={first_err}; fallback_call={fallback_call_err}"
             ) from first_err
 
-        _log_usage("extract-fallback", fallback_response)
-
-        fallback_usage: Any = fallback_response.usage_metadata
-        if fallback_usage is not None:
-            input_tok = getattr(fallback_usage, "prompt_token_count", 0) or 0
-            output_tok = getattr(fallback_usage, "candidates_token_count", 0) or 0
-            _check_and_record_cost(int(input_tok), int(output_tok))
+        _record_usage("extract-fallback", model, fallback_response)
 
         fallback_raw = fallback_response.text
         if not fallback_raw:
@@ -760,7 +828,7 @@ over a wrong "same" call. Do not hallucinate.
 """
 
 
-def disambiguate_entities(pairs: list[dict[str, Any]]) -> DisambiguationResponse:
+def disambiguate_entities(pairs: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> DisambiguationResponse:
     """Batch LLM entity disambiguation for the 0.7–0.9 embedding similarity band.
 
     Accepts up to 10 pairs per call (caller is responsible for batching).
@@ -789,7 +857,7 @@ def disambiguate_entities(pairs: list[dict[str, Any]]) -> DisambiguationResponse
     try:
         response = _with_retry(
             lambda: client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -806,13 +874,7 @@ def disambiguate_entities(pairs: list[dict[str, Any]]) -> DisambiguationResponse
     except Exception as e:
         raise LLMCompileError(f"disambiguate_llm_call_failed: {e}") from e
 
-    _log_usage("disambiguate", response)
-
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _check_and_record_cost(int(input_tok), int(output_tok))
+    _record_usage("disambiguate", model, response)
 
     raw_text = response.text
     if not raw_text:
@@ -931,6 +993,7 @@ def draft_page(
     existing_page_titles: list[str] | None = None,
     extraction_dossier: str = "",
     existing_categories: list[str] | None = None,
+    model: str = _DEFAULT_MODEL,
 ) -> str:
     """Draft a wiki page using Gemini 2.5 Flash.
 
@@ -1048,7 +1111,7 @@ def draft_page(
     client = get_client()
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
@@ -1060,11 +1123,7 @@ def draft_page(
     except Exception as e:
         raise LLMCompileError(f"draft_page_llm_failed: {e}") from e
 
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _check_and_record_cost(int(input_tok), int(output_tok))
+    _record_usage("draft_page", model, response)
 
     raw_text = response.text
     if not raw_text:
@@ -1134,7 +1193,7 @@ Rules:
 """
 
 
-def crossref_pages(pages: list[dict[str, Any]]) -> CrossrefResponse:
+def crossref_pages(pages: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> CrossrefResponse:
     """Add [[wikilinks]] between pages and flag contradictions.
 
     Args:
@@ -1175,7 +1234,7 @@ def crossref_pages(pages: list[dict[str, Any]]) -> CrossrefResponse:
     try:
         response = _with_retry(
             lambda: client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=_CROSSREF_SYSTEM_PROMPT,
@@ -1193,13 +1252,7 @@ def crossref_pages(pages: list[dict[str, Any]]) -> CrossrefResponse:
     except Exception as e:
         raise LLMCompileError(f"crossref_llm_failed: {e}") from e
 
-    _log_usage("crossref", response)
-
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _check_and_record_cost(int(input_tok), int(output_tok))
+    _record_usage("crossref", model, response)
 
     raw_text = response.text
     if not raw_text:
@@ -1242,6 +1295,7 @@ def triage_page_update(
     source_claims: str,
     existing_page_summary: str,
     page_title: str,
+    model: str = _DEFAULT_MODEL,
 ) -> dict[str, str]:
     """Decide whether a source warrants updating an existing wiki page.
 
@@ -1278,7 +1332,7 @@ def triage_page_update(
     try:
         response = _with_retry(
             lambda: client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -1295,13 +1349,7 @@ def triage_page_update(
     except Exception as e:
         raise LLMCompileError(f"triage_llm_call_failed: {e}") from e
 
-    _log_usage("triage", response)
-
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _check_and_record_cost(int(input_tok), int(output_tok))
+    _record_usage("triage", model, response)
 
     raw_text = response.text
     if not raw_text:
@@ -1316,7 +1364,7 @@ def triage_page_update(
     return {"decision": decision, "reason": triage.reason}
 
 
-def generate_schema(pages_summary: list[dict[str, Any]]) -> str:
+def generate_schema(pages_summary: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> str:
     """Generate a wiki schema document from the first compile's page list.
 
     Args:
@@ -1340,7 +1388,7 @@ def generate_schema(pages_summary: list[dict[str, Any]]) -> str:
     try:
         response = _with_retry(
             lambda: client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=_SCHEMA_SYSTEM_PROMPT,
@@ -1356,13 +1404,7 @@ def generate_schema(pages_summary: list[dict[str, Any]]) -> str:
     except Exception as e:
         raise LLMCompileError(f"generate_schema_llm_failed: {e}") from e
 
-    _log_usage("schema", response)
-
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _check_and_record_cost(int(input_tok), int(output_tok))
+    _record_usage("schema", model, response)
 
     raw_text = response.text
     if not raw_text:
@@ -1397,6 +1439,7 @@ relevant, return an empty list. Do not hallucinate page IDs not in the input.
 def select_pages_for_query(
     question: str,
     index: list[dict[str, Any]],
+    model: str = _DEFAULT_MODEL,
 ) -> list[str]:
     """Given a wiki index, select the page IDs most relevant to a question.
 
@@ -1430,7 +1473,7 @@ def select_pages_for_query(
     try:
         response = _with_retry(
             lambda: client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -1447,13 +1490,7 @@ def select_pages_for_query(
     except Exception as e:
         raise LLMCompileError(f"select_pages_llm_failed: {e}") from e
 
-    _log_usage("select_pages", response)
-
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _check_and_record_cost(int(input_tok), int(output_tok))
+    _record_usage("select_pages", model, response)
 
     raw_text = response.text
     if not raw_text:
@@ -1588,11 +1625,8 @@ def synthesize_answer(
     except Exception as e:
         raise LLMCompileError(f"synthesize_llm_failed: {e}") from e
 
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _check_and_record_cost(int(input_tok), int(output_tok))
+    # chat: model is the user's chat_model setting (stamped per session)
+    _record_usage("synthesize", chat_model, response)
 
     raw_text = response.text
     if not raw_text:
@@ -1609,7 +1643,7 @@ def synthesize_answer(
 # ---------------------------------------------------------------------------
 
 
-def generate_digest(data: Any) -> str:
+def generate_digest(data: Any, model: str = _DEFAULT_MODEL) -> str:
     """Generate a brief weekly digest summary via Gemini 2.5 Flash.
 
     Args:
@@ -1647,7 +1681,7 @@ Keep it under 150 words. No markdown formatting — plain text with line breaks.
     client = get_client()
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 thinking_config=types.ThinkingConfig(thinking_budget=1024),
@@ -1658,11 +1692,7 @@ Keep it under 150 words. No markdown formatting — plain text with line breaks.
     except Exception as e:
         raise LLMCompileError(f"digest_llm_failed: {e}") from e
 
-    usage: Any = response.usage_metadata
-    if usage is not None:
-        input_tok = getattr(usage, "prompt_token_count", 0) or 0
-        output_tok = getattr(usage, "candidates_token_count", 0) or 0
-        _check_and_record_cost(int(input_tok), int(output_tok))
+    _record_usage("digest", model, response)
 
     raw_text = response.text
     if not raw_text:

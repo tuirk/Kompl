@@ -33,6 +33,7 @@ import {
   deleteRelationshipMentionsForSource,
   getAliases,
   getAllPageIds,
+  getEffectiveCompileModel,
   getExtraction,
   getPageCount,
   getSource,
@@ -250,6 +251,7 @@ export async function POST(request: Request) {
       ner_output: nerResult,
       keyphrase_output: Object.keys(keyphraseOutput).length > 0 ? keyphraseOutput : null,
       tfidf_output: tfidfOutput,
+      compile_model: getEffectiveCompileModel(source.onboarding_session_id),
     });
 
     // Step 7: persist

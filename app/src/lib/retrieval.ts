@@ -72,12 +72,17 @@ async function indexFirstRetrieval(
   question: string,
   index: ReturnType<typeof getPageIndex>,
   maxPages: number,
+  chatModel?: string,
 ): Promise<RetrievedPage[]> {
   // Ask LLM to pick the most relevant page IDs from the full index.
   const res = await fetch(`${NLP_SERVICE_URL}/chat/select-pages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, index }),
+    body: JSON.stringify({
+      question,
+      index,
+      ...(chatModel ? { chat_model: chatModel } : {}),
+    }),
     signal: AbortSignal.timeout(30_000),
   });
   // If LLM call failed, fall back to top pages by source_count from the index.
@@ -232,6 +237,7 @@ async function hybridRetrieval(
 export async function retrievePages(
   question: string,
   maxPages = 10,
+  chatModel?: string,
 ): Promise<RetrievedPage[]> {
   const index = getPageIndex();
   if (index.length === 0) return [];
@@ -244,7 +250,7 @@ export async function retrievePages(
   );
 
   if (estimatedTokens < INDEX_TOKEN_THRESHOLD) {
-    return indexFirstRetrieval(question, index, maxPages);
+    return indexFirstRetrieval(question, index, maxPages, chatModel);
   }
   return hybridRetrieval(question, maxPages);
 }

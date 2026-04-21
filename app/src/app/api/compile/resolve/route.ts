@@ -35,6 +35,7 @@ import { NextResponse } from 'next/server';
 import {
   bulkInsertAliases,
   getAliases,
+  getEffectiveCompileModel,
   getExtractionsBySession,
   logActivity,
 } from '../../../../lib/db';
@@ -112,11 +113,17 @@ async function callEmbedding(entities: EntityInput[]): Promise<EmbeddingResolveR
   return res.json() as Promise<EmbeddingResolveResponse>;
 }
 
-async function callDisambiguate(pairs: AmbiguousPair[]): Promise<DisambiguateResponse> {
+async function callDisambiguate(
+  pairs: AmbiguousPair[],
+  compileModel?: string,
+): Promise<DisambiguateResponse> {
   const res = await fetch(`${NLP_SERVICE_URL}/resolve/disambiguate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pairs }),
+    body: JSON.stringify({
+      pairs,
+      ...(compileModel ? { compile_model: compileModel } : {}),
+    }),
     signal: AbortSignal.timeout(120_000), // LLM call — allow 2 min
   });
   if (!res.ok) {
@@ -206,7 +213,7 @@ export async function POST(request: Request) {
     const ambiguousRemaining: EntityInput[] = [];
 
     if (ambiguous2.length > 0) {
-      const disambResult = await callDisambiguate(ambiguous2);
+      const disambResult = await callDisambiguate(ambiguous2, getEffectiveCompileModel(session_id));
       const disambMap = new Map(
         disambResult.results.map((r) => [`${r.entity_a}|||${r.entity_b}`, r])
       );

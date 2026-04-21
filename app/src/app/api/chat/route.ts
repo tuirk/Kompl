@@ -135,7 +135,7 @@ export async function POST(request: Request) {
     }
 
     // 2. Retrieve relevant pages
-    const pages = await retrievePages(question, 10);
+    const pages = await retrievePages(question, 10, resolvedModel);
 
     if (pages.length === 0) {
       insertChatMessage({

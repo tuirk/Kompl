@@ -47,6 +47,7 @@ class SelectPagesRequest(BaseModel):
 
     question: str
     index: list[dict]  # [{page_id, title, page_type, summary, source_count}]
+    chat_model: ChatModel = "gemini-2.5-flash-lite"
 
 
 class SelectPagesResponse(BaseModel):
@@ -107,7 +108,7 @@ def chat_select_pages(req: SelectPagesRequest) -> SelectPagesResponse:
     relevance to the question. Used when the index fits within context.
     """
     try:
-        page_ids = select_pages_for_query(req.question, req.index)
+        page_ids = select_pages_for_query(req.question, req.index, model=req.chat_model)
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     except CostCeilingError as e:

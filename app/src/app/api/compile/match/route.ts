@@ -16,6 +16,7 @@
 
 import { NextResponse } from 'next/server';
 import {
+  getEffectiveCompileModel,
   getPageCount,
   getPagesByType,
   getPage,
@@ -65,7 +66,8 @@ async function callTfidfOverlap(
 async function callTriage(
   sourceClaims: string,
   existingPageSummary: string,
-  pageTitle: string
+  pageTitle: string,
+  compileModel?: string,
 ): Promise<TriageResponse> {
   const res = await fetch(`${NLP_SERVICE_URL}/pipeline/triage`, {
     method: 'POST',
@@ -74,6 +76,7 @@ async function callTriage(
       source_claims: sourceClaims,
       existing_page_summary: existingPageSummary,
       page_title: pageTitle,
+      ...(compileModel ? { compile_model: compileModel } : {}),
     }),
     signal: AbortSignal.timeout(30_000),
   });
@@ -159,7 +162,7 @@ export async function POST(request: Request) {
 
       let triageResult: TriageResponse;
       try {
-        triageResult = await callTriage(markdown, existingSummary, page.title);
+        triageResult = await callTriage(markdown, existingSummary, page.title, getEffectiveCompileModel(session_id));
       } catch {
         triageResult = { decision: 'skip', reason: 'triage_failed' };
       }

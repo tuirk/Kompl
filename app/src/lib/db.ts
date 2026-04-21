@@ -1263,18 +1263,32 @@ export interface CompileProgressRow {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  // v20: per-session compile_model lock. Nullable — pre-v20 rows stay NULL
+  // and fall back to getCompileModel() at each step.
+  compile_model: string | null;
 }
 
 /**
  * Insert a compile_progress row for a session, or reset it if one already
  * exists (for retry). All steps start as 'pending', status as 'queued'.
+ *
+ * v20: accepts optional compileModel to stamp the session's model lock on
+ * creation. On conflict (retry), DO NOT overwrite the original compile_model —
+ * a retry should keep the session's original model. If the caller passes
+ * compileModel and the row exists with NULL (legacy session pre-v20), the
+ * existing NULL is preserved; callers fall back to getCompileModel() for
+ * legacy rows.
  */
-export function createCompileProgress(sessionId: string, sourceCount = 0): void {
+export function createCompileProgress(
+  sessionId: string,
+  sourceCount = 0,
+  compileModel: string | null = null,
+): void {
   openDb()
     .prepare(
       `INSERT INTO compile_progress
-         (session_id, status, current_step, steps, error, started_at, completed_at, source_count)
-       VALUES (?, 'queued', NULL, ?, NULL, NULL, NULL, ?)
+         (session_id, status, current_step, steps, error, started_at, completed_at, source_count, compile_model)
+       VALUES (?, 'queued', NULL, ?, NULL, NULL, NULL, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          status       = 'queued',
          current_step = NULL,
@@ -1284,7 +1298,43 @@ export function createCompileProgress(sessionId: string, sourceCount = 0): void 
          completed_at = NULL,
          source_count = CASE WHEN excluded.source_count > 0 THEN excluded.source_count ELSE compile_progress.source_count END`
     )
-    .run(sessionId, JSON.stringify(DEFAULT_STEPS()), sourceCount);
+    .run(sessionId, JSON.stringify(DEFAULT_STEPS()), sourceCount, compileModel);
+}
+
+/**
+ * Read the compile_model that was stamped on this session's compile_progress
+ * row when it was first created. Returns null for legacy sessions (pre-v20)
+ * or sessions created before the caller started passing compile_model to
+ * createCompileProgress. Callers should fall back to getCompileModel() on
+ * null so legacy sessions keep working.
+ *
+ * This mirrors the chat_model lock pattern (chat_messages.chat_model,
+ * getSessionChatModel) — read the stamp if present, fall back to the
+ * current Settings value otherwise.
+ */
+export function getSessionCompileModel(sessionId: string): string | null {
+  const row = openDb()
+    .prepare(`SELECT compile_model FROM compile_progress WHERE session_id = ?`)
+    .get(sessionId) as { compile_model: string | null } | undefined;
+  return row?.compile_model ?? null;
+}
+
+/**
+ * Resolve the Gemini model for a compile-step call. Every per-session LLM
+ * call should use this instead of raw getCompileModel(): it prefers the
+ * session's locked model (if one was stamped at finalize time) and falls
+ * back to the current Settings value for legacy sessions or one-off
+ * non-session calls.
+ *
+ * Accepts null/undefined for sessionId so non-session call sites (lint,
+ * digest, recompile) can pass through without branching.
+ */
+export function getEffectiveCompileModel(
+  sessionId: string | null | undefined,
+): ChatModel {
+  if (!sessionId) return getCompileModel();
+  const locked = getSessionCompileModel(sessionId);
+  return isChatModel(locked) ? locked : getCompileModel();
 }
 
 /**
@@ -2302,6 +2352,28 @@ export function setChatModel(value: string): void {
     throw new Error(`invalid chat_model: ${value}`);
   }
   setSetting('chat_model', value);
+}
+
+// Compile steps use a separate model setting from chat. Chat-favoured model
+// (usually Flash-Lite for speed, optionally Pro for quality) can differ from
+// the compile workload (usually Flash for balance, optionally Pro for large
+// extractions). Same allowlist as CHAT_MODELS — Kompl only supports the 2.5
+// family on Gemini Developer API.
+//
+// Default matches the historical hardcoded value in llm_client.py so upgrading
+// to the setting-driven code is a no-op for existing deployments.
+export const DEFAULT_COMPILE_MODEL: ChatModel = 'gemini-2.5-flash';
+
+export function getCompileModel(): ChatModel {
+  const v = getSetting('compile_model');
+  return isChatModel(v) ? v : DEFAULT_COMPILE_MODEL;
+}
+
+export function setCompileModel(value: string): void {
+  if (!isChatModel(value)) {
+    throw new Error(`invalid compile_model: ${value}`);
+  }
+  setSetting('compile_model', value);
 }
 
 const LLM_CONFIG_PATH = path.join(DATA_ROOT, 'llm-config.json');

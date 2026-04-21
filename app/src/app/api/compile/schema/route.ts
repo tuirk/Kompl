@@ -15,7 +15,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getPagePlansByStatus } from '../../../../lib/db';
+import { getEffectiveCompileModel, getPagePlansByStatus } from '../../../../lib/db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 const SCHEMA_PATH = '/data/schema.md';
@@ -75,7 +75,7 @@ export async function POST(request: Request) {
   const genRes = await fetch(`${NLP_SERVICE_URL}/pipeline/generate-schema`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pages: pagesSummary }),
+    body: JSON.stringify({ pages: pagesSummary, compile_model: getEffectiveCompileModel(session_id) }),
     signal: AbortSignal.timeout(120_000),
   });
 

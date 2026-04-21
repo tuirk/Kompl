@@ -72,6 +72,10 @@ export default function SettingsPage() {
   const [chatModelSaving, setChatModelSaving] = useState(false);
   const [chatModelSaved, setChatModelSaved] = useState(false);
 
+  const [compileModel, setCompileModelState] = useState<string | null>(null);
+  const [compileModelSaving, setCompileModelSaving] = useState(false);
+  const [compileModelSaved, setCompileModelSaved] = useState(false);
+
   const [deploymentMode, setDeploymentModeState] = useState<'personal-device' | 'always-on' | null>(null);
   const [deploymentSaving, setDeploymentSaving] = useState(false);
   const [deploymentSaved, setDeploymentSaved] = useState(false);
@@ -129,6 +133,7 @@ export default function SettingsPage() {
         entity_promotion_threshold: number;
         daily_cap_usd: number;
         chat_model: string;
+        compile_model: string;
       }) => {
         setAutoApprove(data.auto_approve);
         setRelatedMinSources(data.related_pages_min_sources);
@@ -146,6 +151,7 @@ export default function SettingsPage() {
         setEntityThreshold(data.entity_promotion_threshold);
         setDailyCapUsd(data.daily_cap_usd);
         setChatModelState(data.chat_model);
+        setCompileModelState(data.compile_model);
       });
   }, []);
 
@@ -395,6 +401,17 @@ export default function SettingsPage() {
     setChatModelSaving(false);
     setChatModelSaved(true);
     setTimeout(() => setChatModelSaved(false), 2000);
+  }
+
+  async function saveCompileModel(next: string) {
+    setCompileModelSaving(true);
+    setCompileModelSaved(false);
+    const _ok = await saveSettingToApi({ compile_model: next });
+    if (!_ok) { setCompileModelSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
+    setCompileModelState(next);
+    setCompileModelSaving(false);
+    setCompileModelSaved(true);
+    setTimeout(() => setCompileModelSaved(false), 2000);
   }
 
   const MCP_CONFIG_JSON = `{
@@ -749,6 +766,11 @@ export default function SettingsPage() {
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                 Hard USD ceiling on Gemini API spend per UTC day. When exceeded, LLM calls raise a cost-ceiling error and the pipeline marks affected work as retryable. Resets at midnight UTC.
                 Set to <strong>0</strong> for unlimited (no cap).
+                {' '}The tracked number comes from each Gemini call&apos;s <code>usage_metadata</code>
+                (input + cached + output + thinking tokens, multiplied by the model&apos;s published
+                per-million-token price). It&apos;s an <strong>estimate</strong> — real invoice
+                totals may differ by a few percent due to token-count rounding, cached-content
+                discounts, and any price drift between Gemini&apos;s schedule and our constants.
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
@@ -787,6 +809,75 @@ export default function SettingsPage() {
               }}
             >
               Saved — takes effect within 30 seconds.
+            </div>
+          )}
+        </section>
+
+        {/* Compile model */}
+        <section
+          style={{
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            overflow: 'hidden',
+            marginTop: '1rem',
+          }}
+        >
+          <div
+            style={{
+              padding: '1.25rem 1.5rem',
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: '1.5rem',
+            }}
+          >
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
+                Compile model
+              </div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+                Which Gemini model the <strong>compile pipeline</strong> uses for every LLM step
+                (extract, resolve, draft, crossref, schema). Flash (default) balances cost and
+                quality; Flash Lite is cheapest; Pro is most capable but most expensive.
+                Compile spend is typically <strong>10-100× higher than chat</strong> because the
+                pipeline drafts many pages per session.
+                Changes apply to <strong>new compile sessions only</strong> — in-flight pipelines
+                keep the model they started with until they finish or fail. If you want to switch
+                a session to a different model, cancel it first and start a new compile.
+              </div>
+            </div>
+            <div style={{ flexShrink: 0 }}>
+              <select
+                value={compileModel ?? ''}
+                onChange={(e) => void saveCompileModel(e.target.value)}
+                disabled={compileModel === null || compileModelSaving}
+                style={{
+                  padding: '0.45rem 0.6rem',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-card)',
+                  color: 'var(--fg)',
+                  fontSize: '0.9rem',
+                  opacity: compileModel === null ? 0.5 : 1,
+                }}
+              >
+                <option value="gemini-2.5-flash-lite">Flash Lite</option>
+                <option value="gemini-2.5-flash">Flash (default)</option>
+                <option value="gemini-2.5-pro">Pro</option>
+              </select>
+            </div>
+          </div>
+          {compileModelSaved && (
+            <div
+              style={{
+                padding: '0.6rem 1.5rem',
+                background: 'var(--success-bg, #ecfdf5)',
+                borderTop: '1px solid var(--success-border, #a7f3d0)',
+                color: 'var(--success, #059669)',
+                fontSize: 13,
+              }}
+            >
+              Saved — applies to new compile sessions.
             </div>
           )}
         </section>

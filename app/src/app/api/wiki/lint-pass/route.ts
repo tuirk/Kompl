@@ -28,7 +28,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getDb, logActivity, getLintEnabled, setLastLintAt } from '../../../../lib/db';
+import { getCompileModel, getDb, logActivity, getLintEnabled, setLastLintAt } from '../../../../lib/db';
 import { regenerateSavedLinksPage } from '../../../../lib/saved-links';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -138,7 +138,7 @@ export async function POST(request: Request) {
       const res = await fetch(`${NLP_SERVICE_URL}/pipeline/lint-scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pages }),
+        body: JSON.stringify({ pages, compile_model: getCompileModel() }),
         signal: AbortSignal.timeout(60_000),
       });
       if (res.ok) {

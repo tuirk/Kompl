@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -408,6 +408,17 @@ MIGRATION_V19_SQL = """
 ALTER TABLE chat_messages ADD COLUMN chat_model TEXT;
 """
 
+# v20: per-session compile_model lock. Mirrors the v19 chat_model pattern —
+# nullable column, stamped once when the compile_progress row is created,
+# preserved through retries. getSessionCompileModel() reads it; compile
+# steps prefer it over the current Settings value so a running pipeline
+# stays on the same model even if the user flips the Settings dropdown
+# mid-compile. No backfill — legacy sessions fall back to getCompileModel()
+# at each step.
+MIGRATION_V20_SQL = """
+ALTER TABLE compile_progress ADD COLUMN compile_model TEXT;
+"""
+
 
 
 def migrate():
@@ -562,6 +573,15 @@ def migrate():
         }
         if "chat_model" not in existing_cols:
             conn.executescript(MIGRATION_V19_SQL)
+
+    if current < 20:
+        print("  applying migration v20 (compile_progress.compile_model column)...")
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(compile_progress)").fetchall()
+        }
+        if "compile_model" not in existing_cols:
+            conn.executescript(MIGRATION_V20_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

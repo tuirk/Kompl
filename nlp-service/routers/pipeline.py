@@ -18,6 +18,8 @@ This router NEVER opens kompl.db. rule #1 in CLAUDE.md.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
@@ -41,10 +43,23 @@ from services.llm_client import (
 router = APIRouter(tags=["pipeline"])
 
 
+# Compile-steps share this Literal with chat.py's ChatModel. Kept local to
+# each router rather than extracting to a shared module since each router
+# has a small, independent scope. Default is Flash — historical hardcode
+# that every llm_client call site used before compile_model became a
+# setting.
+GeminiModel = Literal[
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+]
+
+
 class LintScanRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     pages: list[str]  # list of "[page_id] title: summary" strings
+    compile_model: GeminiModel = "gemini-2.5-flash"
 
 
 class ExtractLLMRequest(BaseModel):
@@ -55,6 +70,7 @@ class ExtractLLMRequest(BaseModel):
     ner_output: dict   # type: ignore[type-arg]  # JSON from /extract/ner
     keyphrase_output: dict | None = None   # type: ignore[type-arg]
     tfidf_output: dict | None = None       # type: ignore[type-arg]
+    compile_model: GeminiModel = "gemini-2.5-flash"
 
 
 @router.post("/pipeline/extract-llm", response_model=LLMExtractionResponse)
@@ -75,6 +91,7 @@ def pipeline_extract_llm(req: ExtractLLMRequest) -> LLMExtractionResponse:
             req.ner_output,
             req.keyphrase_output,
             req.tfidf_output,
+            model=req.compile_model,
         )
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
@@ -95,7 +112,7 @@ def pipeline_lint_scan(req: LintScanRequest) -> LintScanResponse:
     if not req.pages:
         return LintScanResponse(contradictions=[])
     try:
-        return lint_scan(req.pages)
+        return lint_scan(req.pages, model=req.compile_model)
     except (LLMRateLimitedError, CostCeilingError):
         # Lint is low-priority — skip rather than fail
         return LintScanResponse(contradictions=[])
@@ -136,6 +153,7 @@ class DraftPageRequest(BaseModel):
     existing_page_titles: list[str] = []
     extraction_dossier: str = ""
     existing_categories: list[str] = []
+    compile_model: GeminiModel = "gemini-2.5-flash"
 
 
 class DraftPageResponse(BaseModel):
@@ -162,6 +180,7 @@ def pipeline_draft_page(req: DraftPageRequest) -> DraftPageResponse:
             existing_page_titles=req.existing_page_titles if req.existing_page_titles else None,
             extraction_dossier=req.extraction_dossier,
             existing_categories=req.existing_categories,
+            model=req.compile_model,
         )
         return DraftPageResponse(markdown=markdown)
     except LLMRateLimitedError as e:
@@ -185,6 +204,7 @@ class CrossrefRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     pages: list[CrossrefPageInput]
+    compile_model: GeminiModel = "gemini-2.5-flash"
 
 
 @router.post("/pipeline/crossref", response_model=CrossrefResponse)
@@ -197,7 +217,7 @@ def pipeline_crossref(req: CrossrefRequest) -> CrossrefResponse:
     if not req.pages:
         return CrossrefResponse(updated_pages=[], contradictions_found=[])
     try:
-        return crossref_pages([p.model_dump() for p in req.pages])
+        return crossref_pages([p.model_dump() for p in req.pages], model=req.compile_model)
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
@@ -218,6 +238,7 @@ class GenerateSchemaRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     pages: list[PageSummaryInput]
+    compile_model: GeminiModel = "gemini-2.5-flash"
 
 
 class GenerateSchemaResponse(BaseModel):
@@ -237,6 +258,7 @@ class TriageRequest(BaseModel):
     source_claims: str
     existing_page_summary: str
     page_title: str
+    compile_model: GeminiModel = "gemini-2.5-flash"
 
 
 class TriageResponse(BaseModel):
@@ -260,6 +282,7 @@ def pipeline_triage(req: TriageRequest) -> TriageResponse:
             req.source_claims,
             req.existing_page_summary,
             req.page_title,
+            model=req.compile_model,
         )
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
@@ -278,7 +301,7 @@ def pipeline_generate_schema(req: GenerateSchemaRequest) -> GenerateSchemaRespon
     a deterministic, authoritative schema document.
     """
     try:
-        markdown = generate_schema([p.model_dump() for p in req.pages])
+        markdown = generate_schema([p.model_dump() for p in req.pages], model=req.compile_model)
         return GenerateSchemaResponse(markdown=markdown)
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
@@ -303,6 +326,7 @@ class DigestRequest(BaseModel):
     updated_page_titles: list[str]
     drafts_created: int
     drafts_approved: int
+    compile_model: GeminiModel = "gemini-2.5-flash"
 
 
 class DigestResponse(BaseModel):
@@ -323,7 +347,7 @@ def pipeline_digest_summary(req: DigestRequest) -> DigestResponse:
     HTTP 500 when the LLM call fails.
     """
     try:
-        summary = generate_digest(req)
+        summary = generate_digest(req, model=req.compile_model)
         return DigestResponse(summary=summary)
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e

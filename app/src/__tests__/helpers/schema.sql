@@ -112,7 +112,10 @@ CREATE TABLE compile_progress (
   started_at DATETIME,
   completed_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  source_count INTEGER DEFAULT 0
+  source_count INTEGER DEFAULT 0,
+  -- v20: per-session compile_model lock (nullable — legacy sessions fall back
+  -- to the current Settings value at each step).
+  compile_model TEXT
 );
 
 CREATE TABLE chat_messages (
@@ -215,4 +218,4 @@ CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id
 CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '19');
+INSERT INTO settings (key, value) VALUES ('schema_version', '20');

@@ -22,10 +22,16 @@ Implementation notes:
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
+
+GeminiModel = Literal[
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -413,6 +419,7 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 class DisambiguateRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     pairs: list[AmbiguousPair]
+    compile_model: GeminiModel = "gemini-2.5-flash"
 
 
 class DisambiguateResponseItem(BaseModel):
@@ -461,7 +468,7 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
     for batch_start in range(0, len(pair_dicts), 10):
         batch = pair_dicts[batch_start:batch_start + 10]
         try:
-            resp = disambiguate_entities(batch)
+            resp = disambiguate_entities(batch, model=req.compile_model)
         except LLMRateLimitedError as e:
             raise HTTPException(status_code=429, detail=str(e)) from e
         except CostCeilingError as e:
