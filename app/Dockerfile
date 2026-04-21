@@ -19,7 +19,7 @@
 # named 'sqlite3'" when using python3-minimal. Still no pip/venv/setuptools.
 
 # ---- Build stage ----
-FROM node:20-slim AS builder
+FROM node:25-slim AS builder
 
 # python3 + build tools needed by node-gyp to compile better-sqlite3 from
 # source when the prebuild-install binary download fails (e.g. --no-cache builds).
@@ -38,7 +38,7 @@ COPY app/ ./
 RUN npm run build
 
 # ---- Runtime stage ----
-FROM node:20-slim AS runtime
+FROM node:25-slim AS runtime
 
 # Install python3 (full stdlib, includes sqlite3) for migrate.py.
 # --no-install-recommends keeps pip/setuptools/venv out. migrate.py uses
