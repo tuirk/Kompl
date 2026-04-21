@@ -92,11 +92,13 @@ export default function WikiIndexPage() {
                   />
                 </div>
 
-                {/* 4-column card grid — 1px gap shows through as separator */}
+                {/* 4-column card grid — 1px gap shows through as separator.
+                    minmax(0, 1fr) overrides the default `auto` min so nowrap children
+                    (title/summary ellipsis) can truncate instead of blowing out the column. */}
                 <div
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(4, 1fr)',
+                    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
                     gap: 1,
                     background: 'rgba(var(--separator-rgb),0.1)',
                   }}
@@ -156,7 +158,7 @@ export default function WikiIndexPage() {
                           </span>
                         </div>
 
-                        {/* Row 2: title */}
+                        {/* Row 2: title — single-line truncate, matches dashboard Recently Processed */}
                         <h3
                           style={{
                             fontFamily: 'var(--font-heading)',
@@ -168,30 +170,32 @@ export default function WikiIndexPage() {
                             color: 'var(--fg)',
                             margin: 0,
                             paddingTop: 8,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
                           }}
                         >
                           {page.title}
                         </h3>
 
-                        {/* Row 3: summary (2-line clamp) */}
-                        {page.summary && (
-                          <p
-                            style={{
-                              fontFamily: 'var(--font-heading)',
-                              fontWeight: 400,
-                              fontSize: 14,
-                              lineHeight: '23px',
-                              color: 'var(--fg-muted)',
-                              margin: 0,
-                              display: '-webkit-box',
-                              WebkitLineClamp: 2,
-                              WebkitBoxOrient: 'vertical',
-                              overflow: 'hidden',
-                            }}
-                          >
-                            {page.summary}
-                          </p>
-                        )}
+                        {/* Row 3: summary — single-line truncate, always rendered so every
+                            card has identical 4-row content. Null summary (Gate 1 raw-content
+                            pages, missing frontmatter) still reserves the slot via nbsp. */}
+                        <p
+                          style={{
+                            fontFamily: 'var(--font-heading)',
+                            fontWeight: 400,
+                            fontSize: 14,
+                            lineHeight: '23px',
+                            color: 'var(--fg-muted)',
+                            margin: 0,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {page.summary ?? ' '}
+                        </p>
 
                         {/* Row 4: footer — last updated + source dots */}
                         <div

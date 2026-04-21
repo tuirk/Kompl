@@ -154,20 +154,12 @@ function ProgressPageInner() {
       setProgress(data);
 
       if (data.status === 'running' || data.status === 'queued') {
-        // Don't clobber a pointer to a DIFFERENT active session. The server
-        // now blocks concurrent finalizes via a 409, but a stale tab could
-        // still land here for a session that isn't the one currently
-        // tracked — leave the existing pointer alone in that case so the
-        // dashboard banner keeps following the session that's actually
-        // running.
-        let existing: { session_id?: string } | null = null;
-        try {
-          const raw = localStorage.getItem(LS_KEY);
-          if (raw) existing = JSON.parse(raw) as { session_id?: string };
-        } catch { /* malformed — overwrite below */ }
-        if (!existing?.session_id || existing.session_id === sessionId) {
-          localStorage.setItem(LS_KEY, JSON.stringify({ session_id: sessionId, source_count: sourceCount }));
-        }
+        // Overwrite unconditionally. The server enforces single-session via a
+        // 409 on /api/onboarding/finalize, so any pointer we'd clobber is
+        // either this same session or a stale completed one the user didn't
+        // dismiss — neither case should block the banner from following the
+        // session that's actually running.
+        localStorage.setItem(LS_KEY, JSON.stringify({ session_id: sessionId, source_count: sourceCount }));
       } else if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
         // Keep LS_KEY so the dashboard banner persists until the user dismisses it via the ✕.
         // Clear onboarding-session state only (these are step-wizard breadcrumbs, not the banner pointer).
