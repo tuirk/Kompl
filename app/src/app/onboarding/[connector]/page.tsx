@@ -22,6 +22,7 @@ import Link from 'next/link';
 
 import { useToast } from '../../../components/Toast';
 import { toUserMessage } from '@/lib/service-errors';
+import { isBlockedHost, URL_HOST_BLOCKED_MESSAGE } from '@/lib/url-blocklist';
 import TwitterConnector from './twitter-connector';
 import AppleNotesConnector from './apple-notes-connector';
 import {
@@ -48,9 +49,10 @@ const CONNECTOR_LABELS: Record<string, string> = {
 const FILE_ACCEPT =
   '.pdf,.docx,.pptx,.xlsx,.txt,.md,.html,.htm,.csv,.json,.xml,.jpg,.jpeg,.png,.mp3,.wav';
 
-function parseUrls(raw: string): { urls: string[]; invalid: string[] } {
+function parseUrls(raw: string): { urls: string[]; invalid: string[]; blocked: string[] } {
   const urls: string[] = [];
   const invalid: string[] = [];
+  const blocked: string[] = [];
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -60,12 +62,16 @@ function parseUrls(raw: string): { urls: string[]; invalid: string[] } {
         invalid.push(trimmed);
         continue;
       }
+      if (isBlockedHost(trimmed)) {
+        blocked.push(trimmed);
+        continue;
+      }
       urls.push(trimmed);
     } catch {
       invalid.push(trimmed);
     }
   }
-  return { urls, invalid };
+  return { urls, invalid, blocked };
 }
 
 interface UploadedFile {
@@ -128,8 +134,13 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: 
   const { urls } = parseUrls(urlInput);
 
   async function handleIngest() {
-    const { urls: validUrls, invalid } = parseUrls(urlInput);
+    const { urls: validUrls, invalid, blocked } = parseUrls(urlInput);
+    if (blocked.length > 0 && validUrls.length === 0) {
+      showToast(URL_HOST_BLOCKED_MESSAGE, 'error');
+      return;
+    }
     if (validUrls.length === 0) { showToast('Paste at least one http(s) URL.', 'error'); return; }
+    if (blocked.length > 0) showToast(`Skipping ${blocked.length} X/Twitter URL(s) \u2014 use the Twitter bookmark connector for those.`);
     if (invalid.length > 0) showToast(`Skipping ${invalid.length} invalid line(s).`);
     setSaving(true);
     try {

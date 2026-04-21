@@ -23,6 +23,7 @@ export const SERVICE_ERROR_MESSAGES = {
   file_upload_failed:   'File upload failed. Try again.',
   no_items_staged:      'No sources to compile. Add at least one, or uncheck fewer items.',
   stage_insert_failed:  'Could not save your selection. Try again.',
+  url_host_blocked:     'x.com, twitter.com, and t.co URLs can\u2019t be auto-scraped \u2014 X gates all content behind JavaScript. Import tweets via the Twitter bookmark connector, or paste the post body into the Text connector.',
 } as const;
 
 export type ServiceErrorCode = keyof typeof SERVICE_ERROR_MESSAGES;

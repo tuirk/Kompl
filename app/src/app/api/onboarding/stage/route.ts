@@ -34,6 +34,7 @@ import {
   insertCollectStaging,
   type StagingConnector,
 } from '../../../../lib/db';
+import { isBlockedHost, URL_HOST_BLOCKED_MESSAGE } from '../../../../lib/url-blocklist';
 
 const VALID_CONNECTORS: readonly StagingConnector[] = [
   'url',
@@ -99,6 +100,19 @@ export async function POST(request: Request) {
       if (typeof item.url !== 'string' || !item.url) {
         return NextResponse.json(
           { error: `connector='${connector}' requires item.url` },
+          { status: 422 }
+        );
+      }
+      // The URL connector is user-initiated ("paste a link"); saved-link is
+      // internal plumbing that may legitimately carry an x.com tweet_url in
+      // its metadata. Only block the user-initiated path.
+      if (connector === 'url' && isBlockedHost(item.url)) {
+        return NextResponse.json(
+          {
+            error: URL_HOST_BLOCKED_MESSAGE,
+            error_code: 'url_host_blocked',
+            blocked_url: item.url,
+          },
           { status: 422 }
         );
       }

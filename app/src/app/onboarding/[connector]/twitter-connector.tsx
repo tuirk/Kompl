@@ -380,31 +380,46 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
       });
       await stageItems(sessionId, 'text', tweetItems);
 
-      // Phase 1b: media-only tweets → saved-link rows (no source row, just a
-      // durable URL on the Saved Links wiki page).
+      // Phase 1b: tweets with no source-worthy body → saved-link rows. Covers
+      // X Articles (card preview present, body unreachable server-side) and
+      // media-only tweets (no text, no card, but a permalink to preserve).
       if (skippedTweets.length > 0) {
         setCollectingStep(
-          `Staging ${skippedTweets.length} media-only tweet link${skippedTweets.length !== 1 ? 's' : ''}…`
+          `Staging ${skippedTweets.length} saved link${skippedTweets.length !== 1 ? 's' : ''}…`
         );
         await stageItems(
           sessionId,
           'saved-link',
-          skippedTweets.map((t) => ({
-            url: t.tweet_url!,
-            title_hint: t.author ? `Tweet by ${t.author}` : 'Saved tweet',
-            metadata_hint: {
-              tweet_url: t.tweet_url!,
-              ...(t.author ? { author: t.author } : {}),
-              ...(t.date ? { date_saved: t.date } : {}),
-            },
-            display: {
-              kind: 'saved-link',
-              source_origin: 'twitter-media',
-              tweet_url: t.tweet_url,
-              ...(t.author ? { author: t.author } : {}),
-              ...(t.date ? { date_saved: t.date } : {}),
-            },
-          })),
+          skippedTweets.map((t) => {
+            const isArticle = Boolean(t.card_title);
+            const titleHint = t.card_title
+              ? `Article: ${t.card_title}`
+              : t.author ? `Tweet by ${t.author}` : 'Saved tweet';
+            return {
+              url: t.tweet_url!,
+              title_hint: titleHint,
+              metadata_hint: {
+                tweet_url: t.tweet_url!,
+                ...(t.author ? { author: t.author } : {}),
+                ...(t.date ? { date_saved: t.date } : {}),
+                // SavedLinksInteractive reads metadata.title / metadata.description
+                // as fallback render targets — populate from the card so the
+                // Saved Links page shows the article's real title + 1-para
+                // preview instead of a generic "Tweet by @handle" row.
+                ...(t.card_title ? { title: t.card_title } : {}),
+                ...(t.card_description ? { description: t.card_description } : {}),
+              },
+              display: {
+                kind: 'saved-link',
+                source_origin: isArticle ? 'twitter-article' : 'twitter-media',
+                tweet_url: t.tweet_url,
+                ...(t.author ? { author: t.author } : {}),
+                ...(t.date ? { date_saved: t.date } : {}),
+                ...(t.card_title ? { card_title: t.card_title } : {}),
+                ...(t.card_description ? { card_description: t.card_description } : {}),
+              },
+            };
+          }),
         );
       }
 

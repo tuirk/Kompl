@@ -12,6 +12,15 @@ export interface ParsedTweet {
   date: string | null;         // ISO date string of when tweet was posted, null if unknown
   urls: string[];              // non-twitter article links extracted from tweet
   tweet_url: string | null;    // permanent link to the tweet itself
+  // X has two distinct long-form formats. Note Tweets (long regular tweets, ≤25K
+  // chars) live at note_tweet.note_tweet_results.result.text and are promoted
+  // into `text` above when present — so consumers never see the 280-char
+  // truncation that legacy.full_text carries. X Articles are a different
+  // entity: the body lives behind an authenticated GraphQL call no exporter
+  // makes, but the bookmark response carries a card preview (title +
+  // description) which surfaces here for display-only use.
+  card_title?: string;
+  card_description?: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -53,40 +62,99 @@ function normaliseAuthor(raw: string | null | undefined): string | null {
   return s.startsWith('@') ? s : `@${s}`;
 }
 
+// ── Long-form extractors ─────────────────────────────────────────────────────
+// These two helpers read the "extra" body-carrying fields that exporters
+// preserve from X's internal GraphQL but that earlier versions of this parser
+// ignored. `noteTweetText` recovers the full body of a Note Tweet (long regular
+// tweet) — legacy.full_text truncates these at 280 + t.co. `cardPreview` reads
+// the link-preview card that accompanies any tweet linking to an Article, a
+// YouTube video, etc.
+
+function noteTweetText(obj: unknown): string | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const nt = (obj as Record<string, unknown>).note_tweet;
+  if (!nt || typeof nt !== 'object') return null;
+  const results = (nt as Record<string, unknown>).note_tweet_results;
+  if (!results || typeof results !== 'object') return null;
+  const result = (results as Record<string, unknown>).result;
+  if (!result || typeof result !== 'object') return null;
+  const text = (result as Record<string, unknown>).text;
+  return typeof text === 'string' && text.length > 0 ? text : null;
+}
+
+interface CardPreview {
+  title?: string;
+  description?: string;
+}
+
+function cardPreview(obj: unknown): CardPreview | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const card = (obj as Record<string, unknown>).card;
+  if (!card || typeof card !== 'object') return null;
+  const legacy = (card as Record<string, unknown>).legacy;
+  if (!legacy || typeof legacy !== 'object') return null;
+  const binding = (legacy as Record<string, unknown>).binding_values;
+  if (!Array.isArray(binding)) return null;
+  let title: string | undefined;
+  let description: string | undefined;
+  for (const entry of binding as Array<Record<string, unknown>>) {
+    const key = entry?.key;
+    const value = entry?.value as Record<string, unknown> | undefined;
+    const stringValue = value?.string_value;
+    if (typeof stringValue !== 'string') continue;
+    if (key === 'title') title = stringValue;
+    else if (key === 'description') description = stringValue;
+  }
+  if (!title && !description) return null;
+  return { title, description };
+}
+
 // ── Shape parsers ─────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parseSimple(items: any[]): ParsedTweet[] {
-  return items.map(item => {
-    const text: string = item.text ?? item.content ?? '';
-    return {
+  return items.flatMap(item => {
+    const short: string = item.text ?? item.content ?? '';
+    const long = noteTweetText(item);
+    const text = long ?? short;
+    const card = cardPreview(item);
+    if (!text.trim() && !card) return [];
+    return [{
       text,
       author: normaliseAuthor(item.author ?? item.user ?? item.username ?? item.screen_name),
       date: toIso(item.created_at ?? item.date ?? item.timestamp ?? item.time),
       urls: extractUrls(text),
       tweet_url: item.url ?? item.tweet_url ?? item.link ?? null,
-    };
-  }).filter(t => t.text.trim());
+      ...(card?.title ? { card_title: card.title } : {}),
+      ...(card?.description ? { card_description: card.description } : {}),
+    }];
+  });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parseSiftly(items: any[]): ParsedTweet[] {
-  return items.map(item => {
-    const text: string = item.text ?? '';
+  return items.flatMap(item => {
+    const short: string = item.text ?? '';
+    const long = noteTweetText(item);
+    const text = long ?? short;
+    const card = cardPreview(item);
+    if (!text.trim() && !card) return [];
     const author = normaliseAuthor(item.author ?? item.username);
     const urlsFromField: string[] = Array.isArray(item.urls)
       ? item.urls.filter((u: string) => !isTwitterUrl(u))
       : [];
     const urlsFromText = extractUrls(text);
     const allUrls = [...new Set([...urlsFromField, ...urlsFromText])];
-    return {
+    return [{
       text,
       author,
       date: toIso(item.created_at ?? item.date),
       urls: allUrls,
       tweet_url: item.tweet_url ?? item.url ?? null,
-    };
-  }).filter(t => t.text.trim());
+      ...(card?.title ? { card_title: card.title } : {}),
+      ...(card?.description ? { card_description: card.description } : {}),
+    }];
+  });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -101,8 +169,12 @@ function parseApiV2(data: any): ParsedTweet[] {
     }
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return tweets.map((item: any) => {
-    const text: string = item.text ?? '';
+  return tweets.flatMap((item: any) => {
+    const short: string = item.text ?? '';
+    const long = noteTweetText(item);
+    const text = long ?? short;
+    const card = cardPreview(item);
+    if (!text.trim() && !card) return [];
     // API v2 expands URLs in entities
     const expandedUrls: string[] = (item.entities?.urls ?? [])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -112,21 +184,27 @@ function parseApiV2(data: any): ParsedTweet[] {
     const tweetUrl = authorId && item.id
       ? `https://twitter.com/i/web/status/${item.id}`
       : null;
-    return {
+    return [{
       text,
       author: usersById[authorId] ?? null,
       date: toIso(item.created_at),
       urls: [...new Set([...expandedUrls, ...extractUrls(text)])],
       tweet_url: tweetUrl,
-    };
-  }).filter((t: ParsedTweet) => t.text.trim());
+      ...(card?.title ? { card_title: card.title } : {}),
+      ...(card?.description ? { card_description: card.description } : {}),
+    }];
+  });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parseLegacy(items: any[]): ParsedTweet[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return items.map(item => {
-    const text: string = item.full_text ?? item.text ?? '';
+  return items.flatMap(item => {
+    const short: string = item.full_text ?? item.text ?? '';
+    const long = noteTweetText(item);
+    const text = long ?? short;
+    const card = cardPreview(item);
+    if (!text.trim() && !card) return [];
     const screenName = item.user?.screen_name ?? item.user?.name ?? null;
     const tweetId = item.id_str ?? item.id;
     const tweetUrl = screenName && tweetId
@@ -136,30 +214,38 @@ function parseLegacy(items: any[]): ParsedTweet[] {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .map((e: any) => e.expanded_url ?? e.url)
       .filter((u: string) => !isTwitterUrl(u));
-    return {
+    return [{
       text,
       author: normaliseAuthor(screenName),
       date: toIso(item.created_at),
       urls: [...new Set([...expandedUrls, ...extractUrls(text)])],
       tweet_url: tweetUrl,
-    };
-  }).filter(t => t.text.trim());
+      ...(card?.title ? { card_title: card.title } : {}),
+      ...(card?.description ? { card_description: card.description } : {}),
+    }];
+  });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parseWebExporter(items: any[]): ParsedTweet[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return items.map(item => {
+  return items.flatMap(item => {
     const tweet = item.tweet ?? item;
-    const text: string = tweet.full_text ?? tweet.text ?? '';
-    return {
+    const short: string = tweet.full_text ?? tweet.text ?? '';
+    const long = noteTweetText(tweet);
+    const text = long ?? short;
+    const card = cardPreview(tweet);
+    if (!text.trim() && !card) return [];
+    return [{
       text,
       author: normaliseAuthor(tweet.user?.screen_name ?? tweet.author?.screen_name),
       date: toIso(tweet.created_at),
       urls: extractUrls(text),
       tweet_url: item.tweet_url ?? null,
-    };
-  }).filter(t => t.text.trim());
+      ...(card?.title ? { card_title: card.title } : {}),
+      ...(card?.description ? { card_description: card.description } : {}),
+    }];
+  });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -173,13 +259,18 @@ function parseGraphQL(data: any): ParsedTweet[] {
   }
   const result: ParsedTweet[] = [];
   for (const entry of entries) {
+    // Most long-form fields live directly on tweetResult (note_tweet, card);
+    // legacy holds the short text + ids.
     const tweetResult =
       entry?.content?.itemContent?.tweet_results?.result;
     if (!tweetResult) continue;
     const core = tweetResult.core?.user_results?.result?.legacy ?? {};
     const legacy = tweetResult.legacy ?? tweetResult.tweet?.legacy ?? {};
-    const text: string = legacy.full_text ?? legacy.text ?? '';
-    if (!text.trim()) continue;
+    const long = noteTweetText(tweetResult) ?? noteTweetText(tweetResult.tweet);
+    const short: string = legacy.full_text ?? legacy.text ?? '';
+    const text = long ?? short;
+    const card = cardPreview(tweetResult) ?? cardPreview(tweetResult.tweet);
+    if (!text.trim() && !card) continue;
     const screenName = core.screen_name ?? null;
     const tweetId = legacy.id_str ?? tweetResult.rest_id;
     result.push({
@@ -190,6 +281,8 @@ function parseGraphQL(data: any): ParsedTweet[] {
       tweet_url: screenName && tweetId
         ? `https://twitter.com/${screenName}/status/${tweetId}`
         : null,
+      ...(card?.title ? { card_title: card.title } : {}),
+      ...(card?.description ? { card_description: card.description } : {}),
     });
   }
   return result;
@@ -278,27 +371,49 @@ export function detectAndParse(raw: string): ParsedTweet[] {
 export function formatTweetMarkdown(t: ParsedTweet): string {
   const parts: string[] = [];
   if (t.author) parts.push(`**${t.author}:**\n`);
-  parts.push(t.text);
+  if (t.text) parts.push(t.text);
+  if (t.card_title) {
+    const desc = t.card_description ? ` — ${t.card_description}` : '';
+    parts.push(`\nLinked article: **${t.card_title}**${desc}`);
+  }
   if (t.urls.length > 0) parts.push(`\nLinked: ${t.urls.join(', ')}`);
   if (t.tweet_url) parts.push(`\n[Original tweet](${t.tweet_url})`);
   return parts.join('\n');
 }
 
 /**
- * Like detectAndParse but also returns tweets dropped due to empty text.
- * Skipped items have a tweet_url worth preserving on Saved Links.
- * Works for flat-array formats (Siftly, Simple, Legacy, WebExporter).
- * GraphQL/API v2 don't surface tweet_url at item level — skipped is [] for those.
+ * Like detectAndParse but also returns tweets without body text.
+ * Skipped items represent two cases:
+ *   (1) X Articles — the tweet is a stub (empty legacy.full_text, no note_tweet)
+ *       but the bookmark carries a card preview with article title + description.
+ *       The parser surfaces these with card_title/card_description set.
+ *   (2) Media-only tweets — no text, no card, but a tweet_url worth preserving
+ *       on Saved Links so the user can reopen them later.
+ * Both go to the saved-link connector rather than creating a source row.
  */
 export function detectAndParseAll(
   raw: string
 ): { tweets: ParsedTweet[]; skipped: ParsedTweet[] } {
-  const tweets = detectAndParse(raw);
+  const allParsed = detectAndParse(raw);
 
+  const tweets: ParsedTweet[] = [];
+  const skipped: ParsedTweet[] = [];
+  for (const t of allParsed) {
+    if (t.text.trim()) {
+      tweets.push(t);
+    } else if (t.tweet_url) {
+      // Article preview (card) or anything else with no body but a permalink.
+      skipped.push(t);
+    }
+  }
+
+  // Additionally recover media-only tweets that the parsers dropped because
+  // they had neither body text nor a card. Only applies to flat-array formats
+  // (Simple, Siftly, Legacy, WebExporter) — GraphQL tweet_urls aren't on the
+  // raw item.
   let data: unknown;
-  try { data = JSON.parse(raw); } catch { return { tweets, skipped: [] }; }
+  try { data = JSON.parse(raw); } catch { return { tweets, skipped }; }
 
-  // Unwrap known envelope keys (mirrors detectAndParse)
   if (data && typeof data === 'object' && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>;
     for (const key of ['bookmarks', 'tweets', 'items', 'results', 'records']) {
@@ -306,15 +421,23 @@ export function detectAndParseAll(
     }
   }
 
-  if (!Array.isArray(data)) return { tweets, skipped: [] };
+  if (!Array.isArray(data)) return { tweets, skipped };
 
-  const skipped: ParsedTweet[] = (data as Record<string, unknown>[])
-    .filter(item => {
-      const text = String(item.text ?? item.full_text ?? '').trim();
-      const url  = item.tweet_url ?? item.url ?? null;
-      return !text && typeof url === 'string' && url.length > 0;
-    })
-    .map(item => ({
+  const alreadySeen = new Set(
+    [...tweets, ...skipped].map((t) => t.tweet_url).filter(Boolean)
+  );
+
+  for (const item of data as Record<string, unknown>[]) {
+    const text = String(item.text ?? item.full_text ?? '').trim();
+    const noteLong = noteTweetText(item);
+    const card = cardPreview(item);
+    const url = item.tweet_url ?? item.url ?? null;
+    // Only keep rows that carry no body and no card — card-bearing rows are
+    // already in `skipped` via the parser path above.
+    if (text || noteLong || card) continue;
+    if (typeof url !== 'string' || !url) continue;
+    if (alreadySeen.has(url)) continue;
+    skipped.push({
       text: '',
       author: normaliseAuthor(
         String(item.author ?? item.username ??
@@ -322,8 +445,9 @@ export function detectAndParseAll(
       ),
       date: toIso((item.created_at ?? item.date ?? null) as string | number | null),
       urls: [],
-      tweet_url: String(item.tweet_url ?? item.url),
-    }));
+      tweet_url: url,
+    });
+  }
 
   return { tweets, skipped };
 }
