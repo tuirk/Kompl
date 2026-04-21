@@ -362,6 +362,11 @@ export async function POST(request: Request) {
   for (const entity of canonicalEntities) {
     const planId = entityPlansByCanonical.get(entity.canonical.toLowerCase());
     if (!planId) continue;
+    const t = entity.type?.toUpperCase();
+    // Skip unmapped/OTHER types — they would flow through entityTypeToCategory's
+    // 'General' fallback and produce a catch-all overview page alongside the
+    // fine-grained ones, defeating the whole point of the category grouping.
+    if (!t || t === 'OTHER') continue;
     const cat = entityTypeToCategory(entity.type);
     if (!categoryMap.has(cat)) categoryMap.set(cat, new Set());
     categoryMap.get(cat)!.add(planId);

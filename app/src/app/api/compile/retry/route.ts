@@ -22,16 +22,30 @@ export async function POST(request: Request) {
   const progress = getCompileProgress(session_id);
   if (!progress) return NextResponse.json({ error: 'no_progress_record' }, { status: 404 });
 
-  // Global concurrency gate: block retry if a DIFFERENT session is active.
+  // Global concurrency gate.
   const active = getRunningCompileSession();
-  if (active && active.session_id !== session_id) {
+  if (active) {
+    if (active.session_id !== session_id) {
+      return NextResponse.json(
+        {
+          error_code: 'session_in_progress',
+          error: 'Another compile session is already running.',
+          active_session_id: active.session_id,
+        },
+        { status: 409 }
+      );
+    }
+    // Same-session replay (double-click on Retry, background re-fire).
+    // Skip resetForRetry + n8n trigger — they'd clobber the running
+    // pipeline's step state and fire n8n twice (no native dedupe).
+    //
+    // Known edge: if the first trigger 503'd and the row is stuck
+    // 'queued' with started_at=NULL, this replay also returns
+    // idempotent. Recovery: reconcileStuckCompileSessions (/api/health
+    // sweep) at 5 min, or manual DELETE /api/onboarding/session.
     return NextResponse.json(
-      {
-        error_code: 'session_in_progress',
-        error: 'Another compile session is already running.',
-        active_session_id: active.session_id,
-      },
-      { status: 409 }
+      { session_id, status: 'retrying', already_running: true },
+      { status: 200 }
     );
   }
 

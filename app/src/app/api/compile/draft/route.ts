@@ -37,6 +37,7 @@ const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000'
 const DRAFT_CONCURRENCY = 5;
 
 // Same mapping as plan/route.ts — kept local to avoid a shared-lib extraction for 10 lines.
+// Default is 'Uncategorized' (not 'General') — 'General' as a fallback seeds a universal-matching label into existing_categories and the LLM reuses it for every subsequent draft.
 function entityTypeToCategory(entityType: string): string {
   const t = entityType.toUpperCase();
   if (t === 'PERSON') return 'People';
@@ -45,7 +46,7 @@ function entityTypeToCategory(entityType: string): string {
   if (t === 'LOCATION') return 'Locations';
   if (t === 'EVENT') return 'Events';
   if (t === 'CONCEPT') return 'Concepts';
-  return 'General';
+  return 'Uncategorized';
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -126,9 +127,10 @@ async function pLimit<T>(
 
 // ── Dossier builder ───────────────────────────────────────────────────────────
 
-function buildDossier(
-  plan: { page_type: string; title: string; source_ids: string },
-  extractionsBySource: Map<string, Record<string, unknown>>
+export function buildDossier(
+  plan: { page_type: string; title: string; source_ids: string; related_plan_ids: string | null },
+  extractionsBySource: Map<string, Record<string, unknown>>,
+  planTitleById: Map<string, string>
 ): string {
   if (!['entity', 'concept', 'comparison'].includes(plan.page_type)) return '';
 
@@ -214,16 +216,35 @@ function buildDossier(
   }
 
   if (plan.page_type === 'comparison') {
+    // Resolve the plan's two subjects from related_plan_ids (ground truth from
+    // planner at plan/route.ts:340-352). Fall through to type-only filter if
+    // related_plan_ids is missing/malformed or references a plan that isn't in
+    // the title map (entity-threshold filtered, etc.) — never throw.
+    let pair: Set<string> | null = null;
+    try {
+      const ids = JSON.parse(plan.related_plan_ids ?? '[]') as string[];
+      if (Array.isArray(ids) && ids.length === 2) {
+        const a = planTitleById.get(ids[0])?.toLowerCase();
+        const b = planTitleById.get(ids[1])?.toLowerCase();
+        if (a && b) pair = new Set([a, b]);
+      }
+    } catch {
+      // malformed related_plan_ids JSON — fall through to type-only filter
+    }
+
     for (const sid of sourceIds) {
       const ext = extractionsBySource.get(sid);
       if (!ext) continue;
 
-      const rels = ((ext.relationships as Array<Record<string, unknown>>) ?? []).filter(
-        (r) => r.type === 'competes_with' || r.type === 'contradicts'
-      );
+      const rels = ((ext.relationships as Array<Record<string, unknown>>) ?? []).filter((r) => {
+        if (r.type !== 'competes_with' && r.type !== 'contradicts') return false;
+        if (!pair) return true;
+        if (typeof r.from_entity !== 'string' || typeof r.to !== 'string') return false;
+        return pair.has(r.from_entity.toLowerCase()) && pair.has(r.to.toLowerCase());
+      });
       for (const rel of rels) {
-        const lines = [`Comparison: ${rel.source} vs ${rel.target} (${rel.type})`];
-        if (rel.context) lines.push(`  Context: ${rel.context}`);
+        const lines = [`Comparison: ${rel.from_entity} vs ${rel.to} (${rel.type})`];
+        if (rel.description) lines.push(`  Context: ${rel.description}`);
         parts.push(lines.join('\n'));
       }
     }
@@ -325,11 +346,12 @@ export async function POST(request: Request) {
   const allKnownTitles = [...sessionTitles, ...sortedExistingTitles].slice(0, 200);
 
   // Existing wiki categories — passed to Gemini so it reuses them instead of inventing new ones.
-  // Filter out 'Uncategorized' (the null-category fallback) so the LLM isn't told to use it literally.
+  // Exclude 'Uncategorized' (the null-category fallback) AND 'General' (a universal-matching sink
+  // that the LLM reuses trivially once offered, collapsing every page into one category).
   // baseCategories = categories already committed to the DB from prior sessions.
   const baseCategories = getCategoryGroups()
     .map((g) => g.category)
-    .filter((c): c is string => c !== null && c !== 'Uncategorized');
+    .filter((c): c is string => c !== null && c !== 'Uncategorized' && c !== 'General');
 
   // sessionCategories accumulates categories invented during this session's draft loop.
   // Source-summary pages are drafted first; their invented categories are harvested
@@ -365,6 +387,14 @@ export async function POST(request: Request) {
       }
       return { title: dp.title, type: dp.page_type, summary };
     });
+
+    // plan_id → title map for the comparison dossier filter. Comparison plans
+    // need the two related entity plans' titles to scope relationships to the
+    // specific pair. Entity plans may be either already-drafted (prior layer)
+    // or still in `plans` (untouched) — merge both.
+    const planTitleById = new Map<string, string>();
+    for (const p of plans) planTitleById.set(p.plan_id, p.title);
+    for (const dp of draftedPlans) planTitleById.set(dp.plan_id, dp.title);
 
     const tasks = layerPlans.map((plan) => async () => {
       const sourceIds: string[] = JSON.parse(plan.source_ids);
@@ -419,7 +449,7 @@ export async function POST(request: Request) {
             });
       });
 
-      const dossier = buildDossier(plan, extractionsBySource);
+      const dossier = buildDossier(plan, extractionsBySource, planTitleById);
 
       const markdown = await callDraftPage(
         plan.page_type,
@@ -452,7 +482,7 @@ export async function POST(request: Request) {
         const catMatch = r.markdown.match(/^category:\s*["']?(.+?)["']?\s*$/m);
         if (catMatch?.[1]) {
           const newCat = catMatch[1].trim();
-          if (newCat && newCat !== 'Uncategorized') sessionCategorySet.add(newCat);
+          if (newCat && newCat !== 'Uncategorized' && newCat !== 'General') sessionCategorySet.add(newCat);
         }
       }
     }

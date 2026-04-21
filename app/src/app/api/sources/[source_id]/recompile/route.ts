@@ -57,18 +57,38 @@ export async function POST(
     );
   }
 
-  // Global concurrency gate: block recompile if a DIFFERENT session is
-  // active. Must precede createCompileProgress (below) — otherwise the
-  // insert would race the active session.
+  // Global concurrency gate. Must precede createCompileProgress (below)
+  // — otherwise the insert would clobber the active session's step state.
+  //
+  // Note: resetSourceForRecompile + logActivity above ran before this
+  // guard deliberately. For same-session replay (two recompile clicks
+  // on the same source, OR recompile source-B while source-A's session
+  // is mid-pipeline), flipping source_B → pending ensures the running
+  // pipeline picks it up — which is the desired behavior.
   const active = getRunningCompileSession();
-  if (active && active.session_id !== sessionId) {
+  if (active) {
+    if (active.session_id !== sessionId) {
+      return NextResponse.json(
+        {
+          error_code: 'session_in_progress',
+          error: 'Another compile session is already running.',
+          active_session_id: active.session_id,
+        },
+        { status: 409 }
+      );
+    }
+    // Same-session replay. Skip createCompileProgress + n8n trigger.
+    // Known edge: after a 503 on first trigger, this replay stays
+    // idempotent until the reconciler (/api/health, 5 min) clears the
+    // stuck 'queued' row. Manual escape: DELETE /api/onboarding/session.
     return NextResponse.json(
       {
-        error_code: 'session_in_progress',
-        error: 'Another compile session is already running.',
-        active_session_id: active.session_id,
+        source_id,
+        session_id: sessionId,
+        status: 'queued',
+        already_running: true,
       },
-      { status: 409 }
+      { status: 200 }
     );
   }
 

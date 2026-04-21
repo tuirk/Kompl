@@ -150,7 +150,7 @@ export async function recompilePage(
   // ── Phase 1: call Gemini via NLP service ─────────────────────────────────
   const existingCategories = getCategoryGroups()
     .map((g) => g.category)
-    .filter((c) => c !== 'Uncategorized');
+    .filter((c): c is string => c !== null && c !== 'Uncategorized' && c !== 'General');
   const newMarkdown = await callDraftPage(page.page_type, page.title, sourceContents, existingCategories, getCompileModel());
 
   // ── Phase 2: sync transaction — update pages + setPendingContent + FTS5 ──

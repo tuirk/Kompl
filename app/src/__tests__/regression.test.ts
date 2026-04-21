@@ -233,23 +233,51 @@ describe('summary frontmatter extraction (commit/route.ts:227)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Bug 3 — Null category filter in draft/route.ts baseCategories
+// Bug 3 — existing_categories filter in draft/route.ts and recompile.ts
 // ---------------------------------------------------------------------------
 
 /**
- * The bug: `categories.filter((c) => c !== 'Uncategorized')` passes null values
- * because `null !== 'Uncategorized'` is true. Those nulls then flow to Python
- * where Pydantic serialises them as the string "None", giving the LLM a fake
- * category option and causing new pages to be filed under "Uncategorized".
+ * Two layered bugs, one regression shape:
  *
- * Fix: `categories.filter((c): c is string => c !== null && c !== 'Uncategorized')`
+ * (a) Original: `.filter((c) => c !== 'Uncategorized')` passes null values
+ *     because `null !== 'Uncategorized'` is true. Nulls then flowed to Python
+ *     where Pydantic serialised them as "None", giving the LLM a fake
+ *     category option.
+ *
+ * (b) Follow-up: the raw-passthrough fallback `entityTypeToCategory` returned
+ *     'General' for OTHER / unmapped types, seeding 'General' into
+ *     existing_categories. Because 'General' is a universal-matching label,
+ *     the LLM reused it for every subsequent draft and collapsed ~37/44 pages
+ *     into one category. An empirical counter-example — a 21-page wiki under
+ *     the same code had zero 'General' pages — localized the bug to the seed,
+ *     not the LLM prompt.
+ *
+ * Fix: default to 'Uncategorized' in entityTypeToCategory, and extend every
+ * filter site (draft/route.ts:352, :483, recompile.ts:153) to exclude both
+ * `null` and the literal string 'General'.
  */
 
 function filterBaseCategories(categories: (string | null)[]): string[] {
-  return categories.filter((c): c is string => c !== null && c !== 'Uncategorized');
+  return categories.filter(
+    (c): c is string => c !== null && c !== 'Uncategorized' && c !== 'General'
+  );
 }
 
-describe('baseCategories null filter', () => {
+// Inline copy of draft/route.ts:40-49 / plan/route.ts:105-114. Kept inline so
+// the route modules' private helper stays private — see the note at
+// draft/route.ts:39 ("kept local to avoid a shared-lib extraction for 10 lines").
+function entityTypeToCategory(entityType: string): string {
+  const t = entityType.toUpperCase();
+  if (t === 'PERSON') return 'People';
+  if (t === 'ORG') return 'Organizations';
+  if (t === 'PRODUCT') return 'Products';
+  if (t === 'LOCATION') return 'Locations';
+  if (t === 'EVENT') return 'Events';
+  if (t === 'CONCEPT') return 'Concepts';
+  return 'Uncategorized';
+}
+
+describe('existing_categories filter (null + Uncategorized + General)', () => {
   it('excludes null values', () => {
     const input: (string | null)[] = ['AI', null, 'Research', null];
     expect(filterBaseCategories(input)).toEqual(['AI', 'Research']);
@@ -260,24 +288,109 @@ describe('baseCategories null filter', () => {
     expect(filterBaseCategories(input)).toEqual(['AI', 'Research']);
   });
 
-  it('excludes both null and Uncategorized together', () => {
-    const input: (string | null)[] = [null, 'Uncategorized', null, 'Tools'];
+  it('excludes the General sink so the LLM cannot reuse it trivially', () => {
+    const input: (string | null)[] = ['Programming Languages', 'General', 'Countries'];
+    expect(filterBaseCategories(input)).toEqual(['Programming Languages', 'Countries']);
+  });
+
+  it('excludes null, Uncategorized, and General together', () => {
+    const input: (string | null)[] = [null, 'General', 'Uncategorized', null, 'Tools'];
     expect(filterBaseCategories(input)).toEqual(['Tools']);
   });
 
-  it('returns empty array when all values are null or Uncategorized', () => {
-    const input: (string | null)[] = [null, null, 'Uncategorized'];
+  it('returns empty when all values are null, Uncategorized, or General', () => {
+    const input: (string | null)[] = [null, 'General', 'Uncategorized'];
     expect(filterBaseCategories(input)).toEqual([]);
   });
 
-  it('returns all values when none are null or Uncategorized', () => {
+  it('returns all values when none are null, Uncategorized, or General', () => {
     const input: (string | null)[] = ['AI', 'Research', 'Tools'];
     expect(filterBaseCategories(input)).toEqual(['AI', 'Research', 'Tools']);
   });
 
   it('preserves order', () => {
-    const input: (string | null)[] = ['Zzz', null, 'Aaa', 'Uncategorized', 'Mmm'];
+    const input: (string | null)[] = ['Zzz', null, 'Aaa', 'General', 'Uncategorized', 'Mmm'];
     expect(filterBaseCategories(input)).toEqual(['Zzz', 'Aaa', 'Mmm']);
+  });
+});
+
+describe('entityTypeToCategory raw-passthrough fallback', () => {
+  it('maps the six known types to their wiki categories', () => {
+    expect(entityTypeToCategory('PERSON')).toBe('People');
+    expect(entityTypeToCategory('ORG')).toBe('Organizations');
+    expect(entityTypeToCategory('PRODUCT')).toBe('Products');
+    expect(entityTypeToCategory('LOCATION')).toBe('Locations');
+    expect(entityTypeToCategory('EVENT')).toBe('Events');
+    expect(entityTypeToCategory('CONCEPT')).toBe('Concepts');
+  });
+
+  it('maps OTHER to Uncategorized, not General', () => {
+    // OTHER is emitted by the LLM extraction schema for entities that do not
+    // fit the six mapped types. Returning 'General' here was the seed that
+    // poisoned existing_categories and collapsed the wiki into one bucket.
+    expect(entityTypeToCategory('OTHER')).toBe('Uncategorized');
+  });
+
+  it('maps unknown / unmapped spaCy types to Uncategorized', () => {
+    // spaCy NER can emit NORP, GPE, FAC, DATE, TIME, MONEY, PERCENT, QUANTITY,
+    // ORDINAL, CARDINAL, LANGUAGE, LAW, WORK_OF_ART, etc. None of these must
+    // fall through to 'General'.
+    for (const t of ['NORP', 'GPE', 'DATE', 'WORK_OF_ART', 'LANGUAGE', 'MISC', '']) {
+      expect(entityTypeToCategory(t)).toBe('Uncategorized');
+    }
+  });
+
+  it('is case-insensitive', () => {
+    expect(entityTypeToCategory('person')).toBe('People');
+    expect(entityTypeToCategory('Other')).toBe('Uncategorized');
+  });
+});
+
+describe('overview-grouping guard (plan/route.ts Rule 5)', () => {
+  // Replica of the loop at plan/route.ts:362-372 after the fix.
+  function buildOverviewGroups(
+    entities: Array<{ canonical: string; type: string }>,
+    plansByCanonical: Map<string, string>,
+  ): Map<string, Set<string>> {
+    const categoryMap = new Map<string, Set<string>>();
+    for (const entity of entities) {
+      const planId = plansByCanonical.get(entity.canonical.toLowerCase());
+      if (!planId) continue;
+      const t = entity.type?.toUpperCase();
+      if (!t || t === 'OTHER') continue;
+      const cat = entityTypeToCategory(entity.type);
+      if (!categoryMap.has(cat)) categoryMap.set(cat, new Set());
+      categoryMap.get(cat)!.add(planId);
+    }
+    return categoryMap;
+  }
+
+  it('skips OTHER-typed entities so no General/Uncategorized overview is created', () => {
+    const plans = new Map([
+      ['x', 'plan-x'],
+      ['y', 'plan-y'],
+      ['z', 'plan-z'],
+    ]);
+    const groups = buildOverviewGroups(
+      [
+        { canonical: 'x', type: 'OTHER' },
+        { canonical: 'y', type: 'ORG' },
+        { canonical: 'z', type: 'ORG' },
+      ],
+      plans,
+    );
+    expect(groups.has('General')).toBe(false);
+    expect(groups.has('Uncategorized')).toBe(false);
+    expect(groups.get('Organizations')).toEqual(new Set(['plan-y', 'plan-z']));
+  });
+
+  it('skips entities with missing type', () => {
+    const plans = new Map([['x', 'plan-x']]);
+    const groups = buildOverviewGroups(
+      [{ canonical: 'x', type: '' }],
+      plans,
+    );
+    expect(groups.size).toBe(0);
   });
 });
 

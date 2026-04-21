@@ -1393,6 +1393,18 @@ export function markStaleSessionsFailed(olderThanMinutes: number): number {
  *
  * Queued rows with started_at=NULL (created by createCompileProgress, not
  * yet picked up by n8n) are included — they are fresh-by-definition.
+ *
+ * Atomicity: callers follow `check getRunningCompileSession() →
+ * createCompileProgress()` without a wrapping transaction. This is deliberate
+ * and correct — Node.js is single-threaded and better-sqlite3 is synchronous,
+ * so the check-to-insert window contains no `await` and cannot be interleaved
+ * by another request for a DIFFERENT session_id. Do NOT wrap this pattern in
+ * a transaction to "fix" the perceived TOCTOU — it isn't a TOCTOU, and adding
+ * a write-lock would serialize unrelated request handling.
+ *
+ * Same-session double-submit (two POSTs with identical session_id) is NOT
+ * prevented here — the guard deliberately passes through to support
+ * legitimate retries. Caller sites own idempotency for that case.
  */
 export function getRunningCompileSession(): {
   session_id: string;

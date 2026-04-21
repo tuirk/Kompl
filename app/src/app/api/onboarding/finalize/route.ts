@@ -66,16 +66,32 @@ export async function POST(request: Request) {
   // Global concurrency gate: only one compile session at a time. Two
   // concurrent pipelines collide on the Gemini rate limiter singleton,
   // SQLite WAL writer, and Chroma collection — producing cascading step
-  // failures. Re-finalizing the SAME session is allowed (retry path).
+  // failures.
   const active = getRunningCompileSession();
-  if (active && active.session_id !== session_id) {
+  if (active) {
+    if (active.session_id !== session_id) {
+      return NextResponse.json(
+        {
+          error_code: 'session_in_progress',
+          error: 'Another compile session is already running.',
+          active_session_id: active.session_id,
+        },
+        { status: 409 }
+      );
+    }
+    // Same-session replay (double-click, two tabs, network retry). Skip
+    // all side effects — createCompileProgress wipes step state via
+    // ON CONFLICT DO UPDATE, and n8n has no webhook dedupe so a second
+    // trigger starts a second workflow execution.
+    //
+    // Known edge: after a 503 on first trigger, the row is stuck 'queued'
+    // with started_at=NULL and a replay here also returns idempotent —
+    // the user must wait up to 5 min for reconcileStuckCompileSessions
+    // (/api/health sweep) to flip it to 'failed', OR cancel via
+    // DELETE /api/onboarding/session and re-submit.
     return NextResponse.json(
-      {
-        error_code: 'session_in_progress',
-        error: 'Another compile session is already running.',
-        active_session_id: active.session_id,
-      },
-      { status: 409 }
+      { session_id, queued: staged.length, already_running: true },
+      { status: 200 }
     );
   }
 
