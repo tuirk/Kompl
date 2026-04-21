@@ -453,3 +453,89 @@ export function detectAndParseAll(
 }
 
 export { isTwitterUrl };
+
+// ── Bookmarklet DOM scraper ───────────────────────────────────────────────────
+// Used by the twitter.com/i/bookmarks bookmarklet in twitter-connector.tsx.
+// Exported and kept pure so it can be unit-tested without jsdom AND injected
+// verbatim into the bookmarklet IIFE via .toString().
+//
+// Why a DOM walker instead of .innerText: twitter.com renders long URLs as
+// <a href="https://t.co/XXX"><span>github.com/foo</span><span>…</span></a>
+// with CSS-driven line wrapping, so innerText returns "github.com/foo\n…"
+// with mid-URL linebreaks. We replace each anchor's visible content with its
+// href (t.co wrappers are fine — downstream scrapers follow redirects).
+
+export interface ScrapedTweetText {
+  text: string;
+  urls: string[];
+}
+
+// Accept anything duck-typed — the bookmarklet feeds real DOM elements,
+// tests feed plain-object fakes with the same minimal shape.
+type ElementLike = {
+  nodeType?: number;
+  tagName?: string;
+  textContent?: string | null;
+  childNodes?: ArrayLike<ElementLike>;
+  href?: string;
+  alt?: string;
+};
+
+export function scrapeTweetTextDom(root: ElementLike): ScrapedTweetText {
+  const parts: string[] = [];
+  const urls: string[] = [];
+
+  function isIntraTwitter(href: string): boolean {
+    try {
+      const u = new URL(href, 'https://x.com');
+      const host = u.host.replace(/^www\./, '');
+      if (host === 'twitter.com' || host === 'x.com') {
+        // Mentions/hashtags/routes live on twitter.com/x.com directly.
+        return true;
+      }
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  function walk(node: ElementLike, insideAnchor: boolean): void {
+    const nt = node.nodeType;
+    if (nt === 3 /* text */) {
+      if (insideAnchor) return; // anchor body is visually truncated; href already emitted
+      parts.push(node.textContent ?? '');
+      return;
+    }
+    if (nt !== 1 /* element */) return;
+    const tag = (node.tagName ?? '').toUpperCase();
+    if (tag === 'A') {
+      const href = node.href ?? '';
+      if (href && !isIntraTwitter(href)) {
+        parts.push(href);
+        urls.push(href);
+        return; // skip children — already captured as href
+      }
+      // Intra-twitter anchor (mention, hashtag, route): walk children as text.
+      const kids = node.childNodes;
+      if (kids) for (let i = 0; i < kids.length; i++) walk(kids[i], false);
+      return;
+    }
+    if (tag === 'IMG') {
+      const alt = node.alt ?? '';
+      if (alt) parts.push(alt);
+      return;
+    }
+    if (tag === 'BR') {
+      parts.push('\n');
+      return;
+    }
+    const kids = node.childNodes;
+    if (kids) for (let i = 0; i < kids.length; i++) walk(kids[i], insideAnchor);
+  }
+
+  walk(root, false);
+  return {
+    text: parts.join('').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(),
+    urls: [...new Set(urls)],
+  };
+}

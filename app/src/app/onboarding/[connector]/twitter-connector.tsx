@@ -13,7 +13,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { detectAndParseAll, formatTweetMarkdown, isTwitterUrl, type ParsedTweet } from '../../../lib/twitter-parser';
+import { detectAndParseAll, formatTweetMarkdown, isTwitterUrl, scrapeTweetTextDom, type ParsedTweet } from '../../../lib/twitter-parser';
 import { toUserMessage } from '@/lib/service-errors';
 import {
   type ConnectorProps,
@@ -63,31 +63,52 @@ function hostnameOf(url: string): string {
 // selectors, scrolls automatically, downloads a JSON file, then prompts the
 // user to come back and upload it. Output shape matches parseSiftly() in
 // twitter-parser.ts so no parser changes are needed.
+//
+// Tweet text + URL extraction is delegated to scrapeTweetTextDom() so the
+// same logic is unit-tested. We stringify the TS function at build time and
+// inject it into the IIFE; it uses only standard DOM APIs so it runs
+// unmodified inside the javascript: URL.
+//
+// Note Tweets (>280 chars) are rendered with a "Show more" link in the
+// timeline view that hides the tail behind a GraphQL call. Two-tick protocol:
+// on first visit we click the link and add the tweet_url to `pending`; the
+// next 900ms scroll tick re-visits and scrapes the now-expanded body. If
+// expansion fails, we scrape whatever's in the DOM on tick 2 as a fallback.
 const BOOKMARKLET = `(function(){
   if(!location.href.match(/\\/i\\/bookmarks/)){
     alert('Go to twitter.com/i/bookmarks first, then click this bookmark.');
     return;
   }
-  var tweets=[],seen=new Set(),last=0,tries=0;
+  var scrapeTweetTextDom=${scrapeTweetTextDom.toString()};
+  var tweets=[],seen=new Set(),pending=new Set(),last=0,tries=0;
+  function findShowMore(el){
+    var byTestId=el.querySelector('[data-testid="tweet-text-show-more-link"]');
+    if(byTestId)return byTestId;
+    var links=el.querySelectorAll('a[role="link"]');
+    for(var i=0;i<links.length;i++){
+      if(/^show more$/i.test((links[i].textContent||'').trim()))return links[i];
+    }
+    return null;
+  }
   function scrape(){
     document.querySelectorAll('[data-testid="tweet"]').forEach(function(el){
       var t=el.querySelector('time');
       var a=t&&t.closest('a');
       var url=a?a.href:null;
       if(!url||seen.has(url))return;
-      seen.add(url);
+      if(!pending.has(url)){
+        var sm=findShowMore(el);
+        if(sm){try{sm.click();}catch(e){}pending.add(url);return;}
+      }
+      seen.add(url);pending.delete(url);
       var textEl=el.querySelector('[data-testid="tweetText"]');
-      var text=textEl?textEl.innerText:'';
+      var scraped=textEl?scrapeTweetTextDom(textEl):{text:'',urls:[]};
       var author=null;
       var nameEl=el.querySelector('[data-testid="User-Name"]');
       if(nameEl)[].forEach.call(nameEl.querySelectorAll('span'),function(s){
         if(!author&&s.textContent.startsWith('@'))author=s.textContent;
       });
-      var links=[];
-      if(textEl)[].forEach.call(textEl.querySelectorAll('a'),function(a){
-        if(a.href&&!a.href.match(/\\/\\/(twitter|x|t)\\.co\\//))links.push(a.href);
-      });
-      tweets.push({text:text,author:author,created_at:t?t.getAttribute('datetime'):null,tweet_url:url,urls:links,source:'bookmark'});
+      tweets.push({text:scraped.text,author:author,created_at:t?t.getAttribute('datetime'):null,tweet_url:url,urls:scraped.urls,source:'bookmark'});
     });
   }
   function scroll(){

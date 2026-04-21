@@ -3,8 +3,27 @@ import {
   detectAndParse,
   detectAndParseAll,
   formatTweetMarkdown,
+  scrapeTweetTextDom,
   type ParsedTweet,
 } from '../lib/twitter-parser';
+
+// Minimal duck-typed DOM builder: matches the subset of Node/Element the
+// scraper reads (nodeType, tagName, childNodes, textContent, href, alt).
+// Keeps the test jsdom-free.
+type FakeNode = {
+  nodeType: number;
+  tagName?: string;
+  textContent?: string;
+  childNodes?: FakeNode[];
+  href?: string;
+  alt?: string;
+};
+function el(tag: string, attrs: { href?: string; alt?: string } = {}, children: FakeNode[] = []): FakeNode {
+  return { nodeType: 1, tagName: tag, childNodes: children, ...attrs };
+}
+function tx(s: string): FakeNode {
+  return { nodeType: 3, textContent: s };
+}
 
 // Helpers to build GraphQL bookmark-timeline entries compactly. Shape matches
 // what X's internal bookmark_timeline_v2 response delivers through exporters
@@ -206,5 +225,118 @@ describe('twitter-parser — formatTweetMarkdown', () => {
     const md = formatTweetMarkdown(t);
     expect(md).toContain('Linked article: **Boring Agencies**');
     expect(md).toContain('Everyone treats Claude Code');
+  });
+});
+
+describe('scrapeTweetTextDom (bookmarklet DOM walker)', () => {
+  // Regression: twitter.com renders long t.co links as
+  //   <a href="t.co/..."><span>github.com/foo/bar</span><span>…</span></a>
+  // with CSS line-wrapping. The old .innerText approach produced
+  //   "http://\ngithub.com/multica-ai/and\nrej-karpathy-skills\n…"
+  // which shipped to the LLM as "the tweet body".
+  it('recovers unbroken URL from href when twitter truncates display text', () => {
+    // Mimic the "* ANDREJ-KARPATHY-SKILLS:\n\n<a>github.com/multica-ai/and\nrej-karpathy-skills\n…</a>"
+    const root = el('div', {}, [
+      tx('* ANDREJ-KARPATHY-SKILLS:\n\n'),
+      el('a', { href: 'https://t.co/abc123xyz' }, [
+        el('span', {}, [tx('github.com/multica-ai/and')]),
+        tx('\n'),
+        el('span', {}, [tx('rej-karpathy-skills')]),
+        tx('\n'),
+        el('span', {}, [tx('…')]),
+      ]),
+    ]);
+    const { text, urls } = scrapeTweetTextDom(root);
+    expect(text).not.toMatch(/…/);
+    expect(text).not.toMatch(/github\.com\/[\w-]+\/\w+\n/); // no mid-URL linebreak
+    expect(text).toContain('https://t.co/abc123xyz');
+    expect(urls).toEqual(['https://t.co/abc123xyz']);
+  });
+
+  it('collects t.co links in urls[] (old bookmarklet filter dropped them as intra-twitter)', () => {
+    const root = el('div', {}, [
+      tx('check this out '),
+      el('a', { href: 'https://t.co/LINK1' }, [tx('example.com/a')]),
+      tx(' and '),
+      el('a', { href: 'https://t.co/LINK2' }, [tx('example.com/b')]),
+    ]);
+    const { urls } = scrapeTweetTextDom(root);
+    expect(urls).toEqual(['https://t.co/LINK1', 'https://t.co/LINK2']);
+  });
+
+  it('skips intra-twitter links (mentions, hashtags) — emits display text, no url capture', () => {
+    const root = el('div', {}, [
+      tx('hello '),
+      el('a', { href: 'https://twitter.com/alice' }, [tx('@alice')]),
+      tx(' and '),
+      el('a', { href: '/hashtag/kompl' }, [tx('#kompl')]),
+    ]);
+    const { text, urls } = scrapeTweetTextDom(root);
+    expect(text).toBe('hello @alice and #kompl');
+    expect(urls).toEqual([]);
+  });
+
+  it('expands emoji <img alt> into text', () => {
+    const root = el('div', {}, [
+      tx('shipped '),
+      el('img', { alt: '🚀' }),
+      tx(' today'),
+    ]);
+    expect(scrapeTweetTextDom(root).text).toBe('shipped 🚀 today');
+  });
+
+  // The bookmarklet injects scrapeTweetTextDom via .toString() into a
+  // `javascript:` URL. If the compiled function references hoisted helpers or
+  // module-scoped bindings, the stringified form breaks when eval'd in the
+  // browser. Assert it's self-contained by reconstituting + calling it.
+  it('stringified form is self-contained and behaves identically when eval\'d', () => {
+    const src = scrapeTweetTextDom.toString();
+    // bookmarklet shape: `var scrapeTweetTextDom=${src};` — must parse.
+    const reconstituted = new Function(
+      `${src}; return scrapeTweetTextDom;`
+    )() as typeof scrapeTweetTextDom;
+    const root = el('div', {}, [
+      tx('hello '),
+      el('a', { href: 'https://t.co/LINK' }, [tx('example.com/path')]),
+      tx(' world'),
+    ]);
+    const original = scrapeTweetTextDom(root);
+    const copy = reconstituted(root);
+    expect(copy).toEqual(original);
+    expect(copy.urls).toEqual(['https://t.co/LINK']);
+    expect(copy.text).toBe('hello https://t.co/LINK world');
+  });
+
+  it('full RoundtableSpace-shaped tweet: 5 t.co links, no mid-URL linebreaks, no …', () => {
+    const mkLink = (hash: string, display: string) =>
+      el('a', { href: `https://t.co/${hash}` }, [
+        el('span', {}, [tx(display.slice(0, 20))]),
+        tx('\n'),
+        el('span', {}, [tx(display.slice(20))]),
+        tx('\n'),
+        el('span', {}, [tx('…')]),
+      ]);
+    const root = el('div', {}, [
+      tx('TOP FIVE GITHUB REPOS\n\n* A: '),
+      mkLink('A1', 'github.com/multica-ai/andrej-karpathy-skills'),
+      tx('\n* B: '),
+      mkLink('B2', 'github.com/NousResearch/hermes-agent'),
+      tx('\n* C: '),
+      mkLink('C3', 'github.com/thedotmack/claude-mem'),
+      tx('\n* D: '),
+      mkLink('D4', 'github.com/EvoMap/evolver'),
+      tx('\n* E: '),
+      mkLink('E5', 'github.com/lsdefine/GenericAgent'),
+    ]);
+    const { text, urls } = scrapeTweetTextDom(root);
+    expect(urls).toEqual([
+      'https://t.co/A1', 'https://t.co/B2', 'https://t.co/C3',
+      'https://t.co/D4', 'https://t.co/E5',
+    ]);
+    expect(text).not.toMatch(/…/);
+    expect(text).not.toMatch(/http[s]?:\/\/\s/);
+    for (const h of ['A1', 'B2', 'C3', 'D4', 'E5']) {
+      expect(text).toContain(`https://t.co/${h}`);
+    }
   });
 });
