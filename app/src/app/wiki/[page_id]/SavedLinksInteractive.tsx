@@ -218,7 +218,7 @@ export default function SavedLinksInteractive({
             disabled={loadingIds.size > 0}
             onClick={() => setModal({ kind: 'delete-bulk', ids: selectedArray })}
           >
-            Delete ({selectedIds.size})
+            Remove ({selectedIds.size})
           </button>
         </div>
       )}
@@ -347,7 +347,7 @@ export default function SavedLinksInteractive({
                       title: displayTitle,
                     })}
                   >
-                    Delete
+                    Remove
                   </button>
                 )}
               </div>
@@ -381,7 +381,7 @@ export default function SavedLinksInteractive({
               fontSize: 14, letterSpacing: '1px', textTransform: 'uppercase',
               color: 'var(--fg)', margin: '0 0 12px',
             }}>
-              {modal.kind === 'delete-bulk' ? `Dismiss ${modal.ids.length} Saved Links` : 'Dismiss Saved Link'}
+              {modal.kind === 'delete-bulk' ? `Remove ${modal.ids.length} Saved Links` : 'Remove Saved Link'}
             </p>
             <p style={{
               fontFamily: 'var(--font-body)', fontSize: 13,
@@ -389,8 +389,8 @@ export default function SavedLinksInteractive({
               margin: '0 0 24px',
             }}>
               {modal.kind === 'delete-single'
-                ? <>This will dismiss <strong>{modal.title}</strong>. This can&rsquo;t be undone.</>
-                : <>This will dismiss <strong>{modal.ids.length} saved link{modal.ids.length !== 1 ? 's' : ''}</strong>. This can&rsquo;t be undone.</>
+                ? <>Remove <strong>{modal.title}</strong> from this list? You can reingest them later through add sources.</>
+                : <>Remove <strong>{modal.ids.length} saved link{modal.ids.length !== 1 ? 's' : ''}</strong> from this list? You can reingest them later through add sources.</>
               }
             </p>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -405,7 +405,7 @@ export default function SavedLinksInteractive({
                     : handleBulkDelete(modal.ids)
                 }
               >
-                Confirm Dismiss
+                Remove
               </button>
             </div>
           </div>
