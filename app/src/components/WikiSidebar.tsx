@@ -93,34 +93,20 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
         gap: 24,
       }}
     >
-      {/* Index + Sources links + archive toggle row */}
+      {/* Index link + archive toggle row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: 4 }}>
-          <Link
-            href="/wiki"
-            style={{
-              fontFamily: 'var(--font-body)',
-              fontSize: 12,
-              color: 'var(--fg-muted)',
-              textDecoration: 'none',
-              padding: '0.3em 0.5em',
-            }}
-          >
-            Index
-          </Link>
-          <Link
-            href="/wiki/sources"
-            style={{
-              fontFamily: 'var(--font-body)',
-              fontSize: 12,
-              color: 'var(--fg-muted)',
-              textDecoration: 'none',
-              padding: '0.3em 0.5em',
-            }}
-          >
-            Sources
-          </Link>
-        </div>
+        <Link
+          href="/wiki"
+          style={{
+            fontFamily: 'var(--font-body)',
+            fontSize: 12,
+            color: 'var(--fg-muted)',
+            textDecoration: 'none',
+            padding: '0.3em 0.5em',
+          }}
+        >
+          Index
+        </Link>
         <button
           onClick={handleToggle}
           style={{

@@ -407,6 +407,24 @@ export default async function WikiPageDetail({ params }: PageProps) {
           )}
         </section>
 
+        {page.page_type === 'source-summary' && provRows[0] && (
+          <section style={{ marginTop: '2rem' }}>
+            <Link
+              href={`/source/${provRows[0].source_id}`}
+              style={{
+                display: 'block',
+                fontSize: 17,
+                fontWeight: 500,
+                color: 'var(--accent)',
+                padding: '0.25em 0',
+                lineHeight: 1.4,
+              }}
+            >
+              View original →
+            </Link>
+          </section>
+        )}
+
         <RelatedPagesPanel pageId={page_id} />
       </aside>
     </div>
