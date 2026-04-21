@@ -16,7 +16,7 @@
 #   - tesseract-ocr (commit 14 PRD feature sweep if user needs scanned-PDF OCR)
 #   - libreoffice  (never — tell users to save as modern formats)
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
