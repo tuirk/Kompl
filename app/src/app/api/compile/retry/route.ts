@@ -6,7 +6,7 @@
  * progress UI when status = 'failed'.
  */
 import { NextResponse } from 'next/server';
-import { getCompileProgress, resetForRetry } from '@/lib/db';
+import { getCompileProgress, getRunningCompileSession, resetForRetry } from '@/lib/db';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
 export async function POST(request: Request) {
@@ -21,6 +21,19 @@ export async function POST(request: Request) {
 
   const progress = getCompileProgress(session_id);
   if (!progress) return NextResponse.json({ error: 'no_progress_record' }, { status: 404 });
+
+  // Global concurrency gate: block retry if a DIFFERENT session is active.
+  const active = getRunningCompileSession();
+  if (active && active.session_id !== session_id) {
+    return NextResponse.json(
+      {
+        error_code: 'session_in_progress',
+        error: 'Another compile session is already running.',
+        active_session_id: active.session_id,
+      },
+      { status: 409 }
+    );
+  }
 
   // Reset only failed/pending steps — preserve completed work so runCompilePipeline
   // can skip expensive steps (extract, draft) that already succeeded.

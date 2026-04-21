@@ -19,6 +19,7 @@ import { NextResponse } from 'next/server';
 import {
   createCompileProgress,
   getCompileModel,
+  getRunningCompileSession,
   getSetting,
   getStagingBySession,
   logActivity,
@@ -59,6 +60,22 @@ export async function POST(request: Request) {
         error: 'No included pending staging rows for this session.',
       },
       { status: 400 }
+    );
+  }
+
+  // Global concurrency gate: only one compile session at a time. Two
+  // concurrent pipelines collide on the Gemini rate limiter singleton,
+  // SQLite WAL writer, and Chroma collection — producing cascading step
+  // failures. Re-finalizing the SAME session is allowed (retry path).
+  const active = getRunningCompileSession();
+  if (active && active.session_id !== session_id) {
+    return NextResponse.json(
+      {
+        error_code: 'session_in_progress',
+        error: 'Another compile session is already running.',
+        active_session_id: active.session_id,
+      },
+      { status: 409 }
     );
   }
 

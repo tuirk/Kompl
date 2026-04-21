@@ -767,7 +767,20 @@ function PendingDrafts() {
 
 // ── Root export ────────────────────────────────────────────────────────────
 
-export default function DashboardClient() {
+interface DashboardClientProps {
+  // Null when no compile is running. When non-null the "Add Sources" button
+  // is rendered as visually disabled with a tooltip — starting a second
+  // session causes cascading failures on the shared Gemini rate limiter,
+  // SQLite writer, and Chroma collection.
+  activeSession: { session_id: string; source_count: number } | null;
+}
+
+export default function DashboardClient({ activeSession }: DashboardClientProps) {
+  const addSourcesDisabled = activeSession !== null;
+  const addSourcesTitle = addSourcesDisabled
+    ? 'A compile session is in progress. Wait for it to finish or cancel it from the progress page.'
+    : undefined;
+
   return (
     <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px calc(5rem + 32px)' }}>
 
@@ -876,25 +889,48 @@ export default function DashboardClient() {
               alignSelf: 'stretch',
             }}
           >
-            {/* Primary — Add Sources */}
-            <Link
-              href="/onboarding?mode=add"
-              style={{
-                display: 'flex',
-                flexDirection: 'row',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: 24,
-                background: 'var(--accent)',
-                textDecoration: 'none',
-                flex: 1,
-              }}
-            >
-              <span style={{ fontFamily: 'var(--font-heading)', fontSize: 18, fontWeight: 700, color: 'var(--accent-text)' }}>
-                Add Sources
+            {/* Primary — Add Sources. Disabled when a compile is running. */}
+            {addSourcesDisabled ? (
+              <span
+                title={addSourcesTitle}
+                aria-disabled="true"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: 24,
+                  background: 'var(--accent)',
+                  flex: 1,
+                  opacity: 0.45,
+                  cursor: 'not-allowed',
+                }}
+              >
+                <span style={{ fontFamily: 'var(--font-heading)', fontSize: 18, fontWeight: 700, color: 'var(--accent-text)' }}>
+                  Add Sources
+                </span>
+                <Upload size={17} style={{ color: 'var(--accent-text)', flexShrink: 0 }} />
               </span>
-              <Upload size={17} style={{ color: 'var(--accent-text)', flexShrink: 0 }} />
-            </Link>
+            ) : (
+              <Link
+                href="/onboarding?mode=add"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: 24,
+                  background: 'var(--accent)',
+                  textDecoration: 'none',
+                  flex: 1,
+                }}
+              >
+                <span style={{ fontFamily: 'var(--font-heading)', fontSize: 18, fontWeight: 700, color: 'var(--accent-text)' }}>
+                  Add Sources
+                </span>
+                <Upload size={17} style={{ color: 'var(--accent-text)', flexShrink: 0 }} />
+              </Link>
+            )}
 
             {/* Secondary — Browse Wiki */}
             <Link

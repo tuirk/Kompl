@@ -12,7 +12,7 @@
  */
 
 import { redirect } from 'next/navigation';
-import { getSetting } from '@/lib/db';
+import { getRunningCompileSession, getSetting } from '@/lib/db';
 import DashboardClient from './_dashboard-client';
 
 export const dynamic = 'force-dynamic';
@@ -22,5 +22,9 @@ export default function RootPage() {
   if (!completed) {
     redirect('/onboarding');
   }
-  return <DashboardClient />;
+  // Read the active compile session server-side so the "Add Sources" button
+  // can be visually disabled during an in-progress session. No client poll —
+  // the dashboard is force-dynamic and re-renders on each visit.
+  const activeSession = getRunningCompileSession();
+  return <DashboardClient activeSession={activeSession} />;
 }

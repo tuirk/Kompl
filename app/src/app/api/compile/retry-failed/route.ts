@@ -35,6 +35,7 @@ import {
   deleteIngestFailuresBySourceUrls,
   getCompileProgress,
   getDb,
+  getRunningCompileSession,
 } from '@/lib/db';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
@@ -63,6 +64,19 @@ export async function POST(request: Request) {
   if (progress.status === 'queued' || progress.status === 'running') {
     return NextResponse.json(
       { error: 'pipeline_active', status: progress.status },
+      { status: 409 }
+    );
+  }
+
+  // Global concurrency gate: block retry if a DIFFERENT session is active.
+  const active = getRunningCompileSession();
+  if (active && active.session_id !== session_id) {
+    return NextResponse.json(
+      {
+        error_code: 'session_in_progress',
+        error: 'Another compile session is already running.',
+        active_session_id: active.session_id,
+      },
       { status: 409 }
     );
   }

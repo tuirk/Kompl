@@ -24,6 +24,7 @@ export const SERVICE_ERROR_MESSAGES = {
   no_items_staged:      'No sources to compile. Add at least one, or uncheck fewer items.',
   stage_insert_failed:  'Could not save your selection. Try again.',
   url_host_blocked:     'x.com, twitter.com, and t.co URLs can\u2019t be auto-scraped \u2014 X gates all content behind JavaScript. Import tweets via the Twitter bookmark connector, or paste the post body into the Text connector.',
+  session_in_progress:  'Another compile session is already running. Wait for it to finish or cancel it from the progress page.',
 } as const;
 
 export type ServiceErrorCode = keyof typeof SERVICE_ERROR_MESSAGES;

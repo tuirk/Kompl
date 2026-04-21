@@ -21,6 +21,7 @@ import {
   getSource,
   resetSourceForRecompile,
   createCompileProgress,
+  getRunningCompileSession,
   logActivity,
 } from '@/lib/db';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
@@ -53,6 +54,21 @@ export async function POST(
     return NextResponse.json(
       { error: 'no_session: source has no onboarding session and cannot be recompiled' },
       { status: 422 }
+    );
+  }
+
+  // Global concurrency gate: block recompile if a DIFFERENT session is
+  // active. Must precede createCompileProgress (below) — otherwise the
+  // insert would race the active session.
+  const active = getRunningCompileSession();
+  if (active && active.session_id !== sessionId) {
+    return NextResponse.json(
+      {
+        error_code: 'session_in_progress',
+        error: 'Another compile session is already running.',
+        active_session_id: active.session_id,
+      },
+      { status: 409 }
     );
   }
 
