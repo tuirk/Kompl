@@ -572,6 +572,16 @@ stage_11b_confirm_surfaces_n8n_down() {
     fi
     echo "  compile_progress row persisted for reconciler OK"
 
+    # Hermetic cleanup: the persisted 'queued' row would otherwise trip the
+    # cross-session concurrency guard in subsequent stages (11c, 12, 13…)
+    # that finalize fresh sessions. DELETE /api/onboarding/session clears
+    # both the staging rows and the compile_progress row so the next stage
+    # starts from a clean slate. In production the same row lives on until
+    # the reconciler sweeps it; that behaviour is covered by Stage 11 and
+    # health-check integration tests, not 11b.
+    curl -sf -X DELETE \
+        "http://localhost:3000/api/onboarding/session?session_id=$SESSION_ID" > /dev/null || true
+
     echo "  PASS"
     record_stage 11b REAL PASS
     return 0
