@@ -20,7 +20,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "commander": "^12.1.0",
+    "commander": "^14.0.3",
     "docker-compose": "^0.24.8",
     "open": "^9.1.0",
     "picocolors": "^1.1.1",
