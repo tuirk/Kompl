@@ -314,7 +314,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     firecrawl_body = {
         "url": req.url,
         "formats": ["markdown"],
-        "onlyMainContent": True,
+        "onlyCleanContent": True,
         "timeout": 30000,
     }
     firecrawl_headers = {
