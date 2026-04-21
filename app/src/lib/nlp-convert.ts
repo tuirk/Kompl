@@ -22,7 +22,10 @@ export interface ConvertResponse {
   metadata: Record<string, unknown>;
 }
 
-export type ConvertErrorCode = 'nlp_unreachable' | 'nlp_convert_failed';
+export type ConvertErrorCode =
+  | 'nlp_unreachable'
+  | 'nlp_convert_failed'
+  | 'nlp_convert_timeout';
 
 export type ConvertResult =
   | { ok: true; data: ConvertResponse }
@@ -56,19 +59,27 @@ export async function callConvertUrl(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source_id: sourceId, url }),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(120_000),
     });
   } catch (e) {
+    // AbortSignal.timeout() throws DOMException{name:'TimeoutError'};
+    // ECONNREFUSED/ENOTFOUND/etc. bubble as TypeError. Split so the UI can
+    // distinguish "server took too long" from "server not reachable" — they
+    // demand different follow-ups.
+    const isTimeout = e instanceof Error && e.name === 'TimeoutError';
     return {
       ok: false,
-      code: 'nlp_unreachable',
+      code: isTimeout ? 'nlp_convert_timeout' : 'nlp_unreachable',
       detail: e instanceof Error ? e.message : 'fetch failed',
     };
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
+    // 502 and 504 from our NLP service are Firecrawl-origin failures
+    // (conversion.py raises HTTPException for firecrawl_error / firecrawl_timeout).
+    // Only 503 reflects the NLP process itself being down (FastAPI shutdown).
     const code: ConvertErrorCode =
-      res.status >= 502 && res.status <= 504 ? 'nlp_unreachable' : 'nlp_convert_failed';
+      res.status === 503 ? 'nlp_unreachable' : 'nlp_convert_failed';
     return { ok: false, code, detail: `${res.status} ${detail}`.trim() };
   }
   return { ok: true, data: (await res.json()) as ConvertResponse };
@@ -89,19 +100,20 @@ export async function callConvertFilePath(
         file_path: filePath,
         title_hint: titleHint,
       }),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(120_000),
     });
   } catch (e) {
+    const isTimeout = e instanceof Error && e.name === 'TimeoutError';
     return {
       ok: false,
-      code: 'nlp_unreachable',
+      code: isTimeout ? 'nlp_convert_timeout' : 'nlp_unreachable',
       detail: e instanceof Error ? e.message : 'fetch failed',
     };
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     const code: ConvertErrorCode =
-      res.status >= 502 && res.status <= 504 ? 'nlp_unreachable' : 'nlp_convert_failed';
+      res.status === 503 ? 'nlp_unreachable' : 'nlp_convert_failed';
     return { ok: false, code, detail: `${res.status} ${detail}`.trim() };
   }
   return { ok: true, data: (await res.json()) as ConvertResponse };

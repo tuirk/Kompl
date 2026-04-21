@@ -27,6 +27,7 @@ nlp-service never touches kompl.db directly.
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import mimetypes
 import os
@@ -99,12 +100,21 @@ class FileConvertRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 router = APIRouter(tags=["conversion"])
-_http = HttpClient(timeout=30.0, max_retries=3)
+# Firecrawl has its own internal retries and a 30s per-attempt timeout — outer
+# retries almost never rescue a genuine scrape failure and just compound the
+# wall-clock budget. Keep one attempt so the total convert budget stays small
+# enough to fit inside the Next.js client's AbortSignal window.
+_http = HttpClient(timeout=30.0, max_retries=1)
 _FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
 # Minimum character count for a MarkItDown URL result to be considered usable.
 # Results below this threshold indicate a JS-rendered SPA, paywall, or a YouTube
 # video with no available transcript — Firecrawl is used as a fallback in those cases.
 _MARKITDOWN_MIN_CHARS = 500
+# Upper bound for MarkItDown URL attempts. MarkItDown uses `requests` under the
+# hood with no default timeout, so a slow DNS or hung socket could pin a worker
+# forever without this cap. On timeout we return None, which matches the
+# existing "too few chars" signal and triggers the Firecrawl fallback.
+_MARKITDOWN_URL_TIMEOUT_SECS = 20.0
 _DATA_ROOT = Path("/data")
 _ALLOWED_EXTENSIONS = {
     ".pdf",
@@ -232,17 +242,31 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     Attempt to convert a URL via MarkItDown (free, local).
 
     Returns a ConvertResponse if the result meets the quality threshold
-    (_MARKITDOWN_MIN_CHARS). Returns None if the output is empty or too short
-    so the caller can fall back to Firecrawl.
+    (_MARKITDOWN_MIN_CHARS). Returns None if the output is empty, too short,
+    or the attempt exceeded _MARKITDOWN_URL_TIMEOUT_SECS — in all those cases
+    the caller falls back to Firecrawl.
 
-    Never raises — all exceptions become None (caller decides fallback).
+    Never raises — all exceptions (including timeout) become None.
     YouTube URLs are handled by MarkItDown's built-in YouTubeConverter which
     uses youtube-transcript-api to extract full transcripts.
     """
+    # MarkItDown's internal `requests` calls have no default timeout. Run in a
+    # throwaway thread and cap the wait. We deliberately shut the pool down
+    # with wait=False so a hung MarkItDown fetch does not block our return —
+    # the daemon thread will exit naturally when its socket closes. Not using
+    # `with ...` because the context-manager's implicit shutdown(wait=True)
+    # would reintroduce the blocking we're trying to avoid.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(MarkItDown().convert, url)
     try:
-        result = MarkItDown().convert(url)
-    except Exception:
+        result = future.result(timeout=_MARKITDOWN_URL_TIMEOUT_SECS)
+    except concurrent.futures.TimeoutError:
+        pool.shutdown(wait=False)
         return None
+    except Exception:
+        pool.shutdown(wait=False)
+        return None
+    pool.shutdown(wait=False)
 
     markdown = result.text_content or ""
     if len(markdown) < _MARKITDOWN_MIN_CHARS:

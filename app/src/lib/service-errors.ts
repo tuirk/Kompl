@@ -14,6 +14,7 @@ export const SERVICE_ERROR_MESSAGES = {
   n8n_not_ready:        'Background worker (n8n) is still starting up. Try again in a moment.',
   nlp_unreachable:      'NLP service is down. Restart Docker and try again.',
   nlp_convert_failed:   'NLP service could not convert the source. Try again or use a different URL/file.',
+  nlp_convert_timeout:  'NLP service took too long to convert this source. Try again or use a different URL/file.',
   file_flush_pending:   'Page saved, disk flush pending. Will retry on next startup.',
   backend_lost:         'Lost connection to backend — retrying…',
   never_started:        'Compile did not start — background worker was unreachable. Click Retry.',

@@ -123,7 +123,9 @@ export async function runIngestFilesStep(
     onFailure: async (row, error) => {
       const payload = readFilePayload(row);
       const msg = error.message;
-      const codeMatch = msg.match(/^(nlp_unreachable|nlp_convert_failed):/);
+      const codeMatch = msg.match(
+        /^(nlp_unreachable|nlp_convert_failed|nlp_convert_timeout):/
+      );
       const error_code = codeMatch ? codeMatch[1] : 'ingest_file_failed';
 
       markStagingFailed(row.stage_id, error_code, msg);

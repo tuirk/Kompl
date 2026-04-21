@@ -45,7 +45,7 @@ class HttpClientError(Exception):
 
 
 class HttpClient:
-    def __init__(self, timeout: float = 30.0, max_retries: int = 3) -> None:
+    def __init__(self, timeout: float = 30.0, max_retries: int = 1) -> None:
         self.timeout = timeout
         self.max_retries = max_retries
 
