@@ -26,7 +26,13 @@ import {
   readPageMarkdown,
   type PageRow,
 } from '../../../lib/db';
-import { renderMarkdown, stripFrontmatter } from '../../../lib/markdown';
+import {
+  renderMarkdown,
+  stripFrontmatter,
+  stripWrappingFence,
+  stripSourcesSection,
+  stripLeadingContentHeading,
+} from '../../../lib/markdown';
 import WikiSidebar from '../../../components/WikiSidebar';
 import SavedLinksInteractive from './SavedLinksInteractive';
 
@@ -173,7 +179,16 @@ export default async function WikiPageDetail({ params }: PageProps) {
   const entities = rawMarkdown ? parseFrontmatterEntities(rawMarkdown) : [];
   const strippedMarkdown = rawMarkdown ? stripFrontmatter(rawMarkdown) : null;
   const titleMap = getPageTitleMap();
-  const cleanMarkdown = strippedMarkdown ? expandWikilinks(strippedMarkdown, titleMap) : null;
+  // Heal legacy drafts: unwrap body-only code fences, drop duplicate `## Sources`
+  // section (provenance footer below owns it), then expand wikilinks.
+  const cleanMarkdown = strippedMarkdown
+    ? expandWikilinks(
+        stripLeadingContentHeading(
+          stripSourcesSection(stripWrappingFence(strippedMarkdown)),
+        ),
+        titleMap,
+      )
+    : null;
   const headings = cleanMarkdown ? extractHeadings(cleanMarkdown) : [];
   const html = cleanMarkdown ? renderMarkdown(cleanMarkdown) : null;
 
@@ -215,9 +230,9 @@ export default async function WikiPageDetail({ params }: PageProps) {
           showActions
         />
 
-        {/* Sub-header: type badge, source count, summary, entities */}
+        {/* Sub-header: type badge + source count */}
         <div style={{ marginTop: '-1rem', marginBottom: '1.75rem' }}>
-          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center', fontSize: 13, color: 'var(--fg-muted)', marginBottom: '0.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center', fontSize: 13, color: 'var(--fg-muted)' }}>
             {badge && (
               <span
                 className="meta"
@@ -228,31 +243,46 @@ export default async function WikiPageDetail({ params }: PageProps) {
             )}
             <span className="meta">{page.source_count} source{page.source_count !== 1 ? 's' : ''}</span>
           </div>
-
-          {page.summary && (
-            <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-muted)', lineHeight: 1.6, fontSize: 15 }}>
-              {page.summary}
-            </p>
-          )}
-
-          {entities.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-              {entities.map((name) => (
-                <span
-                  key={name}
-                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border-hover)', padding: '0.15em 0.6em', borderRadius: 4, fontSize: 12, color: 'var(--fg-muted)' }}
-                >
-                  {name}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
+
+        {(page.summary || entities.length > 0) && (
+          <section style={{ marginBottom: '2rem' }}>
+            <div style={{ marginBottom: '0.75rem', paddingBottom: '0.4rem', borderBottom: '1px solid var(--border)' }}>
+              <span className="meta" style={{ fontWeight: 600, fontSize: 12, color: 'var(--fg-dim)', letterSpacing: '0.08em' }}>
+                OVERVIEW
+              </span>
+            </div>
+            {page.summary && (
+              <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-muted)', lineHeight: 1.6, fontSize: 15 }}>
+                {page.summary}
+              </p>
+            )}
+            {entities.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                {entities.map((name) => (
+                  <span
+                    key={name}
+                    style={{ background: 'var(--bg-card)', border: '1px solid var(--border-hover)', padding: '0.15em 0.6em', borderRadius: 4, fontSize: 12, color: 'var(--fg-muted)' }}
+                  >
+                    {name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
 
         {page_id === SAVED_LINKS_PAGE_ID ? (
           <SavedLinksInteractive initialLinks={getUnresolvedLinks()} />
         ) : html ? (
-          <article dangerouslySetInnerHTML={{ __html: html }} style={{ fontSize: 14 }} />
+          <section>
+            <div style={{ marginBottom: '1rem', paddingBottom: '0.4rem', borderBottom: '1px solid var(--border)' }}>
+              <span className="meta" style={{ fontWeight: 600, fontSize: 12, color: 'var(--fg-dim)', letterSpacing: '0.08em' }}>
+                CONTENT
+              </span>
+            </div>
+            <article dangerouslySetInnerHTML={{ __html: html }} style={{ fontSize: 14 }} />
+          </section>
         ) : (
           <div
             style={{

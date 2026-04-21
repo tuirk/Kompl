@@ -14,14 +14,6 @@ const DEFERRED = [
 
 const NOTES = [
   {
-    title: 'OpenAPI codegen + Zod',
-    body: 'Currently all 33 API calls between Next.js and the NLP service have hand-written TypeScript interfaces — someone manually typed the request/response shapes in each route file. If the Python side renames content to markdown (which actually happened and silently broke chat), TypeScript doesn\'t catch it. The fix: run openapi-typescript against FastAPI\'s /openapi.json to auto-generate a nlp-client.ts with correct types. Add Zod schemas on the Next.js API route inputs so bad requests from the frontend get rejected at the boundary with a clear 422 instead of crashing inside the handler. A generate-nlp-client.sh script regenerates types when the Python API changes. A Stage 9 test proves the build fails when types drift. None of this is blocking — the product works, the types are just manually maintained. It\'s insurance against the exact kind of silent contract break that already happened once.',
-  },
-  {
-    title: 'Twitter automated sync',
-    body: 'Right now the user manually exports bookmarks (runs the bookmarklet, downloads JSON, uploads to Kompl). Twitter automated sync would use bird CLI or the X API v2 to fetch bookmarks automatically on a schedule — no manual export, no JSON upload. The user connects once (OAuth or cookie auth), and new bookmarks sync incrementally. This is v3 because Twitter\'s API is rate-limited, requires a developer account, and the auth surface is fragile.',
-  },
-  {
     title: 'Merge import',
     body: 'Import currently only works on an empty wiki — it returns 409 if any pages already exist. Merge import would dedup sources by URL and content hash, skip pages that already exist, import only net-new data, and merge provenance records across the two instances. The tricky edge cases are conflicting page content (two instances compiled the same source differently) and divergent entity resolution (entity "React" resolved to the JS framework in one export but to a chemistry concept in another). Deferred for now. The workaround is to re-ingest sources through onboarding — you get the same end result because compilation is deterministic per source.',
   },
