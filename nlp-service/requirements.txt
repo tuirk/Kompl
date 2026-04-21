@@ -28,7 +28,7 @@ rapidfuzz>=3.0
 json-repair>=0.59.4
 # Commit 7: Chroma vector store (embedded, no separate server). 0.4.x API:
 # PersistentClient, get_or_create_collection, cosine distance.
-chromadb==0.4.24
+chromadb==1.5.8
 # Testing
 pytest==9.0.3
 pytest-mock==3.15.1
