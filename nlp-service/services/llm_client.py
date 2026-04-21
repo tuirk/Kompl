@@ -828,40 +828,60 @@ def disambiguate_entities(pairs: list[dict[str, Any]]) -> DisambiguationResponse
 # Page drafting — write a single wiki page from source content (Part 2c-i)
 # ---------------------------------------------------------------------------
 
+_FRONTMATTER_RULES = """\
+OUTPUT FORMAT RULES (strict):
+- Begin the response with YAML frontmatter delimited by a line containing exactly `---`, then the YAML keys, then a closing line containing exactly `---`, then a blank line, then the body.
+- Do NOT wrap the body in a fenced code block (no ``` markers around the body). Output raw markdown.
+- Do NOT add a `## Sources` section — the wiki renders provenance separately in a footer.
+
+Example frontmatter shape:
+---
+title: <page title>
+page_type: <type>
+category: <category>
+summary: <1-2 sentences>
+sources:
+  - source_id: <id>
+    title: <source title>
+last_updated: <YYYY-MM-DD>
+---
+"""
+
 _DRAFT_PAGE_PROMPTS: dict[str, str] = {
-    "source-summary": """\
+    "source-summary": f"""\
 Write a source summary wiki page for the following source document.
 
-The page should include:
-- YAML frontmatter: title, page_type: source-summary, category, summary (1-2 sentences describing what this source is about), sources (list with source_id and title), last_updated
-- ## Content (reproduce the source content faithfully and in full — do NOT summarize, paraphrase, or shorten it; copy the text as written, preserving the author's voice, formatting, headings, and structure; for GitHub repos this means the full README)
+{_FRONTMATTER_RULES}
+The page body should begin directly with the reproduced source content (no `## Content` heading — the renderer labels this section externally), followed by the sub-sections below:
+- Reproduce the source content faithfully and in full — do NOT summarize, paraphrase, or shorten it; copy the text as written, preserving the author's voice, formatting, headings, and structure; for GitHub repos this means the full README.
 - ## Key Facts (3-5 bullet points of the most important facts for quick reference)
 - ## Entities Mentioned (bullet list of key people, companies, tools)
 - ## Concepts (bullet list of key ideas)
 
-The ## Content section is the most important part — it must contain the actual source text, not a rewrite of it. Do not add information not in the source.
+The reproduced source content is the most important part — it must contain the actual source text, not a rewrite of it. Do not add information not in the source.
 Use [[wikilinks]] for any entities, people, tools, or concepts that have their own wiki pages.
+Frontmatter keys required: title, page_type: source-summary, category, summary (1-2 sentences describing what this source is about), sources (list with source_id and title), last_updated.
 When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 
-    "entity": """\
+    "entity": f"""\
 Write an entity wiki page synthesizing information from multiple sources.
 
-The page should include:
-- YAML frontmatter: title, page_type: entity, category, summary (1-2 sentences), sources (list with source_id and title), last_updated
+{_FRONTMATTER_RULES}
+The page body should include:
 - A brief description paragraph
 - Thematic sections (what this entity does, key facts, relationships to other entities)
-- ## Sources (list of contributing source titles)
 
 Synthesize across all sources. If sources provide complementary information, merge coherently.
 If sources contradict each other, note the contradiction with citations to both sources.
 Use [[wikilinks]] when referencing related entities or concepts that have wiki pages.
+Frontmatter keys required: title, page_type: entity, category, summary (1-2 sentences), sources (list with source_id and title), last_updated.
 When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 
-    "concept": """\
+    "concept": f"""\
 Write a concept wiki page synthesizing information from multiple sources.
 
-The page should include:
-- YAML frontmatter: title, page_type: concept, category, summary (1-2 sentences), sources (list with source_id and title), last_updated
+{_FRONTMATTER_RULES}
+The page body should include:
 - A definition/description paragraph
 - ## Key Claims (from sources, attributed with source title)
 - ## Contradictions section (only if sources disagree — cite both)
@@ -869,30 +889,34 @@ The page should include:
 
 Synthesize across sources. Attribute specific claims to their source.
 Use [[wikilinks]] when referencing related concepts or entities that have wiki pages.
+Frontmatter keys required: title, page_type: concept, category, summary (1-2 sentences), sources (list with source_id and title), last_updated.
 When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 
-    "comparison": """\
+    "comparison": f"""\
 Write a comparison wiki page comparing two entities or concepts.
 
-The page should include:
-- YAML frontmatter: title, page_type: comparison, category, summary (1-2 sentences describing what is being compared), sources (list), last_updated
+{_FRONTMATTER_RULES}
+The page body should include:
 - A brief intro paragraph explaining what is being compared and why
 - A structured comparison (use a table or parallel sections)
 - ## Summary: which is better suited for different use cases (if applicable)
 
 Be objective and factual.
 Use [[wikilinks]] when naming the entities being compared and any related concepts that have wiki pages.
+Frontmatter keys required: title, page_type: comparison, category, summary (1-2 sentences describing what is being compared), sources (list), last_updated.
 When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 
-    "overview": """\
+    "overview": f"""\
 Write an overview wiki page summarizing all pages in a category.
 
-The page should include:
-- YAML frontmatter: title, page_type: overview, category, summary (1-2 sentences describing this category), sources (list), last_updated
+{_FRONTMATTER_RULES}
+The page body should include:
 - A high-level summary paragraph of the category
 - Brief descriptions of each entity/concept in the category (with [[wikilinks]] from the provided list)
 - ## Common Themes
 - ## Open Questions (gaps in coverage, if any)
+
+Frontmatter keys required: title, page_type: overview, category, summary (1-2 sentences describing this category), sources (list), last_updated.
 When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 }
 
@@ -1047,9 +1071,16 @@ def draft_page(
         raise LLMCompileError(f"draft_page_error: empty response for '{title}'")
 
     raw = raw_text.strip()
+    # Outer fence: the whole response is wrapped in a single code fence.
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:yaml|markdown)?\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw)
+    # Body-only fence: frontmatter is clean, but the body is wrapped. Unwrap it.
+    raw = re.sub(
+        r"(^---\n[\s\S]*?\n---\n\s*)```(?:\w+)?\n([\s\S]*?)\n```\s*$",
+        r"\1\2",
+        raw,
+    )
     return raw.strip()
 
 
