@@ -15,7 +15,7 @@ spacy==3.7.6
 rake-nltk==1.0.6
 yake==0.4.8
 keybert==0.8.5
-sentence-transformers==3.3.1
+sentence-transformers==5.4.1
 # pytextrank: spaCy-native TextRank component (PyPI-available, no git dep).
 pytextrank==3.3.0
 scikit-learn==1.5.2
