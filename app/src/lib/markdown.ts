@@ -16,8 +16,11 @@ function slugify(text: string): string {
 }
 
 const renderer = new Renderer();
-renderer.heading = (text: string, level: number) => {
-  const id = slugify(text);
+renderer.heading = (text: string, level: number, raw: string) => {
+  // Slugify the raw markdown source — `text` is already rendered HTML, so
+  // headings with inline formatting (`## **bold** heading`) would otherwise
+  // produce garbled ids like `strongboldstrong-heading` and break TOC jumps.
+  const id = slugify(raw);
   return `<h${level} id="${id}">${text}</h${level}>\n`;
 };
 
