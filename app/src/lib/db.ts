@@ -1558,6 +1558,29 @@ export function markStaleSessionsFailed(olderThanMinutes: number): number {
  * Same-session double-submit (two POSTs with identical session_id) is NOT
  * prevented here — the guard deliberately passes through to support
  * legitimate retries. Caller sites own idempotency for that case.
+ *
+ * Accepted risk — scripted-concurrency hole (documented 2026-04-22):
+ *   A narrow TOCTOU window lets two DIFFERENT session_ids slip past the
+ *   finalize-vs-retry guard pairing in one specific pattern: a session
+ *   stuck `queued` with `started_at=NULL` (n8n cold-start failure) is
+ *   marked `failed` by the reconciler; then `/api/compile/retry` is fired
+ *   on it in the same few-hundred-ms window as `/api/onboarding/finalize`
+ *   for a fresh session. State transitions from `failed` → `queued` on
+ *   the retried row and the new row's insert don't serialise against
+ *   each other, so both guards can pass and two compiles run concurrently.
+ *   If both reach commit in the same second, each creates its own
+ *   page row for the same entity/concept title → duplicate pages.
+ *   Downstream the duplicate is orphaned (see getPageByTitle's implicit
+ *   rowid order) and accumulates no further updates.
+ *
+ *   NOT reachable via the UI — the dashboard and onboarding flows won't
+ *   let you start a new session while clicking Retry on a failed one.
+ *   Only triggers from scripted / multi-tab concurrency that bypasses
+ *   normal UI sequencing.
+ *
+ *   Real-world risk: low. Accept. If it ever shows up in production,
+ *   fixes are available (UNIQUE(title, page_type) + ON CONFLICT, or a
+ *   commit-time getPageByTitle recheck before insertPage).
  */
 export function getRunningCompileSession(): {
   session_id: string;
