@@ -22,6 +22,7 @@
 import { NextResponse } from 'next/server';
 
 import {
+  getAliases,
   getAllPages,
   getCategoryGroups,
   getEffectiveCompileModel,
@@ -128,10 +129,18 @@ async function pLimit<T>(
 
 // ── Dossier builder ───────────────────────────────────────────────────────────
 
+// Minimum alias length for substring filters. "AI" / "ML" / "GO" are real
+// aliases but would match substrings of unrelated words ("paid", "email",
+// "argon") if we ran raw `.includes()`. 3 chars is strict enough to block
+// accidental char-sequence hits while keeping realistic short aliases like
+// "gpt4", "llm2" effective for substring tests.
+const MIN_SUBSTRING_ALIAS_LEN = 3;
+
 export function buildDossier(
   plan: { page_type: string; title: string; source_ids: string; related_plan_ids: string | null },
   extractionsBySource: Map<string, Record<string, unknown>>,
-  planTitleById: Map<string, string>
+  planTitleById: Map<string, string>,
+  aliasesByCanonical: Map<string, Set<string>>
 ): string {
   if (!['entity', 'concept', 'comparison'].includes(plan.page_type)) return '';
 
@@ -143,6 +152,27 @@ export function buildDossier(
   }
 
   const nameLower = plan.title.toLowerCase();
+
+  // Resolve plan.title → set of known aliases (all lowercased). Falls back to
+  // canonical-only when no alias rows exist (empty-map test + fresh-wiki case).
+  // This is why the "GPT 4" / "GPT-4" case silently dropped source blocks
+  // before the fix: resolve never rewrites extractions.llm_output, so the
+  // filter must do alias resolution at read time.
+  const aliasSet = aliasesByCanonical.get(nameLower) ?? new Set([nameLower]);
+
+  const matchesName = (raw: unknown): boolean =>
+    typeof raw === 'string' && aliasSet.has(raw.toLowerCase());
+
+  const matchesSubstring = (text: unknown): boolean => {
+    if (typeof text !== 'string') return false;
+    const low = text.toLowerCase();
+    for (const alias of aliasSet) {
+      if (alias.length < MIN_SUBSTRING_ALIAS_LEN) continue;
+      if (low.includes(alias)) return true;
+    }
+    return false;
+  };
+
   const parts: string[] = [];
 
   if (plan.page_type === 'entity') {
@@ -152,7 +182,7 @@ export function buildDossier(
       const lines: string[] = [];
 
       const entityData = ((ext.entities as Array<Record<string, unknown>>) ?? []).find(
-        (e) => typeof e.name === 'string' && e.name.toLowerCase() === nameLower
+        (e) => matchesName(e.name)
       );
       if (entityData) {
         lines.push(`From source ${sid}:`);
@@ -164,23 +194,21 @@ export function buildDossier(
       // Pydantic ExtractionRelationship emits { from_entity, to, type, description } —
       // the dossier must match those field names, not r.source/r.target which never exist.
       const rels = ((ext.relationships as Array<Record<string, unknown>>) ?? []).filter(
-        (r) =>
-          (typeof r.from_entity === 'string' && r.from_entity.toLowerCase() === nameLower) ||
-          (typeof r.to === 'string' && r.to.toLowerCase() === nameLower)
+        (r) => matchesName(r.from_entity) || matchesName(r.to)
       );
       for (const rel of rels) {
         lines.push(`  Relationship: ${rel.from_entity} —[${rel.type}]→ ${rel.to}`);
       }
 
       const claims = ((ext.claims as Array<Record<string, unknown>>) ?? []).filter(
-        (c) => typeof c.claim === 'string' && c.claim.toLowerCase().includes(nameLower)
+        (c) => matchesSubstring(c.claim)
       );
       for (const claim of claims) {
         lines.push(`  Claim: ${claim.claim}`);
       }
 
       const contras = ((ext.contradictions as Array<Record<string, unknown>>) ?? []).filter(
-        (c) => typeof c.description === 'string' && c.description.toLowerCase().includes(nameLower)
+        (c) => matchesSubstring(c.description)
       );
       for (const contra of contras) {
         lines.push(`  ⚠️ Contradiction: ${contra.description}`);
@@ -197,7 +225,7 @@ export function buildDossier(
       const lines: string[] = [];
 
       const conceptData = ((ext.concepts as Array<Record<string, unknown>>) ?? []).find(
-        (c) => typeof c.name === 'string' && c.name.toLowerCase() === nameLower
+        (c) => matchesName(c.name)
       );
       if (conceptData) {
         lines.push(`From source ${sid}:`);
@@ -206,7 +234,7 @@ export function buildDossier(
       }
 
       const claims = ((ext.claims as Array<Record<string, unknown>>) ?? []).filter(
-        (c) => typeof c.claim === 'string' && c.claim.toLowerCase().includes(nameLower)
+        (c) => matchesSubstring(c.claim)
       );
       for (const claim of claims) {
         lines.push(`  Claim: ${claim.claim}`);
@@ -218,16 +246,22 @@ export function buildDossier(
 
   if (plan.page_type === 'comparison') {
     // Resolve the plan's two subjects from related_plan_ids (ground truth from
-    // planner at plan/route.ts:340-352). Fall through to type-only filter if
-    // related_plan_ids is missing/malformed or references a plan that isn't in
-    // the title map (entity-threshold filtered, etc.) — never throw.
-    let pair: Set<string> | null = null;
+    // planner at plan/route.ts:340-352). Each subject gets its OWN alias set so
+    // the pair filter can enforce cross-subject endpoint symmetry:
+    // {from:SubjectA, to:SubjectB} or {from:SubjectB, to:SubjectA} — never
+    // {from:AliasOfA, to:AnotherAliasOfA}. Falls through to type-only filter
+    // if related_plan_ids is missing/malformed — never throw.
+    let aliasSetA: Set<string> | null = null;
+    let aliasSetB: Set<string> | null = null;
     try {
       const ids = JSON.parse(plan.related_plan_ids ?? '[]') as string[];
       if (Array.isArray(ids) && ids.length === 2) {
         const a = planTitleById.get(ids[0])?.toLowerCase();
         const b = planTitleById.get(ids[1])?.toLowerCase();
-        if (a && b) pair = new Set([a, b]);
+        if (a && b) {
+          aliasSetA = aliasesByCanonical.get(a) ?? new Set([a]);
+          aliasSetB = aliasesByCanonical.get(b) ?? new Set([b]);
+        }
       }
     } catch {
       // malformed related_plan_ids JSON — fall through to type-only filter
@@ -239,9 +273,17 @@ export function buildDossier(
 
       const rels = ((ext.relationships as Array<Record<string, unknown>>) ?? []).filter((r) => {
         if (r.type !== 'competes_with' && r.type !== 'contradicts') return false;
-        if (!pair) return true;
+        if (!aliasSetA || !aliasSetB) return true;
         if (typeof r.from_entity !== 'string' || typeof r.to !== 'string') return false;
-        return pair.has(r.from_entity.toLowerCase()) && pair.has(r.to.toLowerCase());
+        const from = r.from_entity.toLowerCase();
+        const to = r.to.toLowerCase();
+        // OR of AND — one endpoint must belong to subject A and the other to
+        // subject B. Prevents relationships where both endpoints alias to the
+        // same subject from sneaking into the wrong comparison page.
+        return (
+          (aliasSetA.has(from) && aliasSetB.has(to)) ||
+          (aliasSetB.has(from) && aliasSetA.has(to))
+        );
       });
       for (const rel of rels) {
         const lines = [`Comparison: ${rel.from_entity} vs ${rel.to} (${rel.type})`];
@@ -315,6 +357,23 @@ export async function POST(request: Request) {
     } catch {
       // skip unparseable extraction rows
     }
+  }
+
+  // Bulk-load the alias table once per compile so buildDossier can test
+  // each extraction's raw entity/concept name against the canonical's full
+  // alias set (rather than exact match against plan.title). Without this,
+  // a source extracted as "GPT 4" silently drops out of the dossier for a
+  // plan canonicalized to "GPT-4" — see buildDossier doc + tests for the
+  // full rationale.
+  const aliasesByCanonical = new Map<string, Set<string>>();
+  for (const { alias, canonical_name } of getAliases()) {
+    const key = canonical_name.toLowerCase();
+    let set = aliasesByCanonical.get(key);
+    if (!set) {
+      set = new Set<string>([key]);
+      aliasesByCanonical.set(key, set);
+    }
+    set.add(alias.toLowerCase());
   }
 
   // Load the schema if it exists (for context)
@@ -450,7 +509,7 @@ export async function POST(request: Request) {
             });
       });
 
-      const dossier = buildDossier(plan, extractionsBySource, planTitleById);
+      const dossier = buildDossier(plan, extractionsBySource, planTitleById, aliasesByCanonical);
 
       // For 'update' actions with a resolved existing_page_id, load the existing
       // page markdown from disk so the LLM receives the "update this, don't

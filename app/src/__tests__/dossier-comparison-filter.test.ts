@@ -40,7 +40,7 @@ describe('buildDossier — comparison filter', () => {
     ]);
     const titleMap = new Map([['plan-react', 'React'], ['plan-vue', 'Vue']]);
 
-    const dossier = buildDossier(plan, extractions, titleMap);
+    const dossier = buildDossier(plan, extractions, titleMap, new Map());
 
     expect(dossier).toContain('React vs Vue');
     expect(dossier).toContain('frontend rivals');
@@ -63,7 +63,7 @@ describe('buildDossier — comparison filter', () => {
       ])],
     ]);
 
-    const dossier = buildDossier(plan, extractions, new Map());
+    const dossier = buildDossier(plan, extractions, new Map(), new Map());
 
     // Graceful degradation: current (pre-scoping) behaviour is the fallback —
     // both comparison relationships surface.
@@ -86,7 +86,7 @@ describe('buildDossier — comparison filter', () => {
     ]);
     const titleMap = new Map([['plan-react', 'React']]); // plan-missing absent
 
-    const dossier = buildDossier(plan, extractions, titleMap);
+    const dossier = buildDossier(plan, extractions, titleMap, new Map());
 
     // Can't resolve both subjects → fall back; both surface.
     expect(dossier).toContain('React vs Vue');
@@ -108,7 +108,7 @@ describe('buildDossier — comparison filter', () => {
     ]);
     const titleMap = new Map([['plan-react', 'React'], ['plan-vue', 'Vue']]);
 
-    const dossier = buildDossier(plan, extractions, titleMap);
+    const dossier = buildDossier(plan, extractions, titleMap, new Map());
 
     expect(dossier).toContain('still matches');
   });
@@ -128,7 +128,7 @@ describe('buildDossier — comparison filter', () => {
     ]);
     const titleMap = new Map([['plan-react', 'React'], ['plan-vue', 'Vue']]);
 
-    const dossier = buildDossier(plan, extractions, titleMap);
+    const dossier = buildDossier(plan, extractions, titleMap, new Map());
 
     expect(dossier).toContain('reverse order');
   });
@@ -148,7 +148,7 @@ describe('buildDossier — comparison filter', () => {
     ]);
     const titleMap = new Map([['plan-react', 'React'], ['plan-vue', 'Vue']]);
 
-    const dossier = buildDossier(plan, extractions, titleMap);
+    const dossier = buildDossier(plan, extractions, titleMap, new Map());
 
     expect(dossier).not.toContain('partial overlap');
   });
@@ -166,8 +166,8 @@ describe('buildDossier — comparison filter', () => {
       ])],
     ]);
 
-    expect(() => buildDossier(plan, extractions, new Map())).not.toThrow();
-    const dossier = buildDossier(plan, extractions, new Map());
+    expect(() => buildDossier(plan, extractions, new Map(), new Map())).not.toThrow();
+    const dossier = buildDossier(plan, extractions, new Map(), new Map());
     expect(dossier).toContain('still renders');
   });
 });
