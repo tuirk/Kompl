@@ -1045,6 +1045,33 @@ export function getAllAliases(): Array<{ alias: string; canonical_name: string; 
     .all() as Array<{ alias: string; canonical_name: string; canonical_page_id: string | null }>;
 }
 
+/**
+ * Return titles of all entity and concept pages — used by the resolver to match
+ * session entities/concepts against pages that already exist in the wiki. This
+ * is the cross-session bridge that keeps the alias drawer from being the sole
+ * signal for cross-session canonicalisation.
+ */
+export function getEntityAndConceptPageTitles(): Array<{ title: string; page_type: string }> {
+  return openDb()
+    .prepare(
+      `SELECT title, page_type FROM pages WHERE page_type IN ('entity', 'concept')`
+    )
+    .all() as Array<{ title: string; page_type: string }>;
+}
+
+/**
+ * Pin an alias row's canonical_page_id once the canonical's page has been
+ * committed. Shared by compile/commit and approve-plan so both auto-approve
+ * and manual-approve paths keep the alias drawer in sync with actual pages.
+ * Used for entity and concept pages (page_type === 'entity' | 'concept').
+ * No-op if there is no alias row for the title.
+ */
+export function backfillAliasCanonicalPageId(title: string, pageId: string): void {
+  openDb()
+    .prepare(`UPDATE aliases SET canonical_page_id = ? WHERE canonical_name = ? COLLATE NOCASE`)
+    .run(pageId, title);
+}
+
 
 // ============================================================================
 // Page plan helpers (Part 2c-i)

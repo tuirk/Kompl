@@ -26,6 +26,7 @@ import {
   setPendingContent,
   clearPendingContent,
   getPageTitleMap,
+  backfillAliasCanonicalPageId,
 } from './db';
 import { upsertVectorWithRetry } from './vector-upsert';
 import { syncPageWikilinks } from './wikilinks';
@@ -174,6 +175,17 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
     syncPageWikilinks(db, page_id, markdown, getPageTitleMap());
   } catch (wikiErr) {
     console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'wikilink_sync_failed', context: 'approve_plan', plan_id, page_id, error: wikiErr instanceof Error ? wikiErr.message : String(wikiErr) }));
+  }
+
+  // Phase 3b: backfill alias canonical_page_id for entity + concept pages.
+  // Parity with compile/commit so draft-approved pages also pin aliases,
+  // which makes Layer 1 fuzzy in future sessions hit the fast path.
+  if (plan.page_type === 'entity' || plan.page_type === 'concept') {
+    try {
+      backfillAliasCanonicalPageId(plan.title, page_id);
+    } catch {
+      // non-critical
+    }
   }
 
   // Phase 3b: vector upsert (fire-and-forget, retried internally).

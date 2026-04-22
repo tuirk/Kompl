@@ -92,7 +92,7 @@ async function callExtract(sourceId: string, sessionId: string): Promise<void> {
   await throwOnError('extract', res, sessionId);
 }
 
-async function callResolve(sessionId: string): Promise<{ canonical_entities: unknown[] }> {
+async function callResolve(sessionId: string): Promise<{ canonical_entities: unknown[]; canonical_concepts: unknown[] }> {
   const res = await fetch(`${APP_URL}/api/compile/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -100,7 +100,11 @@ async function callResolve(sessionId: string): Promise<{ canonical_entities: unk
     signal: AbortSignal.timeout(180_000),
   });
   await throwOnError('resolve', res, sessionId);
-  return res.json() as Promise<{ canonical_entities: unknown[] }>;
+  const parsed = await res.json() as { canonical_entities?: unknown[]; canonical_concepts?: unknown[] };
+  return {
+    canonical_entities: parsed.canonical_entities ?? [],
+    canonical_concepts: parsed.canonical_concepts ?? [],
+  };
 }
 
 async function callMatch(
@@ -120,12 +124,18 @@ async function callMatch(
 async function callPlan(
   sessionId: string,
   canonicalEntities: unknown[],
+  canonicalConcepts: unknown[],
   matches: unknown[]
 ): Promise<{ stats: { total: number } }> {
   const res = await fetch(`${APP_URL}/api/compile/plan`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, canonical_entities: canonicalEntities, matches }),
+    body: JSON.stringify({
+      session_id: sessionId,
+      canonical_entities: canonicalEntities,
+      canonical_concepts: canonicalConcepts,
+      matches,
+    }),
     signal: AbortSignal.timeout(30_000),
   });
   await throwOnError('plan', res, sessionId);
@@ -319,7 +329,13 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   updateCompileStep(sessionId, 'resolve', 'running');
   const resolveResult = await timed(sessionId, 'resolve', () => callResolve(sessionId));
   const canonicalEntities = resolveResult.canonical_entities;
-  updateCompileStep(sessionId, 'resolve', 'done', `${canonicalEntities.length} canonical entities`);
+  const canonicalConcepts = resolveResult.canonical_concepts;
+  updateCompileStep(
+    sessionId,
+    'resolve',
+    'done',
+    `${canonicalEntities.length} entities, ${canonicalConcepts.length} concepts`
+  );
   assertNotCancelled(sessionId);
 
   // Step 3: match — ALWAYS re-run (cheap: TF-IDF, no LLM unless triage).
@@ -354,7 +370,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     // Fresh run: plan then draft.
     updateCompileStep(sessionId, 'plan', 'running');
     const planResult = await timed(sessionId, 'plan', () =>
-      callPlan(sessionId, canonicalEntities, matchResult.matches)
+      callPlan(sessionId, canonicalEntities, canonicalConcepts, matchResult.matches)
     );
     updateCompileStep(sessionId, 'plan', 'done', `${planResult.stats.total} pages planned`);
     assertNotCancelled(sessionId);

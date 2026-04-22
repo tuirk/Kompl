@@ -44,6 +44,7 @@ import {
   incrementPageSourceCount,
   setPendingContent,
   clearPendingContent,
+  backfillAliasCanonicalPageId,
 } from '../../../../lib/db';
 import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
 import { syncPageWikilinks } from '../../../../lib/wikilinks';
@@ -311,12 +312,12 @@ async function commitSession(session_id: string): Promise<Response> {
       // Do not mark as failed — the page row is durable; only the file is missing.
     }
 
-    // Phase 3b: backfill alias canonical_page_id for entity pages (fire-and-forget)
-    if (plan.page_type === 'entity') {
+    // Phase 3b: backfill alias canonical_page_id for entity + concept pages
+    // (fire-and-forget). Concepts now qualify because canonical_concepts flow
+    // through the resolver post-Core change 2 and populate aliases rows.
+    if (plan.page_type === 'entity' || plan.page_type === 'concept') {
       try {
-        db.prepare(
-          `UPDATE aliases SET canonical_page_id = ? WHERE canonical_name = ? COLLATE NOCASE`
-        ).run(page_id, plan.title);
+        backfillAliasCanonicalPageId(plan.title, page_id);
       } catch {
         // non-critical
       }
