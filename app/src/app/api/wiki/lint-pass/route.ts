@@ -1,7 +1,7 @@
 /**
  * POST /api/wiki/lint-pass
  *
- * The lint engine. Called by n8n lint-wiki.json (Schedule: every 6h + manual webhook).
+ * The lint engine. Called by n8n lint-wiki.json (Schedule: Mon 11:30 local + manual webhook).
  * Also callable directly from /settings "Run Now" button.
  *
  * Checks performed:

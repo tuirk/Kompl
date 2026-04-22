@@ -9,7 +9,6 @@ const DEFERRED = [
   'Tauri tray app — one-click Start/Stop/Open from the system tray',
   'Basic schema editing (moving sources under other topics, renaming topics, etc.)',
   'Improved Wiki Health Checks',
-  'Precleaning for misc pages (cookies, privacy policy etc)',
   'Weekly backup remote channels — Telegram attach + Google Drive OAuth2',
 ];
 

@@ -4,7 +4,7 @@
  * Returns up to 5 wiki pages most similar to the given page, ranked by
  * cosine similarity from Chroma embeddings. Zero LLM cost.
  *
- * Gated by the `related_pages_min_sources` setting (default 100): if the
+ * Gated by the `related_pages_min_sources` setting (default 10): if the
  * active source count is below the threshold, returns enabled:false so the
  * UI can stay hidden until the wiki has enough content for meaningful results.
  */

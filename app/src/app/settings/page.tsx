@@ -98,6 +98,12 @@ export default function SettingsPage() {
   }
   const [lintLastResult, setLintLastResult] = useState<LintLastResult | null>(null);
 
+  // Weekly Digest state — intentionally preserved while the Digest section is
+  // locked off (see the LOCKED-style section below and docs/Tui-read.me).
+  // Unlocking is a one-section swap; these hooks populate from /api/settings
+  // on mount and are ready for the interactive form to come back. DO NOT
+  // delete as unused — lint may flag them, they are load-bearing for re-enable.
+  /* eslint-disable @typescript-eslint/no-unused-vars */
   const [digestEnabled, setDigestEnabled] = useState<boolean | null>(null);
   const [digestSaving, setDigestSaving] = useState(false);
   const [digestSaved, setDigestSaved] = useState(false);
@@ -110,6 +116,7 @@ export default function SettingsPage() {
   const [digestChatIdSaving, setDigestChatIdSaving] = useState(false);
   const [digestChatIdSaved, setDigestChatIdSaved] = useState(false);
   const [digestShowChatId, setDigestShowChatId] = useState(false);
+  /* eslint-enable @typescript-eslint/no-unused-vars */
 
   const [mcpCopied, setMcpCopied] = useState(false);
 
@@ -238,6 +245,10 @@ export default function SettingsPage() {
     }
   }
 
+  // Weekly Digest handlers — intentionally preserved, see Weekly Digest state
+  // block above and the LOCKED section below. DO NOT delete as unused — they
+  // are what the interactive form wires back to when the section is unlocked.
+  /* eslint-disable @typescript-eslint/no-unused-vars */
   async function toggleDigest() {
     if (digestEnabled === null || digestSaving) return;
     const newVal = !digestEnabled;
@@ -275,6 +286,7 @@ export default function SettingsPage() {
     setDigestChatIdSaved(true);
     setTimeout(() => setDigestChatIdSaved(false), 2000);
   }
+  /* eslint-enable @typescript-eslint/no-unused-vars */
 
   async function toggleDeploymentMode() {
     if (deploymentMode === null || deploymentSaving) return;
@@ -760,8 +772,23 @@ export default function SettingsPage() {
             }}
           >
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: 8 }}>
                 Daily Gemini spend cap
+                <span
+                  style={{
+                    padding: '1px 6px',
+                    fontSize: '0.65rem',
+                    fontWeight: 700,
+                    letterSpacing: '0.08em',
+                    textTransform: 'uppercase',
+                    background: 'rgba(var(--warning-rgb), 0.1)',
+                    border: '1px solid rgba(var(--warning-rgb), 0.25)',
+                    color: 'var(--warning)',
+                    borderRadius: 4,
+                  }}
+                >
+                  Beta
+                </span>
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                 Hard USD ceiling on Gemini API spend per UTC day. When exceeded, LLM calls raise a cost-ceiling error and the pipeline marks affected work as retryable. Resets at midnight UTC.
@@ -1146,7 +1173,17 @@ export default function SettingsPage() {
               </div>
             )}
             {importSuccess && (
-              <div style={{ color: 'var(--accent)', marginTop: '0.75rem', fontSize: '0.85rem' }}>
+              <div
+                style={{
+                  marginTop: '0.75rem',
+                  padding: '0.6rem 0.9rem',
+                  background: 'var(--success-bg)',
+                  border: '1px solid var(--success-border)',
+                  borderRadius: 6,
+                  color: 'var(--success)',
+                  fontSize: '0.85rem',
+                }}
+              >
                 Imported — redirecting…
               </div>
             )}
@@ -1308,13 +1345,30 @@ export default function SettingsPage() {
             }}
           >
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: 8 }}>
                 Wiki Health Checks
+                <span
+                  style={{
+                    padding: '1px 6px',
+                    fontSize: '0.65rem',
+                    fontWeight: 700,
+                    letterSpacing: '0.08em',
+                    textTransform: 'uppercase',
+                    background: 'rgba(var(--warning-rgb), 0.1)',
+                    border: '1px solid rgba(var(--warning-rgb), 0.25)',
+                    color: 'var(--warning)',
+                    borderRadius: 4,
+                  }}
+                >
+                  Beta
+                </span>
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                 Scans for orphan pages, stale summaries, dead provenance links,
                 entity names with no wiki page (3+ sources mention them), and
-                contradictions between pages. Runs automatically every 6 hours when enabled.
+                contradictions between pages. Runs weekly on Mondays at 11:30 local time
+                when enabled. Personal-device installs also run lint at startup if it
+                hasn&apos;t run in the last 36 hours.
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0, alignItems: 'center' }}>
@@ -1530,16 +1584,16 @@ export default function SettingsPage() {
           )}
         </section>
 
-        {/* Weekly Digest */}
+        {/* Weekly Digest — locked off like Entity Expansion until schedule/copy/credentials fixes land (see docs/Tui-read.me) */}
         <section
           style={{
             border: '1px solid var(--border)',
             borderRadius: 8,
             overflow: 'hidden',
             marginTop: '1rem',
+            opacity: 0.75,
           }}
         >
-          {/* Header row: title + toggle */}
           <div
             style={{
               padding: '1.25rem 1.5rem',
@@ -1550,172 +1604,54 @@ export default function SettingsPage() {
             }}
           >
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-                Weekly Digest
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '0.35rem' }}>
+                <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>Weekly Digest</span>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 8, letterSpacing: '0.8px',
+                  textTransform: 'uppercase', color: 'var(--fg-dim)',
+                  border: '1px solid var(--border)', padding: '2px 6px',
+                }}>
+                  Experimental
+                </span>
               </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Get a summary of your wiki changes every Sunday at midnight (UTC).
-                Digest won&apos;t send unless both Telegram fields are filled.
+              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.6, marginBottom: '0.75rem' }}>
+                A weekly summary of your wiki activity — sources ingested, pages created/updated, drafts approved,
+                and a health-check section — delivered to a Telegram chat of your choice.
+              </div>
+              {/* Warning banner */}
+              <div style={{
+                display: 'flex', alignItems: 'flex-start', gap: 8,
+                background: 'rgba(var(--warning-rgb),0.08)',
+                border: '1px solid rgba(var(--warning-rgb),0.25)',
+                padding: '0.6rem 0.85rem',
+                borderRadius: 4,
+              }}>
+                <span style={{ fontSize: 13, flexShrink: 0, marginTop: 1 }}>⚠️</span>
+                <span style={{ fontSize: '0.8rem', color: 'var(--warning)', lineHeight: 1.5 }}>
+                  <strong>Not ready to ship.</strong>{' '}
+                  Scheduling, timezone handling, and credential-validation bugs need fixing first.
+                </span>
               </div>
             </div>
-            <button
-              className={digestEnabled ? undefined : 'btn-outline'}
-              onClick={() => void toggleDigest()}
-              disabled={digestEnabled === null || digestSaving}
+            <div
               style={{
                 flexShrink: 0,
                 padding: '0.45rem 1rem',
                 borderRadius: 20,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-card)',
+                color: 'var(--fg-dim)',
+                fontWeight: 600,
                 fontSize: '0.85rem',
-                opacity: digestEnabled === null ? 0.5 : 1,
+                cursor: 'not-allowed',
+                userSelect: 'none',
                 minWidth: 80,
+                textAlign: 'center',
               }}
             >
-              {digestEnabled === null ? '…' : digestEnabled ? 'ON' : 'OFF'}
-            </button>
-          </div>
-
-          {/* Telegram fields */}
-          <div
-            style={{
-              padding: '0 1.5rem 1.25rem',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.85rem',
-            }}
-          >
-            {/* Bot Token */}
-            <div>
-              <label
-                style={{
-                  display: 'block',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  color: 'var(--fg-secondary)',
-                  marginBottom: '0.35rem',
-                  fontFamily: 'var(--font-mono)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                }}
-              >
-                Telegram Bot Token
-              </label>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <input
-                  type={digestShowToken ? 'text' : 'password'}
-                  placeholder={digestTokenIsSet ? '••••••••  (already set — paste to replace)' : 'Paste token from @BotFather'}
-                  value={digestToken}
-                  onChange={(e) => setDigestToken(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') void saveDigestToken(); }}
-                  style={{
-                    flex: 1,
-                    padding: '0.45rem 0.7rem',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-card)',
-                    color: 'var(--fg)',
-                    fontSize: '0.9rem',
-                    fontFamily: 'var(--font-mono)',
-                  }}
-                />
-                <button
-                  className="btn-outline"
-                  onClick={() => setDigestShowToken((v) => !v)}
-                  style={{ padding: '0.45rem 0.7rem', fontSize: '0.8rem', flexShrink: 0 }}
-                >
-                  {digestShowToken ? 'Hide' : 'Show'}
-                </button>
-                <button
-                  onClick={() => void saveDigestToken()}
-                  disabled={!digestToken.trim() || digestTokenSaving}
-                  style={{
-                    padding: '0.45rem 0.85rem',
-                    fontSize: '0.85rem',
-                    flexShrink: 0,
-                    opacity: !digestToken.trim() ? 0.45 : 1,
-                  }}
-                >
-                  {digestTokenSaving ? 'Saving…' : digestTokenSaved ? 'Saved' : 'Save'}
-                </button>
-              </div>
-              <div style={{ fontSize: '0.78rem', color: 'var(--fg-dim)', marginTop: '0.3rem' }}>
-                Create a bot via @BotFather on Telegram, copy the token here.
-              </div>
-            </div>
-
-            {/* Chat ID */}
-            <div>
-              <label
-                style={{
-                  display: 'block',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  color: 'var(--fg-secondary)',
-                  marginBottom: '0.35rem',
-                  fontFamily: 'var(--font-mono)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                }}
-              >
-                Telegram Chat ID
-              </label>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <input
-                  type={digestShowChatId ? 'text' : 'password'}
-                  placeholder="e.g. 123456789"
-                  value={digestChatId}
-                  onChange={(e) => setDigestChatId(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') void saveDigestChatId(); }}
-                  style={{
-                    flex: 1,
-                    padding: '0.45rem 0.7rem',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-card)',
-                    color: 'var(--fg)',
-                    fontSize: '0.9rem',
-                    fontFamily: 'var(--font-mono)',
-                  }}
-                />
-                <button
-                  className="btn-outline"
-                  onClick={() => setDigestShowChatId((v) => !v)}
-                  style={{ padding: '0.45rem 0.7rem', fontSize: '0.8rem', flexShrink: 0 }}
-                >
-                  {digestShowChatId ? 'Hide' : 'Show'}
-                </button>
-                <button
-                  onClick={() => void saveDigestChatId()}
-                  disabled={!digestChatId.trim() || digestChatIdSaving}
-                  style={{
-                    padding: '0.45rem 0.85rem',
-                    fontSize: '0.85rem',
-                    flexShrink: 0,
-                    opacity: !digestChatId.trim() ? 0.45 : 1,
-                  }}
-                >
-                  {digestChatIdSaving ? 'Saving…' : digestChatIdSaved ? 'Saved' : 'Save'}
-                </button>
-              </div>
-              <div style={{ fontSize: '0.78rem', color: 'var(--fg-dim)', marginTop: '0.3rem' }}>
-                Send /start to your bot, then visit api.telegram.org/bot{'<TOKEN>'}/getUpdates to find your chat ID.
-              </div>
+              OFF
             </div>
           </div>
-
-          {digestSaved && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved.
-            </div>
-          )}
         </section>
 
         {/* ========== Integrations ========== */}

@@ -81,7 +81,10 @@
   --bg-input:       #121316;   /* form input surface */
 
   /* --- Semantic --- */
-  --success:       #10b981;
+  --success:        #10b981;
+  --success-rgb:    16, 185, 129;
+  --success-bg:     rgba(16, 185, 129, 0.1);   /* dark-theme tinted success band */
+  --success-border: rgba(16, 185, 129, 0.25);
   --danger:        #ef4444;
   --danger-rgb:    239, 68, 68;
   --warning:       #f59e0b;
