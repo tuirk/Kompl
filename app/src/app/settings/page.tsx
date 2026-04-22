@@ -783,8 +783,23 @@ export default function SettingsPage() {
               }}
             >
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
+                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem', display: 'flex', alignItems: 'center', gap: 8 }}>
                   Max sources per page
+                  <span
+                    style={{
+                      padding: '1px 6px',
+                      fontSize: '0.65rem',
+                      fontWeight: 700,
+                      letterSpacing: '0.08em',
+                      textTransform: 'uppercase',
+                      background: 'rgba(var(--warning-rgb), 0.1)',
+                      border: '1px solid rgba(var(--warning-rgb), 0.25)',
+                      color: 'var(--warning)',
+                      borderRadius: 4,
+                    }}
+                  >
+                    Beta
+                  </span>
                 </div>
                 <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                   When a page has many contributing sources, the drafter only sees
@@ -828,8 +843,23 @@ export default function SettingsPage() {
               }}
             >
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
+                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem', display: 'flex', alignItems: 'center', gap: 8 }}>
                   Minimum relevance score
+                  <span
+                    style={{
+                      padding: '1px 6px',
+                      fontSize: '0.65rem',
+                      fontWeight: 700,
+                      letterSpacing: '0.08em',
+                      textTransform: 'uppercase',
+                      background: 'rgba(var(--warning-rgb), 0.1)',
+                      border: '1px solid rgba(var(--warning-rgb), 0.25)',
+                      color: 'var(--warning)',
+                      borderRadius: 4,
+                    }}
+                  >
+                    Beta
+                  </span>
                 </div>
                 <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                   Sources scoring below this TF-IDF cosine similarity against the
