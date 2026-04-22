@@ -30,6 +30,14 @@
      --danger       Errors, failed badges                     (#ef4444)
      --warning      Warnings, in-progress badges              (#f59e0b)
 
+   Page-type taxonomy (wiki schema classification):
+     --page-concept    Concept pages                          (#5b8def)
+     --page-entity     Entity pages                           (#8b5cf6)
+     --page-comparison Comparison pages                       (#d97757)
+     --page-overview   Overview pages                         (#5eaaa8)
+     source-summary reuses --fg-muted intentionally (low-signal).
+     Consumed via app/src/lib/page-type-palette.ts — do not reference elsewhere.
+
    Typography (exposed as vars from next/font, applied below):
      --font-heading  Space Grotesk — headers, primary labels
      --font-body     Inter — body text, markdown
@@ -89,6 +97,16 @@
   --danger-rgb:    239, 68, 68;
   --warning:       #f59e0b;
   --warning-rgb:   245, 158, 11;
+
+  /* --- Page-type taxonomy (wiki schema classification) ---
+     Disjoint from --success/--danger/--warning/--accent/--fg-dim so page-type
+     swatches are never confused with status signals. Consumed via
+     app/src/lib/page-type-palette.ts — do not reference elsewhere.
+     source-summary reuses --fg-muted (low-signal semantic), not its own var. */
+  --page-concept:    #5b8def;
+  --page-entity:     #8b5cf6;
+  --page-comparison: #d97757;
+  --page-overview:   #5eaaa8;
 
   /* --- Kinetic transitions --- */
   --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -281,9 +299,10 @@ textarea.connector-textarea::placeholder {
 }
 
 /* =============================================================================
-   Type badges — pill-shaped, 1px border (Concept / Entity / Topic)
-   Canonical hex values live in wiki/page.tsx (BADGE_STYLES) and
-   wiki/graph/page.tsx (NODE_COLORS — canvas can't use CSS vars).
+   Type badges — pill-shaped, 1px border (Concept / Entity / Comparison / Overview)
+   Canonical colors live in app/src/lib/page-type-palette.ts — every wiki UI
+   surface (sidebar, index cards, graph nodes + legend, nav search, page header)
+   reads from that single module.
    ============================================================================= */
 
 .badge {

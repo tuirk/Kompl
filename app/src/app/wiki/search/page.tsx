@@ -9,6 +9,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PageRow } from '../../../lib/db';
 import WikiPageHeader from '../../../components/WikiPageHeader';
+import { PAGE_TYPE_VAR } from '../../../lib/page-type-palette';
 
 interface SearchResult {
   items: PageRow[];
@@ -22,13 +23,6 @@ function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number)
     timer = setTimeout(() => fn(...args), ms);
   }) as T;
 }
-
-const PAGE_TYPE_COLORS: Record<string, string> = {
-  'source-summary': 'var(--fg-dim)',
-  concept: 'var(--accent)',
-  entity: 'var(--warning)',
-  topic: 'var(--success)',
-};
 
 export default function WikiSearchPage() {
   const [query, setQuery] = useState('');
@@ -119,7 +113,7 @@ export default function WikiSearchPage() {
                 width: 7,
                 height: 7,
                 borderRadius: '50%',
-                background: PAGE_TYPE_COLORS[page.page_type] ?? 'var(--fg-dim)',
+                background: PAGE_TYPE_VAR[page.page_type as keyof typeof PAGE_TYPE_VAR] ?? 'var(--fg-dim)',
                 flexShrink: 0,
               }}
             />

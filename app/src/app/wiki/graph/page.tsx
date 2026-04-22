@@ -14,6 +14,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ForceGraphMethods } from 'react-force-graph-2d';
+import { PAGE_TYPE_HEX } from '../../../lib/page-type-palette';
 
 // react-force-graph-2d is the 2D-only variant of the force-graph family.
 // Using it instead of the barrel package (react-force-graph) avoids pulling in
@@ -57,13 +58,10 @@ interface GraphData {
   links: GraphLink[];
 }
 
-const NODE_COLORS: Record<string, string> = {
-  'source-summary': '#6b7280',
-  concept:          '#3b82f6',
-  entity:           '#f59e0b',
-  comparison:       '#8b5cf6',
-  overview:         '#10b981',
-};
+// Graph node + Schema Classification legend colors. Canvas can't read CSS vars,
+// so it consumes raw hex from the shared palette module. Widened to
+// Record<string,string> because graph nodes carry `group: string`.
+const NODE_COLORS: Record<string, string> = PAGE_TYPE_HEX;
 
 const NODE_COLOR_DEFAULT = '#8899a6';
 

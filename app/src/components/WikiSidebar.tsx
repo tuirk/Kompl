@@ -9,20 +9,13 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import type { CategoryGroup, PageRow } from '../lib/db';
+import { PAGE_TYPE_VAR, ARCHIVED_COLOR } from '../lib/page-type-palette';
 
 interface WikiSidebarProps {
   initialGroups: CategoryGroup[];
   activePageId?: string;
   activeCategory?: string;
 }
-
-const PAGE_TYPE_COLORS: Record<string, string> = {
-  'source-summary': 'var(--fg-dim)',
-  concept: 'var(--accent)',
-  entity: 'var(--warning)',
-  comparison: 'var(--danger)',
-  overview: 'var(--success)',
-};
 
 /** Client-side equivalent of getCategoryGroups() — groups PageRow[] by category. */
 function buildCategoryGroups(pages: PageRow[]): CategoryGroup[] {
@@ -264,7 +257,7 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
                       width: 6,
                       height: 6,
                       borderRadius: '50%',
-                      background: p.page_type === 'archived' ? 'var(--fg-dim)' : (PAGE_TYPE_COLORS[p.page_type] ?? 'var(--fg-dim)'),
+                      background: p.page_type === 'archived' ? ARCHIVED_COLOR : (PAGE_TYPE_VAR[p.page_type as keyof typeof PAGE_TYPE_VAR] ?? ARCHIVED_COLOR),
                       flexShrink: 0,
                     }}
                   />
@@ -315,7 +308,7 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
                   width: 6,
                   height: 6,
                   borderRadius: '50%',
-                  background: PAGE_TYPE_COLORS['comparison'],
+                  background: PAGE_TYPE_VAR.comparison,
                   flexShrink: 0,
                 }}
               />
