@@ -100,13 +100,16 @@ finalize_session() {
 read_page_markdown() {
     # Prefer pending_content (set before file flush in outbox pattern),
     # fall back to reading content_path from the app container.
+    # Pass the title through `docker exec -e` because host env exports do
+    # not cross the container boundary.
     local title="$1"
-    export QB_TITLE="$title"
-    query_db "
+    docker exec -e QB_TITLE="$title" komplcore-app-1 python3 -c "
 import os, sqlite3, gzip
-con = sqlite3.connect('/data/kompl.db')
+con = sqlite3.connect('/data/db/kompl.db')
+# Filter by entity — a single title can have both an 'original-source' and an
+# 'entity' row; only the entity page is the one that receives match-updates.
 row = con.execute(
-    'SELECT page_id, content_path, pending_content FROM pages WHERE title = ? COLLATE NOCASE LIMIT 1',
+    \"SELECT page_id, content_path, pending_content FROM pages WHERE title = ? COLLATE NOCASE AND page_type = 'entity' LIMIT 1\",
     (os.environ['QB_TITLE'],)
 ).fetchone()
 if row is None:
