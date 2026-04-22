@@ -20,6 +20,8 @@ import {
   getMinSourceChars, setMinSourceChars,
   getMinDraftChars, setMinDraftChars,
   getEntityPromotionThreshold, setEntityPromotionThreshold,
+  getDossierMaxSources, setDossierMaxSources,
+  getDossierMinScore, setDossierMinScore,
   getDailyCapUsd, setDailyCapUsd,
   getChatModel, setChatModel, isChatModel,
   getCompileModel, setCompileModel,
@@ -42,6 +44,8 @@ function buildResponse() {
     min_source_chars: getMinSourceChars(),
     min_draft_chars: getMinDraftChars(),
     entity_promotion_threshold: getEntityPromotionThreshold(),
+    dossier_max_sources: getDossierMaxSources(),
+    dossier_min_score: getDossierMinScore(),
     daily_cap_usd: getDailyCapUsd(),
     chat_model: getChatModel(),
     compile_model: getCompileModel(),
@@ -65,6 +69,8 @@ export async function POST(request: Request) {
     min_source_chars?: number;
     min_draft_chars?: number;
     entity_promotion_threshold?: number;
+    dossier_max_sources?: number;
+    dossier_min_score?: number;
     daily_cap_usd?: number;
     chat_model?: string;
     compile_model?: string;
@@ -77,6 +83,7 @@ export async function POST(request: Request) {
     'lint_enabled', 'deployment_mode',
     'min_source_chars', 'min_draft_chars',
     'entity_promotion_threshold',
+    'dossier_max_sources', 'dossier_min_score',
     'daily_cap_usd',
     'chat_model',
     'compile_model',
@@ -178,6 +185,26 @@ export async function POST(request: Request) {
       );
     }
     setEntityPromotionThreshold(body.entity_promotion_threshold);
+  }
+
+  if (body.dossier_max_sources !== undefined) {
+    if (!Number.isInteger(body.dossier_max_sources) || body.dossier_max_sources < 1) {
+      return NextResponse.json(
+        { error: 'dossier_max_sources must be an integer ≥ 1' },
+        { status: 422 },
+      );
+    }
+    setDossierMaxSources(body.dossier_max_sources);
+  }
+
+  if (body.dossier_min_score !== undefined) {
+    if (typeof body.dossier_min_score !== 'number' || !Number.isFinite(body.dossier_min_score) || body.dossier_min_score < 0) {
+      return NextResponse.json(
+        { error: 'dossier_min_score must be a non-negative number (0 = include anything with any overlap)' },
+        { status: 422 },
+      );
+    }
+    setDossierMinScore(body.dossier_min_score);
   }
 
   if (body.daily_cap_usd !== undefined) {
