@@ -116,11 +116,18 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
       setPendingContent(page_id, markdown);
 
       if (sourceIds.length > 0) {
-        db.prepare('UPDATE pages SET source_count = ? WHERE page_id = ?').run(sourceIds.length, page_id);
         const contribType = plan.action === 'update' ? 'updated' : 'created';
         for (const sid of sourceIds) {
           insertProvenance({ source_id: sid, page_id, content_hash: contentHash, contribution_type: contribType });
         }
+        // Derive source_count from provenance — mirrors compile/commit. Must
+        // run AFTER insertProvenance so the new rows are counted. COUNT DISTINCT
+        // handles the allowed duplicate (source_id, page_id) rows.
+        db.prepare(
+          `UPDATE pages SET source_count = (
+             SELECT COUNT(DISTINCT source_id) FROM provenance WHERE page_id = ?
+           ) WHERE page_id = ?`
+        ).run(page_id, page_id);
       }
 
       // FTS5 upsert — strip frontmatter so YAML keys don't pollute the index.
