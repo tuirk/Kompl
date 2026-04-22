@@ -16,6 +16,13 @@ export function setupTestDb(): TestDbHandle {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
+  // Pin entity_promotion_threshold to 2 so most test fixtures (which seed
+  // 2-3 sources) reliably promote their entities without also pinning the
+  // threshold in every file. Tests that specifically exercise the threshold
+  // override via setSetting.
+  db.prepare(
+    `INSERT OR REPLACE INTO settings (key, value) VALUES ('entity_promotion_threshold', '2')`
+  ).run();
   __setDbForTesting(db);
   return {
     db,
