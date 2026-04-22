@@ -2241,11 +2241,11 @@ export function setAutoApprove(value: boolean): void {
 
 /**
  * Minimum active source count before "related pages" panel is shown.
- * Defaults to 100 if not set.
+ * Defaults to 10 if not set.
  */
 export function getRelatedPagesMinSources(): number {
   const v = getSetting('related_pages_min_sources');
-  return v !== null ? Math.max(0, parseInt(v, 10)) : 100;
+  return v !== null ? Math.max(0, parseInt(v, 10)) : 10;
 }
 
 export function setRelatedPagesMinSources(value: number): void {
@@ -2576,7 +2576,7 @@ export function getStaleSources(thresholdDays: number): StaleSourceRow[] {
 // ============================================================================
 
 /**
- * Whether the scheduled lint pass (n8n every 6h) is enabled.
+ * Whether the scheduled lint pass (n8n Mon 11:30; 36h startup hook on personal-device) is enabled.
  * Defaults to true. When false, lint-pass/route.ts returns early immediately.
  * Manual trigger in settings bypasses this flag.
  */
