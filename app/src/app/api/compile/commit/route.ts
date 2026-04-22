@@ -244,10 +244,6 @@ async function commitSession(session_id: string): Promise<Response> {
           previous_content_path: null, // set by clearPendingContent after Phase 3a
         });
 
-        // Fix source_count to actual number of contributing sources
-        db.prepare(`UPDATE pages SET source_count = ? WHERE page_id = ?`)
-          .run(sourceIds.length, page_id);
-
         // Outbox: store markdown for Phase 3a flush + crash recovery.
         setPendingContent(page_id, markdown);
 
@@ -260,6 +256,17 @@ async function commitSession(session_id: string): Promise<Response> {
             contribution_type: contribType,
           });
         }
+
+        // Derive source_count from provenance — the ground truth. Must run
+        // AFTER the insertProvenance loop so the new rows are visible to the
+        // subquery. COUNT(DISTINCT source_id) handles provenance's allowed
+        // duplicate (source_id, page_id) rows (e.g. 'created' + 'updated'
+        // for the same source across sessions).
+        db.prepare(
+          `UPDATE pages SET source_count = (
+             SELECT COUNT(DISTINCT source_id) FROM provenance WHERE page_id = ?
+           ) WHERE page_id = ?`
+        ).run(page_id, page_id);
 
         // FTS5 upsert
         db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(page_id);
