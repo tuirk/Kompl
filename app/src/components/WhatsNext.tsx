@@ -10,6 +10,7 @@ const DEFERRED = [
   'Basic schema editing (moving sources under other topics, renaming topics, etc.)',
   'Improved Wiki Health Checks',
   'Weekly backup remote channels — Telegram attach + Google Drive OAuth2',
+  'Rank new entity and concept pages by signal strength and defer the weak ones, so the AI only drafts pages worth writing',
 ];
 
 const NOTES = [

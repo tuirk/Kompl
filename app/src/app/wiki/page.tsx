@@ -12,16 +12,25 @@ import Link from 'next/link';
 import { getCategoryGroups } from '../../lib/db';
 import WikiSidebar from '../../components/WikiSidebar';
 import WikiPageHeader, { formatHeaderDatetime } from '../../components/WikiPageHeader';
+import WikiCategorySection from '../../components/WikiCategorySection';
+import { PAGE_TYPE_HEX } from '../../lib/page-type-palette';
 
-// Tinted badge pill styles per page_type. Canonical hex values — keep in sync with
-// NODE_COLORS in wiki/graph/page.tsx (canvas can't use CSS vars).
+// Tinted badge pill styles per page_type. Derived from the shared PAGE_TYPE_HEX
+// palette so the index cards stay aligned with sidebar dots + graph legend.
+function hexToRgb(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+}
+function makeBadge(hex: string) {
+  const rgb = hexToRgb(hex);
+  return { bg: `rgba(${rgb},0.1)`, border: `rgba(${rgb},0.2)`, text: hex };
+}
 const BADGE_STYLES: Record<string, { bg: string; border: string; text: string }> = {
-  concept:          { bg: 'rgba(59,130,246,0.1)',   border: 'rgba(59,130,246,0.2)',   text: '#60A5FA' },
-  entity:           { bg: 'rgba(245,158,11,0.1)',   border: 'rgba(245,158,11,0.2)',   text: '#f59e0b' },
-  topic:            { bg: 'rgba(16,185,129,0.1)',   border: 'rgba(16,185,129,0.2)',   text: '#10b981' },
-  overview:         { bg: 'rgba(16,185,129,0.1)',   border: 'rgba(16,185,129,0.2)',   text: '#10b981' },
-  comparison:       { bg: 'rgba(139,92,246,0.1)',   border: 'rgba(139,92,246,0.2)',   text: '#8b5cf6' },
-  'source-summary': { bg: 'rgba(107,114,128,0.15)', border: 'rgba(107,114,128,0.25)', text: '#9ca3af' },
+  ...Object.fromEntries(
+    Object.entries(PAGE_TYPE_HEX).map(([k, hex]) => [k, makeBadge(hex)])
+  ),
+  // Legacy key — never produced by backend; retained intentionally.
+  topic: makeBadge('#10b981'),
 };
 
 export default function WikiIndexPage() {
@@ -65,33 +74,11 @@ export default function WikiIndexPage() {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 64 }}>
             {groups.map((group) => (
-              <section key={group.category}>
-
-                {/* Category header: name + gradient divider */}
-                <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 24 }}>
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-heading)',
-                      fontWeight: 700,
-                      fontSize: 14,
-                      lineHeight: '20px',
-                      letterSpacing: 3.5,
-                      textTransform: 'uppercase',
-                      color: 'var(--fg)',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {group.category}
-                  </span>
-                  <div
-                    style={{
-                      flex: 1,
-                      height: 1,
-                      background: 'linear-gradient(90deg, rgba(var(--separator-rgb),0.3) 0%, rgba(var(--separator-rgb),0) 100%)',
-                    }}
-                  />
-                </div>
-
+              <WikiCategorySection
+                key={group.category}
+                category={group.category}
+                pageCount={group.pages.length}
+              >
                 {/* 4-column card grid — 1px gap shows through as separator.
                     minmax(0, 1fr) overrides the default `auto` min so nowrap children
                     (title/summary ellipsis) can truncate instead of blowing out the column. */}
@@ -239,7 +226,7 @@ export default function WikiIndexPage() {
                     );
                   })}
                 </div>
-              </section>
+              </WikiCategorySection>
             ))}
           </div>
         )}

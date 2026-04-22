@@ -35,6 +35,7 @@ import {
 } from '../../../lib/markdown';
 import WikiSidebar from '../../../components/WikiSidebar';
 import SavedLinksInteractive from './SavedLinksInteractive';
+import { PAGE_TYPE_VAR, PAGE_TYPE_LABELS, type PageType } from '../../../lib/page-type-palette';
 
 const SAVED_LINKS_PAGE_ID = 'saved-links';
 
@@ -42,13 +43,11 @@ interface PageProps {
   params: Promise<{ page_id: string }>;
 }
 
-const PAGE_TYPE_BADGE: Record<string, { label: string; color: string }> = {
-  'source-summary': { label: 'source summary', color: 'var(--fg-dim)' },
-  concept: { label: 'concept', color: 'var(--accent)' },
-  entity: { label: 'entity', color: 'var(--warning)' },
-  comparison: { label: 'comparison', color: 'var(--danger)' },
-  overview: { label: 'overview', color: 'var(--success)' },
-};
+function pageTypeBadge(t: string): { label: string; color: string } | undefined {
+  const key = t as PageType;
+  if (!(key in PAGE_TYPE_VAR)) return undefined;
+  return { label: PAGE_TYPE_LABELS[key], color: PAGE_TYPE_VAR[key] };
+}
 
 function formatDate(iso: string): string {
   const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
@@ -290,7 +289,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
     date_compiled: string;
   }>;
 
-  const badge = PAGE_TYPE_BADGE[page.page_type];
+  const badge = pageTypeBadge(page.page_type);
 
   return (
     <div style={{ display: 'flex', minHeight: 'calc(100dvh / 0.9)' }}>

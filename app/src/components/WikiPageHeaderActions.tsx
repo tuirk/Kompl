@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Search, Upload, Network } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { PAGE_TYPE_VAR } from '../lib/page-type-palette';
 
 const ACTION_WIDTH = 220;
 
@@ -13,14 +14,6 @@ interface SearchResult {
   page_type: string;
   category: string | null;
 }
-
-const PAGE_TYPE_COLORS: Record<string, string> = {
-  'source-summary': 'var(--fg-dim)',
-  concept:          'var(--accent)',
-  entity:           'var(--warning)',
-  comparison:       'var(--danger)',
-  overview:         'var(--success)',
-};
 
 function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number): T {
   let timer: ReturnType<typeof setTimeout>;
@@ -195,7 +188,7 @@ export default function WikiPageHeaderActions() {
                 >
                   <span style={{
                     width: 6, height: 6, borderRadius: '50%',
-                    background: PAGE_TYPE_COLORS[r.page_type] ?? 'var(--fg-dim)',
+                    background: PAGE_TYPE_VAR[r.page_type as keyof typeof PAGE_TYPE_VAR] ?? 'var(--fg-dim)',
                     flexShrink: 0,
                   }} />
                   <span style={{

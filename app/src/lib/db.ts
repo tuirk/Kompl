@@ -2453,12 +2453,15 @@ export function setMinDraftChars(value: number): void {
  * the full corpus via entity_mentions, not just the current compile session,
  * so ingests compound over time (Karpathy compile-wiki thesis).
  *
- * Default 2: one repeat mention is enough evidence. Set to 1 to promote on
- * first sighting (noisy). Set higher to require more corroboration.
+ * Default 5: conservative anti-noise floor. A single Wikipedia-style article
+ * can surface ~20 canonical entities, and at threshold 1 every one becomes a
+ * separate LLM-drafted page — one ingest = ~20 draft calls. 5 requires real
+ * corpus corroboration before promotion. Set to 1 to promote on first sighting
+ * (noisy, burns LLM budget). Set to 2 for the older, looser floor.
  */
 export function getEntityPromotionThreshold(): number {
   const v = getSetting('entity_promotion_threshold');
-  return v !== null ? Math.max(1, parseInt(v, 10)) : 2;
+  return v !== null ? Math.max(1, parseInt(v, 10)) : 5;
 }
 
 export function setEntityPromotionThreshold(value: number): void {

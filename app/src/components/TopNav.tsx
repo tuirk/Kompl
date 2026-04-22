@@ -30,20 +30,13 @@ import {
   useState,
   type KeyboardEvent,
 } from 'react';
+import { PAGE_TYPE_VAR } from '../lib/page-type-palette';
 
 const NAV_ITEMS = [
   { href: '/',     label: 'Home', isActive: (p: string) => p === '/' },
   { href: '/wiki', label: 'Wiki', isActive: (p: string) => p.startsWith('/wiki') },
   { href: '/chat', label: 'Chat', isActive: (p: string) => p.startsWith('/chat') },
 ] as const;
-
-const PAGE_TYPE_COLORS: Record<string, string> = {
-  'source-summary': 'var(--fg-dim)',
-  concept:          'var(--accent)',
-  entity:           'var(--warning)',
-  comparison:       'var(--danger)',
-  overview:         'var(--success)',
-};
 
 interface SearchResult {
   page_id: string;
@@ -309,7 +302,7 @@ export default function TopNav() {
                         width: 6,
                         height: 6,
                         borderRadius: '50%',
-                        background: PAGE_TYPE_COLORS[r.page_type] ?? 'var(--fg-dim)',
+                        background: PAGE_TYPE_VAR[r.page_type as keyof typeof PAGE_TYPE_VAR] ?? 'var(--fg-dim)',
                         flexShrink: 0,
                       }}
                     />
