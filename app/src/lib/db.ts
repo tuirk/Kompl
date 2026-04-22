@@ -1072,6 +1072,63 @@ export function backfillAliasCanonicalPageId(title: string, pageId: string): voi
     .run(pageId, title);
 }
 
+/**
+ * Re-canonicalise the current session's entity_mentions + relationship_mentions
+ * rows after resolve writes new aliases. Extract-commit pins mention rows via
+ * the aliases table as it stood at extract time; resolve may later mint new
+ * aliases (e.g. "GPT 4" → "GPT-4" via existing-page-title match) that the
+ * extract pass couldn't know about yet.
+ *
+ * Without this pass, countSourcesMentioning and getSourceIdsMentioning miss
+ * the current session's contribution when its LLM extraction used a variant
+ * spelling — plan emits source_ids that don't include the session's own
+ * sources, and commit writes no provenance rows for them.
+ *
+ * Scoped to this session's source_ids so prior sessions' history stays as it
+ * was (historical faithfulness — if an older source was committed under the
+ * old canonical, that's part of the wiki's evolution).
+ */
+export function normalizeSessionMentionsToCanonical(
+  sessionId: string,
+  aliasToCanonical: Array<{ alias: string; canonical: string }>
+): void {
+  if (!aliasToCanonical.length) return;
+  const db = openDb();
+  const sources = db
+    .prepare(
+      `SELECT source_id FROM sources WHERE onboarding_session_id = ?`
+    )
+    .all(sessionId) as Array<{ source_id: string }>;
+  if (sources.length === 0) return;
+  const sourceIds = sources.map((s) => s.source_id);
+  const placeholders = sourceIds.map(() => '?').join(',');
+
+  const updEntity = db.prepare(
+    `UPDATE entity_mentions SET canonical_name = ?
+       WHERE canonical_name = ? COLLATE NOCASE
+         AND source_id IN (${placeholders})`
+  );
+  const updRelFrom = db.prepare(
+    `UPDATE relationship_mentions SET from_canonical = ?
+       WHERE from_canonical = ? COLLATE NOCASE
+         AND source_id IN (${placeholders})`
+  );
+  const updRelTo = db.prepare(
+    `UPDATE relationship_mentions SET to_canonical = ?
+       WHERE to_canonical = ? COLLATE NOCASE
+         AND source_id IN (${placeholders})`
+  );
+
+  db.transaction(() => {
+    for (const { alias, canonical } of aliasToCanonical) {
+      if (alias.toLowerCase() === canonical.toLowerCase()) continue;
+      updEntity.run(canonical, alias, ...sourceIds);
+      updRelFrom.run(canonical, alias, ...sourceIds);
+      updRelTo.run(canonical, alias, ...sourceIds);
+    }
+  })();
+}
+
 
 // ============================================================================
 // Page plan helpers (Part 2c-i)
