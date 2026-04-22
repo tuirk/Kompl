@@ -1073,6 +1073,67 @@ export function backfillAliasCanonicalPageId(title: string, pageId: string): voi
 }
 
 /**
+ * Fetch contradiction events logged against a page, newest first.
+ *
+ * Canonical source of truth is the activity_log row written by plan Rule 6
+ * when the match step's LLM triage returns decision='contradiction'. No
+ * separate table — the activity row carries the full payload (source meta,
+ * reason, timestamps) so the sidebar, future inbox, or any audit surface
+ * can read the same data without a schema change.
+ *
+ * Uses json_extract (SQLite 3.38+) on the already-indexed activity_log
+ * table. No new indexes — contradiction volume is expected to be low (LLM
+ * triage only flags above the 0.3 TF-IDF threshold) and the page_id scan
+ * stays bounded.
+ */
+export interface PageContradiction {
+  source_id: string | null;
+  source_title: string | null;
+  source_url: string | null;
+  source_type: string | null;
+  date_ingested: string | null;
+  reason: string | null;
+  session_id: string | null;
+  detected_at: string | null;
+}
+
+export function getPageContradictions(pageId: string): PageContradiction[] {
+  const rows = openDb()
+    .prepare(
+      // Tiebreak on id DESC because activity_log.timestamp has 1s resolution —
+      // two contradictions logged in the same second must still come back in
+      // insertion order (newest first).
+      `SELECT details
+         FROM activity_log
+        WHERE action_type = 'page_contradiction_detected'
+          AND json_extract(details, '$.page_id') = ?
+        ORDER BY timestamp DESC, id DESC`
+    )
+    .all(pageId) as Array<{ details: string | null }>;
+
+  const out: PageContradiction[] = [];
+  for (const row of rows) {
+    if (!row.details) continue;
+    try {
+      const d = JSON.parse(row.details) as Record<string, unknown>;
+      out.push({
+        source_id: typeof d.source_id === 'string' ? d.source_id : null,
+        source_title: typeof d.source_title === 'string' ? d.source_title : null,
+        source_url: typeof d.source_url === 'string' ? d.source_url : null,
+        source_type: typeof d.source_type === 'string' ? d.source_type : null,
+        date_ingested: typeof d.date_ingested === 'string' ? d.date_ingested : null,
+        reason: typeof d.reason === 'string' ? d.reason : null,
+        session_id: typeof d.session_id === 'string' ? d.session_id : null,
+        detected_at: typeof d.detected_at === 'string' ? d.detected_at : null,
+      });
+    } catch {
+      // Malformed JSON — skip the row, don't crash the sidebar.
+    }
+  }
+  return out;
+}
+
+/**
  * Re-canonicalise the current session's entity_mentions + relationship_mentions
  * rows after resolve writes new aliases. Extract-commit pins mention rows via
  * the aliases table as it stood at extract time; resolve may later mint new
@@ -1103,18 +1164,26 @@ export function normalizeSessionMentionsToCanonical(
   const sourceIds = sources.map((s) => s.source_id);
   const placeholders = sourceIds.map(() => '?').join(',');
 
+  // UPDATE OR REPLACE handles the case where the same source has BOTH the alias
+  // and the canonical extracted as separate entity_mentions rows (e.g. a source
+  // text mentioning both "OpenAI" and "OpenAI API" — resolver fuzzy-merges them
+  // via substring into a single group, then this helper tries to fold the alias
+  // row into the canonical for the same source and hits a PRIMARY KEY
+  // (canonical_name, source_id) conflict). OR REPLACE resolves by deleting the
+  // conflicting target row and applying the UPDATE — net result: one row
+  // under the canonical per source. Same pattern for relationship_mentions.
   const updEntity = db.prepare(
-    `UPDATE entity_mentions SET canonical_name = ?
+    `UPDATE OR REPLACE entity_mentions SET canonical_name = ?
        WHERE canonical_name = ? COLLATE NOCASE
          AND source_id IN (${placeholders})`
   );
   const updRelFrom = db.prepare(
-    `UPDATE relationship_mentions SET from_canonical = ?
+    `UPDATE OR REPLACE relationship_mentions SET from_canonical = ?
        WHERE from_canonical = ? COLLATE NOCASE
          AND source_id IN (${placeholders})`
   );
   const updRelTo = db.prepare(
-    `UPDATE relationship_mentions SET to_canonical = ?
+    `UPDATE OR REPLACE relationship_mentions SET to_canonical = ?
        WHERE to_canonical = ? COLLATE NOCASE
          AND source_id IN (${placeholders})`
   );

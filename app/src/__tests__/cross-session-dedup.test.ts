@@ -397,6 +397,44 @@ describe('normalizeSessionMentionsToCanonical — plan threshold + source_ids ac
     expect(true).toBe(true);
     void db;
   });
+
+  it('survives collision when alias AND canonical both exist for the same source', async () => {
+    // Regression for the UNIQUE constraint crash found during manual e2e:
+    // if a single source's extraction produced both "OpenAI" and "OpenAI API"
+    // as entity_mentions rows, and the resolver fuzzy-merges them into a
+    // single group (canonical="OpenAI", aliases=["OpenAI API"]), the helper
+    // must not throw on the resulting UPDATE collision.
+    handle = setupTestDb();
+    const { db } = handle;
+    const sessionId = 'sess-norm-collision';
+
+    const sid = seedSource(db, {
+      onboarding_session_id: sessionId,
+      compile_status: 'extracted',
+      raw_markdown: 'x'.repeat(600),
+    });
+    // Both rows pre-existing — the scenario that triggered the crash.
+    db.prepare(
+      `INSERT INTO entity_mentions (canonical_name, source_id, entity_type) VALUES (?, ?, ?)`
+    ).run('OpenAI', sid, 'ORG');
+    db.prepare(
+      `INSERT INTO entity_mentions (canonical_name, source_id, entity_type) VALUES (?, ?, ?)`
+    ).run('OpenAI API', sid, 'PRODUCT');
+
+    // Resolver decided these are the same thing; canonical = 'OpenAI'.
+    expect(() =>
+      normalizeSessionMentionsToCanonical(sessionId, [
+        { alias: 'OpenAI API', canonical: 'OpenAI' },
+      ])
+    ).not.toThrow();
+
+    // End state: exactly one row for this source, under 'OpenAI'.
+    const rows = db.prepare(
+      `SELECT canonical_name FROM entity_mentions WHERE source_id = ?`
+    ).all(sid) as Array<{ canonical_name: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].canonical_name).toBe('OpenAI');
+  });
 });
 
 describe('approve-plan — backfillAliasCanonicalPageId for concept pages', () => {
