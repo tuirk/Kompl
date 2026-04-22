@@ -28,8 +28,17 @@ const NO_CONTENT_ANSWER =
  * DB-backed answer, bypassing LLM retrieval entirely.
  * Returns null if the question is not a meta query.
  */
-function detectMetaQuery(question: string): string | null {
-  const q = question.toLowerCase();
+export function detectMetaQuery(question: string): string | null {
+  const q = question.toLowerCase().trim();
+
+  // Content-request verbs (summarise/describe/list/show/tell/explain/give) up
+  // front mean the user wants source *content*, not DB metadata. Bail out so
+  // retrieval + synthesis handle it — otherwise "summarise my most recent
+  // sources" matches the "most recent source" regex and short-circuits to a
+  // timestamp.
+  if (/^(please\s+)?(summari[sz]e|describe|list|show|tell|explain|give|provide|outline|recap)\b/.test(q)) {
+    return null;
+  }
 
   if (/how many (sources|articles|documents|files|things)/.test(q)) {
     const stats = getWikiStats();
