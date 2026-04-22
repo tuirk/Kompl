@@ -828,7 +828,44 @@ over a wrong "same" call. Do not hallucinate.
 """
 
 
-def disambiguate_entities(pairs: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> DisambiguationResponse:
+_DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = """\
+You are a concept resolution assistant. For each pair of concepts, decide
+whether they refer to the same concept or merely related concepts.
+
+Concepts are abstract ideas, techniques, or fields (e.g. "Transformer
+Architecture", "Chain of Thought Prompting", "Machine Learning"). They share
+vocabulary even when they are different concepts — "Transformer Architecture"
+and "Self-Attention" both talk about transformers, but attention is one
+mechanism inside the architecture, not the architecture itself.
+
+For each pair return:
+  entity_a   — name of the first concept (copy from input)
+  entity_b   — name of the second concept (copy from input)
+  decision   — "same" (truly the same concept, not merely related),
+               "different" (distinct concepts, even if related),
+               or "ambiguous" (cannot determine from context)
+  canonical  — if "same", the clearer name (prefer the more complete / canonical form).
+               Set to null for "different" or "ambiguous".
+  reason     — brief explanation (1 sentence)
+
+STRICTNESS RULES for this task:
+  - Return "same" ONLY for:
+      * paraphrases (e.g. "Chain of Thought Prompting" ≡ "CoT reasoning")
+      * acronym/expansion pairs (e.g. "ML" ≡ "Machine Learning")
+      * historical rename of exactly the same concept
+  - Return "different" whenever one concept is a sub-topic, mechanism, component,
+    application, or technique of the other — even when they appear together often.
+  - When in doubt, prefer "different" over "same". Wrong merges are costly to
+    undo and permanently lose the ability to have a page about the narrower
+    concept. Duplicate pages self-heal as more sources arrive.
+"""
+
+
+def disambiguate_entities(
+    pairs: list[dict[str, Any]],
+    model: str = _DEFAULT_MODEL,
+    pair_kind: str = "entity",
+) -> DisambiguationResponse:
     """Batch LLM entity disambiguation for the 0.7–0.9 embedding similarity band.
 
     Accepts up to 10 pairs per call (caller is responsible for batching).
@@ -847,8 +884,13 @@ def disambiguate_entities(pairs: list[dict[str, Any]], model: str = _DEFAULT_MOD
         return DisambiguationResponse(results=[])
 
     pairs_json = _json.dumps(pairs, ensure_ascii=False, indent=2)
+    system_prompt = (
+        _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT
+        if pair_kind == "concept"
+        else _DISAMBIGUATION_SYSTEM_PROMPT
+    )
     prompt = (
-        f"{_DISAMBIGUATION_SYSTEM_PROMPT}\n\n"
+        f"{system_prompt}\n\n"
         f"---\n\n"
         f"Pairs to resolve:\n{pairs_json}"
     )

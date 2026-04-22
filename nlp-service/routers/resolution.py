@@ -73,7 +73,19 @@ class ResolvedGroup(BaseModel):
     type: str
     aliases: list[str]
     source_ids: list[str]
-    method: str   # "exact"|"levenshtein"|"jaro_winkler"|"substring"|"acronym"|"existing_alias"|"embedding"
+    method: str   # "exact"|"levenshtein"|"jaro_winkler"|"substring"|"acronym"|"existing_alias"|"embedding"|"existing_page_title"
+
+
+class ExistingPageTitle(BaseModel):
+    """Anchor for cross-session matching: an entity/concept page that already
+    exists in the wiki. Layer 1 fuzzy and Layer 2 embedding compare incoming
+    session entities against these titles, so a singleton "GPT 4" in session
+    B resolves to the existing "GPT-4" page without needing a prior in-session
+    merge to populate the aliases table.
+    """
+    model_config = ConfigDict(extra='forbid')
+    title: str
+    page_type: str  # 'entity' | 'concept'
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +131,22 @@ def _types_compatible(t1: str, t2: str) -> bool:
     for group in _COMPATIBLE_TYPE_GROUPS:
         if t1 in group and t2 in group:
             return True
+    return False
+
+
+# Entity-type → page-type compatibility for cross-session matching.
+# Entity pages cover proper-noun entities (PERSON/ORG/PRODUCT/LOCATION/EVENT)
+# plus OTHER as catchall. Concept pages cover CONCEPT plus OTHER as catchall.
+# OTHER appears in both so the catchall can resolve either way.
+_ENTITY_PAGE_TYPES = frozenset({"PERSON", "ORG", "PRODUCT", "LOCATION", "EVENT", "OTHER"})
+_CONCEPT_PAGE_TYPES = frozenset({"CONCEPT", "OTHER"})
+
+
+def _entity_matches_page_type(entity_type: str, page_type: str) -> bool:
+    if page_type == "entity":
+        return entity_type in _ENTITY_PAGE_TYPES
+    if page_type == "concept":
+        return entity_type in _CONCEPT_PAGE_TYPES
     return False
 
 
@@ -187,6 +215,7 @@ class FuzzyResolveRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     entities: list[EntityInput]
     existing_aliases: list[ExistingAlias] = []
+    existing_page_titles: list[ExistingPageTitle] = []
 
 
 class FuzzyResolveResponse(BaseModel):
@@ -215,12 +244,39 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
         ea.alias.lower(): ea.canonical for ea in req.existing_aliases
     }
 
-    # Track which entities were resolved via existing alias
+    # Track which entities were resolved via existing alias or existing page title.
+    # Both bind an entity to an already-known canonical without further fuzzy work.
     alias_canonical: dict[int, str] = {}
+    alias_method: dict[int, str] = {}  # "existing_alias" | "existing_page_title"
     for i, e in enumerate(entities):
         canon = alias_lookup.get(e.name.lower())
         if canon:
             alias_canonical[i] = canon
+            alias_method[i] = "existing_alias"
+
+    # Cross-session anchor: match unbound entities against existing wiki page titles.
+    # Exact case-insensitive match first; fuzzy second. Page-type gates entity-type
+    # compatibility (entity page ↔ non-concept types; concept page ↔ CONCEPT/OTHER).
+    page_title_lookup: dict[str, ExistingPageTitle] = {
+        pt.title.lower(): pt for pt in req.existing_page_titles
+    }
+    for i, e in enumerate(entities):
+        if i in alias_canonical:
+            continue
+        # Exact match
+        pt_exact = page_title_lookup.get(e.name.lower())
+        if pt_exact and _entity_matches_page_type(e.type, pt_exact.page_type):
+            alias_canonical[i] = pt_exact.title
+            alias_method[i] = "existing_page_title"
+            continue
+        # Fuzzy match against any page title
+        for pt in req.existing_page_titles:
+            if not _entity_matches_page_type(e.type, pt.page_type):
+                continue
+            if _fuzzy_method(e.name, pt.title):
+                alias_canonical[i] = pt.title
+                alias_method[i] = "existing_page_title"
+                break
 
     # Group entities that share the same existing canonical
     canon_to_indices: dict[str, list[int]] = {}
@@ -229,7 +285,7 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
     for canon, indices in canon_to_indices.items():
         for j in range(1, len(indices)):
             uf.union(indices[0], indices[j])
-            merge_method[(uf.find(indices[0]), j)] = "existing_alias"
+            merge_method[(uf.find(indices[0]), j)] = alias_method.get(indices[0], "existing_alias")
 
     # Pairwise fuzzy matching (O(n²) — acceptable for session-level entity counts)
     for i in range(n):
@@ -255,16 +311,16 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
 
     for root, members in groups.items():
         if len(members) == 1:
-            # Check if this single entity was matched via existing alias
+            # Check if this single entity was matched via existing alias or page title
             idx = members[0]
             if idx in alias_canonical:
-                # Still emit as resolved (canonical from alias table)
+                # Still emit as resolved (canonical from alias table or existing page)
                 resolved.append(ResolvedGroup(
                     canonical=alias_canonical[idx],
                     type=entities[idx].type,
                     aliases=[entities[idx].name],
                     source_ids=[entities[idx].source_id],
-                    method="existing_alias",
+                    method=alias_method.get(idx, "existing_alias"),
                 ))
             else:
                 unresolved.append(entities[idx])
@@ -273,7 +329,7 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
         names = [entities[i].name for i in members]
         source_ids = list(dict.fromkeys(entities[i].source_id for i in members))  # deduplicated, ordered
 
-        # Determine canonical: prefer existing alias canonical if available, else longest name
+        # Determine canonical: prefer existing alias/page-title canonical if available, else longest name
         canon_from_alias = next(
             (alias_canonical[i] for i in members if i in alias_canonical), None
         )
@@ -281,8 +337,10 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
 
         aliases = [n for n in names if n != canon]
 
-        # Best method = most specific one in the group
-        method_priority = ["existing_alias", "exact", "levenshtein", "jaro_winkler", "substring", "acronym"]
+        # Best method = most specific one in the group. Page-title binding
+        # takes precedence over same-session fuzzy signals because it's
+        # authoritative (the target already exists in the wiki).
+        method_priority = ["existing_page_title", "existing_alias", "exact", "levenshtein", "jaro_winkler", "substring", "acronym"]
         used_methods = set(merge_method.values())
         best_method = next((m for m in method_priority if m in used_methods), "fuzzy")
 
@@ -312,6 +370,7 @@ class AmbiguousPair(BaseModel):
 class EmbeddingResolveRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     entities: list[EntityInput]
+    existing_page_titles: list[ExistingPageTitle] = []
 
 
 class EmbeddingResolveResponse(BaseModel):
@@ -321,6 +380,19 @@ class EmbeddingResolveResponse(BaseModel):
     unresolved: list[EntityInput]
 
 
+# Sentinel source_id for synthetic EntityInput representing an existing wiki page
+# title in an AmbiguousPair. The Next.js consumer recognises this value and
+# handles it differently from real session sources when Layer 3 returns a decision.
+EXISTING_PAGE_SENTINEL = "__existing_page__"
+
+
+def _page_type_to_entity_type(page_type: str) -> str:
+    """Map pages.page_type to a representative entity type for synthetic pairs."""
+    if page_type == "concept":
+        return "CONCEPT"
+    return "OTHER"
+
+
 @router.post("/resolve/embedding", response_model=EmbeddingResolveResponse)
 def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     """Layer 2 embedding similarity resolution.
@@ -328,8 +400,15 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     Computes pairwise cosine similarity using sentence-transformers.
     Thresholds: >0.9 → merge (same entity), <0.7 → skip (different),
     0.7–0.9 → ambiguous (pass to Layer 3 LLM).
+
+    Cross-session extension: if existing_page_titles is non-empty, each
+    session entity is also compared against those titles. >0.9 anchors the
+    entity to the page title (emitted as a ResolvedGroup with method
+    'existing_page_title'). 0.7–0.9 emits an AmbiguousPair whose entity_b is
+    a synthetic EntityInput carrying the sentinel source_id, so Layer 3 LLM
+    can triage whether the session entity is the same topic as the existing
+    wiki page.
     """
-    import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
 
     entities = req.entities
@@ -338,7 +417,7 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 
     model = _get_embed_model()
 
-    # Embed name + context for each entity
+    # Embed name + context for each session entity
     texts = [f"{e.name}: {e.context}" if e.context else e.name for e in entities]
     embeddings = model.encode(texts, convert_to_numpy=True)
 
@@ -347,11 +426,58 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     ambiguous_pairs: list[AmbiguousPair] = []
     seen_ambiguous: set[tuple[int, int]] = set()
 
-    # Pairwise similarity (only same/compatible types)
+    # Cross-session anchor resolution — compare each session entity to existing
+    # wiki page titles. Must run BEFORE session-internal UF so that anchored
+    # entities don't get pulled into session merges with a different canonical.
+    anchored: dict[int, tuple[str, float]] = {}  # entity_index → (page_title, similarity)
+    if req.existing_page_titles:
+        pt_titles = [pt.title for pt in req.existing_page_titles]
+        pt_embeddings = model.encode(pt_titles, convert_to_numpy=True)
+        # Shape: (n_entities, n_page_titles)
+        pt_similarities: Any = sklearn_cosine(embeddings, pt_embeddings)
+
+        for i in range(n):
+            best_sim = -1.0
+            best_pt_idx = -1
+            for j, pt in enumerate(req.existing_page_titles):
+                if not _entity_matches_page_type(entities[i].type, pt.page_type):
+                    continue
+                sim = float(pt_similarities[i][j])
+                if sim > best_sim:
+                    best_sim = sim
+                    best_pt_idx = j
+
+            if best_pt_idx < 0:
+                continue
+            best_pt = req.existing_page_titles[best_pt_idx]
+
+            if best_sim > 0.9:
+                # Anchor: emit as resolved group directly, skip session-internal UF.
+                anchored[i] = (best_pt.title, best_sim)
+            elif 0.7 <= best_sim <= 0.9:
+                # Ambiguous cross-session pair — Layer 3 decides.
+                synthetic = EntityInput(
+                    name=best_pt.title,
+                    type=_page_type_to_entity_type(best_pt.page_type),
+                    source_id=EXISTING_PAGE_SENTINEL,
+                    context="",
+                )
+                ambiguous_pairs.append(AmbiguousPair(
+                    entity_a=entities[i],
+                    entity_b=synthetic,
+                    similarity=round(best_sim, 4),
+                ))
+
+    # Session-internal pairwise similarity (only same/compatible types).
+    # Anchored entities are excluded — they already have a canonical from a wiki page.
     similarities: Any = sklearn_cosine(embeddings)
 
     for i in range(n):
+        if i in anchored:
+            continue
         for j in range(i + 1, n):
+            if j in anchored:
+                continue
             if not _types_compatible(entities[i].type, entities[j].type):
                 continue
             sim = float(similarities[i][j])
@@ -370,6 +496,8 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     # Build resolved groups and unresolved singletons
     groups: dict[int, list[int]] = {}
     for i in range(n):
+        if i in anchored:
+            continue  # handled separately below
         groups.setdefault(uf.find(i), []).append(i)
 
     resolved: list[ResolvedGroup] = []
@@ -377,12 +505,25 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     ambiguous_indices: set[int] = set()
 
     for pair in ambiguous_pairs:
-        # Find indices for ambiguous pair members
+        # Find indices for ambiguous pair members (real session entities only —
+        # synthetic EXISTING_PAGE_SENTINEL entities aren't in `entities`).
         for i, e in enumerate(entities):
-            if e.name == pair.entity_a.name and e.source_id == pair.entity_a.source_id:
+            if pair.entity_a.source_id != EXISTING_PAGE_SENTINEL and \
+               e.name == pair.entity_a.name and e.source_id == pair.entity_a.source_id:
                 ambiguous_indices.add(i)
-            if e.name == pair.entity_b.name and e.source_id == pair.entity_b.source_id:
+            if pair.entity_b.source_id != EXISTING_PAGE_SENTINEL and \
+               e.name == pair.entity_b.name and e.source_id == pair.entity_b.source_id:
                 ambiguous_indices.add(i)
+
+    # Emit ResolvedGroup for each anchored entity (canonical = existing page title)
+    for i, (page_title, _sim) in anchored.items():
+        resolved.append(ResolvedGroup(
+            canonical=page_title,
+            type=entities[i].type,
+            aliases=[entities[i].name] if entities[i].name != page_title else [],
+            source_ids=[entities[i].source_id],
+            method="existing_page_title",
+        ))
 
     for root, members in groups.items():
         if len(members) == 1:
@@ -454,35 +595,48 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
     if not req.pairs:
         return DisambiguateResponse(results=[])
 
-    # Build pair dicts for the LLM call
-    pair_dicts = [
-        {
+    # Partition pairs by kind: concept pairs (either side CONCEPT) get the
+    # stricter concept-disambiguation prompt; the rest use the entity prompt.
+    # Concepts have fuzzier boundaries — share vocabulary across distinct
+    # ideas — so the concept prompt errs toward "different" in the gray band.
+    concept_pairs: list[dict[str, Any]] = []
+    entity_pairs: list[dict[str, Any]] = []
+    for p in req.pairs:
+        pair_dict = {
             "entity_a": {"name": p.entity_a.name, "type": p.entity_a.type, "context": p.entity_a.context},
             "entity_b": {"name": p.entity_b.name, "type": p.entity_b.type, "context": p.entity_b.context},
         }
-        for p in req.pairs
-    ]
+        if p.entity_a.type == "CONCEPT" or p.entity_b.type == "CONCEPT":
+            concept_pairs.append(pair_dict)
+        else:
+            entity_pairs.append(pair_dict)
 
-    # Batch: max 10 pairs per call
     all_results: list[DisambiguateResponseItem] = []
-    for batch_start in range(0, len(pair_dicts), 10):
-        batch = pair_dicts[batch_start:batch_start + 10]
-        try:
-            resp = disambiguate_entities(batch, model=req.compile_model)
-        except LLMRateLimitedError as e:
-            raise HTTPException(status_code=429, detail=str(e)) from e
-        except CostCeilingError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except LLMCompileError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
 
-        for r in resp.results:
-            all_results.append(DisambiguateResponseItem(
-                entity_a=r.entity_a,
-                entity_b=r.entity_b,
-                decision=r.decision,
-                canonical=r.canonical,
-                reason=r.reason,
-            ))
+    def _call_in_batches(pairs: list[dict[str, Any]], pair_kind: str) -> None:
+        for batch_start in range(0, len(pairs), 10):
+            batch = pairs[batch_start:batch_start + 10]
+            try:
+                resp = disambiguate_entities(batch, model=req.compile_model, pair_kind=pair_kind)
+            except LLMRateLimitedError as e:
+                raise HTTPException(status_code=429, detail=str(e)) from e
+            except CostCeilingError as e:
+                raise HTTPException(status_code=503, detail=str(e)) from e
+            except LLMCompileError as e:
+                raise HTTPException(status_code=500, detail=str(e)) from e
+
+            for r in resp.results:
+                all_results.append(DisambiguateResponseItem(
+                    entity_a=r.entity_a,
+                    entity_b=r.entity_b,
+                    decision=r.decision,
+                    canonical=r.canonical,
+                    reason=r.reason,
+                ))
+
+    if entity_pairs:
+        _call_in_batches(entity_pairs, "entity")
+    if concept_pairs:
+        _call_in_batches(concept_pairs, "concept")
 
     return DisambiguateResponse(results=all_results)

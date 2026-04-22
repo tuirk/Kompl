@@ -36,11 +36,19 @@ import {
   bulkInsertAliases,
   getAliases,
   getEffectiveCompileModel,
+  getEntityAndConceptPageTitles,
   getExtractionsBySession,
   logActivity,
 } from '../../../../lib/db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
+
+// Must match nlp-service/routers/resolution.py EXISTING_PAGE_SENTINEL. Used to
+// tag the synthetic EntityInput representing an existing wiki page title when
+// Layer 2 flags a session-to-wiki pair as ambiguous. Downstream Layer 3
+// handling treats this value as a non-source so the sentinel never leaks
+// into real source_ids.
+const EXISTING_PAGE_SENTINEL = '__existing_page__';
 
 // ── Type definitions (mirror nlp-service Pydantic models) ─────────────────────
 
@@ -88,25 +96,41 @@ interface DisambiguateResponse {
 
 // ── NLP service call helpers ───────────────────────────────────────────────────
 
+interface ExistingPageTitle {
+  title: string;
+  page_type: string;  // 'entity' | 'concept'
+}
+
 async function callFuzzy(
   entities: EntityInput[],
-  existingAliases: Array<{ alias: string; canonical: string }>
+  existingAliases: Array<{ alias: string; canonical: string }>,
+  existingPageTitles: ExistingPageTitle[]
 ): Promise<FuzzyResolveResponse> {
   const res = await fetch(`${NLP_SERVICE_URL}/resolve/fuzzy`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entities, existing_aliases: existingAliases }),
+    body: JSON.stringify({
+      entities,
+      existing_aliases: existingAliases,
+      existing_page_titles: existingPageTitles,
+    }),
     signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) throw new Error(`fuzzy_failed: ${res.status} ${await res.text().catch(() => '')}`);
   return res.json() as Promise<FuzzyResolveResponse>;
 }
 
-async function callEmbedding(entities: EntityInput[]): Promise<EmbeddingResolveResponse> {
+async function callEmbedding(
+  entities: EntityInput[],
+  existingPageTitles: ExistingPageTitle[]
+): Promise<EmbeddingResolveResponse> {
   const res = await fetch(`${NLP_SERVICE_URL}/resolve/embedding`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entities }),
+    body: JSON.stringify({
+      entities,
+      existing_page_titles: existingPageTitles,
+    }),
     signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) throw new Error(`embedding_failed: ${res.status} ${await res.text().catch(() => '')}`);
@@ -159,26 +183,44 @@ export async function POST(request: Request) {
     );
   }
 
-  // Flatten all entities across all sources
+  // Flatten all entities + concepts across all sources into the same input pool.
+  // Concepts are injected as synthetic EntityInputs with type='CONCEPT' and
+  // context=description so they ride the same 3-layer pipeline as entities.
+  // Type compatibility in the resolver keeps concept groups separate from
+  // non-concept groups, so nothing wrongly merges across kinds. The response
+  // partitions results back into canonical_entities vs canonical_concepts.
   const allEntities: EntityInput[] = extractions.flatMap((ext) => {
-    let llm: { entities?: Array<{ name: string; type: string; context?: string }> };
+    let llm: {
+      entities?: Array<{ name: string; type: string; context?: string }>;
+      concepts?: Array<{ name: string; description?: string }>;
+    };
     try {
       llm = JSON.parse(ext.llm_output) as typeof llm;
     } catch {
       return [];
     }
-    return (llm.entities ?? []).map((ent) => ({
+    const entityInputs: EntityInput[] = (llm.entities ?? []).map((ent) => ({
       name: ent.name,
       type: ent.type,
       source_id: ext.source_id,
       context: ent.context ?? '',
     }));
+    const conceptInputs: EntityInput[] = (llm.concepts ?? [])
+      .filter((c) => typeof c.name === 'string' && c.name.trim().length > 0)
+      .map((c) => ({
+        name: c.name.trim(),
+        type: 'CONCEPT',
+        source_id: ext.source_id,
+        context: c.description ?? '',
+      }));
+    return [...entityInputs, ...conceptInputs];
   });
 
   if (allEntities.length === 0) {
     return NextResponse.json({
       session_id,
       canonical_entities: [],
+      canonical_concepts: [],
       stats: { total_raw: 0, resolved_fuzzy: 0, resolved_embedding: 0, resolved_llm: 0, final_canonical: 0 },
     });
   }
@@ -190,9 +232,14 @@ export async function POST(request: Request) {
     canonical: a.canonical_name,
   }));
 
+  // Step 2b: get existing entity/concept page titles so the resolver can match
+  // session entities against the wiki cross-session — closes the split-session
+  // duplicate gap that the alias drawer alone can't cover.
+  const existingPageTitles: ExistingPageTitle[] = getEntityAndConceptPageTitles();
+
   try {
     // Layer 1 — fuzzy
-    const fuzzyResult = await callFuzzy(allEntities, existingAliases);
+    const fuzzyResult = await callFuzzy(allEntities, existingAliases, existingPageTitles);
     const resolved1 = fuzzyResult.resolved;
     const unresolved1 = fuzzyResult.unresolved;
 
@@ -202,7 +249,7 @@ export async function POST(request: Request) {
     let unresolved2: EntityInput[] = [];
 
     if (unresolved1.length > 0) {
-      const embResult = await callEmbedding(unresolved1);
+      const embResult = await callEmbedding(unresolved1, existingPageTitles);
       resolved2 = embResult.resolved;
       ambiguous2 = embResult.ambiguous;
       unresolved2 = embResult.unresolved;
@@ -221,20 +268,45 @@ export async function POST(request: Request) {
       for (const pair of ambiguous2) {
         const key = `${pair.entity_a.name}|||${pair.entity_b.name}`;
         const result = disambMap.get(key);
+        // Cross-session ambiguous pairs have entity_b carrying the sentinel
+        // source_id (see EXISTING_PAGE_SENTINEL in nlp-service). Handle those
+        // specially — the sentinel is not a real session source and must not
+        // leak into source_ids or into ambiguousRemaining as a singleton.
+        const aIsExistingPage = pair.entity_a.source_id === EXISTING_PAGE_SENTINEL;
+        const bIsExistingPage = pair.entity_b.source_id === EXISTING_PAGE_SENTINEL;
+
         if (result?.decision === 'same' && result.canonical) {
-          const canon = result.canonical;
-          const names = [pair.entity_a.name, pair.entity_b.name];
+          // Pin the canonical to the existing page title so the new session
+          // entity gets routed to the existing page. Always prefer the
+          // existing-page title regardless of what the LLM picked — the wiki
+          // is authoritative.
+          const canon = bIsExistingPage
+            ? pair.entity_b.name
+            : aIsExistingPage
+              ? pair.entity_a.name
+              : result.canonical;
+          const names: string[] = [];
+          const sourceIds: string[] = [];
+          if (!aIsExistingPage) {
+            names.push(pair.entity_a.name);
+            sourceIds.push(pair.entity_a.source_id);
+          }
+          if (!bIsExistingPage) {
+            names.push(pair.entity_b.name);
+            sourceIds.push(pair.entity_b.source_id);
+          }
           resolved3.push({
             canonical: canon,
             type: pair.entity_a.type,
             aliases: names.filter((n) => n !== canon),
-            source_ids: [...new Set([pair.entity_a.source_id, pair.entity_b.source_id])],
-            method: 'llm',
+            source_ids: [...new Set(sourceIds)],
+            method: aIsExistingPage || bIsExistingPage ? 'existing_page_title' : 'llm',
           });
         } else {
-          // "different" or "ambiguous" — treat both as separate singletons
-          ambiguousRemaining.push(pair.entity_a);
-          ambiguousRemaining.push(pair.entity_b);
+          // "different" or "ambiguous" — real session entities flow back to
+          // singletons; the sentinel is discarded.
+          if (!aIsExistingPage) ambiguousRemaining.push(pair.entity_a);
+          if (!bIsExistingPage) ambiguousRemaining.push(pair.entity_b);
         }
       }
     }
@@ -261,15 +333,29 @@ export async function POST(request: Request) {
       }
     }
 
-    const canonicalEntities: ResolvedGroup[] = [
+    const allCanonical: ResolvedGroup[] = [
       ...resolved1,
       ...resolved2,
       ...resolved3,
       ...dedupedSingletons,
     ];
 
-    // Step 5: persist aliases
-    const aliasesToInsert = canonicalEntities.flatMap((g) =>
+    // Partition by type — concepts ran through the same pipeline so they could
+    // cross-session dedup against existing concept pages, but the plan step
+    // treats them as a distinct rule (Rule 3 concepts vs Rule 2 entities).
+    const canonicalEntities: ResolvedGroup[] = [];
+    const canonicalConcepts: ResolvedGroup[] = [];
+    for (const g of allCanonical) {
+      if (g.type === 'CONCEPT') {
+        canonicalConcepts.push(g);
+      } else {
+        canonicalEntities.push(g);
+      }
+    }
+
+    // Step 5: persist aliases for both kinds. The aliases table is untagged —
+    // page_type is inferred via canonical_page_id once the page is committed.
+    const aliasesToInsert = allCanonical.flatMap((g) =>
       g.aliases.map((a) => ({ alias: a, canonical: g.canonical }))
     );
     if (aliasesToInsert.length > 0) {
@@ -280,21 +366,26 @@ export async function POST(request: Request) {
       source_id: null,
       details: {
         session_id,
-        merged_count:   allEntities.length - canonicalEntities.length,
-        resolved_count: canonicalEntities.length,
+        merged_count:   allEntities.length - allCanonical.length,
+        resolved_count: allCanonical.length,
         total_raw:      allEntities.length,
+        entity_count:   canonicalEntities.length,
+        concept_count:  canonicalConcepts.length,
       },
     });
 
     return NextResponse.json({
       session_id,
       canonical_entities: canonicalEntities,
+      canonical_concepts: canonicalConcepts,
       stats: {
         total_raw: allEntities.length,
         resolved_fuzzy: resolved1.reduce((sum, g) => sum + g.aliases.length, 0),
         resolved_embedding: resolved2.reduce((sum, g) => sum + g.aliases.length, 0),
         resolved_llm: resolved3.reduce((sum, g) => sum + g.aliases.length, 0),
-        final_canonical: canonicalEntities.length,
+        final_canonical: allCanonical.length,
+        canonical_entities: canonicalEntities.length,
+        canonical_concepts: canonicalConcepts.length,
       },
     });
   } catch (err) {

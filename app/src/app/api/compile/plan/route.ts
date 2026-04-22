@@ -7,7 +7,7 @@
  * builds a PlannedPage list covering all page types needed for this session:
  *   1. Source summaries — one per session source, always 'create'
  *   2. Entity pages — from canonical entity list
- *   3. Concept pages — concepts recurring across 2+ sources (fuzzy-grouped)
+ *   3. Concept pages — from canonical_concepts (resolved cross-session)
  *   4. Comparison pages — relationships of type competes_with / contradicts
  *   5. Overview pages — when a category has 3+ entity/concept pages
  *
@@ -46,6 +46,11 @@ interface ResolvedGroup {
   method: string;
 }
 
+// Kept identical to ResolvedGroup. Tagged alias for call-site clarity —
+// canonical_concepts are entity type CONCEPT plus anything the resolver
+// partitioned as a concept.
+type ResolvedConceptGroup = ResolvedGroup;
+
 export interface PlannedPage {
   plan_id: string;
   title: string;
@@ -64,41 +69,6 @@ export interface PlannedPage {
 // Deliberately NOT user-tunable — this is the load-bearing evidence signal,
 // not a noise knob.
 export const COMPARISON_SOURCE_THRESHOLD = 3;
-
-// ── Levenshtein distance (simple, sufficient for short concept names) ─────────
-
-export function levenshtein(a: string, b: string): number {
-  const m = a.length, n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
-    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
-  );
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1]
-        ? dp[i - 1][j - 1]
-        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
-    }
-  }
-  return dp[m][n];
-}
-
-// Simple acronym check: "ML" matches "Machine Learning" if first letters align.
-export function isAcronymOf(acronym: string, full: string): boolean {
-  if (acronym.length < 2 || acronym.length > 8) return false;
-  const words = full.split(/\s+/);
-  if (words.length < 2) return false;
-  const initials = words.map((w) => w[0]?.toUpperCase() ?? '').join('');
-  return initials === acronym.toUpperCase();
-}
-
-export function conceptsMatch(a: string, b: string): boolean {
-  const al = a.toLowerCase().trim();
-  const bl = b.toLowerCase().trim();
-  if (al === bl) return true;
-  if (levenshtein(al, bl) <= 2) return true;
-  if (isAcronymOf(al, bl) || isAcronymOf(bl, al)) return true;
-  return false;
-}
 
 // ── Entity type → category heuristic ─────────────────────────────────────────
 
@@ -124,7 +94,11 @@ export async function POST(request: Request) {
   }
 
   const body = rawBody as Record<string, unknown>;
-  const { session_id } = body as { session_id?: string; canonical_entities?: ResolvedGroup[] };
+  const { session_id } = body as {
+    session_id?: string;
+    canonical_entities?: ResolvedGroup[];
+    canonical_concepts?: ResolvedConceptGroup[];
+  };
 
   if (typeof session_id !== 'string' || !session_id.trim()) {
     return NextResponse.json({ error: 'session_id required' }, { status: 400 });
@@ -135,6 +109,12 @@ export async function POST(request: Request) {
 
   try {
   const canonicalEntities = body.canonical_entities as ResolvedGroup[];
+  // canonical_concepts is new in schema v21 resolver output. Tolerate missing
+  // (default []) so a legacy caller / test stub still plans cleanly; Rule 3
+  // then emits no concept pages rather than a 422.
+  const canonicalConcepts = Array.isArray(body.canonical_concepts)
+    ? (body.canonical_concepts as ResolvedConceptGroup[])
+    : [];
   const matches = Array.isArray(body.matches)
     ? (body.matches as Array<{
         source_id: string;
@@ -168,21 +148,24 @@ export async function POST(request: Request) {
   // the current run.
   clearStagedPagePlans(session_id);
 
-  // Get extractions for concepts and relationships
+  // Get extractions for relationships (Rule 4 comparison pages). Concepts
+  // are no longer read here — they go through the resolver and arrive as
+  // canonical_concepts in the request body, matching how canonical_entities
+  // flows in. Same 3-layer cross-session pipeline for both, so "Transformer
+  // Architecture" and "Transformer Networks" from different sessions
+  // converge instead of forming duplicate concept pages.
   const extractions = getExtractionsBySession(session_id);
-  const extractionMap = new Map<string, { concepts: Array<{ name: string }>; relationships: Array<{ from_entity: string; to: string; type: string }> }>();
+  const extractionMap = new Map<string, { relationships: Array<{ from_entity: string; to: string; type: string }> }>();
   for (const ext of extractions) {
     try {
       const llm = JSON.parse(ext.llm_output) as {
-        concepts?: Array<{ name: string }>;
         relationships?: Array<{ from_entity: string; to: string; type: string }>;
       };
       extractionMap.set(ext.source_id, {
-        concepts: llm.concepts ?? [],
         relationships: llm.relationships ?? [],
       });
     } catch {
-      extractionMap.set(ext.source_id, { concepts: [], relationships: [] });
+      extractionMap.set(ext.source_id, { relationships: [] });
     }
   }
 
@@ -254,47 +237,36 @@ export async function POST(request: Request) {
   }
 
   // ── Rule 3: Concept pages ────────────────────────────────────────────────────
-  // Collect all concepts across all sources, group by fuzzy match
-  const conceptGroups: Array<{
-    canonical: string;
-    source_ids: string[];
-    plan_id: string;
-  }> = [];
-
-  for (const [sourceId, ext] of extractionMap.entries()) {
-    for (const concept of ext.concepts) {
-      const name = concept.name.trim();
-      if (!name) continue;
-
-      const existing = conceptGroups.find((g) => conceptsMatch(g.canonical, name));
-      if (existing) {
-        if (!existing.source_ids.includes(sourceId)) {
-          existing.source_ids.push(sourceId);
-        }
-      } else {
-        conceptGroups.push({ canonical: name, source_ids: [sourceId], plan_id: randomUUID() });
-      }
-    }
-  }
-
+  // Concepts now arrive pre-resolved from /api/compile/resolve — fuzzy +
+  // embedding + LLM triage against existing concept page titles — mirroring
+  // the entity path. No in-route fuzzy grouping. Within-session dedup is
+  // already handled upstream; this pass applies the wiki-wide mention
+  // threshold and emits plan rows.
   const conceptPlanIds: string[] = [];
-  for (const group of conceptGroups) {
-    // Wiki-wide gate (same rationale as Rule 2). Concepts are stored in
-    // entity_mentions under entity_type='CONCEPT' by the extract-time hook,
-    // so the same COUNT works for both entities and concepts.
-    if (countSourcesMentioning(group.canonical) < entityThreshold) continue;
+  const conceptPlansByCanonical = new Map<string, string>(); // canonical → plan_id
 
-    const existing = getPageByTitle(group.canonical);
+  for (const concept of canonicalConcepts) {
+    if (!concept.canonical) continue;
+    if (countSourcesMentioning(concept.canonical) < entityThreshold) continue;
+
+    const canonicalKey = concept.canonical.toLowerCase();
+    // Within-session dedup: same canonical name seen again → skip.
+    if (conceptPlansByCanonical.has(canonicalKey)) continue;
+
+    const existing = getPageByTitle(concept.canonical);
+    const plan_id = randomUUID();
+    conceptPlansByCanonical.set(canonicalKey, plan_id);
+
     plans.push({
-      plan_id: group.plan_id,
-      title: group.canonical,
+      plan_id,
+      title: concept.canonical,
       page_type: 'concept',
       action: existing ? 'update' : 'create',
-      source_ids: getSourceIdsMentioning(group.canonical),
+      source_ids: getSourceIdsMentioning(concept.canonical),
       existing_page_id: existing?.page_id,
       related_plan_ids: [],
     });
-    conceptPlanIds.push(group.plan_id);
+    conceptPlanIds.push(plan_id);
   }
 
   // ── Rule 4: Comparison pages ─────────────────────────────────────────────────
