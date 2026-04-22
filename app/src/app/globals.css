@@ -11,10 +11,12 @@
      --bg-card-hover  Hover state for interactive surfaces    (#1e2022)
 
    Foreground:
-     --fg           High-contrast primary text                (#ffffff)
-     --fg-secondary Primary body text (slightly softer)       (#e2e2e5)
+     --fg           High-contrast primary text                (#ececf0)
+     --fg-secondary Primary body text (slightly softer)       (#d4d4d8)
      --fg-muted     Labels, metadata, secondary icons         (#a1a1aa)
      --fg-dim       Timestamps, breadcrumbs, inactive nav     (#52525b)
+     Note: --fg deliberately *not* pure white — pure #fff on dark bg
+     causes glare / visual distortion for dyslexic readers (BDA + W3C).
 
    Borders:
      --border       Default subtle border                     (#1e2022)
@@ -58,9 +60,11 @@
   --bg-card-rgb:   18, 19, 22;
   --bg-card-hover: #1e2022;
 
-  /* --- Foreground --- */
-  --fg:            #ffffff;
-  --fg-secondary:  #e2e2e5;
+  /* --- Foreground ---
+     --fg is deliberately off-white (not #fff) to reduce dark-mode glare
+     and visual distortion for dyslexic readers. See BDA style guide. */
+  --fg:            #ececf0;
+  --fg-secondary:  #d4d4d8;
   --fg-muted:      #a1a1aa;
   --fg-dim:        #52525b;
 
@@ -133,8 +137,10 @@ body {
   padding: 0;
   /* Inter for body; falls back to system-ui if font var not loaded */
   font-family: var(--font-body, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif);
-  font-size: 16px;
-  line-height: 1.5;
+  font-size: 17px;
+  line-height: 1.6;
+  letter-spacing: 0.012em;
+  word-spacing: 0.05em;
 }
 
 /* =============================================================================
@@ -320,6 +326,26 @@ textarea.connector-textarea::placeholder {
 }
 
 /* =============================================================================
+   Lexend scope — applied only inside <WikiLayout>.
+   Lexend has peer-reviewed reading-speed gains for dyslexic readers; we scope
+   it to wiki routes rather than the whole app so UI chrome (nav, settings,
+   onboarding) keeps the Inter/Space Grotesk brand system.
+   Headings keep var(--font-heading) (Space Grotesk) for visual hierarchy —
+   Lexend applies to body text, paragraphs, list items, article content.
+   ============================================================================= */
+
+.wiki-lexend,
+.wiki-lexend p,
+.wiki-lexend li,
+.wiki-lexend span,
+.wiki-lexend article,
+.wiki-lexend article p,
+.wiki-lexend article li,
+.wiki-lexend article blockquote {
+  font-family: var(--font-wiki), var(--font-body), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* =============================================================================
    Article / markdown content
    ============================================================================= */
 
@@ -329,19 +355,46 @@ article {
 }
 article h1 {
   font-size: 2em;
+  font-weight: 600;
   margin-top: 0;
   line-height: 1.2;
-  color: var(--fg);
+  color: var(--fg-secondary);
 }
-article h2,
+article h2 {
+  font-size: 1.6em;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 2em 0 0.6em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-secondary);
+  scroll-margin-top: 80px;
+}
 article h3 {
+  font-size: 1.25em;
+  font-weight: 600;
   line-height: 1.3;
-  margin-top: 1.5em;
-  color: var(--fg);
+  margin: 1.6em 0 0.4em;
+  color: var(--fg-secondary);
+  scroll-margin-top: 80px;
+}
+article h4 {
+  font-size: 1.05em;
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 1.4em 0 0.3em;
+  color: var(--fg-secondary);
   scroll-margin-top: 80px;
 }
 article p {
-  line-height: 1.65;
+  line-height: 1.8;
+  max-width: 72ch;
+  margin-top: 0;
+  margin-bottom: 1.1em;
+}
+article li {
+  line-height: 1.8;
+  max-width: 72ch;
 }
 article code {
   font-family: var(--font-mono, ui-monospace, Consolas, monospace);

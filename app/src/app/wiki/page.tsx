@@ -72,12 +72,22 @@ export default function WikiIndexPage() {
             </p>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 64 }}>
-            {groups.map((group) => (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {groups.map((group, idx) => {
+              const groupLatest = group.pages
+                .map((p) => p.last_updated)
+                .sort()
+                .at(-1) ?? null;
+              const groupLabel = groupLatest
+                ? `last update: ${formatHeaderDatetime(groupLatest)}`
+                : undefined;
+              return (
               <WikiCategorySection
                 key={group.category}
                 category={group.category}
                 pageCount={group.pages.length}
+                lastUpdatedLabel={groupLabel}
+                defaultOpen={idx === 0}
               >
                 {/* 4-column card grid — 1px gap shows through as separator.
                     minmax(0, 1fr) overrides the default `auto` min so nowrap children
@@ -227,7 +237,8 @@ export default function WikiIndexPage() {
                   })}
                 </div>
               </WikiCategorySection>
-            ))}
+              );
+            })}
           </div>
         )}
       </main>

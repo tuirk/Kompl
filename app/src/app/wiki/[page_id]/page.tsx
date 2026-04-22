@@ -331,7 +331,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
               </span>
             </div>
             {page.summary && (
-              <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-muted)', lineHeight: 1.6, fontSize: 15 }}>
+              <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-muted)', lineHeight: 1.7, fontSize: 16, maxWidth: '72ch' }}>
                 {page.summary}
               </p>
             )}
@@ -359,7 +359,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
                 CONTENT
               </span>
             </div>
-            <article dangerouslySetInnerHTML={{ __html: html }} style={{ fontSize: 14 }} />
+            <article dangerouslySetInnerHTML={{ __html: html }} style={{ fontSize: 16 }} />
           </section>
         ) : (
           <div
