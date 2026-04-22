@@ -39,6 +39,7 @@ import {
   getEntityAndConceptPageTitles,
   getExtractionsBySession,
   logActivity,
+  normalizeSessionMentionsToCanonical,
 } from '../../../../lib/db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -360,6 +361,14 @@ export async function POST(request: Request) {
     );
     if (aliasesToInsert.length > 0) {
       bulkInsertAliases(aliasesToInsert);
+      // Re-canonicalise this session's mention rows to the resolver-chosen
+      // canonicals. Extract-commit pinned via historical aliases only; the
+      // resolver just minted NEW aliases (e.g. cross-session page-title
+      // anchors) that invalidate those initial pins for this session's
+      // sources. Without this, plan's threshold counts + source_ids lookups
+      // miss the current session's contribution when its extraction used a
+      // variant spelling that the resolver has now canonicalised.
+      normalizeSessionMentionsToCanonical(session_id, aliasesToInsert);
     }
 
     logActivity('resolution_complete', {

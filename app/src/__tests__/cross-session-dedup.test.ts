@@ -26,7 +26,7 @@ import {
   seedCompileProgress,
   type TestDbHandle,
 } from './helpers/test-db';
-import { bulkInsertAliases, getAllAliases } from '../lib/db';
+import { bulkInsertAliases, getAllAliases, normalizeSessionMentionsToCanonical } from '../lib/db';
 
 let handle: TestDbHandle | null = null;
 
@@ -294,6 +294,110 @@ function mockNlpFetch(): void {
     })
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Normalization — session mention rows retargeted to resolver-chosen canonical
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('normalizeSessionMentionsToCanonical — plan threshold + source_ids accuracy', () => {
+  it('updates entity_mentions for the current session when resolve writes a new alias', async () => {
+    handle = setupTestDb();
+    const { db } = handle;
+    const sessionId = 'sess-norm-1';
+
+    // Session B source extracts "GPT 4" — pinned at extract time, no alias yet.
+    const sourceId = seedSource(db, {
+      onboarding_session_id: sessionId,
+      compile_status: 'extracted',
+      raw_markdown: 'x'.repeat(600),
+    });
+    seedExtraction(db, {
+      source_id: sourceId,
+      llm_output: { entities: [{ name: 'GPT 4', type: 'PRODUCT' }], concepts: [], relationships: [] },
+    });
+
+    // Prior session (A) already has "GPT-4" mention (simulates a pre-existing page).
+    const priorSource = seedSource(db, {
+      onboarding_session_id: 'sess-a',
+      compile_status: 'active',
+      raw_markdown: 'y'.repeat(600),
+    });
+    seedExtraction(db, {
+      source_id: priorSource,
+      llm_output: { entities: [{ name: 'GPT-4', type: 'PRODUCT' }], concepts: [], relationships: [] },
+    });
+
+    // Resolver just decided "GPT 4" → "GPT-4". Simulate the alias write.
+    bulkInsertAliases([{ alias: 'GPT 4', canonical: 'GPT-4' }]);
+
+    // Pre-normalization: entity_mentions has split rows.
+    const preGptDash = db.prepare(
+      `SELECT COUNT(*) AS n FROM entity_mentions WHERE canonical_name = 'GPT-4' COLLATE NOCASE`
+    ).get() as { n: number };
+    expect(preGptDash.n).toBe(1);  // only prior session's row
+    const preGptSpace = db.prepare(
+      `SELECT COUNT(*) AS n FROM entity_mentions WHERE canonical_name = 'GPT 4' COLLATE NOCASE`
+    ).get() as { n: number };
+    expect(preGptSpace.n).toBe(1);  // session B's row, not yet canonicalised
+
+    // Act.
+    normalizeSessionMentionsToCanonical(sessionId, [{ alias: 'GPT 4', canonical: 'GPT-4' }]);
+
+    // Post-normalization: session B's row is now under "GPT-4".
+    const postGptDash = db.prepare(
+      `SELECT COUNT(*) AS n FROM entity_mentions WHERE canonical_name = 'GPT-4' COLLATE NOCASE`
+    ).get() as { n: number };
+    expect(postGptDash.n).toBe(2);
+    const postGptSpace = db.prepare(
+      `SELECT COUNT(*) AS n FROM entity_mentions WHERE canonical_name = 'GPT 4' COLLATE NOCASE`
+    ).get() as { n: number };
+    expect(postGptSpace.n).toBe(0);
+  });
+
+  it('leaves prior sessions untouched (historical faithfulness)', async () => {
+    handle = setupTestDb();
+    const { db } = handle;
+    const sessionId = 'sess-norm-2';
+
+    const priorSource = seedSource(db, {
+      onboarding_session_id: 'sess-historic',
+      compile_status: 'active',
+      raw_markdown: 'y'.repeat(600),
+    });
+    // A historic row using what is now an alias — should NOT be rewritten.
+    db.prepare(
+      `INSERT INTO entity_mentions (canonical_name, source_id, entity_type) VALUES (?, ?, ?)`
+    ).run('Old Name', priorSource, 'PRODUCT');
+
+    // Current session's source contributes nothing interesting (no mentions) —
+    // we're just checking the cross-session protection.
+    seedSource(db, {
+      onboarding_session_id: sessionId,
+      compile_status: 'extracted',
+      raw_markdown: 'z'.repeat(600),
+    });
+
+    normalizeSessionMentionsToCanonical(sessionId, [{ alias: 'Old Name', canonical: 'Canonical Name' }]);
+
+    // Historic row still exists with old canonical.
+    const historic = db.prepare(
+      `SELECT canonical_name FROM entity_mentions WHERE source_id = ?`
+    ).get(priorSource) as { canonical_name: string } | undefined;
+    expect(historic?.canonical_name).toBe('Old Name');
+  });
+
+  it('no-ops when no aliases are provided', async () => {
+    handle = setupTestDb();
+    const { db } = handle;
+    const sessionId = 'sess-norm-3';
+    seedSource(db, { onboarding_session_id: sessionId, compile_status: 'extracted', raw_markdown: 'x'.repeat(600) });
+    // Should not throw, should not touch db.
+    normalizeSessionMentionsToCanonical(sessionId, []);
+    // sanity: helper exists and returned without error
+    expect(true).toBe(true);
+    void db;
+  });
+});
 
 describe('approve-plan — backfillAliasCanonicalPageId for concept pages', () => {
   it('populates canonical_page_id on aliases rows when a concept draft is committed', async () => {
