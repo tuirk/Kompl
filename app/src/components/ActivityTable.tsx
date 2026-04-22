@@ -21,12 +21,7 @@ import {
   type RowContent,
   type Tone,
 } from '@/lib/activity-events';
-
-function formatTime(iso: string): string {
-  const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
-  if (isNaN(d.getTime())) return iso;
-  return d.toISOString().slice(11, 19);
-}
+import { LocalTime } from './LocalDate';
 
 // ── Badge config ──────────────────────────────────────────────────────────────
 
@@ -203,7 +198,7 @@ export function ActivityTable({ pollInterval = 2000 }: ActivityTableProps) {
               >
                 {/* Timestamp */}
                 <div style={{ padding: '18px 0', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-dim)', whiteSpace: 'nowrap' }}>
-                  {formatTime(ev.timestamp)}
+                  <LocalTime iso={ev.timestamp} />
                 </div>
 
                 {/* Description */}

@@ -11,7 +11,8 @@ export const dynamic = 'force-dynamic';
 import Link from 'next/link';
 import { getCategoryGroups } from '../../lib/db';
 import WikiSidebar from '../../components/WikiSidebar';
-import WikiPageHeader, { formatHeaderDatetime } from '../../components/WikiPageHeader';
+import WikiPageHeader from '../../components/WikiPageHeader';
+import { LocalDatetime } from '../../components/LocalDate';
 import WikiCategorySection from '../../components/WikiCategorySection';
 import { PAGE_TYPE_HEX } from '../../lib/page-type-palette';
 
@@ -41,7 +42,7 @@ export default function WikiIndexPage() {
     .flatMap((g) => g.pages.map((p) => p.last_updated))
     .sort()
     .at(-1) ?? null;
-  const latestLabel = latestIso ? `last update: ${formatHeaderDatetime(latestIso)}` : undefined;
+  const latestLabel = latestIso ? <>last update: <LocalDatetime iso={latestIso} /></> : undefined;
 
   return (
     <div style={{ display: 'flex', minHeight: 'calc(100dvh / 0.9)' }}>
@@ -79,7 +80,7 @@ export default function WikiIndexPage() {
                 .sort()
                 .at(-1) ?? null;
               const groupLabel = groupLatest
-                ? `last update: ${formatHeaderDatetime(groupLatest)}`
+                ? <>last update: <LocalDatetime iso={groupLatest} /></>
                 : undefined;
               return (
               <WikiCategorySection
@@ -215,7 +216,7 @@ export default function WikiIndexPage() {
                               opacity: 0.4,
                             }}
                           >
-                            {formatHeaderDatetime(page.last_updated)}
+                            <LocalDatetime iso={page.last_updated} />
                           </span>
                           <div style={{ display: 'flex', flexDirection: 'row', gap: 4 }}>
                             {Array.from({ length: dots }).map((_, i) => (

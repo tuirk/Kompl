@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { SourceRow } from '../../lib/db';
+import { LocalDayMonth } from '../../components/LocalDate';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,13 +23,6 @@ type ModalState =
   | { kind: 'delete-bulk'; ids: string[] };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatDate(iso: string): string {
-  const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
-  if (isNaN(d.getTime())) return iso;
-  const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
-}
 
 function getStatusBadge(source: SourceRow): BadgeCfg {
   if (source.status === 'archived') {
@@ -428,7 +422,7 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
 
               {/* Date */}
               <div style={{ padding: '20px 0', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-secondary)' }}>
-                {formatDate(s.date_ingested)}
+                <LocalDayMonth iso={s.date_ingested} />
               </div>
 
               {/* Source title + meta */}

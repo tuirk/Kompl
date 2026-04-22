@@ -5,7 +5,7 @@ import { useId, useState, type ReactNode } from 'react';
 type Props = {
   category: string;
   pageCount: number;
-  lastUpdatedLabel?: string;
+  lastUpdatedLabel?: ReactNode;
   defaultOpen?: boolean;
   children: ReactNode;
 };

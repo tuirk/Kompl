@@ -16,6 +16,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import WikiPageHeader from '../../../components/WikiPageHeader';
+import { LocalDate } from '../../../components/LocalDate';
 import {
   getDb,
   getCategoryGroups,
@@ -47,12 +48,6 @@ function pageTypeBadge(t: string): { label: string; color: string } | undefined 
   const key = t as PageType;
   if (!(key in PAGE_TYPE_VAR)) return undefined;
   return { label: PAGE_TYPE_LABELS[key], color: PAGE_TYPE_VAR[key] };
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
-  if (isNaN(d.getTime())) return iso;
-  return d.toISOString().replace('T', ' ').slice(0, 10);
 }
 
 /**
@@ -121,7 +116,7 @@ async function PreviousVersionPanel({ pageId, lastUpdated }: { pageId: string; l
       }}
     >
       <div className="meta" style={{ marginBottom: '0.5rem' }}>
-        Previous version · before {formatDate(lastUpdated)}
+        Previous version · before <LocalDate iso={lastUpdated} />
       </div>
       <article dangerouslySetInnerHTML={{ __html: prevHtml }} style={{ fontSize: 13 }} />
     </div>
@@ -197,7 +192,7 @@ async function ContradictingSourcesPanel({ pageId }: { pageId: string }) {
               <div style={{ color: 'var(--fg-muted)', marginTop: '0.2em', fontSize: 11 }}>
                 {item.source_type ? item.source_type : ''}
                 {item.source_type && item.date_ingested ? ' · ' : ''}
-                {item.date_ingested ? formatDate(item.date_ingested) : ''}
+                {item.date_ingested ? <LocalDate iso={item.date_ingested} /> : ''}
               </div>
             )}
           </div>
@@ -403,7 +398,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
                   </>
                 )}
                 <span className="meta" style={{ marginLeft: '0.5rem' }}>
-                  {formatDate(r.date_compiled)}
+                  <LocalDate iso={r.date_compiled} />
                 </span>
               </div>
             ))}

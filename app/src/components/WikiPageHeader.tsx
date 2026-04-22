@@ -1,27 +1,18 @@
+import type { ReactNode } from 'react';
 import Link from 'next/link';
 import WikiPageHeaderActions from './WikiPageHeaderActions';
+import { LocalDatetime } from './LocalDate';
 
 export interface WikiPageHeaderProps {
   title: string;
-  /** Overrides the top label. Defaults to "Kompl Wiki" (links to /wiki). Pass a pre-formatted string to show something else (e.g. a date). */
-  label?: string;
+  /** Overrides the top label. Defaults to "Kompl Wiki" (links to /wiki). Pass a pre-formatted string or node to show something else (e.g. a date). */
+  label?: ReactNode;
   category?: string | null;
   lastUpdated?: string | null;
-  /** Replaces the category + divider + lastUpdated meta row with a single string. */
-  metaText?: string;
+  /** Replaces the category + divider + lastUpdated meta row. */
+  metaText?: ReactNode;
   /** Show the search bar + Graph + Add Sources buttons on the right */
   showActions?: boolean;
-}
-
-export function formatHeaderDatetime(iso: string): string {
-  const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
-  if (isNaN(d.getTime())) return iso;
-  const dd   = String(d.getUTCDate()).padStart(2, '0');
-  const mm   = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const yyyy = d.getUTCFullYear();
-  const hh   = String(d.getUTCHours()).padStart(2, '0');
-  const min  = String(d.getUTCMinutes()).padStart(2, '0');
-  return `${dd}.${mm}.${yyyy} ${hh}.${min}`;
 }
 
 export default function WikiPageHeader({
@@ -133,7 +124,7 @@ export default function WikiPageHeader({
                   opacity: 0.4,
                 }}
               >
-                last update: {formatHeaderDatetime(lastUpdated)}
+                last update: <LocalDatetime iso={lastUpdated} />
               </span>
             )}
           </div>
