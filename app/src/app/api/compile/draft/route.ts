@@ -25,8 +25,10 @@ import {
   getAliases,
   getAllPages,
   getCategoryGroups,
+  getDossierMaxSources,
+  getDossierMinScore,
   getEffectiveCompileModel,
-  getExtractionsBySession,
+  getExtractionsBySourceIds,
   getPagePlansByStatus,
   readPageMarkdown,
   readRawMarkdown,
@@ -104,6 +106,136 @@ async function callDraftPage(
 
   const data = (await res.json()) as { markdown: string };
   return data.markdown;
+}
+
+// ── TF-IDF relevance ranking for dossier cap (Flag 3A) ──────────────────────
+
+interface TfidfRankCandidate { id: string; text: string }
+interface TfidfRankScore { id: string; score: number }
+
+async function callTfidfRank(query: string, candidates: TfidfRankCandidate[]): Promise<TfidfRankScore[]> {
+  if (candidates.length === 0) return [];
+  const res = await fetch(`${NLP_SERVICE_URL}/extract/tfidf-rank`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, candidates }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`tfidf_rank_failed: ${res.status}`);
+  const data = (await res.json()) as { scores: TfidfRankScore[] };
+  return data.scores;
+}
+
+/**
+ * Flag 3A — cap a pre-built dossier by TF-IDF relevance to the plan's subject.
+ *
+ * The input is the already-built dossier string from buildDossier. We split
+ * on block boundaries (double-newline), tag each block with its source_id
+ * via the deterministic "From source {sid}:" prefix buildDossier emits, score
+ * each against the query (plan.title + existing page markdown on updates),
+ * filter by `min_score`, sort by (score DESC, source_id ASC) for deterministic
+ * ties, and cap at top `max_sources`.
+ *
+ * Comparison pages skip scoring — plan.title "A vs B" is a poor TF-IDF query
+ * and Rule 4's own source threshold already keeps the set small.
+ *
+ * Graceful degradation: if the nlp-service call fails, fall back to recency
+ * (`extractions.created_at` DESC) and cap at max_sources without the min_score
+ * filter. Plan continues to draft.
+ *
+ * Returns the capped dossier string plus the source_ids that made the cut
+ * (for callers that want to also trim `related_plan_ids` or similar).
+ */
+async function capDossierByRelevance(
+  plan: { plan_id: string; title: string; page_type: string; source_ids: string },
+  dossierText: string,
+  query: string,
+  maxSources: number,
+  minScore: number,
+  extractionsBySource: Map<string, Record<string, unknown>>,
+): Promise<string> {
+  if (plan.page_type === 'comparison') return dossierText;
+  const trimmed = dossierText.trim();
+  if (!trimmed) return dossierText;
+
+  // Parse per-source blocks. Each entity/concept block begins with
+  // `From source {source_id}:` as its first line. Blocks without this
+  // prefix (shouldn't happen for entity/concept) pass through unranked.
+  const rawBlocks = trimmed.split(/\n\n+/);
+  const tagged: Array<{ source_id: string; text: string }> = [];
+  const untagged: string[] = [];
+  for (const block of rawBlocks) {
+    const m = block.match(/^From source (\S+):/);
+    if (m) tagged.push({ source_id: m[1], text: block });
+    else untagged.push(block);
+  }
+
+  if (tagged.length === 0) return dossierText;
+
+  const candidatesScored = tagged.length;
+  let keptIds: Set<string>;
+  let topScore: number | null = null;
+  let bottomScore: number | null = null;
+  let usedFallback = false;
+
+  try {
+    const scores = await callTfidfRank(
+      query,
+      tagged.map((t) => ({ id: t.source_id, text: t.text })),
+    );
+    const ranked = scores
+      .filter((s) => s.score >= minScore)
+      .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+      .slice(0, maxSources);
+    keptIds = new Set(ranked.map((r) => r.id));
+    if (ranked.length > 0) {
+      topScore = ranked[0].score;
+      bottomScore = ranked[ranked.length - 1].score;
+    }
+  } catch (err) {
+    usedFallback = true;
+    console.warn(JSON.stringify({
+      ts: new Date().toISOString(),
+      event: 'tfidf_rank_failed',
+      plan_id: plan.plan_id,
+      page_title: plan.title,
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    // Recency fallback — sort by created_at DESC (empty string sorts last),
+    // cap by maxSources only, skip min_score.
+    const byRecency = [...tagged].sort((a, b) => {
+      const ta = (extractionsBySource.get(a.source_id)?._created_at as string | undefined) ?? '';
+      const tb = (extractionsBySource.get(b.source_id)?._created_at as string | undefined) ?? '';
+      if (ta === tb) return a.source_id.localeCompare(b.source_id);
+      return ta < tb ? 1 : -1;
+    }).slice(0, maxSources);
+    keptIds = new Set(byRecency.map((b) => b.source_id));
+  }
+
+  // Preserve original block order among survivors (already source_id-ordered
+  // since buildDossier iterates plan.source_ids in-order). Re-attach any
+  // untagged leading/trailing fragments so we never drop content we don't
+  // know how to rank.
+  const survivors = tagged.filter((t) => keptIds.has(t.source_id)).map((t) => t.text);
+  const rebuilt = [...untagged, ...survivors].join('\n\n');
+
+  // Telemetry — single structured line per plan, unlocks default tuning later.
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    event: 'dossier_capped',
+    plan_id: plan.plan_id,
+    page_title: plan.title,
+    page_type: plan.page_type,
+    candidates_scored: candidatesScored,
+    candidates_kept: keptIds.size,
+    max_sources: maxSources,
+    min_score: minScore,
+    top_score: topScore,
+    bottom_score: bottomScore,
+    fallback: usedFallback,
+  }));
+
+  return rebuilt;
 }
 
 // Run an array of async tasks with limited concurrency
@@ -347,13 +479,35 @@ export async function POST(request: Request) {
     return NextResponse.json({ session_id, drafted: 0, failed: 0, by_type: {} }, { status: 200 });
   }
 
-  // Load extractions for dossier building (entity/concept/comparison pages only)
-  const rawExtractions = getExtractionsBySession(session_id);
+  // Load extractions for dossier building (entity/concept/comparison pages only).
+  //
+  // Flag 3A: load across the corpus, not just this session. A Rule 2/3 update
+  // plan's source_ids is populated via getSourceIdsMentioning(), which may
+  // include sources from older sessions — those extractions were previously
+  // invisible to the dossier, forcing the LLM to re-parse raw markdown to
+  // rediscover facts extraction already computed. Now every source_id
+  // referenced by any plan in this compile contributes its extraction.
+  //
+  // The extractionsBySource map carries an OPTIONAL `_created_at` key on each
+  // value so the graceful-degradation recency fallback can sort without a
+  // second DB query. (The underscore prefix guarantees no collision with
+  // Pydantic-emitted JSON fields.)
+  const allPlanSourceIds = new Set<string>();
+  for (const p of plans) {
+    try {
+      for (const sid of JSON.parse(p.source_ids) as string[]) allPlanSourceIds.add(sid);
+    } catch {
+      // malformed source_ids — plan will also fail downstream; skip here
+    }
+  }
+  const rawExtractions = getExtractionsBySourceIds(Array.from(allPlanSourceIds));
   const extractionsBySource = new Map<string, Record<string, unknown>>();
   for (const row of rawExtractions) {
     if (!row.llm_output) continue;
     try {
-      extractionsBySource.set(row.source_id, JSON.parse(row.llm_output) as Record<string, unknown>);
+      const parsed = JSON.parse(row.llm_output) as Record<string, unknown>;
+      parsed._created_at = row.created_at;
+      extractionsBySource.set(row.source_id, parsed);
     } catch {
       // skip unparseable extraction rows
     }
@@ -375,6 +529,10 @@ export async function POST(request: Request) {
     }
     set.add(alias.toLowerCase());
   }
+
+  // Flag 3A — dossier capping settings read once per compile.
+  const dossierMaxSources = getDossierMaxSources();
+  const dossierMinScore = getDossierMinScore();
 
   // Load the schema if it exists (for context)
   let schema: string | undefined;
@@ -509,7 +667,7 @@ export async function POST(request: Request) {
             });
       });
 
-      const dossier = buildDossier(plan, extractionsBySource, planTitleById, aliasesByCanonical);
+      const rawDossier = buildDossier(plan, extractionsBySource, planTitleById, aliasesByCanonical);
 
       // For 'update' actions with a resolved existing_page_id, load the existing
       // page markdown from disk so the LLM receives the "update this, don't
@@ -522,6 +680,20 @@ export async function POST(request: Request) {
         plan.action === 'update' && plan.existing_page_id
           ? readPageMarkdown(plan.existing_page_id) ?? undefined
           : undefined;
+
+      // Flag 3A — cap the dossier by TF-IDF relevance. Query is plan.title
+      // plus existing-page markdown on updates (enriches with related
+      // terminology the planner already matched). Skipped for comparison
+      // pages (bad query shape + Rule 4's own threshold keeps them small).
+      const dossierQuery = existingContent ? `${plan.title} ${existingContent}` : plan.title;
+      const dossier = await capDossierByRelevance(
+        plan,
+        rawDossier,
+        dossierQuery,
+        dossierMaxSources,
+        dossierMinScore,
+        extractionsBySource,
+      );
 
       const markdown = await callDraftPage(
         plan.page_type,

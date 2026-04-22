@@ -793,6 +793,30 @@ export function getExtractionsBySession(sessionId: string): ExtractionRow[] {
     .all(sessionId) as ExtractionRow[];
 }
 
+/**
+ * Fetch extractions for an explicit set of source_ids. Used by the draft
+ * step (Flag 3A) to load cross-session extractions when a plan's
+ * `source_ids` spans sessions — a Rule 2/3 entity page whose corpus-wide
+ * `getSourceIdsMentioning` pulled sources from older sessions still wants
+ * its pre-digested facts in the dossier.
+ *
+ * Orphan IDs (sources deleted after the plan was written) just don't
+ * appear in the result — caller's `if (!ext) continue;` guard handles it.
+ */
+export function getExtractionsBySourceIds(sourceIds: string[]): ExtractionRow[] {
+  if (sourceIds.length === 0) return [];
+  const placeholders = sourceIds.map(() => '?').join(',');
+  return openDb()
+    .prepare(
+      `SELECT e.source_id, e.ner_output, e.profile, e.keyphrase_output,
+              e.tfidf_output, e.llm_output, e.created_at
+         FROM extractions e
+        WHERE e.source_id IN (${placeholders})
+        ORDER BY e.created_at ASC`
+    )
+    .all(...sourceIds) as ExtractionRow[];
+}
+
 // ---------------------------------------------------------------------------
 // entity_mentions — wiki-wide entity mention index (schema v17)
 // ---------------------------------------------------------------------------
@@ -2466,6 +2490,38 @@ export function getEntityPromotionThreshold(): number {
 
 export function setEntityPromotionThreshold(value: number): void {
   setSetting('entity_promotion_threshold', String(Math.max(1, Math.floor(value))));
+}
+
+/**
+ * Flag 3A — dossier capping settings.
+ *
+ * dossier_max_sources: top-N cap after TF-IDF ranking. 12 × ~300 tokens of
+ * dossier lines ≈ 3.6k tokens; leaves headroom for existing page markdown
+ * (update path) and the prompt scaffolding alongside Gemini's window.
+ *
+ * dossier_min_score: minimum TF-IDF cosine similarity for a source's dossier
+ * block to be kept. 0.05 is a floor that excludes zero-match candidates
+ * without being restrictive. 0 disables the min-score filter entirely.
+ */
+export function getDossierMaxSources(): number {
+  const v = getSetting('dossier_max_sources');
+  return v !== null ? Math.max(1, parseInt(v, 10)) : 12;
+}
+
+export function setDossierMaxSources(value: number): void {
+  setSetting('dossier_max_sources', String(Math.max(1, Math.floor(value))));
+}
+
+export function getDossierMinScore(): number {
+  const v = getSetting('dossier_min_score');
+  const n = v !== null ? parseFloat(v) : 0.05;
+  if (!Number.isFinite(n) || n < 0) return 0.05;
+  return n;
+}
+
+export function setDossierMinScore(value: number): void {
+  const clamped = Math.max(0, Number.isFinite(value) ? value : 0.05);
+  setSetting('dossier_min_score', String(clamped));
 }
 
 export const CHAT_MODELS = [

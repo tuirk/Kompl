@@ -7,6 +7,7 @@ Endpoints:
   POST /extract/textrank       — TextRank via pytextrank spaCy component
   POST /extract/yake           — YAKE keyphrase extraction
   POST /extract/tfidf-overlap  — TF-IDF cosine similarity vs wiki page corpus
+  POST /extract/tfidf-rank     — TF-IDF rank: score N candidate texts against one query
   POST /extract/route          — Profile router (pure logic, no ML)
 
 NLP models are lazy-initialized on first request and cached as module-level
@@ -31,7 +32,7 @@ from rake_nltk import Rake
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from services.file_store import read_page
 
@@ -288,6 +289,78 @@ def extract_tfidf_overlap(req: TfidfOverlapRequest) -> TfidfOverlapResponse:
 
     overlap_score = max(sims) if sims else 0.0
     return TfidfOverlapResponse(overlap_score=overlap_score, top_matches=matches)
+
+
+# ── TF-IDF rank: score N candidate texts against one query ────────────────────
+# Used by the draft step's dossier capping (Flag 3A). The caller passes
+# the candidate texts inline so this endpoint does not need to read page
+# files — it's a pure math layer. Query is typically the plan title (+
+# existing page markdown for update actions). Candidates are the alias-
+# filtered per-source dossier blocks. Returns score per candidate id,
+# ordered as input.
+
+
+class TfidfRankCandidate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    id: str
+    text: str
+
+
+class TfidfRankRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    query: str = Field(min_length=1)
+    candidates: list[TfidfRankCandidate]
+
+
+class TfidfRankScore(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    id: str
+    score: float
+
+
+class TfidfRankResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    scores: list[TfidfRankScore]
+
+
+@router.post("/extract/tfidf-rank", response_model=TfidfRankResponse)
+def extract_tfidf_rank(req: TfidfRankRequest) -> TfidfRankResponse:
+    if not req.candidates:
+        return TfidfRankResponse(scores=[])
+
+    # Candidates with empty text collapse to score 0 without feeding them
+    # into the vectorizer (sklearn would raise on all-empty corpora).
+    valid: list[TfidfRankCandidate] = [c for c in req.candidates if c.text.strip()]
+    empty_ids = [c.id for c in req.candidates if not c.text.strip()]
+
+    scored: list[TfidfRankScore] = [TfidfRankScore(id=cid, score=0.0) for cid in empty_ids]
+
+    if valid:
+        all_docs = [req.query] + [c.text for c in valid]
+        try:
+            vectorizer = TfidfVectorizer(max_features=5000, stop_words="english")
+            tfidf_matrix = vectorizer.fit_transform(all_docs)
+        except ValueError:
+            # Empty vocabulary after stop-word filtering — treat as no-signal.
+            for c in valid:
+                scored.append(TfidfRankScore(id=c.id, score=0.0))
+        else:
+            query_vec = tfidf_matrix[0]
+            candidate_matrix = tfidf_matrix[1:]
+            sims = cosine_similarity(query_vec, candidate_matrix)[0].tolist()
+            for c, s in zip(valid, sims):
+                scored.append(TfidfRankScore(id=c.id, score=float(s)))
+
+    # Preserve the request's input order so the TS caller can do stable
+    # tiebreakers (score DESC, source_id ASC) without worrying about
+    # server-side reordering.
+    score_by_id = {s.id: s for s in scored}
+    ordered = [score_by_id[c.id] for c in req.candidates if c.id in score_by_id]
+    return TfidfRankResponse(scores=ordered)
 
 
 # ── Extraction profile router (pure logic) ────────────────────────────────────

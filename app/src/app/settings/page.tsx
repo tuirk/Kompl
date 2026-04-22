@@ -64,6 +64,14 @@ export default function SettingsPage() {
   const [entityThresholdSaving, setEntityThresholdSaving] = useState(false);
   const [entityThresholdSaved, setEntityThresholdSaved] = useState(false);
 
+  const [dossierMaxSources, setDossierMaxSources] = useState<number | null>(null);
+  const [dossierMaxSourcesSaving, setDossierMaxSourcesSaving] = useState(false);
+  const [dossierMaxSourcesSaved, setDossierMaxSourcesSaved] = useState(false);
+
+  const [dossierMinScore, setDossierMinScore] = useState<number | null>(null);
+  const [dossierMinScoreSaving, setDossierMinScoreSaving] = useState(false);
+  const [dossierMinScoreSaved, setDossierMinScoreSaved] = useState(false);
+
   const [dailyCapUsd, setDailyCapUsd] = useState<number | null>(null);
   const [dailyCapSaving, setDailyCapSaving] = useState(false);
   const [dailyCapSaved, setDailyCapSaved] = useState(false);
@@ -138,6 +146,8 @@ export default function SettingsPage() {
         min_source_chars: number;
         min_draft_chars: number;
         entity_promotion_threshold: number;
+        dossier_max_sources: number;
+        dossier_min_score: number;
         daily_cap_usd: number;
         chat_model: string;
         compile_model: string;
@@ -156,6 +166,8 @@ export default function SettingsPage() {
         setMinSourceChars(data.min_source_chars);
         setMinDraftChars(data.min_draft_chars);
         setEntityThreshold(data.entity_promotion_threshold);
+        setDossierMaxSources(data.dossier_max_sources);
+        setDossierMinScore(data.dossier_min_score);
         setDailyCapUsd(data.daily_cap_usd);
         setChatModelState(data.chat_model);
         setCompileModelState(data.compile_model);
@@ -380,6 +392,28 @@ export default function SettingsPage() {
     setMinDraftCharsSaving(false);
     setMinDraftCharsSaved(true);
     setTimeout(() => setMinDraftCharsSaved(false), 2000);
+  }
+
+  async function saveDossierMaxSources() {
+    if (dossierMaxSources === null) return;
+    setDossierMaxSourcesSaving(true);
+    setDossierMaxSourcesSaved(false);
+    const _ok = await saveSettingToApi({ dossier_max_sources: dossierMaxSources });
+    if (!_ok) { setDossierMaxSourcesSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
+    setDossierMaxSourcesSaving(false);
+    setDossierMaxSourcesSaved(true);
+    setTimeout(() => setDossierMaxSourcesSaved(false), 2000);
+  }
+
+  async function saveDossierMinScore() {
+    if (dossierMinScore === null) return;
+    setDossierMinScoreSaving(true);
+    setDossierMinScoreSaved(false);
+    const _ok = await saveSettingToApi({ dossier_min_score: dossierMinScore });
+    if (!_ok) { setDossierMinScoreSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
+    setDossierMinScoreSaving(false);
+    setDossierMinScoreSaved(true);
+    setTimeout(() => setDossierMinScoreSaved(false), 2000);
   }
 
   async function saveEntityThreshold() {
@@ -737,8 +771,103 @@ export default function SettingsPage() {
                 <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>sources</span>
               </div>
             </div>
+
+            {/* Max sources per page (dossier cap) */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: '1.5rem',
+                paddingTop: '1rem',
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
+                  Max sources per page
+                </div>
+                <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+                  When a page has many contributing sources, the drafter only sees
+                  the top N by TF-IDF relevance to the page title. Higher = more
+                  context, slower drafts, higher cost. Default <strong>12</strong>.
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={dossierMaxSources ?? ''}
+                  onChange={(e) => setDossierMaxSources(Math.max(1, parseInt(e.target.value || '1', 10)))}
+                  onBlur={() => void saveDossierMaxSources()}
+                  disabled={dossierMaxSources === null || dossierMaxSourcesSaving}
+                  style={{
+                    width: 80,
+                    padding: '0.45rem 0.6rem',
+                    borderRadius: 6,
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg-card)',
+                    color: 'var(--fg)',
+                    fontSize: '0.9rem',
+                    textAlign: 'right',
+                    opacity: dossierMaxSources === null ? 0.5 : 1,
+                  }}
+                />
+                <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>sources</span>
+              </div>
+            </div>
+
+            {/* Minimum relevance score (dossier floor) */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: '1.5rem',
+                paddingTop: '1rem',
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
+                  Minimum relevance score
+                </div>
+                <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+                  Sources scoring below this TF-IDF cosine similarity against the
+                  page title are dropped from the drafter&apos;s cheat sheet.
+                  <strong> 0</strong> = include anything that mentions the topic;
+                  <strong> 0.1</strong> = exclude trivially-matched sources. Tune
+                  after observing real drafts. Default <strong>0.05</strong>.
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={dossierMinScore ?? ''}
+                  onChange={(e) => {
+                    const n = parseFloat(e.target.value || '0');
+                    setDossierMinScore(Number.isFinite(n) && n >= 0 ? n : 0);
+                  }}
+                  onBlur={() => void saveDossierMinScore()}
+                  disabled={dossierMinScore === null || dossierMinScoreSaving}
+                  style={{
+                    width: 80,
+                    padding: '0.45rem 0.6rem',
+                    borderRadius: 6,
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg-card)',
+                    color: 'var(--fg)',
+                    fontSize: '0.9rem',
+                    textAlign: 'right',
+                    opacity: dossierMinScore === null ? 0.5 : 1,
+                  }}
+                />
+                <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>score</span>
+              </div>
+            </div>
           </div>
-          {(minSourceCharsSaved || minDraftCharsSaved || entityThresholdSaved) && (
+          {(minSourceCharsSaved || minDraftCharsSaved || entityThresholdSaved || dossierMaxSourcesSaved || dossierMinScoreSaved) && (
             <div
               style={{
                 padding: '0.6rem 1.5rem',
