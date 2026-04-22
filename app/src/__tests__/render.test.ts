@@ -211,6 +211,47 @@ describe('stripLeadingContentHeading', () => {
   });
 });
 
+describe('renderMarkdown — heading renderer contract', () => {
+  // Regression gate for the marked API. v12 → v18 changed `renderer.heading`
+  // from `(text, level)` to `({tokens, depth})`. A renderer still on the v12
+  // shape silently turns every heading into `[object Object]` under v18.
+  // These tests fail loudly on that drift.
+
+  it('renders a plain heading as <hN> with a slug id', () => {
+    const html = renderMarkdown('## Hello world\n');
+    expect(html).toContain('<h2');
+    expect(html).toContain('id="hello-world"');
+    expect(html).toContain('Hello world');
+    expect(html).not.toContain('[object Object]');
+    expect(html).not.toContain('undefined');
+  });
+
+  it('respects heading level (depth)', () => {
+    const html = renderMarkdown('# A\n\n### B\n');
+    expect(html).toContain('<h1 id="a"');
+    expect(html).toContain('<h3 id="b"');
+    expect(html).not.toContain('<hundefined');
+  });
+
+  it('preserves inline formatting inside headings', () => {
+    // The v18 API hands you tokens, not a rendered string. If the migration
+    // forgets `this.parser.parseInline(tokens)`, inline marks vanish.
+    const html = renderMarkdown('## **bold** heading\n');
+    expect(html).toContain('<strong>bold</strong>');
+    expect(html).toContain('heading');
+    expect(html).not.toContain('[object Object]');
+  });
+
+  it('derives heading id from raw markdown, not rendered HTML', () => {
+    // Regression: pre-fix the slug ran on rendered HTML, so inline-formatted
+    // headings produced ids like `strongboldstrong-heading` from leaked tag
+    // names. Slug must come from the raw `**bold** heading` source.
+    const html = renderMarkdown('## **bold** heading\n');
+    expect(html).toContain('id="bold-heading"');
+    expect(html).not.toContain('strongboldstrong');
+  });
+});
+
 describe('end-to-end malformed-draft heal', () => {
   it('produces clean HTML from a bare-YAML + body-fence + ##-Sources draft', () => {
     const draft = [
