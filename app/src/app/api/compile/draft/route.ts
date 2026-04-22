@@ -27,6 +27,7 @@ import {
   getEffectiveCompileModel,
   getExtractionsBySession,
   getPagePlansByStatus,
+  readPageMarkdown,
   readRawMarkdown,
   updatePlanDraft,
   updatePlanStatus,
@@ -451,12 +452,24 @@ export async function POST(request: Request) {
 
       const dossier = buildDossier(plan, extractionsBySource, planTitleById);
 
+      // For 'update' actions with a resolved existing_page_id, load the existing
+      // page markdown from disk so the LLM receives the "update this, don't
+      // rewrite from scratch" prompt block (nlp-service/services/llm_client.py).
+      // plan.draft_content is NOT the right field here — it's populated by
+      // updatePlanDraft AFTER this call returns (always NULL on first pass), and
+      // it has downstream commit semantics via approve-plan.ts, so overloading
+      // it would corrupt the OFF-mode commit flow on draft failure.
+      const existingContent =
+        plan.action === 'update' && plan.existing_page_id
+          ? readPageMarkdown(plan.existing_page_id) ?? undefined
+          : undefined;
+
       const markdown = await callDraftPage(
         plan.page_type,
         plan.title,
         sourceContents,
         relatedPages.length > 0 ? relatedPages : undefined,
-        plan.draft_content ?? undefined, // existing content for 'update' action
+        existingContent,
         schema,
         allKnownTitles,
         dossier || undefined,
