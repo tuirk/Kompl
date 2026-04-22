@@ -16,6 +16,7 @@ export const dynamic = 'force-dynamic';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 const MAX_RESULTS = 5;
+const SAVED_LINKS_PAGE_ID = 'saved-links';
 
 interface RelatedPageItem {
   page_id: string;
@@ -77,10 +78,13 @@ export async function GET(_request: Request, { params }: RouteContext): Promise<
     return NextResponse.json({ items: [], count: 0, enabled: true });
   }
 
-  // Exclude self, resolve titles, take top MAX_RESULTS
+  // Exclude self, resolve titles, take top MAX_RESULTS.
+  // saved-links is a system page (user-curated unresolved URLs) — not content,
+  // so it never belongs in "You might also read".
   const items: RelatedPageItem[] = [];
   for (const match of vectorMatches) {
     if (match.page_id === page_id) continue;
+    if (match.page_id === SAVED_LINKS_PAGE_ID) continue;
     const related = getPage(match.page_id);
     if (!related) continue;
     items.push({ page_id: match.page_id, title: related.title, page_type: related.page_type });

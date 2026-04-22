@@ -87,7 +87,7 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
   return (
     <aside
       style={{
-        width: 288,
+        width: 349,
         flexShrink: 0,
         borderRight: '1px solid var(--border)',
         padding: '1.5rem 1rem',

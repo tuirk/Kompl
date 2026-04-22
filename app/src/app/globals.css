@@ -388,13 +388,13 @@ article h4 {
 }
 article p {
   line-height: 1.8;
-  max-width: 72ch;
+  max-width: 91ch;
   margin-top: 0;
   margin-bottom: 1.1em;
 }
 article li {
   line-height: 1.8;
-  max-width: 72ch;
+  max-width: 91ch;
 }
 article code {
   font-family: var(--font-mono, ui-monospace, Consolas, monospace);

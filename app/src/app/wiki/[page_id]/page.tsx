@@ -331,7 +331,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
               </span>
             </div>
             {page.summary && (
-              <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-muted)', lineHeight: 1.7, fontSize: 16, maxWidth: '72ch' }}>
+              <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-muted)', lineHeight: 1.7, fontSize: 16, maxWidth: '91ch' }}>
                 {page.summary}
               </p>
             )}
@@ -424,7 +424,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
       {/* Right: TOC + Backlinks */}
       <aside
         style={{
-          width: 242,
+          width: 293,
           flexShrink: 0,
           padding: '2rem 1rem',
           borderLeft: '1px solid var(--border)',
@@ -503,8 +503,12 @@ export default async function WikiPageDetail({ params }: PageProps) {
           </section>
         )}
 
-        <ContradictingSourcesPanel pageId={page_id} />
-        <RelatedPagesPanel pageId={page_id} />
+        {page_id !== SAVED_LINKS_PAGE_ID && (
+          <>
+            <ContradictingSourcesPanel pageId={page_id} />
+            <RelatedPagesPanel pageId={page_id} />
+          </>
+        )}
       </aside>
     </div>
   );
