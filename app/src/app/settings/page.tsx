@@ -710,7 +710,7 @@ export default function SettingsPage() {
                 <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                   Minimum distinct sources that must mention an entity (or concept)
                   before it gets its own page. Counted across the whole wiki — every
-                  new source can tip older mentions over the line. Default <strong>2</strong>.
+                  new source can tip older mentions over the line. Default <strong>5</strong>.
                 </div>
               </div>
               <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
@@ -1539,23 +1539,9 @@ export default function SettingsPage() {
                   Experimental
                 </span>
               </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.6, marginBottom: '0.75rem' }}>
+              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.6 }}>
                 A weekly summary of your wiki activity — sources ingested, pages created/updated, drafts approved,
                 and a health-check section — delivered to a Telegram chat of your choice.
-              </div>
-              {/* Warning banner */}
-              <div style={{
-                display: 'flex', alignItems: 'flex-start', gap: 8,
-                background: 'rgba(var(--warning-rgb),0.08)',
-                border: '1px solid rgba(var(--warning-rgb),0.25)',
-                padding: '0.6rem 0.85rem',
-                borderRadius: 4,
-              }}>
-                <span style={{ fontSize: 13, flexShrink: 0, marginTop: 1 }}>⚠️</span>
-                <span style={{ fontSize: '0.8rem', color: 'var(--warning)', lineHeight: 1.5 }}>
-                  <strong>Not ready to ship.</strong>{' '}
-                  Scheduling, timezone handling, and credential-validation bugs need fixing first.
-                </span>
               </div>
             </div>
             <div

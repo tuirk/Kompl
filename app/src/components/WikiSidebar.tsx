@@ -33,12 +33,27 @@ function buildCategoryGroups(pages: PageRow[]): CategoryGroup[] {
 export default function WikiSidebar({ initialGroups, activePageId, activeCategory }: WikiSidebarProps) {
   const [showArchived, setShowArchived] = useState(false);
   const [groups, setGroups] = useState(initialGroups);
+  const [openCategories, setOpenCategories] = useState<Set<string>>(() => {
+    // Open the first non-comparison category by default — mirrors the /wiki index
+    // behaviour so the sidebar shows at least one expanded category on first load.
+    const first = initialGroups.find((g) => g.pages.some((p) => p.page_type !== 'comparison'));
+    return first ? new Set([first.category]) : new Set();
+  });
 
   // Sync groups when server re-renders a new page (initialGroups changes via App Router).
   // Without this, useState persists stale groups across soft navigations in the shared layout.
   useEffect(() => {
     if (!showArchived) setGroups(initialGroups);
   }, [initialGroups, showArchived]);
+
+  function toggleCategory(category: string) {
+    setOpenCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
+  }
 
   async function handleToggle() {
     const next = !showArchived;
@@ -217,22 +232,47 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
         </div>
         {categoryGroups.map((group) => {
           const isActive = activeCategory === group.category;
+          const open = openCategories.has(group.category);
           return (
             <div key={group.category} style={{ marginBottom: '0.75rem' }}>
-              <div
+              <button
+                type="button"
+                onClick={() => toggleCategory(group.category)}
+                aria-expanded={open}
                 style={{
+                  width: '100%',
+                  fontFamily: 'inherit',
                   fontSize: 11,
                   fontWeight: 600,
                   color: isActive ? 'var(--fg)' : 'var(--fg-muted)',
                   padding: '0.2em 0.4em',
                   display: 'flex',
-                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 6,
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  textAlign: 'left',
                 }}
               >
-                <span>{group.category}</span>
-                <span style={{ color: 'var(--fg-dim)' }}>{group.pages.length}</span>
-              </div>
-              {group.pages.map((p) => (
+                <span
+                  aria-hidden
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 9,
+                    color: 'var(--fg-dim)',
+                    width: 8,
+                    flexShrink: 0,
+                  }}
+                >
+                  {open ? '▾' : '▸'}
+                </span>
+                <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {group.category}
+                </span>
+                <span style={{ color: 'var(--fg-dim)', flexShrink: 0 }}>{group.pages.length}</span>
+              </button>
+              {open && group.pages.map((p) => (
                 <Link
                   key={p.page_id}
                   href={`/wiki/${p.page_id}`}
