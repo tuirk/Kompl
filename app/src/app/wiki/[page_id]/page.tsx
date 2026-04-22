@@ -129,6 +129,85 @@ async function PreviousVersionPanel({ pageId, lastUpdated }: { pageId: string; l
   );
 }
 
+/**
+ * Contradicting sources panel — rendered next to the Linked resources block
+ * on the right sidebar. Reads activity_log rows (via /api/wiki/[page_id]/contradictions)
+ * where the match-step LLM triage flagged a source as contradicting this page.
+ * Read-only for now; resolve/dismiss verbs and an inbox view are deferred
+ * until real usage tells us the right UI shape.
+ */
+interface ContradictionItem {
+  source_id: string | null;
+  source_title: string | null;
+  source_url: string | null;
+  source_type: string | null;
+  date_ingested: string | null;
+  reason: string | null;
+  session_id: string | null;
+  detected_at: string | null;
+}
+
+async function ContradictingSourcesPanel({ pageId }: { pageId: string }) {
+  const res = await fetch(
+    `${process.env.APP_URL ?? 'http://app:3000'}/api/wiki/${pageId}/contradictions`,
+    { cache: 'no-store' }
+  ).catch(() => null);
+
+  if (!res || !res.ok) return null;
+
+  const data = (await res.json()) as { items: ContradictionItem[]; count: number };
+  if (data.count === 0) return null;
+
+  return (
+    <section style={{ marginTop: '2rem' }}>
+      <div className="meta" style={{ marginBottom: '0.5rem' }}>
+        Contradicting sources
+      </div>
+      {data.items.map((item, idx) => {
+        const key = `${item.source_id ?? 'unknown'}-${item.detected_at ?? idx}`;
+        const label = item.source_title ?? item.source_url ?? 'Untitled source';
+        const href = item.source_id ? `/source/${item.source_id}` : null;
+        return (
+          <div
+            key={key}
+            style={{
+              fontSize: 12,
+              padding: '0.3em 0',
+              lineHeight: 1.4,
+              borderBottom: '1px solid var(--border)',
+            }}
+          >
+            {href ? (
+              <Link
+                href={href}
+                style={{
+                  display: 'block',
+                  color: 'var(--danger)',
+                  fontWeight: 500,
+                }}
+              >
+                {label}
+              </Link>
+            ) : (
+              <span style={{ color: 'var(--danger)', fontWeight: 500 }}>{label}</span>
+            )}
+            {item.reason && (
+              <div style={{ color: 'var(--fg-dim)', marginTop: '0.2em' }}>{item.reason}</div>
+            )}
+            {(item.source_type || item.date_ingested) && (
+              <div style={{ color: 'var(--fg-muted)', marginTop: '0.2em', fontSize: 11 }}>
+                {item.source_type ? item.source_type : ''}
+                {item.source_type && item.date_ingested ? ' · ' : ''}
+                {item.date_ingested ? formatDate(item.date_ingested) : ''}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 /** Related pages panel — embedding similarity, zero LLM cost. */
 async function RelatedPagesPanel({ pageId }: { pageId: string }) {
   const res = await fetch(
@@ -425,6 +504,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
           </section>
         )}
 
+        <ContradictingSourcesPanel pageId={page_id} />
         <RelatedPagesPanel pageId={page_id} />
       </aside>
     </div>

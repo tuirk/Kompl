@@ -33,6 +33,7 @@ import {
   getSourceIdsForRelationship,
   getSourceIdsMentioning,
   insertPagePlan,
+  logActivity,
   readRawMarkdown,
 } from '../../../../lib/db';
 
@@ -126,15 +127,23 @@ export async function POST(request: Request) {
     : [];
   const db = getDb();
 
-  // Get session sources
+  // Get session sources — title/url/type/date are needed by Rule 6's contradiction
+  // activity payload, so grab them all in one query rather than re-hitting `sources`
+  // per match below.
   const sessionSources = db
     .prepare(
-      `SELECT source_id, title, onboarding_session_id
+      `SELECT source_id, title, source_url, source_type, date_ingested, onboarding_session_id
          FROM sources
         WHERE onboarding_session_id = ?
           AND compile_status IN ('pending', 'extracted', 'in_progress')`
     )
-    .all(session_id) as Array<{ source_id: string; title: string }>;
+    .all(session_id) as Array<{
+      source_id: string;
+      title: string;
+      source_url: string | null;
+      source_type: string;
+      date_ingested: string;
+    }>;
 
   if (sessionSources.length === 0) {
     return NextResponse.json(
@@ -279,18 +288,46 @@ export async function POST(request: Request) {
   // earns its page when the current session corroborates it.
   const entityNameSet = new Set(canonicalEntities.map((e) => e.canonical.toLowerCase()));
 
+  // Raw-spelling → canonical map, built in-memory per request from the
+  // resolver's canonicalEntities output. Lets Rule 4 normalise relationship
+  // endpoints that still carry the LLM's raw spelling (e.g. "GPT 4") before
+  // the entityNameSet filter, the candidatePairs key, the entityPlansByCanonical
+  // lookup, and the comparison title. Without this, a relationship like
+  // "GPT 4 competes_with Claude" was silently dropped even though the
+  // resolver had already canonicalised both endpoints — undercounting the
+  // threshold and losing legitimate comparison pages.
+  //
+  // Persisted relationship_mentions rows are already consistent with the
+  // resolver's canonicals thanks to normalizeSessionMentionsToCanonical
+  // (db.ts). This in-memory map fixes the OTHER surface: the raw
+  // llm.relationships Rule 4 reads from extractionMap.
+  const rawToCanonical = new Map<string, string>();
+  for (const g of canonicalEntities) {
+    rawToCanonical.set(g.canonical.toLowerCase(), g.canonical);
+    for (const a of g.aliases) rawToCanonical.set(a.toLowerCase(), g.canonical);
+  }
+  const canonicalize = (raw: string): string =>
+    rawToCanonical.get(raw.toLowerCase()) ?? raw;
+
   const candidatePairs = new Map<string, { from: string; to: string; type: string }>();
   for (const ext of extractionMap.values()) {
     for (const rel of ext.relationships) {
       if (rel.type !== 'competes_with' && rel.type !== 'contradicts') continue;
-      if (!entityNameSet.has(rel.from_entity.toLowerCase())) continue;
-      if (!entityNameSet.has(rel.to.toLowerCase())) continue;
+
+      // Canonicalise FIRST so all downstream filters/keys/titles use the
+      // same identity. entityNameSet holds canonical names in lowercase,
+      // so a raw variant must be folded to its canonical before checking.
+      const fromCanonical = canonicalize(rel.from_entity);
+      const toCanonical = canonicalize(rel.to);
+
+      if (!entityNameSet.has(fromCanonical.toLowerCase())) continue;
+      if (!entityNameSet.has(toCanonical.toLowerCase())) continue;
 
       // Normalize to match the sort rule used by extract when writing
       // relationship_mentions, so the lookup key lines up.
-      const [nameA, nameB] = rel.from_entity.toLowerCase() <= rel.to.toLowerCase()
-        ? [rel.from_entity, rel.to]
-        : [rel.to, rel.from_entity];
+      const [nameA, nameB] = fromCanonical.toLowerCase() <= toCanonical.toLowerCase()
+        ? [fromCanonical, toCanonical]
+        : [toCanonical, fromCanonical];
       const key = `${nameA.toLowerCase()}|||${nameB.toLowerCase()}|||${rel.type}`;
       if (!candidatePairs.has(key)) {
         candidatePairs.set(key, { from: nameA, to: nameB, type: rel.type });
@@ -368,27 +405,74 @@ export async function POST(request: Request) {
     });
   }
 
-  // ── Rule 6: Provenance-only — TF-IDF "skip" decisions ───────────────────────
-  // Sources that overlap with existing pages but have no new info get a
-  // provenance-only entry so the link is recorded without triggering a re-draft.
-  // update/contradiction decisions are handled by the existing title-match logic above.
+  // ── Rule 6: Match-triage outputs (skip / update / contradiction) ────────────
+  // The match step (/api/compile/match) runs TF-IDF + LLM triage for each
+  // session source against non-summary pages. All three decisions now have
+  // a concrete downstream action:
+  //   skip          → provenance-only plan (record the link, no re-draft)
+  //   update        → update plan (re-draft the existing page with this source)
+  //   contradiction → NO plan (out of compile's hot path) + rich activity row
+  //                   powering the wiki page sidebar.
+  // Pre-built source metadata lookup so Rule 6 doesn't re-query `sources`
+  // on every match.
+  const sessionSourceMetaById = new Map<string, typeof sessionSources[number]>();
+  for (const s of sessionSources) sessionSourceMetaById.set(s.source_id, s);
+
   for (const match of matches) {
-    if (match.decision !== 'skip') continue;
-
-    const alreadyPlanned = plans.some(
-      (p) => p.existing_page_id === match.page_id && p.source_ids.includes(match.source_id)
-    );
-    if (alreadyPlanned) continue;
-
-    plans.push({
-      plan_id: randomUUID(),
-      title: match.page_title,
-      page_type: 'entity',
-      action: 'provenance-only',
-      source_ids: [match.source_id],
-      existing_page_id: match.page_id,
-      related_plan_ids: [],
-    });
+    if (match.decision === 'skip') {
+      const alreadyPlanned = plans.some(
+        (p) => p.existing_page_id === match.page_id && p.source_ids.includes(match.source_id)
+      );
+      if (alreadyPlanned) continue;
+      plans.push({
+        plan_id: randomUUID(),
+        title: match.page_title,
+        page_type: 'entity',
+        action: 'provenance-only',
+        source_ids: [match.source_id],
+        existing_page_id: match.page_id,
+        related_plan_ids: [],
+      });
+    } else if (match.decision === 'update') {
+      // Re-draft the existing page with this source appended as a contributor.
+      // Reuse action='update' (commit/route.ts already handles that path); the
+      // existing_page_id here is what makes the update route specific to this
+      // page. Dedup against plans already emitted by Rules 1-5 so one source
+      // doesn't write the same page twice.
+      const alreadyPlanned = plans.some(
+        (p) => p.existing_page_id === match.page_id && p.source_ids.includes(match.source_id)
+      );
+      if (alreadyPlanned) continue;
+      plans.push({
+        plan_id: randomUUID(),
+        title: match.page_title,
+        page_type: 'entity',   // match targets non-summary pages; all are entity or concept
+        action: 'update',
+        source_ids: [match.source_id],
+        existing_page_id: match.page_id,
+        related_plan_ids: [],
+      });
+    } else if (match.decision === 'contradiction') {
+      // Log a detailed activity row. The getPageContradictions(pageId) helper
+      // in db.ts json_extracts from here — keep the field names stable.
+      const srcMeta = sessionSourceMetaById.get(match.source_id);
+      logActivity('page_contradiction_detected', {
+        source_id: match.source_id,
+        details: {
+          page_id: match.page_id,
+          page_title: match.page_title,
+          source_title: srcMeta?.title ?? null,
+          source_url: srcMeta?.source_url ?? null,
+          source_type: srcMeta?.source_type ?? null,
+          date_ingested: srcMeta?.date_ingested ?? null,
+          reason: match.reason,
+          session_id,
+          detected_at: new Date().toISOString(),
+        },
+      });
+    }
+    // Any other decision value: drop silently. Triage is enum-typed at the
+    // match layer; unknown values are a contract violation we don't rescue.
   }
 
   // ── Persist all plans ────────────────────────────────────────────────────────

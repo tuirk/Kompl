@@ -270,6 +270,25 @@ function renderPageProvenanceUpdated(row: FeedActivityRow): RowContent {
   return { primary, secondary, action, isError: false };
 }
 
+function renderPageContradictionDetected(row: FeedActivityRow): RowContent {
+  const { str } = makeGetters(row);
+  const pageTitle = str('page_title');
+  const page_id = str('page_id');
+  const sourceTitle = str('source_title');
+  const reason = str('reason');
+  const pageName = pageTitle ?? page_id ?? '…';
+  const primary = page_id
+    ? <Link href={`/wiki/${page_id}`} style={LINK_STYLE}><strong>{pageName}</strong></Link>
+    : <strong>{pageName}</strong>;
+  const sourceFragment = sourceTitle ? `"${sourceTitle}" ` : '';
+  const reasonFragment = reason ? ` — ${reason}` : '';
+  const secondary = <span style={MONO_DIM}>{sourceFragment}contradicts this page{reasonFragment}</span>;
+  const action = page_id
+    ? <Link href={`/wiki/${page_id}`} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+    : null;
+  return { primary, secondary, action, isError: false };
+}
+
 function renderPageRecompileFailed(row: FeedActivityRow): RowContent {
   const { str } = makeGetters(row);
   const detailTitle = str('title');
@@ -532,6 +551,7 @@ export const ACTIVITY_EVENTS = {
   page_recompiled:        { key: 'page_recompiled',        badge: { label: 'RECOMPILED', tone: 'neut' as Tone }, render: renderPageRecompiled },
   page_recompile_failed:  { key: 'page_recompile_failed',  badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderPageRecompileFailed },
   page_provenance_updated: { key: 'page_provenance_updated', badge: { label: 'NOTED',    tone: 'dim'  as Tone }, render: renderPageProvenanceUpdated },
+  page_contradiction_detected: { key: 'page_contradiction_detected', badge: { label: 'CONFLICT', tone: 'red' as Tone }, render: renderPageContradictionDetected },
   // ── Drafts ──────────────────────────────────────────────────────────────
   draft_approved:         { key: 'draft_approved',         badge: { label: 'APPROVED',   tone: 'mint' as Tone }, render: renderDraftApproved },
   draft_rejected:         { key: 'draft_rejected',         badge: { label: 'REJECTED',   tone: 'red'  as Tone }, render: renderDraftRejected },
