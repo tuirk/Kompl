@@ -18,7 +18,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-force-graph-2d": "^1.23.15",
-    "undici": "^7.25.0"
+    "undici": "^8.1.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
