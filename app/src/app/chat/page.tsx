@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { ChatMessage, Citation } from '@/lib/chat-types';
 import { toUserMessage } from '@/lib/service-errors';
+import { parseIsoUtc } from '@/components/LocalDate';
 
 interface WikiStatsSnapshot {
   source_count: number;
@@ -184,9 +185,9 @@ const EXAMPLE_QUESTIONS = [
 
 function formatRelativeTime(iso: string | null): string {
   if (!iso) return 'never';
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return 'never';
-  const diff = Date.now() - then;
+  const parsed = parseIsoUtc(iso);
+  if (!parsed) return 'never';
+  const diff = Date.now() - parsed.getTime();
   const s = Math.floor(diff / 1000);
   if (s < 60) return 'just now';
   const m = Math.floor(s / 60);

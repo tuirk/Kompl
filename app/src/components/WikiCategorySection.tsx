@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 
 type Props = {
   category: string;
@@ -10,6 +10,8 @@ type Props = {
   children: ReactNode;
 };
 
+const STORAGE_PREFIX = 'kompl_wiki_cat_open:';
+
 export default function WikiCategorySection({
   category,
   pageCount,
@@ -17,14 +19,33 @@ export default function WikiCategorySection({
   defaultOpen = false,
   children,
 }: Props) {
+  const storageKey = `${STORAGE_PREFIX}${category}`;
   const [open, setOpen] = useState(defaultOpen);
   const panelId = useId();
+
+  // After hydration, restore the section's last-session state. Absent key =>
+  // first-ever visit; keep the SSR-seeded `defaultOpen` so the page isn't empty.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw === 'true') setOpen(true);
+      else if (raw === 'false') setOpen(false);
+    } catch {}
+  }, [storageKey]);
+
+  function toggle() {
+    setOpen((v) => {
+      const next = !v;
+      try { localStorage.setItem(storageKey, String(next)); } catch {}
+      return next;
+    });
+  }
 
   return (
     <section>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         aria-expanded={open}
         aria-controls={panelId}
         style={{
