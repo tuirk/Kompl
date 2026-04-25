@@ -18,17 +18,18 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-force-graph-2d": "^1.23.15",
-    "undici": "^7.25.0",
-    "uuid": "^10.0.0"
+    "undici": "^7.25.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^24.9.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@types/uuid": "^10.0.0",
     "@vitest/ui": "^4.1.4",
     "typescript": "^5.0.0",
     "vitest": "^4.1.4"
+  },
+  "overrides": {
+    "postcss": "^8.5.10"
   }
 }
