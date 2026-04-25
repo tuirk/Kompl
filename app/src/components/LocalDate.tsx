@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
-function parse(iso: string): Date | null {
+export function parseIsoUtc(iso: string): Date | null {
   const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
   return isNaN(d.getTime()) ? null : d;
 }
@@ -12,7 +12,7 @@ const pad = (n: number) => String(n).padStart(2, '0');
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
 function fmtDatetime(iso: string, useUTC: boolean): string {
-  const d = parse(iso);
+  const d = parseIsoUtc(iso);
   if (!d) return iso;
   const dd   = useUTC ? d.getUTCDate()     : d.getDate();
   const mo   = useUTC ? d.getUTCMonth()    : d.getMonth();
@@ -23,7 +23,7 @@ function fmtDatetime(iso: string, useUTC: boolean): string {
 }
 
 function fmtTime(iso: string, useUTC: boolean): string {
-  const d = parse(iso);
+  const d = parseIsoUtc(iso);
   if (!d) return iso;
   const hh = useUTC ? d.getUTCHours()   : d.getHours();
   const mi = useUTC ? d.getUTCMinutes() : d.getMinutes();
@@ -32,7 +32,7 @@ function fmtTime(iso: string, useUTC: boolean): string {
 }
 
 function fmtDayMonth(iso: string, useUTC: boolean): string {
-  const d = parse(iso);
+  const d = parseIsoUtc(iso);
   if (!d) return iso;
   const mo = useUTC ? d.getUTCMonth() : d.getMonth();
   const dd = useUTC ? d.getUTCDate()  : d.getDate();
@@ -40,7 +40,7 @@ function fmtDayMonth(iso: string, useUTC: boolean): string {
 }
 
 function fmtDate(iso: string, useUTC: boolean): string {
-  const d = parse(iso);
+  const d = parseIsoUtc(iso);
   if (!d) return iso;
   const yy = useUTC ? d.getUTCFullYear() : d.getFullYear();
   const mo = useUTC ? d.getUTCMonth()    : d.getMonth();

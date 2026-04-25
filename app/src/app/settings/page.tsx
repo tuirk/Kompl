@@ -744,7 +744,7 @@ export default function SettingsPage() {
                 <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                   Minimum distinct sources that must mention an entity (or concept)
                   before it gets its own page. Counted across the whole wiki — every
-                  new source can tip older mentions over the line. Default <strong>5</strong>.
+                  new source can tip older mentions over the line. Default <strong>2</strong>.
                 </div>
               </div>
               <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
