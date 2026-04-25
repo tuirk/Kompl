@@ -53,7 +53,7 @@ services:
       nlp-service:
         condition: service_healthy
     healthcheck:
-      # node is always present in node:20-slim; wget/curl are not.
+      # node is always present in node:24-slim; wget/curl are not.
       # Checks HTTP status only (not JSON body): exits 0 on HTTP 200, exits 1
       # on non-200, socket error, or 3s timeout. Both status:'ok' and
       # status:'degraded' return HTTP 200 — the container stays healthy while

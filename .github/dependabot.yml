@@ -13,6 +13,9 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: "@types/node"
+        versions: [">=25"]
 
   - package-ecosystem: npm
     directory: /mcp-server
@@ -27,6 +30,9 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: "@types/node"
+        versions: [">=25"]
 
   - package-ecosystem: npm
     directory: /cli
@@ -41,6 +47,9 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: "@types/node"
+        versions: [">=25"]
 
   - package-ecosystem: pip
     directory: /nlp-service

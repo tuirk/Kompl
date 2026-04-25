@@ -13,7 +13,7 @@
   },
   "devDependencies": {
     "typescript": "^5.5.0",
-    "@types/node": "^20.0.0"
+    "@types/node": "^24.9.2"
   },
   "overrides": {
     "hono": "^4.12.14"
