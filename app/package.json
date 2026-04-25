@@ -19,7 +19,7 @@
     "react-dom": "^19.0.0",
     "react-force-graph-2d": "^1.23.15",
     "undici": "^7.25.0",
-    "uuid": "^10.0.0"
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
