@@ -37,6 +37,7 @@ import {
 import WikiSidebar from '../../../components/WikiSidebar';
 import SavedLinksInteractive from './SavedLinksInteractive';
 import { PAGE_TYPE_VAR, PAGE_TYPE_LABELS, type PageType } from '../../../lib/page-type-palette';
+import { renderInlineWikilinks } from '../../../lib/wikilink-render';
 
 const SAVED_LINKS_PAGE_ID = 'saved-links';
 
@@ -327,7 +328,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
             </div>
             {page.summary && (
               <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-muted)', lineHeight: 1.7, fontSize: 16, maxWidth: '91ch' }}>
-                {page.summary}
+                {renderInlineWikilinks(page.summary, titleMap)}
               </p>
             )}
             {entities.length > 0 && (

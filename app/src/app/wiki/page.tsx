@@ -15,6 +15,7 @@ import WikiPageHeader from '../../components/WikiPageHeader';
 import { LocalDatetime } from '../../components/LocalDate';
 import WikiCategorySection from '../../components/WikiCategorySection';
 import { PAGE_TYPE_HEX } from '../../lib/page-type-palette';
+import { stripWikilinkBrackets } from '../../lib/wikilink-render';
 
 // Tinted badge pill styles per page_type. Derived from the shared PAGE_TYPE_HEX
 // palette so the index cards stay aligned with sidebar dots + graph legend.
@@ -192,7 +193,7 @@ export default function WikiIndexPage() {
                             textOverflow: 'ellipsis',
                           }}
                         >
-                          {page.summary ?? ' '}
+                          {page.summary ? stripWikilinkBrackets(page.summary) : ' '}
                         </p>
 
                         {/* Row 4: footer — last updated + source dots */}

@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PageRow } from '../../../lib/db';
 import WikiPageHeader from '../../../components/WikiPageHeader';
 import { PAGE_TYPE_VAR } from '../../../lib/page-type-palette';
+import { stripWikilinkBrackets } from '../../../lib/wikilink-render';
 
 interface SearchResult {
   items: PageRow[];
@@ -144,7 +145,7 @@ export default function WikiSearchPage() {
                 overflow: 'hidden',
               }}
             >
-              {page.summary}
+              {stripWikilinkBrackets(page.summary)}
             </p>
           )}
         </Link>
