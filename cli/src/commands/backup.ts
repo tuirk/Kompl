@@ -66,10 +66,13 @@ export async function backupCommand(opts: BackupOptions = {}): Promise<void> {
 }
 
 function registerScheduledTask(): void {
-  if (process.platform === 'linux') {
+  if (process.platform === 'linux' || process.platform === 'darwin') {
     registerLinuxCron()
-  } else {
+  } else if (process.platform === 'win32') {
     registerWindowsScheduledTask()
+  } else {
+    console.error(`  Schedule     ${pc.red('●')} unsupported platform: ${process.platform}`)
+    process.exit(1)
   }
 }
 
