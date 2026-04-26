@@ -1,0 +1,4 @@
+# CODEOWNERS — anyone listed here is automatically requested for review on PRs that touch the matching paths.
+# Both founders own the entire repo; carve out paths only if/when contributors specialize.
+
+* @tuirk @ahjinsolo
