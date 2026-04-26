@@ -1,9 +1,6 @@
 # Node
 app/node_modules/
 app/.next/
-wiki/node_modules/
-wiki/.docusaurus/
-wiki/build/
 
 # Python
 nlp-service/.venv/
