@@ -1,0 +1,81 @@
+name: Bug report
+description: Something doesn't work as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report. Please run `kompl status` and `kompl logs` first — they often surface what went wrong.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A short description of the bug. Include any error message you saw.
+      placeholder: "When I paste a YouTube URL, the compile fails after 30 seconds with..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `kompl start`
+        2. Open localhost:3000
+        3. Paste this URL: ...
+        4. Click "Build"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: input
+    id: kompl-version
+    attributes:
+      label: Kompl version (commit SHA or tag)
+      description: Run `git rev-parse --short HEAD` in the repo root.
+      placeholder: "abc1234 or v1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: docker
+    attributes:
+      label: Docker version
+      description: Run `docker --version` and `docker compose version`.
+      placeholder: "Docker 27.0.0, Compose v2.30.0"
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: Run `node --version`.
+      placeholder: "v24.0.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional but very helpful)
+      description: Output of `kompl logs` around the failure. Redact any API keys.
+      render: shell

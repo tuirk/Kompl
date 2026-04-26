@@ -1,0 +1,22 @@
+Kompl
+Copyright 2026 tuirk, ahjinsolo
+
+This product is licensed under the Apache License, Version 2.0 (the
+"License"); you may not use this product except in compliance with the
+License. A copy of the License is provided in the LICENSE file at the
+root of this repository.
+
+This product includes the following third-party software dependencies
+which are licensed under their own terms. Where the dependency is shipped
+as a runtime container image (n8n, Next.js base images, Python base
+images), the dependency is loaded at runtime; Kompl itself does not
+redistribute their source.
+
+  - n8n (https://n8n.io)
+      Licensed under the Sustainable Use License (not OSI-approved).
+      n8n is run as an unmodified container (`n8nio/n8n`) and is not
+      redistributed by Kompl. Users self-hosting Kompl are bound by
+      n8n's own license terms when running that container.
+
+For a complete list of dependency licenses, see each subpackage's
+package.json (app/, cli/, mcp-server/) and nlp-service/requirements.txt.

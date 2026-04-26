@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest something Kompl should do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Before filing, peek at the **What's next** panel in the bottom-left footer of the running Kompl app — it lists things we already plan to build. If your idea is close to one of those, you can comment on or expand the existing roadmap item instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: The actual user need, not the proposed solution.
+      placeholder: "When I have 200+ pages, the wiki search is slow because..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like Kompl to behave?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you think about? Why didn't those work?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: Mockups, links to similar features in other tools, edge cases — whatever's useful.
