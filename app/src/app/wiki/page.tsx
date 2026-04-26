@@ -153,7 +153,7 @@ export default function WikiIndexPage() {
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            {page.source_count ?? 0} src{(page.source_count ?? 0) !== 1 ? 's' : ''}
+                            {page.source_count ?? 0} source{(page.source_count ?? 0) !== 1 ? 's' : ''}
                           </span>
                         </div>
 

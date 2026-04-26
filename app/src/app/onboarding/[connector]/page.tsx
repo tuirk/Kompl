@@ -23,6 +23,10 @@ import Link from 'next/link';
 import { useToast } from '../../../components/Toast';
 import { toUserMessage } from '@/lib/service-errors';
 import { isBlockedHost, URL_HOST_BLOCKED_MESSAGE } from '@/lib/url-blocklist';
+import {
+  SUPPORTED_FORMATS_FULL,
+  SUPPORTED_FORMATS_DOTTED,
+} from '@/lib/supported-formats';
 import TwitterConnector from './twitter-connector';
 import AppleNotesConnector from './apple-notes-connector';
 import {
@@ -355,7 +359,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
                     position: 'absolute', top: 12, left: 12,
                     fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.9px',
                     textTransform: 'uppercase', color: 'var(--separator)',
-                  }}>DROP.ZONE / v2</span>
+                  }}>DROP.ZONE</span>
 
                   {/* Bottom-right decor */}
                   <span style={{
@@ -412,7 +416,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
                         fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.6px',
                         textTransform: 'uppercase', color: 'var(--fg-dim)',
                         textAlign: 'center', margin: 0,
-                      }}>PDF · Markdown · Word · Audio</p>
+                      }}>{SUPPORTED_FORMATS_DOTTED}</p>
 
                       {/* Browse button */}
                       <button
@@ -518,7 +522,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
                     fontFamily: 'var(--font-body)', fontSize: 11, letterSpacing: '0.275px',
                     textTransform: 'uppercase', color: 'var(--accent-dim)',
                   }}>
-                    Max 50 MB per file · PDF, DOCX, PPTX, XLSX, TXT, MD, HTML, CSV, images, audio supported
+                    Max 50 MB per file · {SUPPORTED_FORMATS_FULL} supported
                   </span>
                 </div>
               </div>
@@ -806,7 +810,7 @@ function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast, mode 
 
 const CONNECTOR_META: Record<string, { title: string; subtitle: string }> = {
   url:           { title: 'Add URLs',          subtitle: 'Paste web pages, articles, or YouTube links — one per line.' },
-  'file-upload': { title: 'Upload Files',      subtitle: 'PDF, Markdown, Word, Excel, audio — all formats supported.' },
+  'file-upload': { title: 'Upload Files',      subtitle: `${SUPPORTED_FORMATS_FULL} — all supported.` },
   bookmarks:     { title: 'Browser Bookmarks', subtitle: 'Export your bookmarks from Chrome, Firefox, or Safari.' },
   twitter:       { title: 'Twitter / X',       subtitle: 'Upload your exported Twitter bookmarks file.' },
   upnote:        { title: 'Upnote',            subtitle: 'Export your notes from Upnote and upload as Markdown.' },

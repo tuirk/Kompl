@@ -73,7 +73,7 @@ export default function WikiSearchPage() {
       <input
         ref={inputRef}
         type="text"
-        placeholder="Search pages…"
+        placeholder="Search wiki…"
         value={query}
         onChange={handleChange}
         style={{ marginBottom: '1.5rem', fontSize: 15 }}

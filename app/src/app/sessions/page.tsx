@@ -194,7 +194,7 @@ export default function SessionsPage() {
                   fontFamily: 'var(--font-mono)', fontSize: 10,
                   color: 'var(--fg-dim)', textAlign: 'right', whiteSpace: 'nowrap',
                 }}>
-                  {s.source_count > 0 ? `${s.source_count} src` : '—'}
+                  {s.source_count > 0 ? `${s.source_count} source${s.source_count !== 1 ? 's' : ''}` : '—'}
                 </span>
 
                 {/* Step progress */}

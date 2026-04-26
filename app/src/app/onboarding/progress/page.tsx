@@ -352,9 +352,9 @@ function ProgressPageInner() {
   const totalSteps = visibleSteps.length;
 
   const headingText =
-    isComplete     ? 'Wiki Ready.'           :
-    isFailedStatus ? 'Something went wrong.' :
-    isCancelled    ? 'Compile cancelled.'    :
+    isComplete     ? 'Wiki ready.'        :
+    isFailedStatus ? 'Compile failed.'    :
+    isCancelled    ? 'Compile cancelled.' :
                      'Building your wiki.';
 
   const statusLabel =
@@ -504,12 +504,12 @@ function ProgressPageInner() {
               uiAState === 'amber'  ? 'rgba(230,184,0,0.15)'         :
                                       'var(--bg-track)';
             const rowLabel =
-              uiAState === 'danger' ? 'Compile engine not responding'
-                                    : 'Queuing — waiting for compile engine';
+              uiAState === 'danger' ? 'Background worker not responding'
+                                    : 'Queuing — waiting for background worker';
             const subline =
               uiAState === 'danger' && n8nErrorFromUrl ? toUserMessage(n8nErrorFromUrl) :
-              uiAState === 'danger'                    ? 'n8n did not pick up this session. Click Retry to resend.' :
-              uiAState === 'amber'                     ? 'n8n may be starting up — this usually takes a few seconds.' :
+              uiAState === 'danger'                    ? 'Background worker did not pick up this session. Click Retry to resend.' :
+              uiAState === 'amber'                     ? 'Background worker may be starting up — this usually takes a few seconds.' :
                                                          null;
             return (
               <div style={{
@@ -811,7 +811,7 @@ function ProgressPageInner() {
             padding: '12px 16px', margin: 0, overflowX: 'auto',
             whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           }}>
-            Pipeline hasn&apos;t started. The background worker may be unavailable — click Retry to try again.
+            Background worker hasn&apos;t started — click Retry to try again.
           </pre>
         )}
 
