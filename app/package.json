@@ -13,7 +13,7 @@
     "better-sqlite3": "^12.9.0",
     "jszip": "^3.10.1",
     "lucide-react": "^1.11.0",
-    "marked": "^12.0.0",
+    "marked": "^18.0.2",
     "next": "16.2.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
