@@ -13,7 +13,7 @@ Knowledge compiler — turns scattered links, files, and bookmarks into a living
 
 ## Why Kompl?
 
-Most tools save your stuff and forget about it. Kompl reads it, extracts the knowledge, and compiles it into an interlinked wiki — automatically.
+Most tools save your stuff and forget about it. Kompl reads it, extracts the knowledge, and compiles it into an interlinked wiki, automatically.
 
 - One new source can update 10+ wiki pages. Cross-references, contradictions, and synthesis are built at ingest time, not re-discovered on every query.
 - Entity pages, concept pages, comparisons, and source summaries are wikilinked together. The wiki gets richer with every source you add.
@@ -21,11 +21,7 @@ Most tools save your stuff and forget about it. Kompl reads it, extracts the kno
 
 Built with Next.js, Python NLP, n8n orchestration, and SQLite.
 
-## Demo
-
 ![Kompl Wiki](docs/assets/kompl-demo.gif)
-
-*8 pages compiled from 5 sources — entities, concepts, and source summaries auto-organized into categories.*
 
 ## Before you start
 
@@ -35,7 +31,7 @@ You'll need three things on your machine:
 - **[Node.js](https://nodejs.org/) ≥ 24** — to install and run the `kompl` CLI.
 - **~5 GB free disk and 4 GB free RAM** — Kompl runs three containers (app, NLP service, n8n) plus pulls a ~90 MB embedding model on first compile.
 
-You'll also need two API keys — both are free to get:
+You'll also need two API keys, both free to get:
 
 | | Get key | Free tier |
 |---|---|---|
@@ -177,13 +173,13 @@ Kompl itself sends no analytics, no error reports, and no version pings. The bun
 
 Settings → **Kompl Backup** downloads a `.kompl.zip` containing your entire wiki: sources, compiled pages, provenance, extractions, and settings. API keys and third-party secrets are excluded. No LLM calls needed to restore.
 
-Enable **Include vectors** before downloading to bundle the search index (embeddings) — adds a few MB to the ZIP but means related-pages works immediately after restore with no re-processing.
-
-To restore on a fresh instance: run setup, skip onboarding, go to Settings → **Import Wiki**, upload the `.kompl.zip`. All pages are immediately browsable and searchable. If the ZIP includes vectors they're restored directly; otherwise the search index rebuilds in the background.
+To restore on a fresh instance: run setup, skip onboarding, go to Settings → **Import Wiki**, upload the `.kompl.zip`. All pages are immediately browsable and searchable. The search index rebuilds in the background after restore.
 
 ### Automatic backup
 
 If you chose **personal-device** mode during setup, `kompl start` automatically saves a local backup to `~/.kompl/backups/kompl-backup.kompl.zip` (at most once every 36 hours). Settings shows when the last backup ran.
+
+> *⚠️ Auto-backup-on-start is an early feature, wired end-to-end but lacking regression tests on the start-time path. Flag any silent skips.*
 
 ### CLI backup
 
