@@ -7,10 +7,10 @@ const DEFERRED = [
   'Image support via LLM vision',
   'Custom LLM provider support',
   'Tauri tray app — one-click Start/Stop/Open from the system tray',
-  'Basic schema editing (moving sources under other topics, renaming topics, etc.)',
-  'Improved Wiki Health Checks',
+  'Schema editing — move sources between topics, rename topics',
+  'Improved wiki health checks',
   'Weekly backup remote channels — Telegram attach + Google Drive OAuth2',
-  'Rank new entity and concept pages by signal strength and defer the weak ones, so the AI only drafts pages worth writing',
+  'Signal-strength ranking for new entity and concept pages — defer the weak ones',
 ];
 
 const NOTES = [
@@ -78,7 +78,7 @@ export default function WhatsNext() {
         }}>
 
           <p style={{ fontFamily: 'var(--font-heading)', fontSize: 11, color: 'var(--fg-dim)', letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 10px' }}>
-            Deferred to v2
+            On the roadmap
           </p>
           <ul style={{ margin: '0 0 20px', padding: '0 0 0 18px', listStyle: 'disc' }}>
             {DEFERRED.map(item => (

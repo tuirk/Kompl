@@ -861,7 +861,7 @@ export default function DashboardClient({ activeSession }: DashboardClientProps)
                 margin: 0,
               }}
             >
-              COMPILED.
+              COMPILE.
             </h1>
             <p
               style={{
@@ -875,7 +875,7 @@ export default function DashboardClient({ activeSession }: DashboardClientProps)
                 maxWidth: 384,
               }}
             >
-              Your knowledge archive is live. Sources compile automatically into a self-organizing wiki.
+              Turn scattered links, files, and bookmarks into a living wiki that compounds with every new source.
             </p>
           </div>
 

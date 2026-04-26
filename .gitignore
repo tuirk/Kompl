@@ -63,7 +63,7 @@ npm-debug.log*
 # Internal docs (local only — not for public repo)
 docs/spec/
 docs/wiki-design-points.md
-docs/kompl-v2-spec.md
+docs/kompl-spec.md
 
 # Agent instruction files (local only — not for public repo)
 CLAUDE.md

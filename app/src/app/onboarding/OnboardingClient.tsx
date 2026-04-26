@@ -17,6 +17,7 @@ import {
   Smartphone, HardDrive, Book, ArrowRight,
 } from 'lucide-react';
 import { useToast } from '../../components/Toast';
+import { SUPPORTED_FORMATS_SHORT } from '../../lib/supported-formats';
 
 type ConnectorStatus = 'active' | 'coming-soon';
 
@@ -29,14 +30,14 @@ interface ConnectorDef {
 }
 
 const CONNECTORS: ConnectorDef[] = [
-  { id: 'url',          Icon: Globe,      title: 'URL',               subtitle: 'Live Web Indexing',    status: 'active' },
-  { id: 'file-upload',  Icon: FileUp,     title: 'File Upload',       subtitle: 'PDF, Markdown, JSON',  status: 'active' },
-  { id: 'bookmarks',    Icon: Bookmark,   title: 'Browser Bookmarks', subtitle: 'Browser Sync',         status: 'active' },
-  { id: 'twitter',      Icon: AtSign,     title: 'Twitter / X',       subtitle: 'Social Intelligence',  status: 'active' },
-  { id: 'apple-notes',  Icon: Smartphone, title: 'Apple Notes',       subtitle: 'Native Notes',         status: 'active' },
-  { id: 'upnote',       Icon: BookOpen,   title: 'Upnote',            subtitle: 'Knowledge Management', status: 'active' },
-  { id: 'google-drive', Icon: HardDrive,  title: 'Google Drive',      subtitle: 'Cloud Storage',        status: 'coming-soon' },
-  { id: 'notion',       Icon: Book,       title: 'Notion',            subtitle: 'Workspace',            status: 'coming-soon' },
+  { id: 'url',          Icon: Globe,      title: 'URL',               subtitle: 'Web pages, articles, YouTube',  status: 'active' },
+  { id: 'file-upload',  Icon: FileUp,     title: 'File Upload',       subtitle: SUPPORTED_FORMATS_SHORT,         status: 'active' },
+  { id: 'bookmarks',    Icon: Bookmark,   title: 'Browser Bookmarks', subtitle: 'Chrome, Firefox, Safari export', status: 'active' },
+  { id: 'twitter',      Icon: AtSign,     title: 'Twitter / X',       subtitle: 'Twitter bookmarks export',      status: 'active' },
+  { id: 'apple-notes',  Icon: Smartphone, title: 'Apple Notes',       subtitle: 'Notes export',                  status: 'active' },
+  { id: 'upnote',       Icon: BookOpen,   title: 'Upnote',            subtitle: 'Markdown notes export',         status: 'active' },
+  { id: 'google-drive', Icon: HardDrive,  title: 'Google Drive',      subtitle: 'Cloud Storage',                 status: 'coming-soon' },
+  { id: 'notion',       Icon: Book,       title: 'Notion',            subtitle: 'Workspace',                     status: 'coming-soon' },
 ];
 
 const ACTIVE_IDS = new Set(CONNECTORS.filter(c => c.status === 'active').map(c => c.id));

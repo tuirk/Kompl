@@ -635,7 +635,7 @@ export default function SettingsPage() {
         >
           <div style={{ padding: '1.25rem 1.5rem' }}>
             <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.85rem' }}>
-              Compilation Quality
+              Compilation quality
             </div>
 
             {/* Min source chars */}
@@ -863,7 +863,7 @@ export default function SettingsPage() {
                 </div>
                 <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                   Sources scoring below this TF-IDF cosine similarity against the
-                  page title are dropped from the drafter&apos;s cheat sheet.
+                  page title are dropped from the per-page draft context.
                   <strong> 0</strong> = include anything that mentions the topic;
                   <strong> 0.1</strong> = exclude trivially-matched sources. Tune
                   after observing real drafts. Default <strong>0.05</strong>.
@@ -1172,7 +1172,7 @@ export default function SettingsPage() {
         >
           <div style={{ padding: '1.25rem 1.5rem' }}>
             <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-              Wiki Export
+              Wiki export
             </div>
             <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '1.25rem' }}>
               Download your entire wiki for backup or use in other tools.
@@ -1216,7 +1216,7 @@ export default function SettingsPage() {
         >
           <div style={{ padding: '1.25rem 1.5rem' }}>
             <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-              Import Wiki
+              Import wiki
             </div>
             <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.75rem' }}>
               Restore from a .kompl.zip backup. <strong>Only works on an empty wiki</strong> — importing into a wiki that already has data will fail.
@@ -1363,7 +1363,7 @@ export default function SettingsPage() {
           >
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-                Stale Source Alerts
+                Stale source alerts
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                 Show a reminder on the dashboard when sources haven&apos;t been updated in a while.
@@ -1430,7 +1430,7 @@ export default function SettingsPage() {
           >
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-                Wiki Health Checks
+                Wiki health checks
                 <span
                   style={{
                     padding: '1px 6px',

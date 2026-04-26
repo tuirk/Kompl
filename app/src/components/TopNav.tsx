@@ -218,7 +218,7 @@ export default function TopNav() {
           <input
             type="text"
             className="topnav-search"
-            placeholder="Search archive"
+            placeholder="Search wiki"
             value={query}
             onChange={handleChange}
             onKeyDown={handleKeyDown}

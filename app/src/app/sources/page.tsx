@@ -80,7 +80,7 @@ export default function SourcesPage() {
       })
       .catch((err) => {
         if ((err as Error).name !== 'AbortError') {
-          setError('Failed to load sources. Try refreshing.');
+          setError('Failed to load sources — try refreshing.');
         }
       })
       .finally(() => setLoading(false));
@@ -197,9 +197,9 @@ export default function SourcesPage() {
         {/* Source type */}
         <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} style={controlStyle}>
           <option value="">All types</option>
-          <option value="url">URL / Article</option>
+          <option value="url">URL</option>
           <option value="file-upload">File upload</option>
-          <option value="text">Note / Text</option>
+          <option value="text">Note</option>
           <option value="tweet">Tweet</option>
         </select>
 
