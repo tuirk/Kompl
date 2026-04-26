@@ -49,10 +49,6 @@ docker-compose.test.yml
 Thumbs.db
 desktop.ini
 
-# Docusaurus build
-wiki/.docusaurus/
-wiki/build/
-
 # Logs
 *.log
 npm-debug.log*
@@ -62,6 +58,7 @@ npm-debug.log*
 .claude/memory/
 .claude/skills/
 .claude/plans/
+.claude/*.lock
 
 # Internal docs (local only — not for public repo)
 docs/spec/

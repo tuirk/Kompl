@@ -1,10 +1,9 @@
 # Kompl v2 — docker-compose (commit 4).
 #
-# Three real services + one placeholder:
+# Three services:
 #   - app         (Next.js 16 + better-sqlite3 single-writer, commit 2)
 #   - nlp-service (FastAPI + Firecrawl + MarkItDown, commit 3)
 #   - n8n         (ingest orchestration, Sidecar pattern, commit 3)
-#   - wiki        (Docusaurus — placeholder until commit 11)
 #
 # CRITICAL — architecture rule #1 storage substrate:
 #   kompl.db lives on a NAMED DOCKER VOLUME, never a Windows host bind
@@ -126,6 +125,16 @@ services:
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
       # Binary data on the shared volume so nlp-service can read uploads.
       N8N_DEFAULT_BINARY_DATA_MODE: "filesystem"
+      # Privacy: disable upstream n8n telemetry, version-check, template
+      # registry, and personalization. Out of the box n8n phones home to
+      # telemetry.n8n.io and api.n8n.io with no opt-in. Kompl is a local
+      # personal-data product; users should not have to discover these
+      # toggles from upstream docs. To re-enable for your own instance,
+      # override these in a docker-compose.override.yml.
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_TEMPLATES_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
       GENERIC_TIMEZONE: ${KOMPL_TIMEZONE:-UTC}
       # Pass the Firecrawl key in case future workflows need it via
       # credentials files (commit 3 uses nlp-service for Firecrawl).
@@ -153,10 +162,6 @@ services:
         limits:
           memory: 512m
           cpus: '0.5'
-
-  wiki:
-    image: alpine:latest
-    # Placeholder — becomes real in commit 11 (Docusaurus static wiki).
 
 volumes:
   kompl-data:

@@ -1,6 +1,8 @@
 {
   "name": "kompl",
   "version": "1.0.0",
+  "private": true,
+  "license": "Apache-2.0",
   "description": "CLI for managing the Kompl knowledge compiler stack",
   "bin": {
     "kompl": "./bin/kompl.js"
