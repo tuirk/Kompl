@@ -7,8 +7,6 @@
 Knowledge compiler — turns scattered links, files, and bookmarks into a living wiki that compounds with every new source.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tuirk/Kompl/badge)](https://scorecard.dev/viewer/?uri=github.com/tuirk/Kompl)
-[![CI](https://github.com/tuirk/Kompl/actions/workflows/integration-test.yml/badge.svg)](https://github.com/tuirk/Kompl/actions)
 [![Docker](https://img.shields.io/badge/Docker-Compose_Ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
 [![LLM](https://img.shields.io/badge/LLM-Gemini_2.5-8E75B2?logo=google&logoColor=white)]()
 
