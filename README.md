@@ -33,10 +33,10 @@ You'll need three things on your machine:
 
 You'll also need two API keys, both free to get:
 
-| | Get key | Free tier |
-|---|---|---|
-| **Gemini** (wiki compilation) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day |
-| **Firecrawl** (URL scraping) | [firecrawl.dev](https://firecrawl.dev) | 500 scrapes/month |
+| | Get key | Free tier | Notes |
+|---|---|---|---|
+| **Gemini** (wiki compilation) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day | Free works for the demo and your first few sources. **Paid Tier 1 is strongly recommended for real use** — Gemini's free per-minute throttle (~10 RPM) will rate-limit a normal ingest, even though daily quota is plenty. Default rate-limiter assumes Tier 1. |
+| **Firecrawl** (URL scraping) | [firecrawl.dev](https://firecrawl.dev) | 500 scrapes/month | Free tier covers normal personal use. |
 
 ## Setup
 
@@ -208,4 +208,12 @@ kompl backup --schedule                               # register a weekly backup
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Kompl's source is **Apache-2.0** — see [LICENSE](LICENSE). You can use, modify, fork, and redistribute it freely under those terms.
+
+**One caveat about the bundled n8n container.** Kompl runs `n8nio/n8n` as an unmodified runtime dependency for workflow orchestration. n8n itself is licensed under the [Sustainable Use License](https://docs.n8n.io/sustainable-use-license/), which is **not OSI-approved**. In practice:
+
+- Self-hosting Kompl for personal or internal use → fully fine.
+- Forking and redistributing Kompl source → fine (Apache-2.0 covers Kompl; n8n is a runtime dep users pull themselves).
+- Offering **Kompl-as-a-hosted-service to third parties** → this is the line. n8n's SUL restricts hosting n8n as a service for others; if your offering bundles n8n, contact n8n first.
+
+See [NOTICE](NOTICE) for full attribution.
