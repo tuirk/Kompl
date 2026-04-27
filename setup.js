@@ -78,7 +78,7 @@ async function main() {
     console.log('  API keys already set in .env — skipping prompts')
   } else {
     console.log('\n  You need two API keys (both have free tiers):')
-    console.log(dim('    Gemini:    https://aistudio.google.com/apikey   (1500 req/day free)'))
+    console.log(dim('    Gemini:    https://aistudio.google.com/apikey   (free works for the demo; paid Tier 1 strongly recommended for real use)'))
     console.log(dim('    Firecrawl: https://firecrawl.dev                (500 scrapes/month free)\n'))
 
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout })

@@ -64,6 +64,7 @@ npm-debug.log*
 docs/spec/
 docs/wiki-design-points.md
 docs/kompl-spec.md
+docs/launch/
 
 # Agent instruction files (local only — not for public repo)
 CLAUDE.md
