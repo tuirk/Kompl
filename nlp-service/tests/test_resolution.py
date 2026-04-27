@@ -156,6 +156,56 @@ class TestFuzzyExistingPageTitles:
         resp = resolution_client.post("/resolve/fuzzy", json=body)
         assert resp.status_code == 200
 
+    def test_substring_does_not_bind_short_entity_to_long_page_title(self, resolution_client):
+        """Regression: a short-name entity must NOT bind to a longer page title
+        just because one is a character-level substring of the other.
+
+        Cities and landmarks within them ("Vilnius" ↔ "Vilnius Cathedral"),
+        parents and subsidiaries, brands and product lines all share this
+        shape. Same-session substring matching is fine, but cross-session
+        anchoring against authoritative wiki page titles must be stricter.
+
+        Expected: entity falls through to unresolved so Layer 2 embedding can
+        evaluate semantic similarity.
+        """
+        body = {
+            "entities": [
+                {"name": "Vilnius", "type": "LOCATION", "source_id": "src1", "context": ""}
+            ],
+            "existing_aliases": [],
+            "existing_page_titles": [
+                {"title": "Vilnius Cathedral", "page_type": "entity"}
+            ],
+        }
+        resp = resolution_client.post("/resolve/fuzzy", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["resolved"] == []
+        assert len(data["unresolved"]) == 1
+        assert data["unresolved"][0]["name"] == "Vilnius"
+
+    def test_substring_does_not_bind_long_entity_to_short_page_title(self, resolution_client):
+        """Symmetric to above: extracting 'Catan Junior' must not bind to an
+        existing 'Catan' page via reverse substring. The substring branch
+        triggers on either direction (al in bl OR bl in al), so the strict
+        cross-session matcher must reject both.
+        """
+        body = {
+            "entities": [
+                {"name": "Catan Junior", "type": "PRODUCT", "source_id": "src1", "context": ""}
+            ],
+            "existing_aliases": [],
+            "existing_page_titles": [
+                {"title": "Catan", "page_type": "entity"}
+            ],
+        }
+        resp = resolution_client.post("/resolve/fuzzy", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["resolved"] == []
+        assert len(data["unresolved"]) == 1
+        assert data["unresolved"][0]["name"] == "Catan Junior"
+
 
 # ---------------------------------------------------------------------------
 # /resolve/embedding — anchor + ambiguous cross-session pairs

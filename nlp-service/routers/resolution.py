@@ -165,7 +165,13 @@ def _is_acronym(short: str, long: str) -> bool:
 
 
 def _fuzzy_method(a: str, b: str) -> str | None:
-    """Return the best matching method name if a and b should be merged, else None."""
+    """Return the best matching method name if a and b should be merged, else None.
+
+    Used for SAME-SESSION pairwise grouping where the inputs are sibling
+    extractions from the same source pool — substring/acronym signals are
+    soft-priors there ("Karpathy" + "A. Karpathy" in one article pool are
+    almost certainly the same person).
+    """
     al, bl = a.lower(), b.lower()
 
     # Exact
@@ -189,6 +195,42 @@ def _fuzzy_method(a: str, b: str) -> str | None:
             return "substring"
 
     # Acronym
+    if _is_acronym(a, b) or _is_acronym(b, a):
+        return "acronym"
+
+    return None
+
+
+def _cross_session_method(a: str, b: str) -> str | None:
+    """Stricter variant of _fuzzy_method for cross-session anchoring against
+    existing wiki page titles.
+
+    Drops the substring branch. Substring matching is a fine soft-prior for
+    same-session pairs but over-merges when one side is an authoritative,
+    permanent wiki page title — e.g. extracting "Vilnius" from a new source
+    must NOT bind to an existing "Vilnius Cathedral" page just because one
+    is a character-level substring of the other. The same shape hits cities
+    vs landmarks (London ↔ London Eye), parents vs subsidiaries, brands vs
+    product lines.
+
+    Layer 2 embedding similarity handles the legitimate cross-session cases
+    (e.g. "Andrej Karpathy" ↔ existing "Karpathy" page) semantically,
+    sending borderline pairs to Layer 3 LLM disambiguation.
+    """
+    al, bl = a.lower(), b.lower()
+
+    if al == bl:
+        return "exact"
+
+    if len(a) >= 4 and len(b) >= 4:
+        from rapidfuzz.distance import Levenshtein
+        if Levenshtein.distance(al, bl) <= 2:
+            return "levenshtein"
+
+    from rapidfuzz.distance import JaroWinkler
+    if JaroWinkler.similarity(al, bl) >= 0.92:
+        return "jaro_winkler"
+
     if _is_acronym(a, b) or _is_acronym(b, a):
         return "acronym"
 
@@ -269,11 +311,15 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
             alias_canonical[i] = pt_exact.title
             alias_method[i] = "existing_page_title"
             continue
-        # Fuzzy match against any page title
+        # Fuzzy match against any page title — uses the strict cross-session
+        # matcher (no substring) to avoid binding short-name entities to
+        # longer-name pages they happen to be a character-level prefix of
+        # (e.g. "Vilnius" ↔ existing "Vilnius Cathedral"). Layer 2 embedding
+        # handles those semantically.
         for pt in req.existing_page_titles:
             if not _entity_matches_page_type(e.type, pt.page_type):
                 continue
-            if _fuzzy_method(e.name, pt.title):
+            if _cross_session_method(e.name, pt.title):
                 alias_canonical[i] = pt.title
                 alias_method[i] = "existing_page_title"
                 break
