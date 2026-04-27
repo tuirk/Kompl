@@ -30,8 +30,8 @@ json-repair>=0.59.4
 # PersistentClient, get_or_create_collection, cosine distance.
 chromadb==0.4.24
 # chromadb 0.4.24 references np.float_ (chromadb/api/types.py:102), which
-# NumPy 2.0 removed. Pin numpy<2 until chromadb is upgraded.
-numpy<2
+# NumPy 2.0 removed. Pin numpy<3 until chromadb is upgraded.
+numpy<3
 # Testing
 pytest==9.0.3
 pytest-mock==3.15.1
