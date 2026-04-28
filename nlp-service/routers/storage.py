@@ -17,25 +17,26 @@ This router NEVER opens kompl.db. rule #1 in CLAUDE.md.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict
-
 import os
+from pathlib import Path
 
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from services._safe_paths import safe_join, validate_page_id
 from services.file_store import read_page, write_page
 
 router = APIRouter(tags=["storage"])
 
-_DATA_ROOT = "/data"
+_DATA_ROOT = Path("/data")
 
 
 def _safe_path(file_path: str) -> str:
     """Resolve path and verify it's under /data. Raises HTTPException if not."""
-    import pathlib
-    resolved = str(pathlib.Path(file_path).resolve())
-    if not resolved.startswith(_DATA_ROOT + "/") and resolved != _DATA_ROOT:
-        raise HTTPException(status_code=403, detail="path_outside_data_volume")
-    return resolved
+    try:
+        return str(safe_join(_DATA_ROOT, file_path))
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail="path_outside_data_volume") from e
 
 
 class WritePageRequest(BaseModel):
@@ -43,6 +44,12 @@ class WritePageRequest(BaseModel):
 
     page_id: str
     markdown: str
+
+    @field_validator("page_id")
+    @classmethod
+    def _check_page_id(cls, v: str) -> str:
+        validate_page_id(v)
+        return v
 
 
 class WritePageResponse(BaseModel):
@@ -106,6 +113,12 @@ class ReadPageRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     page_id: str
+
+    @field_validator("page_id")
+    @classmethod
+    def _check_page_id(cls, v: str) -> str:
+        validate_page_id(v)
+        return v
 
 
 class ReadPageResponse(BaseModel):
