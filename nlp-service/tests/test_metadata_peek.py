@@ -22,6 +22,7 @@ from routers.metadata_peek import (
     _extract,
     router as metadata_peek_router,
 )
+from services.url_safety import ValidatedURL
 
 
 @pytest.fixture
@@ -96,9 +97,15 @@ class _FakeResponse:
         body: bytes,
         content_type: str = "text/html; charset=utf-8",
         charset: str | None = "utf-8",
+        status_code: int = 200,
+        location: str | None = None,
     ) -> None:
         self._body = body
-        self.headers = {"content-type": content_type}
+        self.status_code = status_code
+        headers = {"content-type": content_type}
+        if location is not None:
+            headers["location"] = location
+        self.headers = headers
         self.charset_encoding = charset
 
     async def aiter_bytes(self) -> AsyncIterator[bytes]:
@@ -116,7 +123,7 @@ class _FakeClient:
     async def __aexit__(self, *_exc) -> None:
         return None
 
-    def stream(self, _method: str, _url: str):
+    def stream(self, _method: str, _url: str, **_kw):
         if self._raises is not None:
             raise self._raises
 
@@ -129,6 +136,11 @@ class _FakeClient:
 
 def _patch_httpx(monkeypatch, fake: _FakeClient) -> None:
     monkeypatch.setattr(mp.httpx, "AsyncClient", lambda **_kw: fake)
+    monkeypatch.setattr(
+        mp,
+        "validate_outbound_url",
+        lambda url: ValidatedURL(pinned_url=url, host_header="example.test", sni_hostname="example.test"),
+    )
 
 
 def test_peek_happy_path(monkeypatch, client):
@@ -165,3 +177,48 @@ def test_peek_rejects_extra_fields():
     c = TestClient(app)
     res = c.post("/metadata/peek", json={"url": "https://x.test", "extra": "no"})
     assert res.status_code == 422
+
+
+def test_peek_returns_empty_when_url_validation_rejects(monkeypatch, client):
+    """SSRF gate: validate_outbound_url raising ValueError yields the empty
+    response without any HTTP request being attempted."""
+    stream_calls = []
+
+    class _TrackingClient(_FakeClient):
+        def stream(self, method, url, **kw):
+            stream_calls.append((method, url))
+            return super().stream(method, url, **kw)
+
+    fake = _TrackingClient(_FakeResponse(b""))
+    monkeypatch.setattr(mp.httpx, "AsyncClient", lambda **_kw: fake)
+    monkeypatch.setattr(mp, "validate_outbound_url", lambda _u: (_ for _ in ()).throw(ValueError("private_address")))
+
+    res = client.post("/metadata/peek", json={"url": "http://169.254.169.254/"})
+    assert res.status_code == 200
+    assert res.json() == {"title": None, "description": None, "og_image": None}
+    assert stream_calls == [], "stream must not be called when validation rejects"
+
+
+def test_peek_follows_redirect_with_revalidation(monkeypatch, client):
+    """Each redirect hop runs validate_outbound_url again. A redirect to a
+    blocked target after a successful first hop must yield the empty response."""
+    seen_urls: list[str] = []
+
+    def _validate(url: str):
+        seen_urls.append(url)
+        if "evil" in url:
+            raise ValueError("private_address")
+        return ValidatedURL(pinned_url=url, host_header="ex.test", sni_hostname="ex.test")
+
+    monkeypatch.setattr(mp, "validate_outbound_url", _validate)
+
+    # First call returns a 302 redirect to an evil URL; second hop should
+    # be rejected by validation.
+    redirect_resp = _FakeResponse(b"", status_code=302, location="http://evil.test/")
+    monkeypatch.setattr(mp.httpx, "AsyncClient", lambda **_kw: _FakeClient(redirect_resp))
+
+    res = client.post("/metadata/peek", json={"url": "http://safe.test/"})
+    assert res.status_code == 200
+    assert res.json() == {"title": None, "description": None, "og_image": None}
+    assert "http://safe.test/" in seen_urls
+    assert any("evil" in u for u in seen_urls), "redirect target must hit validator"

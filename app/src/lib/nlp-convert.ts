@@ -119,14 +119,36 @@ export async function callConvertFilePath(
   return { ok: true, data: (await res.json()) as ConvertResponse };
 }
 
+const PEEK_ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
+const PEEK_BLOCKED_HOSTS = new Set([
+  'metadata',
+  'metadata.google.internal',
+  'metadata.goog',
+  'instance-data',
+  'instance-data.local',
+]);
+
 /**
  * Best-effort og-tag fetch for URLs whose primary conversion failed.
  * Always resolves — never throws — so the failure path stays linear.
  * 3.5s timeout (shorter than the convert timeout) so a deeply-stuck peek
  * can't extend the failure reporting window meaningfully.
+ *
+ * Defense-in-depth: scheme + cloud-metadata-hostname pre-check in the front
+ * door so obviously-bad URLs never burn an nlp-service round trip. Full DNS
+ * + private-IP validation runs server-side in services/url_safety.py.
  */
 export async function peekMetadata(url: string): Promise<MetadataPeek> {
   const empty: MetadataPeek = { title: null, description: null, og_image: null };
+
+  try {
+    const parsed = new URL(url);
+    if (!PEEK_ALLOWED_PROTOCOLS.has(parsed.protocol)) return empty;
+    if (PEEK_BLOCKED_HOSTS.has(parsed.hostname.toLowerCase())) return empty;
+  } catch {
+    return empty;
+  }
+
   try {
     const res = await fetch(`${NLP_SERVICE_URL}/metadata/peek`, {
       method: 'POST',
