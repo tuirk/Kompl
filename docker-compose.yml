@@ -92,10 +92,11 @@ services:
       # opens kompl.db, verified by the absence of sqlite imports in the
       # router files.)
       - kompl-data:/data
-    # Dev-only host port so you can curl the conversion routes directly
-    # during debugging. Remove in production.
+    # Dev-only host port bound to loopback so curl from the host works during
+    # debugging but the service is not reachable from the LAN. Remove in
+    # production.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request, sys; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read(); sys.exit(0)"]
       interval: 10s
