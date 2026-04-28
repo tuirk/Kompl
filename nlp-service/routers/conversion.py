@@ -40,6 +40,7 @@ from fastapi import APIRouter, HTTPException
 from markitdown import MarkItDown
 from pydantic import BaseModel, ConfigDict, Field
 
+from services._safe_paths import safe_join
 from services.http_client import HttpClient, HttpClientError
 
 
@@ -451,11 +452,13 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
 
 @router.post("/convert/file-path", response_model=ConvertResponse)
 def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
-    # Path safety — straight port of v1 conversion.py check. Prevents a
-    # compromised n8n from asking us to read arbitrary host paths.
-    p = Path(req.file_path).resolve()
-    if not p.is_relative_to(_DATA_ROOT):
-        raise HTTPException(status_code=403, detail="path_outside_data_volume")
+    # safe_join enforces "must be inside /data" via Path.relative_to() — the
+    # canonical CodeQL-recognised sanitiser pattern, replacing the older inline
+    # is_relative_to() check (functionally equivalent, statically opaque).
+    try:
+        p = safe_join(_DATA_ROOT, req.file_path)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail="path_outside_data_volume") from e
 
     if not p.exists():
         raise HTTPException(status_code=404, detail="file_not_found")

@@ -27,6 +27,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from services._safe_paths import safe_join, validate_page_id
+
 _DATA_ROOT = "/data"
 _PAGES_DIR = os.path.join(_DATA_ROOT, "pages")
 
@@ -50,11 +52,15 @@ def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
                         if this is the first version of the page
 
     Raises:
-        OSError — if the directory cannot be created or files cannot be moved/written
+        ValueError — if page_id fails the slug regex or the resulting path
+                     escapes _PAGES_DIR (defence-in-depth on top of the regex)
+        OSError    — if the directory cannot be created or files cannot be
+                     moved/written
     """
+    validate_page_id(page_id)
     os.makedirs(_PAGES_DIR, exist_ok=True)
 
-    current_path = os.path.join(_PAGES_DIR, f"{page_id}.md.gz")
+    current_path = str(safe_join(_PAGES_DIR, f"{page_id}.md.gz"))
     previous_path: str | None = None
 
     # Version archive — atomically move existing file before overwriting.
@@ -62,7 +68,7 @@ def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
     # atomic on POSIX when source and dest are on the same filesystem.
     if os.path.exists(current_path):
         ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime(os.stat(current_path).st_mtime))
-        previous_path = os.path.join(_PAGES_DIR, f"{page_id}.{ts}.md.gz")
+        previous_path = str(safe_join(_PAGES_DIR, f"{page_id}.{ts}.md.gz"))
         os.replace(current_path, previous_path)
 
     # Atomic write: write to .tmp.gz in the same directory (same filesystem),
@@ -88,7 +94,8 @@ def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
 
 def read_page(page_id: str) -> str | None:
     """Read and decompress a wiki page. Returns None if the file does not exist."""
-    current_path = os.path.join(_PAGES_DIR, f"{page_id}.md.gz")
+    validate_page_id(page_id)
+    current_path = str(safe_join(_PAGES_DIR, f"{page_id}.md.gz"))
     if not os.path.exists(current_path):
         return None
     with gzip.open(current_path, "rb") as f:

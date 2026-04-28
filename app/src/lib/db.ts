@@ -32,6 +32,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { COMPILE_STEP_KEYS, type CompileStepKey } from './compile-steps';
+import { assertSafeId } from './safe-paths';
 import type { ActivityEventType } from './activity-events';
 
 const DB_PATH = process.env.DB_PATH ?? '/data/db/kompl.db';
@@ -191,6 +192,7 @@ export interface ActivityRow {
 // ============================================================================
 
 export function rawFilePath(sourceId: string): string {
+  assertSafeId(sourceId, 'source');
   return path.join(RAW_DIR, `${sourceId}.md.gz`);
 }
 
@@ -479,6 +481,7 @@ export function getAllProvenance(): ProvenanceRow[] {
 // ============================================================================
 
 export function pagesFilePath(pageId: string): string {
+  assertSafeId(pageId, 'page');
   return path.join(DATA_ROOT, 'pages', `${pageId}.md.gz`);
 }
 
@@ -1828,6 +1831,7 @@ export function incrementPageSourceCount(pageId: string, increment: number): voi
  * Synchronous so it can be called inside a db.transaction() callback.
  */
 export function getCurrentPageHash(pageId: string): string {
+  assertSafeId(pageId, 'page');
   const filePath = path.join(PAGES_DIR, `${pageId}.md.gz`);
   if (!fs.existsSync(filePath)) return '';
   const data = fs.readFileSync(filePath);
