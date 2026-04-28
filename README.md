@@ -9,6 +9,7 @@ Knowledge compiler — turns scattered links, files, and bookmarks into a living
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Compose_Ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
 [![LLM](https://img.shields.io/badge/LLM-Gemini_2.5-8E75B2?logo=google&logoColor=white)]()
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tuirk/Kompl/badge)](https://scorecard.dev/viewer/?uri=github.com/tuirk/Kompl)
 
 ## Why Kompl?
 
@@ -224,6 +225,27 @@ kompl backup --schedule                               # register a weekly backup
 - **Current connectors:** URLs (YouTube transcripts and GitHub READMEs included), file uploads (PDF, DOCX, PPTX, XLSX, TXT, MD, HTML), browser bookmarks, Twitter JSON export, Upnote, Apple Notes.
 - Personal-device vs always-on-server mode is a demo feature — the always-on server path hasn't been hardened yet.
 - No mobile app. The web UI works on mobile browsers but isn't optimized for small screens.
+
+## Security
+
+Kompl is built for personal-device deployment behind a loopback or LAN. The security posture is calibrated for that model.
+
+**Hardening shipped (4-commit security pass, April 2026):**
+- SSRF protection on `/metadata/peek` — DNS-resolved IP pinning via httpx `sni_hostname` extension, scheme allowlist, cloud-metadata blocklist, manual redirect revalidation.
+- Path-traversal hardening across nlp-service and Next.js — regex-validated IDs (`^[a-z0-9](?:[a-z0-9_-]{0,79})$`) + `Path.resolve().relative_to()` containment.
+- Centralized YAML frontmatter escaping with C0/C1/U+2028/U+2029/BOM stripping.
+- Log-forging protection on compile pipeline log lines.
+- nlp-service port bound to `127.0.0.1` so the LAN cannot bypass the Next.js front door.
+
+**Open before public-internet (always-on / Railway) deployment:**
+- Markdown HTML output is not yet sanitized — Firecrawl-scraped content can carry XSS payloads. Personal-device users are exposed only to bookmarks they choose to ingest; multi-user/public deploys need DOMPurify in the render pipeline.
+- `/convert/url` does not yet share the SSRF gate that protects `/metadata/peek`.
+- No authentication layer — front the deployment with Cloudflare Access, Tailscale Funnel, or your own auth proxy.
+- CSP / X-Frame-Options / HSTS / Referrer-Policy headers not yet set.
+
+**CodeQL alerts.** Some `py/path-injection` and `js/path-injection` alerts re-fire on every push because CodeQL's taint tracker doesn't follow cross-function sanitizers. We dismiss these individually (rather than silencing in CodeQL config) so any genuinely new sink in those files surfaces for review. The audit trail and per-alert reasoning live at [docs/security/codeql-false-positives.md](docs/security/codeql-false-positives.md).
+
+**Reporting an issue.** If you find something, please open a GitHub Security Advisory rather than a public issue.
 
 ## License
 
