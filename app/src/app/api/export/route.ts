@@ -27,6 +27,7 @@ import {
   readPageMarkdown,
   setLastBackupAt,
 } from '@/lib/db';
+import { yamlDoubleQuote } from '@/lib/yaml-escape';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -111,14 +112,14 @@ async function buildObsidianZip(): Promise<Buffer> {
     const pageSources = pageSourceTitles.get(page.page_id) ?? [];
     const sourcesYaml =
       pageSources.length > 0
-        ? `[${pageSources.map((t) => `"${t.replace(/"/g, '\\"')}"`).join(', ')}]`
+        ? `[${pageSources.map((t) => yamlDoubleQuote(t)).join(', ')}]`
         : '[]';
 
     const dateUpdated = page.last_updated ? page.last_updated.split('T')[0] : '';
 
     const frontmatter =
       `---\n` +
-      `title: "${page.title.replace(/"/g, '\\"')}"\n` +
+      `title: ${yamlDoubleQuote(page.title)}\n` +
       `tags: [${tags.join(', ')}]\n` +
       `sources: ${sourcesYaml}\n` +
       `date_updated: ${dateUpdated}\n` +

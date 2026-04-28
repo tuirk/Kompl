@@ -16,6 +16,7 @@ import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { getChatHistory, getChatModel, getPageCategories, getSessionChatModel, getWikiStats, insertChatDraft, insertChatMessage } from '@/lib/db';
 import { retrievePages } from '@/lib/retrieval';
+import { yamlDoubleQuote } from '@/lib/yaml-escape';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -214,22 +215,17 @@ export async function POST(request: Request) {
     // 7. Compounding: if answer used 3+ pages, create a pending draft
     if (pages.length >= 3) {
       // Raw title for the DB column. Strip control chars (CR/LF/tab/etc) so
-      // the drafts list renders cleanly; do NOT escape quotes here — that's
-      // only needed when embedding in YAML.
+      // the drafts list renders cleanly.
       const draftTitle = `FAQ: ${question.slice(0, 100).replace(/[\x00-\x1F\x7F]+/g, ' ').trim()}`;
-      // YAML-escaped copy for the frontmatter. Backslash must be doubled
-      // BEFORE quotes are escaped, otherwise `C:\` becomes `C:\\"` and the
-      // trailing quote closes the YAML string prematurely.
-      const yamlTitle = draftTitle.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       const citedList = citations
         .map((c) => `- [${c.page_title}](/wiki/${c.page_id})`)
         .join('\n');
       const draftContent = [
         `---`,
-        `title: "${yamlTitle}"`,
+        `title: ${yamlDoubleQuote(draftTitle)}`,
         `page_type: query-generated`,
         `draft_status: pending_approval`,
-        `pages_referenced: [${pagesUsed.map((id) => `"${id}"`).join(', ')}]`,
+        `pages_referenced: [${pagesUsed.map((id) => yamlDoubleQuote(id)).join(', ')}]`,
         `---`,
         ``,
         `## Question`,

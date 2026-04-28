@@ -36,6 +36,7 @@ import {
   updatePlanStatus,
   getDb,
 } from '../../../../lib/db';
+import { yamlDoubleQuote } from '../../../../lib/yaml-escape';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 const DRAFT_CONCURRENCY = 5;
@@ -650,7 +651,7 @@ export async function POST(request: Request) {
         const firstClaim = (ext?.claims as Array<{ claim?: string }> | undefined)?.[0]?.claim;
         const firstConcept = (ext?.concepts as Array<{ definition?: string }> | undefined)?.[0]?.definition;
         const summaryText = (firstClaim ?? firstConcept ?? src.markdown.slice(0, 120).replace(/\n/g, ' ')).trim();
-        const rawDraft = `---\ntitle: "${plan.title}"\ncategory: ${category}\nsummary: "${summaryText.replace(/"/g, "'")}"\n---\n\n${src.markdown}`;
+        const rawDraft = `---\ntitle: ${yamlDoubleQuote(plan.title)}\ncategory: ${category}\nsummary: ${yamlDoubleQuote(summaryText)}\n---\n\n${src.markdown}`;
         updatePlanDraft(plan.plan_id, rawDraft);
         return { pageType: plan.page_type, markdown: rawDraft };
       }
