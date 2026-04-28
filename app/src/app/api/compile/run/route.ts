@@ -42,6 +42,7 @@ import { runHealthCheckStep } from '@/lib/compile/steps/health-check';
 import { runIngestFilesStep } from '@/lib/compile/steps/ingest-files';
 import { runIngestUrlsStep } from '@/lib/compile/steps/ingest-urls';
 import { runIngestTextsStep } from '@/lib/compile/steps/ingest-texts';
+import { sanitizeLogValue } from '@/lib/log-safe';
 
 const APP_URL = process.env.APP_URL ?? 'http://app:3000';
 
@@ -78,7 +79,7 @@ async function throwOnError(
     new Promise<string>((resolve) => setTimeout(() => resolve('<body read timed out>'), 3000)),
   ]);
   const snippet = body.replace(/\s+/g, ' ').trim().slice(0, 2000);
-  console.error(`[compile:${sessionId}] ${step} HTTP ${res.status}`);
+  console.error('[compile:%s] %s HTTP %d', sanitizeLogValue(sessionId), step, res.status);
   throw new Error(`${step} failed: ${res.status}${snippet ? ` — ${snippet}` : ''}`);
 }
 
@@ -209,7 +210,7 @@ function assertNotCancelled(sessionId: string): void {
 async function timed<T>(sessionId: string, step: string, fn: () => Promise<T>): Promise<T> {
   const t = Date.now();
   const r = await fn();
-  console.log(`[compile:${sessionId}] ${step} ${Date.now() - t}ms`);
+  console.log('[compile:%s] %s %dms', sanitizeLogValue(sessionId), step, Date.now() - t);
   return r;
 }
 
@@ -389,7 +390,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   } else if (pendingDraftCount > 0) {
     // Retry path: plans exist, some are still 'planned' or were marked
     // 'failed' on a prior Gemini error. Re-draft only those.
-    console.log(`[compile:${sessionId}] ${pendingDraftCount} plans pending — re-drafting without re-planning`);
+    console.log('[compile:%s] %d plans pending — re-drafting without re-planning', sanitizeLogValue(sessionId), pendingDraftCount);
     updateCompileStep(sessionId, 'draft', 'running');
     const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId));
     updateCompileStep(
@@ -402,7 +403,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     );
     assertNotCancelled(sessionId);
   } else {
-    console.log(`[compile:${sessionId}] plan+draft already complete — skipping both`);
+    console.log('[compile:%s] plan+draft already complete — skipping both', sanitizeLogValue(sessionId));
   }
 
   // Step 6: crossref — ALWAYS re-run.
@@ -460,10 +461,10 @@ export async function POST(request: Request) {
   // Fire and forget — return immediately so n8n doesn't timeout
   runCompilePipeline(session_id).catch((err: unknown) => {
     if (err instanceof CompileCancelledError) {
-      console.log(`[compile:${session_id}] cancelled by user — pipeline exited cleanly`);
+      console.log('[compile:%s] cancelled by user — pipeline exited cleanly', sanitizeLogValue(session_id));
       return;
     }
-    console.error(`[compile:${session_id}] pipeline error:`, err);
+    console.error('[compile:%s] pipeline error:', sanitizeLogValue(session_id), err);
     failCompileProgress(session_id, err instanceof Error ? err.message : String(err));
   });
 
