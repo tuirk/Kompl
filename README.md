@@ -39,13 +39,33 @@ You'll also need two API keys, both free to get:
 
 ## Setup
 
+### Quick install (recommended)
+
+**macOS / Linux / WSL / Git Bash:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tuirk/Kompl/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/tuirk/Kompl/main/install.ps1 | iex
+```
+
+The installer pre-flights Docker, Node 24, disk, and RAM, clones the repo, and hands off to `setup.js` for the API-key prompts. If anything's missing it fails fast with a copy-paste fix.
+
+Prefer to inspect the script before running it? Download with `curl -fsSLO` (or `iwr -OutFile` on PowerShell), open it in your editor, then run with `bash install.sh` (or `.\install.ps1`).
+
+### Manual install
+
 ```bash
 git clone https://github.com/tuirk/Kompl.git kompl
 cd kompl
 node setup.js
 ```
 
-The script handles everything: creates your config, asks for the two API keys, installs the `kompl` CLI, and starts the stack. No other steps needed. Your system timezone is detected and written to `.env` as `KOMPL_TIMEZONE` automatically.
+Either path: the script handles everything — creates your config, asks for the two API keys, installs the `kompl` CLI, and starts the stack. No other steps needed. Your system timezone is detected and written to `.env` as `KOMPL_TIMEZONE` automatically.
 
 > Your API keys land in `.env` at the repo root. That file is gitignored — never commit it.
 
