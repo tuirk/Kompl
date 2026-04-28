@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { insertChatDraft } from '../../../../lib/db';
 import type { Citation } from '../../../../lib/chat-types';
+import { yamlDoubleQuote } from '../../../../lib/yaml-escape';
 
 interface SaveDraftRequest {
   session_id: string;
@@ -33,10 +34,10 @@ export async function POST(request: Request) {
       : '';
 
   const draft_content = `---
-title: "${title.replace(/"/g, '\\"')}"
+title: ${yamlDoubleQuote(title)}
 page_type: query-generated
 category: "Chat Insights"
-summary: "${content.slice(0, 200).replace(/"/g, '\\"').replace(/\n/g, ' ')}"
+summary: ${yamlDoubleQuote(content.slice(0, 200))}
 entities: []
 ---
 
