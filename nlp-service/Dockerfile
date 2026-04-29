@@ -16,7 +16,9 @@
 #   - tesseract-ocr (commit 14 PRD feature sweep if user needs scanned-PDF OCR)
 #   - libreoffice  (never — tell users to save as modern formats)
 
-FROM python:3.11-slim
+# Pinned by digest for OpenSSF Scorecard Pinned-Dependencies. Dependabot's
+# docker ecosystem (.github/dependabot.yml) bumps weekly.
+FROM python:3.11-slim@sha256:6d85378d88a19cd4d76079817532d62232be95757cb45945a99fec8e8084b9c2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

@@ -76,6 +76,9 @@ docs/Tui-read.me
 # Scratch patch files from refactor sessions
 .tmp-patches/
 
+# Local OpenSSF Scorecard scan output
+__scorecard/
+
 # MCP server config (local-only Claude Code / tool setup)
 .mcp.json
 docker-compose.override.yml

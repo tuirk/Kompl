@@ -19,7 +19,11 @@
 # named 'sqlite3'" when using python3-minimal. Still no pip/venv/setuptools.
 
 # ---- Build stage ----
-FROM node:24-slim AS builder
+# Pinned by digest for OpenSSF Scorecard Pinned-Dependencies. Dependabot's
+# docker ecosystem (.github/dependabot.yml) bumps weekly. This digest MUST
+# match the runtime stage below — cross-stage COPY --from=builder copies
+# native better-sqlite3 binaries that are glibc/ABI-bound to the build base.
+FROM node:24-slim@sha256:03eae3ef7e88a9de535496fb488d67e02b9d96a063a8967bae657744ecd513f2 AS builder
 
 # python3 + build tools needed by node-gyp to compile better-sqlite3 from
 # source when the prebuild-install binary download fails (e.g. --no-cache builds).
@@ -31,14 +35,15 @@ WORKDIR /app
 
 # Install dependencies first for better layer caching
 COPY app/package.json app/package-lock.json* ./
-RUN npm install
+RUN npm ci
 
 # Copy app source and build
 COPY app/ ./
 RUN npm run build
 
 # ---- Runtime stage ----
-FROM node:24-slim AS runtime
+# MUST match the builder digest above (see comment there).
+FROM node:24-slim@sha256:03eae3ef7e88a9de535496fb488d67e02b9d96a063a8967bae657744ecd513f2 AS runtime
 
 # Install python3 (full stdlib, includes sqlite3) for migrate.py.
 # --no-install-recommends keeps pip/setuptools/venv out. migrate.py uses
