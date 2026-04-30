@@ -88,6 +88,48 @@ def test_multiple_overwrites_preserve_each_historical_version(isolated_pages_dir
     assert _read_gz(current) == "v4"
 
 
+def test_three_writes_within_same_second_preserve_two_distinct_archives(isolated_pages_dir):
+    """Regression: 3+ writes to the same page_id within one wall-clock second.
+
+    Pre-fix, the archive filename used %Y%m%d-%H%M%S (second resolution), so
+    consecutive writes whose mtimes fell in the same second produced identical
+    archive paths and the second os.replace silently overwrote the first
+    archive — losing version history. Microsecond suffix makes each archive
+    path unique even when all three writes land in the same second.
+    """
+    current, _ = file_store.write_page("doge", "v1")
+
+    # Pin v1's mtime to a fixed instant inside one wall-clock second.
+    base = 1_700_000_000  # arbitrary epoch second
+    os.utime(current, (base + 0.123, base + 0.123))
+    _, archive_a = file_store.write_page("doge", "v2")
+
+    # Pin v2's mtime to a DIFFERENT microsecond inside the SAME second as
+    # v1's mtime. Pre-fix this produced the same archive filename → clobber.
+    os.utime(current, (base + 0.456, base + 0.456))
+    _, archive_b = file_store.write_page("doge", "v3")
+
+    assert archive_a is not None and archive_b is not None
+    # Both archives must coexist with distinct paths.
+    assert archive_a != archive_b, (
+        f"second archive overwrote the first: {archive_a} == {archive_b}"
+    )
+    assert os.path.exists(archive_a), "v1 archive must survive v3's write"
+    assert os.path.exists(archive_b), "v2 archive must exist"
+    assert _read_gz(archive_a) == "v1"
+    assert _read_gz(archive_b) == "v2"
+
+    # Both archive filenames must contain the same %Y%m%d-%H%M%S prefix
+    # (same wall-clock second) but different microsecond suffixes.
+    name_a = os.path.basename(archive_a)
+    name_b = os.path.basename(archive_b)
+    second_prefix_a = name_a.rsplit("-", 1)[0]
+    second_prefix_b = name_b.rsplit("-", 1)[0]
+    assert second_prefix_a == second_prefix_b, (
+        f"both archives should fall in the same second: {name_a} vs {name_b}"
+    )
+
+
 def test_read_page_returns_decompressed_content(isolated_pages_dir):
     file_store.write_page("solana", "Solana page body.")
     assert file_store.read_page("solana") == "Solana page body."
