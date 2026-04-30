@@ -30,6 +30,7 @@ import {
 } from './db';
 import { upsertVectorWithRetry } from './vector-upsert';
 import { syncPageWikilinks } from './wikilinks';
+import { extractFrontmatterField } from './yaml-frontmatter';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -85,11 +86,11 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
     page_id = `${base || 'page'}-${suffix}`;
   }
 
-  // Frontmatter extraction — narrow regex (matches commit/route.ts).
-  const categoryMatch = markdown.match(/^category:[ \t]*["']?(.+?)["']?[ \t]*$/m);
-  const summaryMatch = markdown.match(/^summary:[ \t]*["']?(.+?)["']?[ \t]*$/m);
-  const category = categoryMatch?.[1]?.trim() ?? null;
-  const summary = summaryMatch?.[1]?.trim() ?? null;
+  // Frontmatter extraction — scoped to the YAML envelope only so body
+  // content (e.g. user-supplied chat questions in FAQ drafts) cannot inject
+  // forged `category:` / `summary:` lines. See lib/yaml-frontmatter.ts.
+  const category = extractFrontmatterField(markdown, 'category');
+  const summary = extractFrontmatterField(markdown, 'summary');
 
   const expectedPath = `/data/pages/${page_id}.md.gz`;
   const contentHash = createHash('sha256').update(markdown).digest('hex');

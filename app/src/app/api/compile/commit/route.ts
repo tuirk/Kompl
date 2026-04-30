@@ -48,6 +48,7 @@ import {
 } from '../../../../lib/db';
 import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
 import { syncPageWikilinks } from '../../../../lib/wikilinks';
+import { extractFrontmatterField } from '../../../../lib/yaml-frontmatter';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -212,13 +213,12 @@ async function commitSession(session_id: string): Promise<Response> {
       page_id = `${base || 'page'}-${suffix}`;
     }
 
-    // Extract frontmatter fields (category, summary) from YAML.
-    // Use [ \t]* (not \s*) so the regex cannot cross a newline and accidentally
-    // capture the next YAML key when category:/summary: has no inline value.
-    const categoryMatch = markdown.match(/^category:[ \t]*["']?(.+?)["']?[ \t]*$/m);
-    const summaryMatch = markdown.match(/^summary:[ \t]*["']?(.+?)["']?[ \t]*$/m);
-    const category = categoryMatch?.[1]?.trim() ?? null;
-    const summary = summaryMatch?.[1]?.trim() ?? null;
+    // Extract frontmatter fields (category, summary) from YAML envelope only.
+    // Scoping to the `---\n...\n---` block prevents body content (which can
+    // include user-controlled text) from injecting forged metadata via lines
+    // that look like `category: forged`. See lib/yaml-frontmatter.ts.
+    const category = extractFrontmatterField(markdown, 'category');
+    const summary = extractFrontmatterField(markdown, 'summary');
 
     // Deterministic path — known before the file is written (page_id is fixed).
     const expectedPath = `/data/pages/${page_id}.md.gz`;
