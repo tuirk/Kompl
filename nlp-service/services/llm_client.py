@@ -161,6 +161,57 @@ _CONFIG_FILE = Path(os.environ.get("DATA_ROOT", "/data")) / "llm-config.json"
 # requiring a service restart.
 _cap_cache: dict[str, Any] = {"value": None, "read_at": 0.0}
 
+# Per-call-site thinking_budget defaults — must match
+# DEFAULT_THINKING_BUDGETS in app/src/lib/db.ts. Source of truth at runtime is
+# /data/llm-config.json; this dict is the fallback when the file is missing
+# (first boot, dev env, test) or a key is absent.
+_DEFAULT_THINKING_BUDGETS: dict[str, int] = {
+    "extract_source": 512,
+    "draft_page": 1024,
+    "disambiguate_entities": 512,
+    "synthesize_answer": 512,
+    "lint_scan": 1024,
+    "select_pages_for_query": 1024,
+    "generate_schema": 2048,
+    "crossref_pages": 0,
+    "triage_page_update": 0,
+    "generate_digest": 1024,
+}
+
+# 30 s mirrors the daily-cap cache window — Settings UI changes take effect
+# within half a minute without a service restart.
+_thinking_cache: dict[str, Any] = {"value": None, "read_at": 0.0}
+
+
+def _read_thinking_budget(call_site: str) -> int:
+    """Return the configured thinking_budget for `call_site`.
+
+    Reads /data/llm-config.json's `thinking_budgets` map, cached for 30 s.
+    Falls back to _DEFAULT_THINKING_BUDGETS[call_site] when the file is
+    missing, malformed, the key is absent, or the value isn't a valid int.
+    Unknown call_site names raise KeyError so a typo at the call site
+    surfaces immediately rather than silently using 0.
+    """
+    if call_site not in _DEFAULT_THINKING_BUDGETS:
+        raise KeyError(f"unknown thinking_budget call_site: {call_site}")
+    now = time.time()
+    if _thinking_cache["value"] is not None and now - _thinking_cache["read_at"] < 30:
+        budgets = _thinking_cache["value"]
+    else:
+        budgets = dict(_DEFAULT_THINKING_BUDGETS)
+        try:
+            data = json.loads(_CONFIG_FILE.read_text())
+            tb = data.get("thinking_budgets") if isinstance(data, dict) else None
+            if isinstance(tb, dict):
+                for k, v in tb.items():
+                    if k in _DEFAULT_THINKING_BUDGETS and isinstance(v, int) and -1 <= v <= 24576:
+                        budgets[k] = v
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+        _thinking_cache["value"] = budgets
+        _thinking_cache["read_at"] = now
+    return budgets[call_site]
+
 
 def _read_daily_cap_usd() -> float:
     """Read the user-configurable daily Gemini $ cap from /data/llm-config.json.
@@ -493,7 +544,7 @@ def lint_scan(pages: list[str], model: str = _DEFAULT_MODEL) -> LintScanResponse
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('lint_scan')),
                     max_output_tokens=4096,  # lint responses are short
                 ),
             ),
@@ -669,7 +720,7 @@ def extract_source(
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=LLMExtractionResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=512),
+                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('extract_source')),
                     max_output_tokens=32768,
                     temperature=0.0,
                 ),
@@ -746,7 +797,7 @@ def extract_source(
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=LLMExtractionResponse,
-                        thinking_config=types.ThinkingConfig(thinking_budget=512),
+                        thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('extract_source')),
                         max_output_tokens=32768,
                         temperature=0.0,
                     ),
@@ -904,7 +955,7 @@ def disambiguate_entities(
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=DisambiguationResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=512),
+                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('disambiguate_entities')),
                     max_output_tokens=2048,
                     temperature=0.0,
                 ),
@@ -1157,7 +1208,7 @@ def draft_page(
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
-                thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('draft_page')),
                 max_output_tokens=16384,
                 temperature=0.3,
             ),
@@ -1282,7 +1333,7 @@ def crossref_pages(pages: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> 
                     system_instruction=_CROSSREF_SYSTEM_PROMPT,
                     response_mime_type="application/json",
                     response_schema=CrossrefResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('crossref_pages')),
                     max_output_tokens=32768,
                     temperature=0.0,
                 ),
@@ -1379,7 +1430,7 @@ def triage_page_update(
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=TriageResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('triage_page_update')),
                     max_output_tokens=512,
                     temperature=0.0,
                 ),
@@ -1434,7 +1485,7 @@ def generate_schema(pages_summary: list[dict[str, Any]], model: str = _DEFAULT_M
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=_SCHEMA_SYSTEM_PROMPT,
-                    thinking_config=types.ThinkingConfig(thinking_budget=2048),
+                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('generate_schema')),
                     max_output_tokens=8192,
                     temperature=0.0,
                 ),
@@ -1520,7 +1571,7 @@ def select_pages_for_query(
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=SelectPagesResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('select_pages_for_query')),
                     max_output_tokens=1024,
                     temperature=0.0,
                 ),
@@ -1659,7 +1710,7 @@ def synthesize_answer(
                 system_instruction=_SYNTHESIZE_SYSTEM_PROMPT,
                 response_mime_type="application/json",
                 response_schema=SynthesizeResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=512),
+                thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('synthesize_answer')),
                 max_output_tokens=4096,
                 temperature=0.2,
             ),
@@ -1726,7 +1777,7 @@ Keep it under 150 words. No markdown formatting — plain text with line breaks.
             model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('generate_digest')),
                 max_output_tokens=2048,
                 temperature=0.3,
             ),
