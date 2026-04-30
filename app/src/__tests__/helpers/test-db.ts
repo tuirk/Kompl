@@ -218,3 +218,22 @@ export function seedCompileProgress(db: Database.Database, sessionId: string, so
      VALUES (?, 'in_progress', '[]', ?)`
   ).run(sessionId, sourceCount);
 }
+
+export function seedProvenance(
+  db: Database.Database,
+  page_id: string,
+  source_id: string,
+  contribution_type: string = 'created',
+): void {
+  db.prepare(
+    `INSERT INTO provenance (source_id, page_id, content_hash, contribution_type)
+     VALUES (?, ?, 'seed-hash', ?)`,
+  ).run(source_id, page_id, contribution_type);
+}
+
+export function getActivityCounts(db: Database.Database): Record<string, number> {
+  const rows = db
+    .prepare(`SELECT action_type, COUNT(*) AS n FROM activity_log GROUP BY action_type`)
+    .all() as Array<{ action_type: string; n: number }>;
+  return Object.fromEntries(rows.map((r) => [r.action_type, r.n]));
+}
