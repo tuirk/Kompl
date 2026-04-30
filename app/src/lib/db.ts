@@ -2576,6 +2576,60 @@ export function setCompileModel(value: string): void {
 const LLM_CONFIG_PATH = path.join(DATA_ROOT, 'llm-config.json');
 const DEFAULT_DAILY_CAP_USD = 5.00;
 
+// Default thinking_budget per LLM call site. Matches the values currently
+// hardcoded in nlp-service/services/llm_client.py — switching the source of
+// truth from code constants to settings preserves existing behaviour. Users
+// can raise these (e.g. -1 for unlimited per the docstring spec at
+// llm_client.py:12-16) via the Settings UI when they want deeper reasoning.
+//
+// Allowed values (Gemini 2.5 Flash docs):
+//   -1     → dynamic / unlimited
+//    0     → thinking off
+//    >0    → fixed token budget
+const DEFAULT_THINKING_BUDGETS = {
+  extract_source: 512,
+  draft_page: 1024,
+  disambiguate_entities: 512,
+  synthesize_answer: 512,
+  lint_scan: 1024,
+  select_pages_for_query: 1024,
+  generate_schema: 2048,
+  crossref_pages: 0,
+  triage_page_update: 0,
+  generate_digest: 1024,
+} as const;
+
+export type ThinkingBudgetKey = keyof typeof DEFAULT_THINKING_BUDGETS;
+export const THINKING_BUDGET_KEYS = Object.keys(DEFAULT_THINKING_BUDGETS) as ThinkingBudgetKey[];
+
+function isValidThinkingBudget(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= -1 && value <= 24576;
+}
+
+// Single read/write of /data/llm-config.json. Both setDailyCapUsd and
+// setThinkingBudgets call writeLlmConfig — without merge semantics, the second
+// caller would clobber the first caller's keys.
+function readLlmConfig(): Record<string, unknown> {
+  try {
+    const raw = fs.readFileSync(LLM_CONFIG_PATH, 'utf-8');
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLlmConfig(patch: Record<string, unknown>): void {
+  const merged = { ...readLlmConfig(), ...patch };
+  try {
+    fs.writeFileSync(LLM_CONFIG_PATH, JSON.stringify(merged));
+  } catch {
+    // Non-fatal: NLP service falls back to its hardcoded defaults.
+  }
+}
+
 export function getDailyCapUsd(): number {
   const v = getSetting('daily_cap_usd');
   if (v === null) return DEFAULT_DAILY_CAP_USD;
@@ -2586,11 +2640,49 @@ export function getDailyCapUsd(): number {
 export function setDailyCapUsd(value: number): void {
   const clamped = Math.max(0, Number.isFinite(value) ? value : DEFAULT_DAILY_CAP_USD);
   setSetting('daily_cap_usd', String(clamped));
+  writeLlmConfig({ daily_cap_usd: clamped });
+}
+
+/**
+ * Per-call-site thinking_budget overrides for nlp-service Gemini calls.
+ * Settings table holds the authoritative copy; /data/llm-config.json mirrors
+ * it for nlp-service to read on the hot path. Missing keys fall back to
+ * DEFAULT_THINKING_BUDGETS, so partial UIs and partial JSON files both work.
+ */
+export function getThinkingBudgets(): Record<ThinkingBudgetKey, number> {
+  const stored = getSetting('thinking_budgets');
+  const result = { ...DEFAULT_THINKING_BUDGETS } as Record<ThinkingBudgetKey, number>;
+  if (stored === null) return result;
   try {
-    fs.writeFileSync(LLM_CONFIG_PATH, JSON.stringify({ daily_cap_usd: clamped }));
+    const parsed = JSON.parse(stored) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const key of THINKING_BUDGET_KEYS) {
+        const v = (parsed as Record<string, unknown>)[key];
+        if (isValidThinkingBudget(v)) result[key] = v;
+      }
+    }
   } catch {
-    // Non-fatal: NLP service falls back to env var default.
+    // malformed JSON in settings — fall back to defaults
   }
+  return result;
+}
+
+/**
+ * Merge-update thinking_budgets. Caller passes a partial map; only valid keys
+ * with valid values are accepted. Returns the resolved post-merge state so
+ * the API route can echo it back without a second read.
+ */
+export function setThinkingBudgets(
+  patch: Partial<Record<ThinkingBudgetKey, number>>,
+): Record<ThinkingBudgetKey, number> {
+  const current = getThinkingBudgets();
+  for (const key of THINKING_BUDGET_KEYS) {
+    const v = patch[key];
+    if (v !== undefined && isValidThinkingBudget(v)) current[key] = v;
+  }
+  setSetting('thinking_budgets', JSON.stringify(current));
+  writeLlmConfig({ thinking_budgets: current });
+  return current;
 }
 
 export function countPagePlansByStatus(sessionId: string): Record<string, number> {

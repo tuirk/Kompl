@@ -25,6 +25,8 @@ import {
   getDailyCapUsd, setDailyCapUsd,
   getChatModel, setChatModel, isChatModel,
   getCompileModel, setCompileModel,
+  getThinkingBudgets, setThinkingBudgets,
+  THINKING_BUDGET_KEYS, type ThinkingBudgetKey,
 } from '../../../lib/db';
 
 function buildResponse() {
@@ -49,6 +51,7 @@ function buildResponse() {
     daily_cap_usd: getDailyCapUsd(),
     chat_model: getChatModel(),
     compile_model: getCompileModel(),
+    thinking_budgets: getThinkingBudgets(),
   };
 }
 
@@ -74,6 +77,7 @@ export async function POST(request: Request) {
     daily_cap_usd?: number;
     chat_model?: string;
     compile_model?: string;
+    thinking_budgets?: Partial<Record<ThinkingBudgetKey, number>>;
   };
 
   const knownFields = [
@@ -87,6 +91,7 @@ export async function POST(request: Request) {
     'daily_cap_usd',
     'chat_model',
     'compile_model',
+    'thinking_budgets',
   ];
   if (!knownFields.some((f) => f in body)) {
     return NextResponse.json({ error: 'no recognized setting field in request body' }, { status: 422 });
@@ -235,6 +240,31 @@ export async function POST(request: Request) {
       );
     }
     setCompileModel(body.compile_model);
+  }
+
+  if (body.thinking_budgets !== undefined) {
+    if (typeof body.thinking_budgets !== 'object' || body.thinking_budgets === null || Array.isArray(body.thinking_budgets)) {
+      return NextResponse.json(
+        { error: 'thinking_budgets must be an object mapping call-site name to integer in [-1, 24576]' },
+        { status: 422 },
+      );
+    }
+    const patch = body.thinking_budgets as Record<string, unknown>;
+    for (const [key, value] of Object.entries(patch)) {
+      if (!THINKING_BUDGET_KEYS.includes(key as ThinkingBudgetKey)) {
+        return NextResponse.json(
+          { error: `unknown thinking_budgets key: ${key}. Valid keys: ${THINKING_BUDGET_KEYS.join(', ')}` },
+          { status: 422 },
+        );
+      }
+      if (!Number.isInteger(value) || (value as number) < -1 || (value as number) > 24576) {
+        return NextResponse.json(
+          { error: `thinking_budgets.${key} must be an integer in [-1, 24576] (-1 = unlimited, 0 = off)` },
+          { status: 422 },
+        );
+      }
+    }
+    setThinkingBudgets(body.thinking_budgets);
   }
 
   return NextResponse.json(buildResponse());

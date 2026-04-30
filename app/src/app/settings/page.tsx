@@ -84,6 +84,42 @@ export default function SettingsPage() {
   const [compileModelSaving, setCompileModelSaving] = useState(false);
   const [compileModelSaved, setCompileModelSaved] = useState(false);
 
+  // Thinking budgets — per-LLM-call-site reasoning token allowance.
+  // Source of truth lives in /data/llm-config.json (mirrored from settings
+  // table); nlp-service reads the JSON on each Gemini call. -1 = unlimited,
+  // 0 = thinking off. Defaults match what the code shipped with so toggling
+  // doesn't change behaviour until the user opts in.
+  const THINKING_BUDGET_KEYS = [
+    'extract_source',
+    'draft_page',
+    'disambiguate_entities',
+    'synthesize_answer',
+    'lint_scan',
+    'select_pages_for_query',
+    'generate_schema',
+    'crossref_pages',
+    'triage_page_update',
+    'generate_digest',
+  ] as const;
+  type ThinkingBudgetKey = typeof THINKING_BUDGET_KEYS[number];
+  const THINKING_BUDGET_LABELS: Record<ThinkingBudgetKey, string> = {
+    extract_source: 'Extract entities/concepts/claims from a source',
+    draft_page: 'Draft a wiki page from sources',
+    disambiguate_entities: 'Resolve canonical entities across sources',
+    synthesize_answer: 'Synthesize a chat answer from cited pages',
+    lint_scan: 'Weekly wiki lint pass',
+    select_pages_for_query: 'Pick pages relevant to a chat question',
+    generate_schema: 'Bootstrap schema.md after a compile',
+    crossref_pages: 'Inject [[wikilinks]] across newly-drafted pages',
+    triage_page_update: 'Decide create vs update vs skip per match candidate',
+    generate_digest: 'Compose the weekly Telegram digest',
+  };
+  const [thinkingBudgets, setThinkingBudgets] = useState<Record<ThinkingBudgetKey, number> | null>(null);
+  const [thinkingBudgetsDraft, setThinkingBudgetsDraft] = useState<Record<ThinkingBudgetKey, number> | null>(null);
+  const [thinkingBudgetsSaving, setThinkingBudgetsSaving] = useState(false);
+  const [thinkingBudgetsSaved, setThinkingBudgetsSaved] = useState(false);
+  const [thinkingBudgetsError, setThinkingBudgetsError] = useState<string | null>(null);
+
   const [deploymentMode, setDeploymentModeState] = useState<'personal-device' | 'always-on' | null>(null);
   const [deploymentSaving, setDeploymentSaving] = useState(false);
   const [deploymentSaved, setDeploymentSaved] = useState(false);
@@ -151,6 +187,7 @@ export default function SettingsPage() {
         daily_cap_usd: number;
         chat_model: string;
         compile_model: string;
+        thinking_budgets: Record<ThinkingBudgetKey, number>;
       }) => {
         setAutoApprove(data.auto_approve);
         setRelatedMinSources(data.related_pages_min_sources);
@@ -171,6 +208,8 @@ export default function SettingsPage() {
         setDailyCapUsd(data.daily_cap_usd);
         setChatModelState(data.chat_model);
         setCompileModelState(data.compile_model);
+        setThinkingBudgets(data.thinking_budgets);
+        setThinkingBudgetsDraft(data.thinking_budgets);
       });
   }, []);
 
@@ -458,6 +497,26 @@ export default function SettingsPage() {
     setCompileModelSaving(false);
     setCompileModelSaved(true);
     setTimeout(() => setCompileModelSaved(false), 2000);
+  }
+
+  async function saveThinkingBudgets() {
+    if (thinkingBudgetsDraft === null) return;
+    for (const key of THINKING_BUDGET_KEYS) {
+      const v = thinkingBudgetsDraft[key];
+      if (!Number.isInteger(v) || v < -1 || v > 24576) {
+        setThinkingBudgetsError(`${key}: must be an integer between -1 and 24576 (-1 = unlimited, 0 = off)`);
+        return;
+      }
+    }
+    setThinkingBudgetsError(null);
+    setThinkingBudgetsSaving(true);
+    setThinkingBudgetsSaved(false);
+    const _ok = await saveSettingToApi({ thinking_budgets: thinkingBudgetsDraft });
+    if (!_ok) { setThinkingBudgetsSaving(false); showToast(toUserMessage('settings_save_failed'), 'error'); return; }
+    setThinkingBudgets(thinkingBudgetsDraft);
+    setThinkingBudgetsSaving(false);
+    setThinkingBudgetsSaved(true);
+    setTimeout(() => setThinkingBudgetsSaved(false), 2000);
   }
 
   const MCP_CONFIG_JSON = `{
@@ -1155,6 +1214,119 @@ export default function SettingsPage() {
               }}
             >
               Saved — applies to new chats.
+            </div>
+          )}
+        </section>
+
+        {/* Thinking budgets */}
+        <section
+          style={{
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            overflow: 'hidden',
+            marginTop: '1rem',
+          }}
+        >
+          <div style={{ padding: '1.25rem 1.5rem' }}>
+            <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
+              Thinking budgets
+            </div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.75rem' }}>
+              How many <em>reasoning</em> tokens each Gemini call site is allowed to spend before
+              producing the final response. Higher = better quality on hard tasks; lower = cheaper
+              and faster. <strong>-1</strong> = unlimited (model decides), <strong>0</strong> = thinking off.
+              Defaults match what shipped with the build — tune only if you have a specific reason.
+            </div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--fg-dim)', lineHeight: 1.5, marginBottom: '1rem' }}>
+              The Gemini 2.5 Flash docs suggest 0 for mechanical text manipulation, 1024 for
+              selection/ranking, 2048 for structured creative one-offs, and -1 for deep reasoning
+              (extract, draft, disambiguate, synthesize). Range: -1 to 24576.
+            </div>
+
+            {thinkingBudgetsDraft === null ? (
+              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)' }}>Loading…</div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: '0.5rem 1rem', alignItems: 'center' }}>
+                {THINKING_BUDGET_KEYS.map((key) => (
+                  <div key={key} style={{ display: 'contents' }}>
+                    <label htmlFor={`tb-${key}`} style={{ fontSize: '0.85rem' }}>
+                      <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--accent)' }}>
+                        {key}
+                      </code>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--fg-muted)', marginTop: '0.15rem' }}>
+                        {THINKING_BUDGET_LABELS[key]}
+                      </div>
+                    </label>
+                    <input
+                      id={`tb-${key}`}
+                      type="number"
+                      min={-1}
+                      max={24576}
+                      step={1}
+                      value={thinkingBudgetsDraft[key]}
+                      onChange={(e) => {
+                        const next = Number.parseInt(e.target.value, 10);
+                        setThinkingBudgetsDraft({
+                          ...thinkingBudgetsDraft,
+                          [key]: Number.isFinite(next) ? next : 0,
+                        });
+                      }}
+                      disabled={thinkingBudgetsSaving}
+                      style={{
+                        padding: '0.4rem 0.55rem',
+                        borderRadius: 6,
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg-card)',
+                        color: 'var(--fg)',
+                        fontSize: '0.85rem',
+                        fontFamily: 'var(--font-mono)',
+                        width: '100%',
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {thinkingBudgetsError && (
+              <div style={{ marginTop: '0.75rem', fontSize: '0.82rem', color: 'var(--danger)' }}>
+                {thinkingBudgetsError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem', alignItems: 'center' }}>
+              <button
+                onClick={() => void saveThinkingBudgets()}
+                disabled={thinkingBudgetsDraft === null || thinkingBudgetsSaving}
+                style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
+              >
+                {thinkingBudgetsSaving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                onClick={() => {
+                  if (thinkingBudgets !== null) {
+                    setThinkingBudgetsDraft(thinkingBudgets);
+                    setThinkingBudgetsError(null);
+                  }
+                }}
+                disabled={thinkingBudgetsDraft === null || thinkingBudgetsSaving}
+                style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
+              >
+                Revert
+              </button>
+            </div>
+          </div>
+          {thinkingBudgetsSaved && (
+            <div
+              style={{
+                padding: '0.6rem 1.5rem',
+                background: 'var(--success-bg, #ecfdf5)',
+                borderTop: '1px solid var(--success-border, #a7f3d0)',
+                color: 'var(--success, #059669)',
+                fontSize: 13,
+              }}
+            >
+              Saved — nlp-service picks up the new values within ~30 s (cache TTL).
             </div>
           )}
         </section>
