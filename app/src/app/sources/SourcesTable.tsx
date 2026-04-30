@@ -281,15 +281,29 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
     setSources((prev) => prev.filter((s) => !ids.includes(s.source_id)));
     setSelectedIds(new Set());
 
-    const results = await Promise.allSettled(
-      ids.map((id) =>
-        fetch(`/api/sources/${id}`, { method: 'DELETE' })
-          .then((r) => { if (!r.ok && r.status !== 204) throw new Error(`${r.status}`); return id; })
-      )
-    );
-
+    // Single bulk request — server-side helper batches the page-eval phase so
+    // shared pages get deleted once instead of recompiled N-1 times. (issue #46)
+    // 'not_found' is treated as success: the row was already gone (e.g. another
+    // tab deleted it) — keep it removed, no error badge.
     const failed = new Set<string>();
-    results.forEach((r, i) => { if (r.status === 'rejected') failed.add(ids[i]); });
+    try {
+      const res = await fetch('/api/sources/bulk-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const body = await res.json() as {
+        results?: Array<{ source_id: string; status: 'ok' | 'not_found' | 'error' }>;
+      };
+      if (!Array.isArray(body.results)) throw new Error('malformed response');
+      for (const r of body.results) {
+        if (r.status === 'error') failed.add(r.source_id);
+      }
+    } catch {
+      // Top-level failure: lost per-id granularity → roll back all.
+      ids.forEach((id) => failed.add(id));
+    }
 
     if (failed.size > 0) {
       // Re-insert failed rows at their original positions

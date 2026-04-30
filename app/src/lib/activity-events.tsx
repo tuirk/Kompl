@@ -235,7 +235,9 @@ function renderPageDeleted(row: FeedActivityRow): RowContent {
     ? 'no sources remained'
     : reason === 'sole_remaining_source'
       ? 'sole source deleted'
-      : null;
+      : reason === 'all_remaining_in_batch'
+        ? 'all remaining sources deleted in batch'
+        : null;
   const secondary = reasonText ? <span style={MONO_DIM}>{reasonText}</span> : null;
   return { primary: <strong>{pageName}</strong>, secondary, action: null, isError: true };
 }
