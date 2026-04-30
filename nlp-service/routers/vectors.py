@@ -31,11 +31,26 @@ router = APIRouter(tags=["vectors"])
 # ---------------------------------------------------------------------------
 
 
+class VectorMetadata(BaseModel):
+    """Strict metadata schema for wiki page embeddings.
+
+    Mirrors the four fields consumed by `services.vector_store.upsert_page`.
+    All call sites (compile/commit, recompile, backfill-vectors) send exactly
+    these keys — see commit/route.ts:334-339.
+    """
+    model_config = ConfigDict(extra='forbid')
+
+    title: str
+    page_type: str
+    category: str = ''
+    source_count: int = 0
+
+
 class VectorUpsertRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     page_id: str
-    metadata: dict  # {title, page_type, category, source_count}
+    metadata: VectorMetadata
 
 
 class VectorUpsertResponse(BaseModel):
@@ -108,7 +123,7 @@ class BackfillRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     page_ids: list[str]
-    metadata_map: dict  # page_id → {title, page_type, category, source_count}
+    metadata_map: dict[str, VectorMetadata]  # page_id → VectorMetadata
 
 
 class BackfillResponse(BaseModel):
@@ -137,7 +152,7 @@ def vectors_upsert(req: VectorUpsertRequest) -> VectorUpsertResponse:
         raise HTTPException(status_code=404, detail="page_not_found")
 
     try:
-        upsert_page(req.page_id, content, req.metadata)
+        upsert_page(req.page_id, content, req.metadata.model_dump())
     except Exception as e:
         logger.error("vector upsert failed for %s: %s", req.page_id, e)
         raise HTTPException(status_code=500, detail=f"vector_upsert_failed: {e}") from e
@@ -248,7 +263,8 @@ def vectors_backfill(req: BackfillRequest) -> BackfillResponse:
             errors += 1
             continue
 
-        metadata = req.metadata_map.get(page_id, {})
+        meta_model = req.metadata_map.get(page_id)
+        metadata = meta_model.model_dump() if meta_model is not None else {}
         try:
             upsert_page(page_id, content, metadata)
             upserted += 1
