@@ -66,9 +66,14 @@ def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
     # Version archive — atomically move existing file before overwriting.
     # os.replace() is used instead of shutil.move() for clarity; both are
     # atomic on POSIX when source and dest are on the same filesystem.
+    # Microsecond suffix on the timestamp prevents collisions when the same
+    # page_id is rewritten 3+ times within one wall-clock second (the
+    # second-resolution format used to silently overwrite the second archive).
     if os.path.exists(current_path):
-        ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime(os.stat(current_path).st_mtime))
-        previous_path = str(safe_join(_PAGES_DIR, f"{page_id}.{ts}.md.gz"))
+        mtime = os.stat(current_path).st_mtime
+        ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime(mtime))
+        usec = int((mtime - int(mtime)) * 1_000_000)
+        previous_path = str(safe_join(_PAGES_DIR, f"{page_id}.{ts}-{usec:06d}.md.gz"))
         os.replace(current_path, previous_path)
 
     # Atomic write: write to .tmp.gz in the same directory (same filesystem),
