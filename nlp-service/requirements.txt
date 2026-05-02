@@ -25,7 +25,7 @@ nltk==3.9.4
 rapidfuzz>=3.0
 # Recovers truncated JSON from Gemini 2.5 Flash repetition-loop bug
 # (see issue in repo) — salvages already-billed output on parse failure.
-json-repair>=0.59.4
+json-repair>=0.59.5
 # Commit 7: Chroma vector store (embedded, no separate server). 0.4.x API:
 # PersistentClient, get_or_create_collection, cosine distance.
 chromadb==0.4.24
