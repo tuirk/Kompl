@@ -1,7 +1,9 @@
 # Scorecard deferred-alerts audit
 
-Last audited: 2026-04-29 — covers the 41 open alerts after commit 8672980
-restored the Scorecard schedule.
+Last audited: 2026-05-02 — covers the 41 open alerts after commit 8672980
+restored the Scorecard schedule. 2026-05-02 update: alert #27 status-check
+gap closed in ruleset `main-protection` (id 15607385); 4 solo-dev sub-gaps
+remain open by design.
 
 OpenSSF Scorecard runs weekly via `.github/workflows/scorecard.yml`. This
 file documents which alerts are dismissed, which are deferred with rationale,
@@ -123,12 +125,19 @@ Scorecard wants:
 - Required approving review count ≥ 2 ✗ (solo dev)
 - Codeowners review required ✗ (solo dev)
 - Last-push approval enabled ✗ (no second reviewer)
-- Required status checks present ⚠ partially actionable
+- Required status checks present ✓ (added 2026-05-02)
 
-**Action plan:** in repo Settings → Branches → main → enable required
-status checks for the `Tests` workflow once it has stabilized (avoids
-deadlocking on solo-merges if CI is broken). The other items are
-structurally inapplicable to a solo-dev model.
+**Status:** required-status-checks rule added to ruleset `main-protection`
+(id 15607385) on 2026-05-02 with contexts `unit-tests-app`,
+`unit-tests-cli`, `unit-tests-nlp`, `integration-test` and
+`strict_required_status_checks_policy: true` (require branches up to date
+before merging). Admin bypass remains enabled, so this never deadlocks a
+solo-merge if CI breaks. Sub-gaps now down from 5 → 4. Branch-protection
+sub-score remained 5/10 — Tier 2 structural failures (admins-bypass,
+2-reviewer, codeowners, last-push) cap the score regardless of Tier 3
+fixes. Scorecard composite stays ~5.9 until a second maintainer joins.
+Real-world value of the change is the actual enforcement (status checks
+must pass + branch must be current), not the score number.
 
 ## Re-audit triggers
 
