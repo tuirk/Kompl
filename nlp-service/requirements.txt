@@ -22,7 +22,7 @@ scikit-learn==1.8.0
 # nltk: required by rake-nltk (stopwords + punkt tokenizer data).
 nltk==3.9.4
 # Part 2b: fast Levenshtein/Jaro-Winkler matching for entity resolution.
-rapidfuzz>=3.0
+rapidfuzz>=3.14.5
 # Recovers truncated JSON from Gemini 2.5 Flash repetition-loop bug
 # (see issue in repo) — salvages already-billed output on parse failure.
 json-repair>=0.59.5
