@@ -120,7 +120,7 @@ describe('bulk-delete — canonical issue #46 regression', () => {
 });
 
 describe('bulk-delete — page survives partial deletion', () => {
-  it('a,b,c,d,e share P; bulk-delete a,b,c → 3 page_recompiled (intermediate behavior)', async () => {
+  it('a,b,c,d,e share P; bulk-delete a,b,c → 1 page_recompiled (coalesced)', async () => {
     const page_id = seedPage(handle.db, { page_id: 'p-survive' });
     const all = ['ps-a', 'ps-b', 'ps-c', 'ps-d', 'ps-e'].map((sid) =>
       seedSource(handle.db, { source_id: sid, raw_markdown: LONG_MD }),
@@ -131,34 +131,26 @@ describe('bulk-delete — page survives partial deletion', () => {
     const res = await POST(postBulk(toDelete));
     expect(res.status).toBe(200);
 
-    // Source A is processed first. remainingProvenance = [B,C,D,E].
-    // batchSiblingIds = {A,B,C}. remainingExcludingBatch = [D,E]. remainingCount=2 → recompile.
-    // Source B: getPagesBySourceId returns P only if B's provenance row still exists —
-    //   it does (B's prune happens at start of B's helper call), but A's helper already
-    //   ran setPageSourceCount(P, 2) and called recompilePage. B's helper call:
-    //   getPagesBySourceId(B) returns [P]. removeProvenanceForSource(B). remaining = [C,D,E].
-    //   filter siblings {A,B,C} = [D,E]. remainingCount=2 → recompile.
-    //   So actually 3 recompiles can fire here, NOT 1, because each batch sibling still
-    //   has its own provenance row to P at the time it runs.
-    //
-    // Wait — re-read the helper: remainingProvenance is read AFTER removeProvenanceForSource(self).
-    // So when A runs: A's prov already removed, [B,C,D,E] remain. Filter siblings {A,B,C} = [D,E].
-    //   recompile.
-    // When B runs: B's prov also removed, [C,D,E] remain. Filter siblings = [D,E]. recompile.
-    // When C runs: C's prov removed, [D,E] remain. Filter siblings = [D,E]. recompile.
-    // 3 recompiles, all redundant (same final state). The bug is only fully fixed for the
-    // remainingCount<=1 branch — survivors-on-shared-page still over-recompile in the
-    // multi-survivor case. For the canonical issue #46 reproduction (delete ALL sources of
-    // a shared page), this is irrelevant because remainingCount=0 deletes the page on the
-    // first sibling.
-    //
-    // This test pins that intermediate behavior so a future fix tightening the multi-survivor
-    // case is explicit.
-    expect(vi.mocked(recompilePage)).toHaveBeenCalledTimes(3);
+    // bulkState.handledPages dedups page-level work across batch siblings: A
+    // recompiles P once and records 'recompiled'; B and C see the recorded
+    // outcome, mirror it into their own pages_rewritten counts, and skip.
+    expect(vi.mocked(recompilePage)).toHaveBeenCalledTimes(1);
     const counts = getActivityCounts(handle.db);
-    expect(counts.page_recompiled).toBe(3);
+    expect(counts.page_recompiled).toBe(1);
     expect(counts.page_deleted ?? 0).toBe(0);
     expect(counts.source_deleted).toBe(3);
+
+    // Per-source counts still tally the page (each source's source_deleted
+    // event reports it touched the page) — only the actual recompile is deduped.
+    const sourceDeletedRows = handle.db
+      .prepare(`SELECT details FROM activity_log WHERE action_type = 'source_deleted'`)
+      .all() as Array<{ details: string }>;
+    expect(sourceDeletedRows).toHaveLength(3);
+    for (const r of sourceDeletedRows) {
+      const d = JSON.parse(r.details) as { pages_rewritten: number; pages_affected: number };
+      expect(d.pages_rewritten).toBe(1);
+      expect(d.pages_affected).toBe(1);
+    }
 
     // Page survives.
     const pageRow = handle.db.prepare('SELECT 1 FROM pages WHERE page_id = ?').get(page_id);
@@ -168,6 +160,58 @@ describe('bulk-delete — page survives partial deletion', () => {
       .prepare('SELECT source_id FROM provenance WHERE page_id = ? ORDER BY source_id')
       .all(page_id) as Array<{ source_id: string }>;
     expect(remaining.map((r) => r.source_id)).toEqual([all[3], all[4]].sort());
+  });
+
+  it('a,b,c,d share P; bulk-delete a,b → 1 page_recompiled (2 survivors)', async () => {
+    const page_id = seedPage(handle.db, { page_id: 'p-2of4' });
+    const all = ['s2of4-a', 's2of4-b', 's2of4-c', 's2of4-d'].map((sid) =>
+      seedSource(handle.db, { source_id: sid, raw_markdown: LONG_MD }),
+    );
+    for (const sid of all) seedProvenance(handle.db, page_id, sid);
+
+    const res = await POST(postBulk([all[0], all[1]]));
+    expect(res.status).toBe(200);
+
+    // A recompiles, records 'recompiled'. B sees handled, skips.
+    expect(vi.mocked(recompilePage)).toHaveBeenCalledTimes(1);
+    const counts = getActivityCounts(handle.db);
+    expect(counts.page_recompiled).toBe(1);
+    expect(counts.page_deleted ?? 0).toBe(0);
+    expect(counts.source_deleted).toBe(2);
+
+    // C, D provenance still on page.
+    const remaining = handle.db
+      .prepare('SELECT source_id FROM provenance WHERE page_id = ? ORDER BY source_id')
+      .all(page_id) as Array<{ source_id: string }>;
+    expect(remaining.map((r) => r.source_id)).toEqual([all[2], all[3]].sort());
+  });
+
+  it('A,B share P1; B,C share P2; bulk-delete A,B,C → 2 page_deleted, 0 recompiles', async () => {
+    // Verifies handledPages keys correctly when one batch source touches
+    // multiple pages and pages have different sibling overlaps.
+    const p1 = seedPage(handle.db, { page_id: 'multipage-p1' });
+    const p2 = seedPage(handle.db, { page_id: 'multipage-p2' });
+    const a = seedSource(handle.db, { source_id: 'mp-a', raw_markdown: LONG_MD });
+    const b = seedSource(handle.db, { source_id: 'mp-b', raw_markdown: LONG_MD });
+    const c = seedSource(handle.db, { source_id: 'mp-c', raw_markdown: LONG_MD });
+    seedProvenance(handle.db, p1, a);
+    seedProvenance(handle.db, p1, b);
+    seedProvenance(handle.db, p2, b);
+    seedProvenance(handle.db, p2, c);
+
+    const res = await POST(postBulk([a, b, c]));
+    expect(res.status).toBe(200);
+
+    // P1: A deletes (B is in batch, remainingExcludingBatch=0). P2: B deletes
+    // (C is in batch). C's helper finds no pages (P2's provenance cascaded).
+    expect(vi.mocked(recompilePage)).toHaveBeenCalledTimes(0);
+    const counts = getActivityCounts(handle.db);
+    expect(counts.page_deleted).toBe(2);
+    expect(counts.page_recompiled ?? 0).toBe(0);
+    expect(counts.source_deleted).toBe(3);
+
+    expect(handle.db.prepare('SELECT 1 FROM pages WHERE page_id = ?').get(p1)).toBeUndefined();
+    expect(handle.db.prepare('SELECT 1 FROM pages WHERE page_id = ?').get(p2)).toBeUndefined();
   });
 
   it('a,b,c share P; bulk-delete a,b → page deleted (1 survivor triggers <=1 rule)', async () => {
