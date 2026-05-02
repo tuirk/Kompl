@@ -4,8 +4,21 @@
  *
  * Two-tier cascade for each affected page:
  *   - 0 or 1 remaining sources → permanently delete the page
- *   - 2+ remaining, deleted source < 500 chars → keep, append provenance note
- *   - 2+ remaining, deleted source ≥ 500 chars → keep, recompile from remaining
+ *   - 2+ remaining, deleted source < min_source_chars → keep, append provenance note
+ *   - 2+ remaining, deleted source ≥ min_source_chars → keep, recompile from remaining
+ *
+ *   The "short source" threshold is the same `min_source_chars` Setting the
+ *   compile pipeline reads at plan time (plan/route.ts), so the UI is the
+ *   single source of truth. min_source_chars=0 disables the short-source
+ *   short-circuit — every multi-source page recompiles on delete.
+ *
+ *   KNOWN: this reads the *current* setting at delete time, not the value in
+ *   force when the source was ingested. A source ingested under setting=500
+ *   that is later deleted under setting=800 takes the short branch even if
+ *   compile originally treated it as substantial. Acceptable: the UI gesture
+ *   is "this is what 'short' means now", and consistent live-setting reads
+ *   beat snapshot semantics for a low-stakes cost decision (one Gemini call
+ *   per page on the wrong branch).
  *
  * INVARIANTS (do not break):
  *   1. getPagesBySourceId MUST be called BEFORE removeProvenanceForSource —
@@ -39,6 +52,7 @@ import {
   cleanupPendingPlansForDeletedSource,
   deletePage,
   deleteSource,
+  getMinSourceChars,
   getPage,
   getPagesBySourceId,
   getProvenanceForPage,
@@ -83,7 +97,8 @@ export async function deleteOneSourceWithCascade(
   try {
     const sourceContent = readRawMarkdown(sourceId);
     const sourceChars = sourceContent?.length ?? 0;
-    const isShortSource = sourceChars < 500;
+    const minSourceChars = getMinSourceChars();
+    const isShortSource = minSourceChars > 0 && sourceChars < minSourceChars;
 
     // Invariant 1: enumerate BEFORE pruning provenance.
     const affectedPages = getPagesBySourceId(sourceId);
