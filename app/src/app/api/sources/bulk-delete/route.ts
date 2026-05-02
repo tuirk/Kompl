@@ -7,10 +7,14 @@
  * own provenance prune, so N-1 of them recompile pages that are about to be
  * deleted by the next handler.
  *
- * The fix lives in lib/source-delete.ts: the per-source helper accepts a
- * `batchSiblingIds` set and excludes those sources from `remainingCount`,
- * so a page shared by N batch siblings is deletePage'd once instead of
- * recompiled N-1 times.
+ * The fix lives in lib/source-delete.ts:
+ *   - `batchSiblingIds` (Set) excludes batch members from `remainingCount`, so
+ *     a page shared by N batch siblings is deletePage'd once instead of
+ *     recompiled N-1 times.
+ *   - `bulkState.handledPages` (Map) records the terminal outcome of each
+ *     affected page on first encounter. A surviving page (≥2 non-batch sources
+ *     remain) is recompiled exactly once — siblings 2..N see the recorded
+ *     outcome, mirror it into their own counts, and skip the work.
  *
  * Request body: { ids: string[] }
  *   - ids: array of source_ids. 1..MAX_IDS entries. Duplicates silently deduped.
@@ -32,6 +36,7 @@ import { NextResponse } from 'next/server';
 
 import {
   deleteOneSourceWithCascade,
+  type BulkDeleteState,
   type SourceDeleteResult,
 } from '../../../../lib/source-delete';
 
@@ -68,10 +73,11 @@ export async function POST(request: Request) {
   const dedupedIds = Array.from(new Set(cleanIds));
   const batchSiblingIds: ReadonlySet<string> = new Set(dedupedIds);
   const bulkId = randomUUID();
+  const bulkState: BulkDeleteState = { handledPages: new Map() };
 
   const results: SourceDeleteResult[] = [];
   for (const id of dedupedIds) {
-    results.push(await deleteOneSourceWithCascade(id, batchSiblingIds, bulkId));
+    results.push(await deleteOneSourceWithCascade(id, batchSiblingIds, bulkId, bulkState));
   }
 
   const summary = results.reduce(

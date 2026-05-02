@@ -20,6 +20,14 @@
  *      the same batch. Their provenance rows are subtracted from remainingCount
  *      so a page shared by N batch siblings gets deletePage'd once (by whichever
  *      sibling lands first), instead of N-1 wasted recompiles.
+ *   5. In bulk context, bulkState.handledPages records the terminal outcome of
+ *      each affected page on first encounter. Subsequent siblings that touch
+ *      the same surviving page mirror the recorded outcome into their per-source
+ *      counts and skip the work — so a partial-survivor page (≥2 non-batch
+ *      sources remain) is recompiled exactly once per bulk, not once per
+ *      deleted sibling. First-sibling-wins: if siblings would land in different
+ *      branches (one short, one long), the order in dedupedIds decides; revisit
+ *      if mixed-length bulks surface user-visible surprises.
  */
 
 import path from 'node:path';
@@ -57,10 +65,17 @@ export type SourceDeleteResult =
   | { status: 'not_found'; source_id: string }
   | { status: 'error'; source_id: string; error: string };
 
+type PageOutcome = 'deleted' | 'recompiled' | 'archived' | 'note_fallback';
+
+export interface BulkDeleteState {
+  handledPages: Map<string, PageOutcome>;
+}
+
 export async function deleteOneSourceWithCascade(
   sourceId: string,
   batchSiblingIds: ReadonlySet<string> = new Set(),
   bulkId: string | null = null,
+  bulkState?: BulkDeleteState,
 ): Promise<SourceDeleteResult> {
   const source = getSource(sourceId);
   if (!source) return { status: 'not_found', source_id: sourceId };
@@ -98,6 +113,29 @@ export async function deleteOneSourceWithCascade(
     const today = new Date().toISOString().split('T')[0];
 
     for (const page of affectedPages) {
+      // Bulk dedup (invariant 5): if a sibling already handled this page in
+      // this batch, mirror the recorded outcome into this source's counts and
+      // skip the work — preserves the per-source `source_deleted` event shape
+      // while ensuring page-level work and activity events fire exactly once.
+      const recordedOutcome = bulkState?.handledPages.get(page.page_id);
+      if (recordedOutcome) {
+        switch (recordedOutcome) {
+          case 'deleted':
+            counts.pages_deleted++;
+            break;
+          case 'recompiled':
+            counts.pages_rewritten++;
+            break;
+          case 'archived':
+            counts.pages_archived++;
+            break;
+          case 'note_fallback':
+            counts.pages_noted++;
+            break;
+        }
+        continue;
+      }
+
       const remainingProvenance = getProvenanceForPage(page.page_id);
       const remainingExcludingBatch = remainingProvenance.filter(
         (p) => !batchSiblingIds.has(p.source_id),
@@ -142,6 +180,7 @@ export async function deleteOneSourceWithCascade(
           });
         }
         counts.pages_deleted++;
+        bulkState?.handledPages.set(page.page_id, 'deleted');
       } else if (isShortSource) {
         const fullPage = getPage(page.page_id);
         void addProvenanceNote(
@@ -158,6 +197,7 @@ export async function deleteOneSourceWithCascade(
           },
         });
         counts.pages_noted++;
+        bulkState?.handledPages.set(page.page_id, 'note_fallback');
       } else {
         try {
           const { outcome } = await recompilePage(page.page_id, sourceId);
@@ -168,12 +208,14 @@ export async function deleteOneSourceWithCascade(
               details: { ...baseDetails, reason: 'source_deleted', source_chars: sourceChars },
             });
             counts.pages_archived++;
+            bulkState?.handledPages.set(page.page_id, 'archived');
           } else {
             logActivity('page_recompiled', {
               source_id: sourceId,
               details: { ...baseDetails, reason: 'source_deleted', source_chars: sourceChars },
             });
             counts.pages_rewritten++;
+            bulkState?.handledPages.set(page.page_id, 'recompiled');
           }
         } catch (err) {
           const fullPage = getPage(page.page_id);
@@ -187,6 +229,7 @@ export async function deleteOneSourceWithCascade(
             details: { ...baseDetails, error: String(err) },
           });
           counts.pages_noted++;
+          bulkState?.handledPages.set(page.page_id, 'note_fallback');
         }
       }
     }
