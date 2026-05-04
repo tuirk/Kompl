@@ -796,6 +796,104 @@ stage_12_text_connector() {
 }
 
 # ---------------------------------------------------------------------------
+# Stage 12b — paste connector canary via /stage
+# ---------------------------------------------------------------------------
+#
+# Submits a paste block via connector='paste' through /api/onboarding/stage.
+# Mirrors stage_12 but exercises the new paste payload shape: required title,
+# raw text body, optional source_url. Verifies the staging row carries all
+# three fields back through /api/onboarding/staging.
+#
+# This stage does NOT require FIRECRAWL_API_KEY or GEMINI_API_KEY.
+stage_12b_paste_connector() {
+    echo "[STAGE 12b] REAL: paste connector canary (paste block → collect_staging)"
+
+    local SESSION_ID
+    SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
+
+    local PASTE_TITLE='Stage 12b paste canary'
+    local PASTE_TEXT='Hello world body — pasted directly into the Paste Text connector.'
+    local PASTE_URL='https://example.com/article'
+
+    echo "  POSTing to /api/onboarding/stage with connector=paste..."
+    local stage_response
+    stage_response=$(curl -sf -X POST \
+        -H "content-type: application/json" \
+        -d "{\"session_id\":\"$SESSION_ID\",\"connector\":\"paste\",\"items\":[{\"title\":\"$PASTE_TITLE\",\"text\":\"$PASTE_TEXT\",\"source_url\":\"$PASTE_URL\"}]}" \
+        "http://localhost:3000/api/onboarding/stage")
+
+    if [ -z "$stage_response" ]; then
+        echo "  FAIL: /api/onboarding/stage returned empty response"
+        record_stage 12b REAL FAIL
+        return 1
+    fi
+
+    if ! echo "$stage_response" | grep -q '"stage_ids":\["'; then
+        echo "  FAIL: stage response missing stage_ids"
+        echo "  stage response: $stage_response"
+        record_stage 12b REAL FAIL
+        return 1
+    fi
+
+    local staging_response
+    staging_response=$(curl -sf "http://localhost:3000/api/onboarding/staging?session_id=$SESSION_ID")
+
+    if ! echo "$staging_response" | grep -q '"total":1'; then
+        echo "  FAIL: staging response missing totals.total=1"
+        echo "  staging response: $staging_response"
+        record_stage 12b REAL FAIL
+        return 1
+    fi
+    echo "  staging total=1 OK"
+
+    if ! echo "$staging_response" | grep -q "Stage 12b paste canary"; then
+        echo "  FAIL: staging payload missing paste title"
+        record_stage 12b REAL FAIL
+        return 1
+    fi
+    if ! echo "$staging_response" | grep -q 'pasted directly into the Paste Text'; then
+        echo "  FAIL: staging payload missing paste text body"
+        record_stage 12b REAL FAIL
+        return 1
+    fi
+    if ! echo "$staging_response" | grep -q 'example.com/article'; then
+        echo "  FAIL: staging payload missing source_url metadata"
+        record_stage 12b REAL FAIL
+        return 1
+    fi
+    echo "  payload contains title + text + source_url OK"
+
+    # Negative cases: server should 422 missing-title and bad-url payloads.
+    local bad_session
+    bad_session=$(python3 -c "import uuid; print(uuid.uuid4())")
+    local missing_title_status
+    missing_title_status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+        -H 'content-type: application/json' \
+        -d "{\"session_id\":\"$bad_session\",\"connector\":\"paste\",\"items\":[{\"text\":\"body only\"}]}" \
+        "http://localhost:3000/api/onboarding/stage")
+    if [ "$missing_title_status" != "422" ]; then
+        echo "  FAIL: missing title should 422, got $missing_title_status"
+        record_stage 12b REAL FAIL
+        return 1
+    fi
+    local bad_url_status
+    bad_url_status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+        -H 'content-type: application/json' \
+        -d "{\"session_id\":\"$bad_session\",\"connector\":\"paste\",\"items\":[{\"title\":\"t\",\"text\":\"b\",\"source_url\":\"javascript:alert(1)\"}]}" \
+        "http://localhost:3000/api/onboarding/stage")
+    if [ "$bad_url_status" != "422" ]; then
+        echo "  FAIL: non-http source_url should 422, got $bad_url_status"
+        record_stage 12b REAL FAIL
+        return 1
+    fi
+    echo "  validation rejects missing title + non-http URL OK"
+
+    echo "  PASS"
+    record_stage 12b REAL PASS
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Stage 13: Twitter connector canary via /stage
 # Submits a tweet via connector='text' with source_type_hint='tweet' and
 # date metadata. Verifies the staging row carries the tweet metadata.
@@ -1331,6 +1429,7 @@ main() {
     stage_11c_collect_surfaces_nlp_down
     stage_11d_insertactivity_guard
     stage_12_text_connector
+    stage_12b_paste_connector
     stage_13_twitter_connector
     stage_14_extraction
     stage_15_resolution
@@ -1353,7 +1452,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 20 stages (0, 1, 4, 11–27) executed, all passed ==="
+    echo "=== All 21 stages (0, 1, 4, 11–12b, 13–27) executed, all passed ==="
     exit 0
 }
 

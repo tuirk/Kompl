@@ -14,7 +14,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 import {
   Globe, FileUp, Bookmark, BookOpen, AtSign,
-  Smartphone, HardDrive, Book, ArrowRight,
+  Smartphone, HardDrive, Book, ArrowRight, ClipboardType,
 } from 'lucide-react';
 import { useToast } from '../../components/Toast';
 import { SUPPORTED_FORMATS_SHORT } from '../../lib/supported-formats';
@@ -30,6 +30,7 @@ interface ConnectorDef {
 }
 
 const CONNECTORS: ConnectorDef[] = [
+  { id: 'paste',        Icon: ClipboardType, title: 'Paste Text',        subtitle: 'Quick notes, snippets, transcripts', status: 'active' },
   { id: 'url',          Icon: Globe,      title: 'URL',               subtitle: 'Web pages, articles, YouTube',  status: 'active' },
   { id: 'file-upload',  Icon: FileUp,     title: 'File Upload',       subtitle: SUPPORTED_FORMATS_SHORT,         status: 'active' },
   { id: 'bookmarks',    Icon: Bookmark,   title: 'Browser Bookmarks', subtitle: 'Chrome, Firefox, Safari export', status: 'active' },

@@ -1,15 +1,22 @@
 /**
- * Pipeline prelude step: ingest text + saved-link staging rows.
+ * Pipeline prelude step: ingest text + paste + saved-link staging rows.
  *
- * Two connector types are handled here because they share the "no
+ * Three connector types are handled here because they share the "no
  * external NLP call needed" property — conversion is a local hash
- * + insertSource (text) or a bare insertIngestFailure write (saved-link,
- * for media-only tweets whose only durable artefact is the URL itself).
+ * + insertSource (text/paste) or a bare insertIngestFailure write
+ * (saved-link, for media-only tweets whose only durable artefact is the
+ * URL itself).
  *
  * Text items (connector='text'):
  *   - Upnote notes and Twitter tweet text. Client already has the full
  *     markdown. We compute SHA-256, dedup against existing sources,
  *     storeRawMarkdown, insertSource with compile_status='pending'.
+ *
+ * Paste items (connector='paste'):
+ *   - Raw text the user pasted directly into the Paste Text connector.
+ *     Title is required (user-supplied; no fallback extraction). source_url
+ *     is optional metadata (the place the text came from) and is persisted
+ *     on the source row but never auto-fetched. source_type is 'paste'.
  *
  * Saved-link items (connector='saved-link'):
  *   - Media-only tweets whose caption text is empty so no `sources` row
@@ -52,6 +59,13 @@ interface SavedLinkPayload {
   metadata_hint?: Record<string, unknown>;
 }
 
+interface PastePayload {
+  title: string;
+  text: string;
+  source_url: string | null;
+  metadata?: Record<string, unknown>;
+}
+
 function readTextPayload(row: StagingRow): TextPayload | null {
   const p = row.payload as Partial<TextPayload>;
   if (typeof p.markdown !== 'string' || !p.markdown) return null;
@@ -80,6 +94,21 @@ function readSavedLinkPayload(row: StagingRow): SavedLinkPayload | null {
   };
 }
 
+function readPastePayload(row: StagingRow): PastePayload | null {
+  const p = row.payload as Partial<PastePayload>;
+  if (typeof p.title !== 'string' || !p.title.trim()) return null;
+  if (typeof p.text !== 'string' || !p.text) return null;
+  return {
+    title: p.title.trim(),
+    text: p.text,
+    source_url: typeof p.source_url === 'string' && p.source_url ? p.source_url : null,
+    metadata:
+      p.metadata && typeof p.metadata === 'object'
+        ? (p.metadata as Record<string, unknown>)
+        : undefined,
+  };
+}
+
 export async function runIngestTextsStep(
   sessionId: string,
   items: StagingRow[],
@@ -103,6 +132,42 @@ export async function runIngestTextsStep(
       return msg;
     },
     run: async (row) => {
+      if (row.connector === 'paste') {
+        const payload = readPastePayload(row);
+        if (!payload) {
+          throw new Error('ingest_texts: invalid paste payload (missing title or text)');
+        }
+
+        const content_hash = `sha256-${createHash('sha256')
+          .update(payload.text)
+          .digest('hex')}`;
+
+        const hashDupe = findSourceByContentHash(content_hash);
+        if (hashDupe) {
+          markStagingIngested(row.stage_id, hashDupe.source_id);
+          duplicatesThisBatch++;
+          return;
+        }
+
+        const sourceId = randomUUID();
+        const filePath = storeRawMarkdown(sourceId, payload.text);
+
+        insertSource({
+          source_id: sourceId,
+          title: payload.title,
+          source_type: 'paste',
+          source_url: payload.source_url,
+          content_hash,
+          file_path: filePath,
+          metadata: payload.metadata ?? null,
+          compile_status: 'pending',
+          onboarding_session_id: sessionId,
+        });
+
+        markStagingIngested(row.stage_id, sourceId);
+        return;
+      }
+
       if (row.connector === 'saved-link') {
         // Media-only tweets — no source row, just a saved-link entry.
         const payload = readSavedLinkPayload(row);

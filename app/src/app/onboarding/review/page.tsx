@@ -563,6 +563,8 @@ function ItemLabel({ display }: { display: TypedStagingRow['display'] }) {
       return <div style={{ ...base, fontFamily: 'var(--font-mono)', fontSize: 13 }}>{display.filename}</div>;
     case 'saved-link':
       return <div style={{ ...base, fontFamily: 'var(--font-mono)', fontSize: 13 }}>{display.tweet_url ?? 'Saved tweet'}</div>;
+    case 'paste':
+      return <div style={base}>{display.title}</div>;
     default:
       return <div style={base}>Unknown</div>;
   }
@@ -608,6 +610,16 @@ function ItemMeta({ display }: { display: TypedStagingRow['display'] }) {
       if (display.author) parts.push(display.author);
       if (display.date_saved) parts.push(formatDate(display.date_saved));
       return <div style={meta}>{parts.join(' · ')}</div>;
+    }
+    case 'paste': {
+      const parts: string[] = [`${display.char_count.toLocaleString()} chars`];
+      if (display.has_source_url) parts.push('linked source');
+      return (
+        <div style={meta}>
+          {parts.join(' · ')}
+          {display.excerpt && ` — "${display.excerpt}"`}
+        </div>
+      );
     }
     default:
       return null;

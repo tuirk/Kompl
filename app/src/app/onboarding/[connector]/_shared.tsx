@@ -37,7 +37,7 @@ export interface ConnectorProps {
  */
 export async function stageItems(
   sessionId: string,
-  connector: 'url' | 'file-upload' | 'text' | 'saved-link',
+  connector: 'url' | 'file-upload' | 'text' | 'saved-link' | 'paste',
   items: Array<Record<string, unknown>>,
 ): Promise<{ stage_ids: string[] }> {
   const res = await fetch('/api/onboarding/stage', {

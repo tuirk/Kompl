@@ -82,6 +82,40 @@ describe('coerceToTypedRow', () => {
     }
   });
 
+  it('synthesises paste display from title + text payload when display missing', () => {
+    const row = stagingRow({
+      stage_id: 's-paste-legacy',
+      connector: 'paste',
+      payload: {
+        title: 'A pasted snippet',
+        text: 'A short body for the paste — first 120 chars become the excerpt.',
+        source_url: 'https://example.com/article',
+      },
+    });
+    const typed = coerceToTypedRow(row);
+    expect(typed.display.kind).toBe('paste');
+    if (typed.display.kind === 'paste') {
+      expect(typed.display.source_origin).toBe('paste');
+      expect(typed.display.title).toBe('A pasted snippet');
+      expect(typed.display.excerpt.length).toBeLessThanOrEqual(120);
+      expect(typed.display.excerpt).toContain('short body');
+      expect(typed.display.has_source_url).toBe(true);
+      expect(typed.display.char_count).toBeGreaterThan(0);
+    }
+  });
+
+  it('synthesises paste display with has_source_url=false when source_url missing', () => {
+    const row = stagingRow({
+      stage_id: 's-paste-no-url',
+      connector: 'paste',
+      payload: { title: 'No URL paste', text: 'Body only.' },
+    });
+    const typed = coerceToTypedRow(row);
+    if (typed.display.kind === 'paste') {
+      expect(typed.display.has_source_url).toBe(false);
+    }
+  });
+
   it('synthesises text display from markdown first-line excerpt', () => {
     const row = stagingRow({
       stage_id: 's-text-legacy',
@@ -179,6 +213,18 @@ describe('visualGroupOf', () => {
       display: { kind: 'saved-link', source_origin: 'twitter-media', tweet_url: 'https://x.com/1' },
       expected: 'saved-links',
     },
+    {
+      name: 'paste → paste',
+      display: {
+        kind: 'paste',
+        source_origin: 'paste',
+        title: 'My paste',
+        excerpt: 'body excerpt',
+        char_count: 12,
+        has_source_url: false,
+      },
+      expected: 'paste',
+    },
   ];
 
   for (const c of cases) {
@@ -219,6 +265,20 @@ describe('groupStagingRows', () => {
         connector: 'saved-link',
         payload: { display: { kind: 'saved-link', source_origin: 'twitter-media', tweet_url: 'https://x.com/1' } },
       }),
+      stagingRow({
+        stage_id: 'f',
+        connector: 'paste',
+        payload: {
+          display: {
+            kind: 'paste',
+            source_origin: 'paste',
+            title: 'A paste',
+            excerpt: 'snippet',
+            char_count: 7,
+            has_source_url: false,
+          },
+        },
+      }),
     ];
     const grouped = groupStagingRows(rows);
     expect(grouped.url).toHaveLength(1);
@@ -226,6 +286,7 @@ describe('groupStagingRows', () => {
     expect(grouped.files).toHaveLength(1);
     expect(grouped.tweets).toHaveLength(1);
     expect(grouped['saved-links']).toHaveLength(1);
+    expect(grouped.paste).toHaveLength(1);
     expect(grouped.notes).toHaveLength(0);
     expect(grouped['twitter-links']).toHaveLength(0);
   });
@@ -247,7 +308,7 @@ describe('VISUAL_GROUP_CONNECTOR_SLUG', () => {
   it('every visual group resolves to a known connector slug', () => {
     // Known connectors per /onboarding/[connector]/page.tsx CONNECTOR_COMPONENTS map.
     const knownSlugs = new Set([
-      'url', 'file-upload', 'bookmarks', 'twitter', 'upnote', 'apple-notes',
+      'paste', 'url', 'file-upload', 'bookmarks', 'twitter', 'upnote', 'apple-notes',
     ]);
     for (const group of VISUAL_GROUP_ORDER) {
       const slug = VISUAL_GROUP_CONNECTOR_SLUG[group];

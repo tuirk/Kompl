@@ -19,6 +19,7 @@
 import { type ComponentType, Suspense, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { Plus, Trash2 } from 'lucide-react';
 
 import { useToast } from '../../../components/Toast';
 import { toUserMessage } from '@/lib/service-errors';
@@ -39,6 +40,7 @@ import {
 } from './_shared';
 
 const CONNECTOR_LABELS: Record<string, string> = {
+  paste: 'Paste Text',
   url: 'URLs',
   'file-upload': 'Files',
   'google-drive': 'Google Drive',
@@ -806,9 +808,406 @@ function UpnoteConnector({ sessionId, connectors, connectorIdx, showToast, mode 
   );
 }
 
+// ── Paste Connector ───────────────────────────────────────────────────────────
+
+interface PasteBlock {
+  title: string;
+  source_url: string;
+  text: string;
+  errors?: { source_url?: string };
+}
+
+const PASTE_TITLE_MAX = 200;
+const PASTE_TEXT_WARN_AT = 50_000;
+const PASTE_MAX_BLOCKS = 10;
+const PASTE_HINT =
+  "Use this for anything you can't ingest another way — a paragraph from a paywalled article, a copied message, a quote, or a thought you want to remember.";
+
+const PASTE_LABEL_STYLE: React.CSSProperties = {
+  display: 'block',
+  fontFamily: 'var(--font-mono)',
+  fontWeight: 700,
+  fontSize: 10,
+  letterSpacing: '2px',
+  textTransform: 'uppercase',
+  color: 'var(--accent)',
+  marginBottom: 8,
+};
+const PASTE_OPTIONAL_TAG: React.CSSProperties = {
+  marginLeft: 8,
+  fontWeight: 400,
+  letterSpacing: '1px',
+  color: 'var(--fg-dim)',
+};
+const PASTE_INPUT_STYLE: React.CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: '10px 14px',
+  background: 'var(--bg-card-hover)',
+  border: 'none',
+  outline: 'none',
+  color: 'var(--fg)',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 13,
+  caretColor: 'var(--accent)',
+};
+const PASTE_HELPER_ROW: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginTop: 6,
+  gap: 12,
+};
+const PASTE_HELPER_TEXT: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: 10,
+  letterSpacing: '0.5px',
+  color: 'var(--fg-dim)',
+};
+const PASTE_CHAR_COUNT: React.CSSProperties = {
+  ...PASTE_HELPER_TEXT,
+  opacity: 0.6,
+};
+
+function PasteConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
+  const router = useRouter();
+  const [blocks, setBlocks] = useState<PasteBlock[]>([
+    { title: '', source_url: '', text: '' },
+  ]);
+  const [imgWarning, setImgWarning] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const showHint =
+    blocks.length === 1 &&
+    !blocks[0].title &&
+    !blocks[0].source_url &&
+    !blocks[0].text;
+  const validBlocks = blocks.filter(
+    (b) => b.title.trim() && b.text.trim()
+  );
+  const hasInput = validBlocks.length > 0;
+
+  function updateBlock(i: number, patch: Partial<PasteBlock>) {
+    setBlocks((curr) =>
+      curr.map((b, idx) =>
+        idx === i ? { ...b, ...patch, errors: undefined } : b
+      )
+    );
+  }
+
+  function addBlock() {
+    setBlocks((curr) =>
+      curr.length >= PASTE_MAX_BLOCKS
+        ? curr
+        : [...curr, { title: '', source_url: '', text: '' }]
+    );
+  }
+
+  function removeBlock(i: number) {
+    setBlocks((curr) =>
+      curr.length <= 1 ? curr : curr.filter((_, idx) => idx !== i)
+    );
+  }
+
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of Array.from(items)) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        setImgWarning("Images aren't supported yet — paste text only.");
+        window.setTimeout(() => setImgWarning(''), 5000);
+        return;
+      }
+    }
+  }
+
+  function autoResize(el: HTMLTextAreaElement) {
+    el.style.height = 'auto';
+    el.style.height = Math.max(el.scrollHeight, 160) + 'px';
+  }
+
+  async function handleIngest() {
+    // Per-block URL validation. Empty source_url is fine; a non-empty value
+    // must be a well-formed http/https URL.
+    let hasUrlError = false;
+    const checked: PasteBlock[] = blocks.map((b) => {
+      const trimmed = b.source_url.trim();
+      if (!trimmed) return b;
+      try {
+        const parsed = new URL(trimmed);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          hasUrlError = true;
+          return { ...b, errors: { source_url: 'Use http:// or https://' } };
+        }
+      } catch {
+        hasUrlError = true;
+        return { ...b, errors: { source_url: 'Not a valid URL' } };
+      }
+      return b;
+    });
+    if (hasUrlError) {
+      setBlocks(checked);
+      return;
+    }
+
+    const valid = checked.filter((b) => b.title.trim() && b.text.trim());
+    if (valid.length === 0) {
+      showToast('Add a title and body to at least one block.', 'error');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await stageItems(
+        sessionId,
+        'paste',
+        valid.map((b) => {
+          const sourceUrl = b.source_url.trim() || null;
+          return {
+            title: b.title.trim(),
+            text: b.text,
+            source_url: sourceUrl,
+            display: {
+              kind: 'paste',
+              source_origin: 'paste',
+              title: b.title.trim(),
+              excerpt: b.text.slice(0, 120),
+              char_count: b.text.length,
+              has_source_url: sourceUrl !== null,
+            },
+          };
+        })
+      );
+      navigateNext(sessionId, connectors, connectorIdx, router, mode);
+    } catch (e) {
+      showToast(
+        toUserMessage(e instanceof Error ? e.message : 'stage_failed'),
+        'error'
+      );
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      {mode === 'resume' && (
+        <ResumeBanner sessionId={sessionId} connectorLabel="paste blocks" />
+      )}
+
+      {showHint && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: '12px 16px',
+            background: 'rgba(var(--accent-rgb), 0.06)',
+            border: '1px solid rgba(var(--accent-rgb), 0.15)',
+            fontFamily: 'var(--font-body)',
+            fontSize: 13,
+            lineHeight: '20px',
+            color: 'var(--fg-secondary)',
+          }}
+        >
+          {PASTE_HINT}
+        </div>
+      )}
+
+      {imgWarning && (
+        <div
+          role="status"
+          style={{
+            marginBottom: 12,
+            padding: '10px 14px',
+            background: 'rgba(212, 160, 23, 0.08)',
+            border: '1px solid rgba(212, 160, 23, 0.25)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11,
+            color: 'var(--fg-secondary)',
+          }}
+        >
+          {imgWarning}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {blocks.map((block, i) => (
+          <div
+            key={i}
+            style={{
+              position: 'relative',
+              background: 'var(--bg-card)',
+              padding: 32,
+              isolation: 'isolate',
+            }}
+          >
+            <span
+              style={{
+                position: 'absolute',
+                top: 16,
+                right: 16,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 9,
+                letterSpacing: '1.8px',
+                textTransform: 'uppercase',
+                color: 'rgba(var(--accent-rgb), 0.3)',
+              }}
+            >
+              {i === 0 ? 'PASTE BLOCK' : `BLOCK ${i + 1}`}
+            </span>
+
+            {i > 0 && (
+              <button
+                type="button"
+                onClick={() => removeBlock(i)}
+                disabled={saving}
+                aria-label={`Remove block ${i + 1}`}
+                style={{
+                  position: 'absolute',
+                  top: 12,
+                  right: 110,
+                  background: 'none',
+                  border: 'none',
+                  cursor: saving ? 'not-allowed' : 'pointer',
+                  padding: 4,
+                  color: 'var(--fg-dim)',
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              {/* Title */}
+              <div>
+                <label style={PASTE_LABEL_STYLE}>Title</label>
+                <input
+                  type="text"
+                  value={block.title}
+                  onChange={(e) =>
+                    updateBlock(i, { title: e.target.value.slice(0, PASTE_TITLE_MAX) })
+                  }
+                  placeholder="Give this a title"
+                  maxLength={PASTE_TITLE_MAX}
+                  disabled={saving}
+                  style={PASTE_INPUT_STYLE}
+                />
+                <div style={PASTE_HELPER_ROW}>
+                  <span />
+                  <span style={PASTE_CHAR_COUNT}>
+                    {block.title.length}/{PASTE_TITLE_MAX}
+                  </span>
+                </div>
+              </div>
+
+              {/* Source URL */}
+              <div>
+                <label style={PASTE_LABEL_STYLE}>
+                  Source URL <span style={PASTE_OPTIONAL_TAG}>optional</span>
+                </label>
+                <input
+                  type="text"
+                  value={block.source_url}
+                  onChange={(e) => updateBlock(i, { source_url: e.target.value })}
+                  placeholder="Where did this come from? (optional)"
+                  disabled={saving}
+                  style={PASTE_INPUT_STYLE}
+                />
+                <div style={PASTE_HELPER_ROW}>
+                  {block.errors?.source_url ? (
+                    <span style={{ ...PASTE_HELPER_TEXT, color: 'var(--danger)' }}>
+                      {block.errors.source_url}
+                    </span>
+                  ) : (
+                    <span style={PASTE_HELPER_TEXT}>
+                      An article link, tweet URL, anywhere this came from
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Text body */}
+              <div>
+                <label style={PASTE_LABEL_STYLE}>Text body</label>
+                <textarea
+                  className="connector-textarea"
+                  value={block.text}
+                  onChange={(e) => {
+                    updateBlock(i, { text: e.target.value });
+                    autoResize(e.currentTarget);
+                  }}
+                  onPaste={handlePaste}
+                  placeholder="Paste anything — a copied message, a quote, a paragraph, a thought"
+                  disabled={saving}
+                  style={{
+                    minHeight: 160,
+                    padding: 16,
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 13,
+                    lineHeight: '20px',
+                    width: '100%',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <div style={PASTE_HELPER_ROW}>
+                  {block.text.length > PASTE_TEXT_WARN_AT ? (
+                    <span style={{ ...PASTE_HELPER_TEXT, color: '#d4a017' }}>
+                      That's a lot for one paste — make sure this is intentional.
+                    </span>
+                  ) : (
+                    <span />
+                  )}
+                  <span style={PASTE_CHAR_COUNT}>
+                    {block.text.length.toLocaleString()} chars
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {blocks.length < PASTE_MAX_BLOCKS && (
+          <button
+            type="button"
+            onClick={addBlock}
+            disabled={saving}
+            style={{
+              alignSelf: 'flex-start',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '12px 20px',
+              background: 'transparent',
+              border: '1px dashed rgba(var(--accent-rgb), 0.3)',
+              cursor: saving ? 'not-allowed' : 'pointer',
+              fontFamily: 'var(--font-mono)',
+              fontWeight: 700,
+              fontSize: 10,
+              letterSpacing: '1px',
+              textTransform: 'uppercase',
+              color: 'var(--accent)',
+            }}
+          >
+            <Plus size={11} /> Add another
+          </button>
+        )}
+      </div>
+
+      <BottomNav
+        phase={saving ? 'loading' : 'idle'}
+        hasInput={hasInput}
+        onIngest={handleIngest}
+        onSkip={() => navigateNext(sessionId, connectors, connectorIdx, router, mode)}
+        onBack={() => navigateBack(sessionId, connectors, connectorIdx, router, mode)}
+      />
+    </>
+  );
+}
+
 // ── Connector metadata (title + subtitle rendered by the page shell) ──────────
 
 const CONNECTOR_META: Record<string, { title: string; subtitle: string }> = {
+  paste:         { title: 'Paste Text',         subtitle: 'Paste raw text — quotes, snippets, transcripts. No URL or file required.' },
   url:           { title: 'Add URLs',          subtitle: 'Paste web pages, articles, or YouTube links — one per line.' },
   'file-upload': { title: 'Upload Files',      subtitle: `${SUPPORTED_FORMATS_FULL} — all supported.` },
   bookmarks:     { title: 'Browser Bookmarks', subtitle: 'Export your bookmarks from Chrome, Firefox, or Safari.' },
@@ -820,6 +1219,7 @@ const CONNECTOR_META: Record<string, { title: string; subtitle: string }> = {
 // ── Dispatch map ──────────────────────────────────────────────────────────────
 
 const CONNECTOR_COMPONENTS: Record<string, ComponentType<ConnectorProps>> = {
+  'paste': PasteConnector,
   'url': UrlConnector,
   'file-upload': FileConnector,
   'bookmarks': BookmarksConnector,

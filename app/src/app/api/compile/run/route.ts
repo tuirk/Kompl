@@ -240,7 +240,10 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     const fileItems = staged.filter((s) => s.connector === 'file-upload');
     const urlItems = staged.filter((s) => s.connector === 'url');
     const textItems = staged.filter(
-      (s) => s.connector === 'text' || s.connector === 'saved-link'
+      (s) =>
+        s.connector === 'text' ||
+        s.connector === 'saved-link' ||
+        s.connector === 'paste'
     );
 
     await timed(sessionId, 'health_check', () =>
