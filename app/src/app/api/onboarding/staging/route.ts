@@ -51,12 +51,14 @@ export async function GET(request: Request) {
     'file-upload': [],
     text: [],
     'saved-link': [],
+    paste: [],
   };
   const by_connector: Record<StagingConnector, number> = {
     url: 0,
     'file-upload': 0,
     text: 0,
     'saved-link': 0,
+    paste: 0,
   };
   let included = 0;
 

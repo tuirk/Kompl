@@ -197,6 +197,7 @@ export default function SourcesPage() {
         {/* Source type */}
         <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} style={controlStyle}>
           <option value="">All types</option>
+          <option value="paste">Paste</option>
           <option value="url">URL</option>
           <option value="file-upload">File upload</option>
           <option value="text">Note</option>

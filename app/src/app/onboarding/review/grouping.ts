@@ -80,6 +80,15 @@ export interface SavedLinkDisplay {
   date_saved?: string;
 }
 
+export interface PasteDisplay {
+  kind: 'paste';
+  source_origin: 'paste';
+  title: string;
+  excerpt: string;
+  char_count: number;
+  has_source_url: boolean;
+}
+
 export type StagingDisplay =
   | UrlPasteDisplay
   | BookmarkDisplay
@@ -87,7 +96,8 @@ export type StagingDisplay =
   | FileDisplay
   | NoteDisplay
   | TweetDisplay
-  | SavedLinkDisplay;
+  | SavedLinkDisplay
+  | PasteDisplay;
 
 export interface TypedStagingRow extends Omit<StagingRow, 'payload'> {
   payload: Record<string, unknown>;
@@ -102,6 +112,7 @@ export interface TypedStagingRow extends Omit<StagingRow, 'payload'> {
  * them as two visual groups. Twitter-linked articles split out too.
  */
 export type VisualGroup =
+  | 'paste'
   | 'url'
   | 'bookmarks'
   | 'twitter-links'
@@ -111,11 +122,13 @@ export type VisualGroup =
   | 'saved-links';
 
 /**
- * Ordering matches the review-page render order. URLs first (user's
- * primary intent), files last (bulk container), saved-links after that
+ * Ordering matches the review-page render order. Paste blocks first (now
+ * the leading user intent — Paste Text is the first card on the connector
+ * grid), URLs next, files last (bulk container), saved-links after that
  * (lowest-value "I'll look at this later" bucket).
  */
 export const VISUAL_GROUP_ORDER: readonly VisualGroup[] = [
+  'paste',
   'url',
   'bookmarks',
   'twitter-links',
@@ -126,6 +139,7 @@ export const VISUAL_GROUP_ORDER: readonly VisualGroup[] = [
 ] as const;
 
 export const VISUAL_GROUP_LABELS: Record<VisualGroup, string> = {
+  paste: 'Pasted Text',
   url: 'URLs',
   bookmarks: 'Bookmarks',
   'twitter-links': 'Twitter-linked articles',
@@ -144,6 +158,7 @@ export const VISUAL_GROUP_LABELS: Record<VisualGroup, string> = {
  * connector even if the DB connector is different).
  */
 export const VISUAL_GROUP_CONNECTOR_SLUG: Record<VisualGroup, string> = {
+  paste: 'paste',
   url: 'url',
   bookmarks: 'bookmarks',
   'twitter-links': 'twitter',
@@ -157,6 +172,7 @@ export const VISUAL_GROUP_CONNECTOR_SLUG: Record<VisualGroup, string> = {
 
 export function visualGroupOf(row: TypedStagingRow): VisualGroup {
   const d = row.display;
+  if (d.kind === 'paste') return 'paste';
   if (d.kind === 'file-upload') return 'files';
   if (d.kind === 'saved-link') return 'saved-links';
   if (d.kind === 'text' && d.source_origin === 'twitter') return 'tweets';
@@ -214,6 +230,20 @@ function synthesiseDisplay(
   const markdown = typeof payload.markdown === 'string' ? payload.markdown : '';
 
   switch (connector) {
+    case 'paste': {
+      const title = typeof payload.title === 'string' ? payload.title : 'Paste';
+      const text = typeof payload.text === 'string' ? payload.text : '';
+      const sourceUrl =
+        typeof payload.source_url === 'string' && payload.source_url ? payload.source_url : null;
+      return {
+        kind: 'paste',
+        source_origin: 'paste',
+        title,
+        excerpt: text.slice(0, 120),
+        char_count: text.length,
+        has_source_url: sourceUrl !== null,
+      };
+    }
     case 'url':
       return {
         kind: 'url',
@@ -264,6 +294,7 @@ export type GroupedStaging = Record<VisualGroup, TypedStagingRow[]>;
 
 export function emptyGroups(): GroupedStaging {
   return {
+    paste: [],
     url: [],
     bookmarks: [],
     'twitter-links': [],

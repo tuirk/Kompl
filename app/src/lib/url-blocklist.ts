@@ -8,7 +8,7 @@
  *
  * We block these at intake. Users must use a dedicated connector (e.g. the
  * Twitter bookmark importer for x.com), or paste the content body into the
- * Text connector.
+ * Paste Text connector.
  *
  * Keep this list short and defensible. Each entry matches the host exactly
  * OR any subdomain of it (`www.x.com`, `mobile.twitter.com` both match).
@@ -21,7 +21,7 @@ export const BLOCKED_URL_HOSTS: readonly string[] = [
 ] as const;
 
 export const URL_HOST_BLOCKED_MESSAGE =
-  'x.com, twitter.com, and t.co URLs can\u2019t be auto-scraped \u2014 X gates all content behind JavaScript. Import tweets via the Twitter bookmark connector (JSON export), or paste the post body into the Text connector.';
+  'x.com, twitter.com, and t.co URLs can\u2019t be auto-scraped \u2014 X gates all content behind JavaScript. Import tweets via the Twitter bookmark connector (JSON export), or paste the post body into the Paste Text connector.';
 
 /**
  * Returns true if the URL's hostname is in the blocklist (exact match or

@@ -41,7 +41,19 @@ const VALID_CONNECTORS: readonly StagingConnector[] = [
   'file-upload',
   'text',
   'saved-link',
+  'paste',
 ] as const;
+
+const PASTE_TITLE_MAX = 200;
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 function isValidConnector(v: unknown): v is StagingConnector {
   return typeof v === 'string' && (VALID_CONNECTORS as readonly string[]).includes(v);
@@ -122,6 +134,37 @@ export async function POST(request: Request) {
           { error: "connector='file-upload' requires item.file_path" },
           { status: 422 }
         );
+      }
+    } else if (connector === 'paste') {
+      // Paste blocks: user-supplied title + body, optional source_url metadata.
+      // Host blocklist is intentionally not applied — paste is user-curated;
+      // the blocklist exists to stop scraping x.com pages that have no useful
+      // HTML, irrelevant when the user already has the text in hand.
+      if (typeof item.title !== 'string' || !item.title.trim()) {
+        return NextResponse.json(
+          { error: "connector='paste' requires item.title" },
+          { status: 422 }
+        );
+      }
+      if (item.title.length > PASTE_TITLE_MAX) {
+        return NextResponse.json(
+          { error: `connector='paste' item.title exceeds ${PASTE_TITLE_MAX} chars` },
+          { status: 422 }
+        );
+      }
+      if (typeof item.text !== 'string' || !item.text) {
+        return NextResponse.json(
+          { error: "connector='paste' requires item.text" },
+          { status: 422 }
+        );
+      }
+      if (item.source_url != null) {
+        if (typeof item.source_url !== 'string' || !isValidHttpUrl(item.source_url)) {
+          return NextResponse.json(
+            { error: "connector='paste' item.source_url must be a valid http(s) URL" },
+            { status: 422 }
+          );
+        }
       }
     } else {
       // connector === 'text'

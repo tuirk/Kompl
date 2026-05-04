@@ -3181,7 +3181,7 @@ export function getPageTitleMap(): Map<string, string> {
 //   failed    — conversion or insert failed; error_* populated
 //   discarded — user unchecked on review page; skipped by finalize
 
-export type StagingConnector = 'url' | 'file-upload' | 'text' | 'saved-link';
+export type StagingConnector = 'url' | 'file-upload' | 'text' | 'saved-link' | 'paste';
 export type StagingStatus =
   | 'pending'
   | 'ingesting'
