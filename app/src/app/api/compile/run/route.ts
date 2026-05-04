@@ -54,6 +54,14 @@ const APP_URL = process.env.APP_URL ?? 'http://app:3000';
 // keeping other calls on the default Agent preserves fail-fast behavior for
 // the short paths (extract, resolve, match, plan, commit, schema).
 // Ref: https://nodejs.org/api/globals.html#custom-dispatcher
+//
+// undici pinned to ^7 in package.json. undici 8 reworked dispatcher composition
+// to require an `onRequestStart` interceptor method shape that this Agent does
+// not expose when passed via `dispatcher:` to Node's built-in fetch — fails
+// with `InvalidArgumentError: invalid onRequestStart method` at draft/crossref
+// time. Dependabot will re-propose undici 8: do not merge that bump until
+// callDraft/callCrossref are migrated to undici-8-compatible dispatcher API
+// (`undici.request()` direct, or `setGlobalDispatcher()` on a v8 Agent).
 const LONG_HTTP_AGENT = new Agent({
   headersTimeout: 16 * 60_000,
   bodyTimeout: 16 * 60_000,
