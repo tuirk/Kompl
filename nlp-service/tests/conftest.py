@@ -24,7 +24,15 @@ sys.modules.setdefault("chromadb", chromadb_stub)
 
 st_stub = types.ModuleType("sentence_transformers")
 st_stub.SentenceTransformer = MagicMock()
+# KeyBERT (loaded indirectly via routers/extraction.py) reads
+# ``sentence_transformers.util``. Provide a permissive submodule stub so the
+# import chain succeeds during tests that touch main.app.
+st_util_stub = types.ModuleType("sentence_transformers.util")
+st_util_stub.cos_sim = MagicMock()
+st_util_stub.semantic_search = MagicMock()
+st_stub.util = st_util_stub
 sys.modules.setdefault("sentence_transformers", st_stub)
+sys.modules.setdefault("sentence_transformers.util", st_util_stub)
 
 spacy_stub = types.ModuleType("spacy")
 spacy_stub.load = MagicMock(return_value=MagicMock())

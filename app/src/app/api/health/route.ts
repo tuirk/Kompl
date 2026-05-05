@@ -76,6 +76,12 @@ export async function GET() {
         vector_backlog: vectorBacklog,
         stale_sessions_fixed: staleSessionsFixed,
         stuck_queued_fixed: stuckQueuedFixed,
+        // Phase 5 multi-provider: presence-only flags consumed by the
+        // Settings UI to gate the model dropdown. No outbound key probe.
+        provider_keys: {
+          gemini_present: !!process.env.GEMINI_API_KEY,
+          deepseek_present: !!process.env.DEEPSEEK_API_KEY,
+        },
       },
       // Return 200 for both 'ok' and 'degraded' so Docker healthcheck only
       // fails on hard errors. The app is usable in degraded state.
