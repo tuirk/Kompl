@@ -43,6 +43,7 @@ services:
       # calls — the downstream work runs inside nlp-service, which has its
       # own copies above. Presence-only check, no SDK import.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
     volumes:
       - kompl-data:/data
@@ -78,6 +79,12 @@ services:
       PYTHONUNBUFFERED: "1"
       # Commit 4: LLM compile. google-genai SDK reads GEMINI_API_KEY.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Phase 4 multi-provider: DeepSeek V4 Pro as a second selectable backend
+      # behind the LLMProvider abstraction. Operators set this to opt in;
+      # absence is fine — the factory only wires DeepSeek when the model
+      # prefix selects it (gemini-* sessions never read this var).
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_RPM: ${DEEPSEEK_RPM:-60}
       # Rate limiter: 800 RPM = 80% of tier-1 cap (1000 RPM). Set lower if on free tier.
       GEMINI_RPM: ${GEMINI_RPM:-800}
       # Input truncation: 128,000 chars ≈ 32,000 tokens (1 token/4 chars).

@@ -225,7 +225,7 @@ export async function POST(request: Request) {
   if (body.chat_model !== undefined) {
     if (!isChatModel(body.chat_model)) {
       return NextResponse.json(
-        { error: 'chat_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro' },
+        { error: 'chat_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro, deepseek-v4-pro' },
         { status: 422 },
       );
     }
@@ -235,7 +235,7 @@ export async function POST(request: Request) {
   if (body.compile_model !== undefined) {
     if (!isChatModel(body.compile_model)) {
       return NextResponse.json(
-        { error: 'compile_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro' },
+        { error: 'compile_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro, deepseek-v4-pro' },
         { status: 422 },
       );
     }
