@@ -78,6 +78,24 @@ def test_llm_result_carries_text_parsed_usage_finish():
 # ---------------------------------------------------------------------------
 
 
+def test_get_provider_dispatches_gemini_prefix(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    # Reset cached singleton so the env override takes effect for this test.
+    from services import providers as P
+    P._REGISTRY.clear()
+
+    from services.providers import get_provider
+    from services.providers.gemini import GeminiProvider
+
+    p = get_provider("gemini-2.5-flash")
+    assert isinstance(p, GeminiProvider)
+    assert p.name == "gemini"
+    # Same instance returned on repeat lookups (singleton cache).
+    assert get_provider("gemini-2.5-pro") is p
+
+    P._REGISTRY.clear()
+
+
 def test_get_provider_deepseek_raises_until_phase_4():
     from services.providers import get_provider
 
@@ -92,6 +110,31 @@ def test_get_provider_unknown_raises_value_error():
         get_provider("anthropic-claude-4-7")
     with pytest.raises(ValueError, match="unknown provider"):
         get_provider("not-a-real-model")
+
+
+# ---------------------------------------------------------------------------
+# Cost-cap message generalisation (Phase 2 task 2.3)
+# ---------------------------------------------------------------------------
+
+
+def test_cost_cap_error_message_says_llm_not_gemini(monkeypatch, tmp_path):
+    """The cap error message generalises now that DeepSeek is on the way.
+
+    Pre-Phase-2.3 the message said "Daily Gemini spend"; Phase 4 will see
+    operators run DeepSeek-only sessions, where "Gemini" would be misleading.
+    """
+    from services import llm_client
+    # Point the cap files at a temp dir + force a small cap.
+    monkeypatch.setattr(llm_client, "_CAP_FILE", tmp_path / "cap.json")
+    monkeypatch.setattr(llm_client, "_CONFIG_FILE", tmp_path / "cfg.json")
+    monkeypatch.setattr(llm_client, "_read_daily_cap_usd", lambda: 0.0001)
+
+    with pytest.raises(llm_client.CostCeilingError) as exc:
+        # Use enough tokens to definitely exceed 0.0001 cap on flash pricing
+        # (input rate 0.30 / M; 1M prompt tokens = $0.30, well over $0.0001).
+        llm_client._check_and_record_cost("gemini-2.5-flash", 1_000_000, 0, 1_000_000, 0)
+    assert "Daily LLM spend" in str(exc.value)
+    assert "Gemini" not in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

@@ -161,7 +161,7 @@ def _read_thinking_budget(call_site: str) -> int:
 
 
 def _read_daily_cap_usd() -> float:
-    """Read the user-configurable daily Gemini $ cap from /data/llm-config.json.
+    """Read the user-configurable daily LLM $ cap from /data/llm-config.json.
 
     Next.js writes this file whenever setDailyCapUsd() is called in db.ts
     (backed by the 'daily_cap_usd' settings row). We cache the value for 30 s
@@ -210,33 +210,34 @@ def _check_and_record_cost(
     output_tokens: int,
     thought_tokens: int,
 ) -> None:
-    """Check daily cap then record cost. Raises CostCeilingError if exceeded.
+    """Check daily LLM $ cap then record cost. Raises CostCeilingError if exceeded.
 
     Per-call cost is computed by the model's provider (Gemini today; DeepSeek
-    in Phase 4). The dispatcher only enforces the daily LLM $ cap and the
-    on-disk persistence — pricing tables live in the providers.
+    in Phase 4) via ``provider.cost_usd(model, usage_dict)``. The dispatcher
+    enforces the daily LLM $ cap and the on-disk persistence — pricing tables
+    live in the providers.
 
-    Called from inside ``GeminiProvider.complete()`` after every successful
-    Gemini API call. If GEMINI_DAILY_USD_CAP=0 the check is skipped
-    (unlimited mode).
+    The token-count signature is preserved for backward compatibility with
+    the existing test fixture ``mock_cost``; the body translates to a usage
+    dict for the provider.
+
+    Called from inside the provider's ``complete()`` after every successful
+    API call. If GEMINI_DAILY_USD_CAP=0 the check is skipped (unlimited mode).
     """
-    # Lazy import to avoid a circular at module-load time.
-    from .providers.gemini import _get_model_prices
+    provider = get_provider(model)
+    usage = {
+        "prompt_token_count":         prompt_tokens,
+        "cached_content_token_count": cached_tokens,
+        "candidates_token_count":     output_tokens,
+        "thoughts_token_count":       thought_tokens,
+    }
+    cost_usd = provider.cost_usd(model, usage)
 
-    prices = _get_model_prices(model)
-    # prompt_token_count includes cached tokens per Gemini API docs.
-    fresh_input = max(0, prompt_tokens - cached_tokens)
-    cost_usd = (
-        (fresh_input      / 1_000_000) * prices["input"]
-      + (cached_tokens    / 1_000_000) * prices["cache"]
-      + (output_tokens    / 1_000_000) * prices["output"]
-      + (thought_tokens   / 1_000_000) * prices["output"]
-    )
     cap_data = _read_cap()
     daily_cap = _read_daily_cap_usd()
     if daily_cap > 0 and cap_data["total_usd"] + cost_usd > daily_cap:
         raise CostCeilingError(
-            f"Daily Gemini spend limit (${daily_cap:.2f}) reached. "
+            f"Daily LLM spend limit (${daily_cap:.2f}) reached. "
             f"Today's spend: ${cap_data['total_usd']:.4f}. "
             f"Resets at midnight UTC."
         )
