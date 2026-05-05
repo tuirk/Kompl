@@ -667,7 +667,7 @@ Return JSON with these fields:
 Keep lists focused: 5-15 entities, 3-10 concepts, 3-15 claims, 3-10 relationships.
 Each entity appears once. Stop as soon as the source is covered — do NOT
 repeat names or pad the output.
-"""
+""" + _JSON_TRAILER
 
 
 def extract_source(
@@ -884,7 +884,7 @@ For each pair return:
 
 Be conservative: only return "same" if you are confident. Prefer "ambiguous"
 over a wrong "same" call. Do not hallucinate.
-"""
+""" + _JSON_TRAILER
 
 
 _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = """\
@@ -917,7 +917,7 @@ STRICTNESS RULES for this task:
   - When in doubt, prefer "different" over "same". Wrong merges are costly to
     undo and permanently lose the ability to have a page about the narrower
     concept. Duplicate pages self-heal as more sources arrive.
-"""
+""" + _JSON_TRAILER
 
 
 def disambiguate_entities(
@@ -1291,7 +1291,7 @@ Rules:
 - Do NOT modify YAML frontmatter.
 - Do NOT add links to pages that are not in the provided set.
 - Return EVERY page in updated_pages, even if unchanged.
-"""
+""" + _JSON_TRAILER
 
 
 def crossref_pages(pages: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> CrossrefResponse:
@@ -1534,7 +1534,7 @@ Return JSON with one field:
 
 Only include pages that genuinely help answer the question. If no pages are
 relevant, return an empty list. Do not hallucinate page IDs not in the input.
-"""
+""" + _JSON_TRAILER
 
 
 def select_pages_for_query(
@@ -1650,7 +1650,7 @@ Return JSON with two fields:
   answer     — your full markdown answer (may use headers, bullets, code blocks)
   citations  — list of {page_id, page_title} for every page you cited
                (only pages you actually used in your answer)
-"""
+""" + _JSON_TRAILER
 
 
 def synthesize_answer(
