@@ -8,6 +8,8 @@ tests (json_object injection, retry on 429, discount-boundary).
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from pydantic import BaseModel
 
@@ -96,11 +98,21 @@ def test_get_provider_dispatches_gemini_prefix(monkeypatch):
     P._REGISTRY.clear()
 
 
-def test_get_provider_deepseek_raises_until_phase_4():
-    from services.providers import get_provider
+def test_get_provider_dispatches_deepseek_prefix(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    from services import providers as P
+    P._REGISTRY.clear()
 
-    with pytest.raises(NotImplementedError):
-        get_provider("deepseek-v4-pro")
+    from services.providers import get_provider
+    from services.providers.deepseek import DeepSeekProvider
+
+    p = get_provider("deepseek-v4-pro")
+    assert isinstance(p, DeepSeekProvider)
+    assert p.name == "deepseek"
+    # Singleton cache: same instance on repeat lookup.
+    assert get_provider("deepseek-v5-future") is p
+
+    P._REGISTRY.clear()
 
 
 def test_get_provider_unknown_raises_value_error():
@@ -223,6 +235,285 @@ def test_extract_halved_fallback_skipped_on_non_gemini(monkeypatch):
 
     assert log == ["extract"], "halved-fallback must NOT run on deepseek-*"
     assert "extract_llm_parse_failed" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# DeepSeekProvider.complete() (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+def _stub_deepseek_post(monkeypatch, status_codes, body=None):
+    """Patch httpx.Client.post to walk through ``status_codes`` returning
+    a canned 200 body on a 200 code and a minimal text payload on others.
+
+    Returns the captured-bodies list so tests can assert on the request
+    JSON for each invocation.
+    """
+    captured: list[dict] = []
+    iterator = iter(status_codes)
+    default_body = body or {
+        "choices": [{
+            "message": {"content": '{"ok": true}'},
+            "finish_reason": "stop",
+        }],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_cache_hit_tokens": 0,
+        },
+    }
+
+    class _FakeResponse:
+        def __init__(self, status):
+            self.status_code = status
+            self.text = "rate limited" if status != 200 else ""
+        def json(self):
+            return default_body
+
+    def _fake_post(self, url, json=None, **kw):
+        captured.append(json)
+        try:
+            code = next(iterator)
+        except StopIteration:
+            code = 200
+        return _FakeResponse(code)
+
+    monkeypatch.setattr("httpx.Client.post", _fake_post)
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    return captured
+
+
+def _ensure_clean_deepseek_singleton(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    from services import providers as P
+    from services.providers import deepseek as D
+    P._REGISTRY.clear()
+    # Reset any module-level caches the previous test may have populated.
+    D._client = None
+    D._limiter = None
+    # The pyrate-limiter constructor signature differs across versions
+    # (the container's 3.7.1 pin accepts ``raise_when_fail`` as a kwarg, but
+    # other host-local installs do not). Tests don't need a real bucket —
+    # stub _get_limiter to a permissive MagicMock that always grants tokens.
+    fake_limiter = MagicMock()
+    fake_limiter.try_acquire.return_value = True
+    monkeypatch.setattr(D, "_get_limiter", lambda: fake_limiter)
+    return fake_limiter
+
+
+def test_deepseek_complete_injects_json_response_format(monkeypatch):
+    """When response_model is set the request body MUST carry response_format."""
+    _ensure_clean_deepseek_singleton(monkeypatch)
+    from pydantic import BaseModel as _BM
+    from services.providers import get_provider
+    from services.providers.base import LLMRequest
+
+    class _Out(_BM):
+        ok: bool
+
+    captured = _stub_deepseek_post(monkeypatch, [200])
+    p = get_provider("deepseek-v4-pro")
+    req = LLMRequest(
+        model="deepseek-v4-pro",
+        messages=[
+            {"role": "system", "content": "be terse — return json"},
+            {"role": "user",   "content": "go"},
+        ],
+        response_model=_Out,
+        thinking_budget=0,
+        max_output_tokens=512,
+        temperature=0.0,
+        step="t",
+    )
+    result = p.complete(req)
+    assert captured[0]["response_format"] == {"type": "json_object"}
+    assert result.parsed.ok is True
+    assert result.text == '{"ok": true}'
+    assert result.finish_reason == "STOP"
+
+
+def test_deepseek_complete_omits_response_format_when_no_schema(monkeypatch):
+    _ensure_clean_deepseek_singleton(monkeypatch)
+    from services.providers import get_provider
+    from services.providers.base import LLMRequest
+
+    captured = _stub_deepseek_post(monkeypatch, [200])
+    p = get_provider("deepseek-v4-pro")
+    req = LLMRequest(
+        model="deepseek-v4-pro",
+        messages=[{"role": "user", "content": "free-form please"}],
+        response_model=None,
+        thinking_budget=0,
+        max_output_tokens=512,
+        step="t",
+    )
+    p.complete(req)
+    assert "response_format" not in captured[0]
+
+
+def test_deepseek_complete_attaches_reasoning_effort_when_thinking_enabled(monkeypatch):
+    _ensure_clean_deepseek_singleton(monkeypatch)
+    from services.providers import get_provider
+    from services.providers.base import LLMRequest
+
+    captured = _stub_deepseek_post(monkeypatch, [200])
+    p = get_provider("deepseek-v4-pro")
+    req = LLMRequest(
+        model="deepseek-v4-pro",
+        messages=[{"role": "user", "content": "go"}],
+        response_model=None,
+        thinking_budget=2048,  # -> "medium" per translate_thinking_budget
+        max_output_tokens=512,
+        step="extract",
+    )
+    p.complete(req)
+    assert captured[0]["reasoning_effort"] == "medium"
+
+
+def test_deepseek_complete_omits_reasoning_when_budget_zero(monkeypatch):
+    _ensure_clean_deepseek_singleton(monkeypatch)
+    from services.providers import get_provider
+    from services.providers.base import LLMRequest
+
+    captured = _stub_deepseek_post(monkeypatch, [200])
+    p = get_provider("deepseek-v4-pro")
+    p.complete(LLMRequest(
+        model="deepseek-v4-pro",
+        messages=[{"role": "user", "content": "go"}],
+        response_model=None,
+        thinking_budget=0,
+        max_output_tokens=512,
+        step="lint",
+    ))
+    assert "reasoning_effort" not in captured[0]
+
+
+def test_deepseek_retries_on_429_then_succeeds(monkeypatch):
+    _ensure_clean_deepseek_singleton(monkeypatch)
+    from services.providers import get_provider
+    from services.providers.base import LLMRequest
+
+    captured = _stub_deepseek_post(monkeypatch, [429, 200])
+    p = get_provider("deepseek-v4-pro")
+    p.complete(LLMRequest(
+        model="deepseek-v4-pro",
+        messages=[{"role": "user", "content": "x"}],
+        response_model=None,
+        thinking_budget=0,
+        max_output_tokens=128,
+        step="t",
+    ))
+    assert len(captured) == 2, "expected exactly one retry after 429"
+
+
+def test_deepseek_emits_log_line_with_cache_hit(monkeypatch, capsys):
+    _ensure_clean_deepseek_singleton(monkeypatch)
+    from services.providers import get_provider
+    from services.providers.base import LLMRequest
+
+    body = {
+        "choices": [{
+            "message": {"content": "free text"},
+            "finish_reason": "stop",
+        }],
+        "usage": {
+            "prompt_tokens": 1234,
+            "completion_tokens": 56,
+            "prompt_cache_hit_tokens": 78,
+        },
+    }
+    _stub_deepseek_post(monkeypatch, [200], body=body)
+    p = get_provider("deepseek-v4-pro")
+    p.complete(LLMRequest(
+        model="deepseek-v4-pro",
+        messages=[{"role": "user", "content": "x"}],
+        response_model=None,
+        thinking_budget=0,
+        max_output_tokens=128,
+        step="extract",
+    ))
+    captured = capsys.readouterr()
+    assert "[deepseek] step=extract" in captured.err
+    assert "in=1234" in captured.err
+    assert "out=56" in captured.err
+    assert "cache_hit=78" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# DeepSeekProvider pricing (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+def test_deepseek_prices_in_discount_window(monkeypatch):
+    """One second before DISCOUNT_UNTIL: prices use the discount table."""
+    from services.providers import deepseek as D
+    monkeypatch.delenv("DEEPSEEK_INPUT_USD_PER_M", raising=False)
+    monkeypatch.delenv("DEEPSEEK_OUTPUT_USD_PER_M", raising=False)
+    monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
+
+    import datetime as _dt
+    target = D.DISCOUNT_UNTIL - _dt.timedelta(seconds=1)
+
+    class _FakeDateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None): return target
+
+    monkeypatch.setattr(D, "datetime", _FakeDateTime)
+    prices = D._prices_now()
+    assert prices["input"] == D._PRICES_DISCOUNT["input"]
+    assert prices["output"] == D._PRICES_DISCOUNT["output"]
+    assert prices["cache"] == D._PRICES_DISCOUNT["cache"]
+
+
+def test_deepseek_prices_after_discount_window(monkeypatch):
+    """One second after DISCOUNT_UNTIL: prices flip to the list table."""
+    from services.providers import deepseek as D
+    monkeypatch.delenv("DEEPSEEK_INPUT_USD_PER_M", raising=False)
+    monkeypatch.delenv("DEEPSEEK_OUTPUT_USD_PER_M", raising=False)
+    monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
+
+    import datetime as _dt
+    target = D.DISCOUNT_UNTIL + _dt.timedelta(seconds=1)
+
+    class _FakeDateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None): return target
+
+    monkeypatch.setattr(D, "datetime", _FakeDateTime)
+    prices = D._prices_now()
+    assert prices["input"] == D._PRICES_LIST["input"]
+    assert prices["output"] == D._PRICES_LIST["output"]
+    assert prices["cache"] == D._PRICES_LIST["cache"]
+
+
+def test_deepseek_prices_env_override_wins(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_INPUT_USD_PER_M", "0.99")
+    from services.providers import deepseek as D
+    prices = D._prices_now()
+    assert prices["input"] == 0.99
+
+
+def test_deepseek_cost_usd_formula(monkeypatch):
+    """Sanity-check the cost arithmetic on a known usage dict."""
+    monkeypatch.setenv("DEEPSEEK_INPUT_USD_PER_M",  "1.00")
+    monkeypatch.setenv("DEEPSEEK_OUTPUT_USD_PER_M", "10.00")
+    monkeypatch.setenv("DEEPSEEK_CACHE_USD_PER_M",  "0.10")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    from services import providers as P
+    P._REGISTRY.clear()
+    from services.providers import get_provider
+
+    p = get_provider("deepseek-v4-pro")
+    # 1M prompt tokens, 100K cached, 500K output (Gemini-shape keys).
+    cost = p.cost_usd("deepseek-v4-pro", {
+        "prompt_token_count":         1_000_000,
+        "cached_content_token_count": 100_000,
+        "candidates_token_count":     500_000,
+        "thoughts_token_count":       0,
+    })
+    # fresh = 900_000 -> 0.9; cached = 100_000 -> 0.01; output = 500_000 -> 5.00
+    assert abs(cost - (0.9 + 0.01 + 5.0)) < 1e-9
+    P._REGISTRY.clear()
 
 
 def test_cost_cap_error_message_says_llm_not_gemini(monkeypatch, tmp_path):

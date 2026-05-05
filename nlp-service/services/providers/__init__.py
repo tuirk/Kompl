@@ -48,9 +48,8 @@ def get_provider(model: str) -> LLMProvider:
         from .gemini import GeminiProvider
         return _REGISTRY.setdefault("gemini", GeminiProvider())
     if model.startswith("deepseek-"):
-        raise NotImplementedError(
-            "DeepSeek provider lands in Phase 4 of the multi-provider plan"
-        )
+        from .deepseek import DeepSeekProvider
+        return _REGISTRY.setdefault("deepseek", DeepSeekProvider())
     raise ValueError(f"unknown provider for model {model!r}")
 
 
