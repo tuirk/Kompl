@@ -440,18 +440,23 @@ Your job is precision, not creativity. Only extract information that is
 explicitly or strongly implicitly present in the source. Do not hallucinate.
 
 Return JSON with these fields:
-1. entities      — named entities with type, mentions, and context
+1. entities      — named entities with name, type, mentions, and context
+   - name: canonical name of the entity (a string — do NOT use the entity name as a dict key)
    - type: PERSON | ORG | PRODUCT | CONCEPT | EVENT | LOCATION | OTHER
    - mentions: list of exact text spans from the source
    - context: 1-2 sentence description of this entity as discussed in the source
-2. concepts      — key concepts with descriptions
+2. concepts      — key concepts with name and description
+   - name: short canonical name of the concept
+   - description: 1-2 sentence description of the concept
 3. claims        — specific factual claims
+   - claim: the claim text itself (a string — full sentence)
    - confidence: "stated" (explicit) | "implied" (strongly suggested) | "speculative"
    - entities_involved: list of entity/concept names from your entities/concepts lists
 4. relationships — connections between entities/concepts
    - from_entity: name of first entity/concept
    - to: name of second entity/concept
    - type: uses | competes_with | part_of | created_by | related_to | contradicts
+   - description: 1-sentence explanation of how these entities relate
 5. contradictions — claims that contradict other sources or internal logic
    - claim: what this source claims
    - against: what it contradicts (leave empty string if unknown)

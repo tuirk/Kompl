@@ -1,0 +1,189 @@
+{
+  "run_at": "2026-05-05T15:35:34.529542+00:00",
+  "branch": "feat/multi-provider-llm",
+  "head_commit": "ecadbe0",
+  "providers": [
+    "gemini-2.5-flash",
+    "deepseek-v4-pro"
+  ],
+  "nlp_service_url": "http://localhost:8000",
+  "sources": [
+    {
+      "name": "30+ Places You Should See in Vilnius - Curl Abroad.md",
+      "markdown_chars": 31785,
+      "results": {
+        "gemini-2.5-flash": {
+          "ok": false,
+          "detail": "extract_llm_error: empty response text",
+          "http_status": 500,
+          "elapsed_s": 154.46
+        },
+        "deepseek-v4-pro": {
+          "ok": true,
+          "entity_count": 15,
+          "concept_count": 7,
+          "claim_count": 12,
+          "relationship_count": 13,
+          "contradiction_count": 0,
+          "summary_chars": 631,
+          "http_status": 200,
+          "elapsed_s": 233.62
+        }
+      }
+    },
+    {
+      "name": "Introduction to agent skills - Claude Code.md",
+      "markdown_chars": 33029,
+      "results": {
+        "gemini-2.5-flash": {
+          "ok": true,
+          "entity_count": 8,
+          "concept_count": 9,
+          "claim_count": 12,
+          "relationship_count": 8,
+          "contradiction_count": 0,
+          "summary_chars": 568,
+          "http_status": 200,
+          "elapsed_s": 34.33
+        },
+        "deepseek-v4-pro": {
+          "ok": true,
+          "entity_count": 13,
+          "concept_count": 6,
+          "claim_count": 12,
+          "relationship_count": 10,
+          "contradiction_count": 0,
+          "summary_chars": 753,
+          "http_status": 200,
+          "elapsed_s": 166.97
+        }
+      }
+    },
+    {
+      "name": "kelly-criterion.md",
+      "markdown_chars": 25355,
+      "results": {
+        "gemini-2.5-flash": {
+          "ok": true,
+          "entity_count": 10,
+          "concept_count": 7,
+          "claim_count": 13,
+          "relationship_count": 7,
+          "contradiction_count": 1,
+          "summary_chars": 533,
+          "http_status": 200,
+          "elapsed_s": 35.45
+        },
+        "deepseek-v4-pro": {
+          "ok": true,
+          "entity_count": 15,
+          "concept_count": 6,
+          "claim_count": 10,
+          "relationship_count": 8,
+          "contradiction_count": 0,
+          "summary_chars": 607,
+          "http_status": 200,
+          "elapsed_s": 212.31,
+          "retry_with_timeout_s": 600
+        }
+      }
+    },
+    {
+      "name": "Museums of Kaunas - Curl Abroad.md",
+      "markdown_chars": 16372,
+      "results": {
+        "gemini-2.5-flash": {
+          "ok": false,
+          "detail": "extract_llm_error: empty response text",
+          "http_status": 500,
+          "elapsed_s": 211.37
+        },
+        "deepseek-v4-pro": {
+          "ok": true,
+          "entity_count": 15,
+          "concept_count": 8,
+          "claim_count": 15,
+          "relationship_count": 10,
+          "contradiction_count": 0,
+          "summary_chars": 528,
+          "http_status": 200,
+          "elapsed_s": 374.09,
+          "retry_with_timeout_s": 600
+        }
+      }
+    },
+    {
+      "name": "Open Standards for AI Skills -agentskills.io.md",
+      "markdown_chars": 95027,
+      "results": {
+        "gemini-2.5-flash": {
+          "ok": false,
+          "detail": "{'error': 'timed out'}",
+          "http_status": -1,
+          "elapsed_s": 261.11
+        },
+        "deepseek-v4-pro": {
+          "ok": true,
+          "entity_count": 15,
+          "concept_count": 8,
+          "claim_count": 15,
+          "relationship_count": 10,
+          "contradiction_count": 0,
+          "summary_chars": 693,
+          "http_status": 200,
+          "elapsed_s": 289.58,
+          "retry_with_timeout_s": 600
+        }
+      }
+    },
+    {
+      "name": "The Ultimate Travel Guide To Vilnius Lithuania - Curl Abroad.md",
+      "markdown_chars": 27485,
+      "results": {
+        "gemini-2.5-flash": {
+          "ok": false,
+          "detail": "extract_llm_error: empty response text",
+          "http_status": 500,
+          "elapsed_s": 155.28
+        },
+        "deepseek-v4-pro": {
+          "ok": true,
+          "entity_count": 15,
+          "concept_count": 10,
+          "claim_count": 15,
+          "relationship_count": 10,
+          "contradiction_count": 0,
+          "summary_chars": 464,
+          "http_status": 200,
+          "elapsed_s": 387.58,
+          "retry_with_timeout_s": 600
+        }
+      }
+    },
+    {
+      "name": "tinyforming-mars-rulebook.md",
+      "markdown_chars": 22707,
+      "results": {
+        "gemini-2.5-flash": {
+          "ok": false,
+          "detail": "extract_llm_call_failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'Your project has exceeded its monthly spending cap. Please go to AI Studio at https://ai.studio/spend to manage your project spend cap. Learn more at https://ai.google.dev/gemini-api/docs/billing#project-spend-caps. ', 'status': 'RESOURCE_EXHAUSTED'}}",
+          "http_status": 500,
+          "elapsed_s": 33.02
+        },
+        "deepseek-v4-pro": {
+          "ok": true,
+          "entity_count": 15,
+          "concept_count": 8,
+          "claim_count": 15,
+          "relationship_count": 10,
+          "contradiction_count": 0,
+          "summary_chars": 649,
+          "http_status": 200,
+          "elapsed_s": 197.21
+        }
+      }
+    }
+  ],
+  "rerun_at": "2026-05-05T16:39:14.245257+00:00",
+  "rerun_timeout_s": 600
+}
