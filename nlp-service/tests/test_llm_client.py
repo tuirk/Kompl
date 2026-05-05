@@ -103,12 +103,15 @@ def test_draft_page_strips_markdown_code_fences(mock_gemini, mock_limiter, mock_
 
 
 def test_draft_page_raises_rate_limited_when_bucket_full(mock_gemini, mock_cost):
-    """draft_page must raise LLMRateLimitedError when the rate limiter denies."""
+    """draft_page must raise LLMRateLimitedError when the rate limiter denies.
+
+    Phase 2: limiter lives in services.providers.gemini.
+    """
     mock_lim = MagicMock()
     mock_lim.try_acquire.return_value = False
 
-    import services.llm_client as lc  # noqa: PLC0415
-    lc._get_limiter = lambda: mock_lim  # direct patch (no monkeypatch needed here)
+    from services.providers import gemini as gemini_provider  # noqa: PLC0415
+    gemini_provider._get_limiter = lambda: mock_lim  # direct patch (no monkeypatch needed here)
 
     with pytest.raises(llm_client.LLMRateLimitedError):
         llm_client.draft_page(

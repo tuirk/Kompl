@@ -240,7 +240,7 @@ stage_1_migration_schema() {
     # compile. Fixed 2026-04-20 by adding the keys to app.environment.
     # Presence-only check; never compares values (would leak secrets on fail).
     echo "  checking env-var wire (host -> app container)..."
-    for var in GEMINI_API_KEY FIRECRAWL_API_KEY; do
+    for var in GEMINI_API_KEY DEEPSEEK_API_KEY FIRECRAWL_API_KEY; do
         host_val=$(printenv "$var" 2>/dev/null || true)
         if [ -n "$host_val" ]; then
             container_val=$($COMPOSE exec -T app printenv "$var" 2>/dev/null || true)
