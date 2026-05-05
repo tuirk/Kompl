@@ -84,6 +84,14 @@ export default function SettingsPage() {
   const [compileModelSaving, setCompileModelSaving] = useState(false);
   const [compileModelSaved, setCompileModelSaved] = useState(false);
 
+  // Phase 5/6 multi-provider: presence-only flags from /api/health gate the
+  // dropdown options. null = still loading; never throw on a fetch failure
+  // (operator on a broken health endpoint should still see Gemini default).
+  const [providerKeys, setProviderKeys] = useState<{
+    gemini_present: boolean;
+    deepseek_present: boolean;
+  } | null>(null);
+
   // Thinking budgets — per-LLM-call-site reasoning token allowance.
   // Source of truth lives in /data/llm-config.json (mirrored from settings
   // table); nlp-service reads the JSON on each Gemini call. -1 = unlimited,
@@ -210,6 +218,24 @@ export default function SettingsPage() {
         setCompileModelState(data.compile_model);
         setThinkingBudgets(data.thinking_budgets);
         setThinkingBudgetsDraft(data.thinking_budgets);
+      });
+  }, []);
+
+  // Phase 5/6 multi-provider: fetch the provider-key presence flags so the
+  // model dropdowns can disable options whose backend isn't configured.
+  // /api/health returns lots of fields; we only read provider_keys here.
+  useEffect(() => {
+    void fetch('/api/health')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { provider_keys?: { gemini_present: boolean; deepseek_present: boolean } } | null) => {
+        if (data?.provider_keys) {
+          setProviderKeys(data.provider_keys);
+        }
+      })
+      .catch(() => {
+        // Non-fatal: dropdowns fall back to "all enabled" while
+        // providerKeys stays null. The POST validator at /api/settings
+        // is the back-stop on actually-invalid selections.
       });
   }, []);
 
@@ -991,7 +1017,7 @@ export default function SettingsPage() {
           >
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-                Daily Gemini spend cap
+                Daily LLM spend cap
                 <span
                   style={{
                     padding: '1px 6px',
@@ -1009,13 +1035,16 @@ export default function SettingsPage() {
                 </span>
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Hard USD ceiling on Gemini API spend per UTC day. When exceeded, LLM calls raise a cost-ceiling error and the pipeline marks affected work as retryable. Resets at midnight UTC.
+                Hard USD ceiling on combined LLM API spend per UTC day (Gemini + DeepSeek share
+                this cap). When exceeded, LLM calls raise a cost-ceiling error and the pipeline
+                marks affected work as retryable. Resets at midnight UTC.
                 Set to <strong>0</strong> for unlimited (no cap).
-                {' '}The tracked number comes from each Gemini call&apos;s <code>usage_metadata</code>
-                (input + cached + output + thinking tokens, multiplied by the model&apos;s published
-                per-million-token price). It&apos;s an <strong>estimate</strong> — real invoice
-                totals may differ by a few percent due to token-count rounding, cached-content
-                discounts, and any price drift between Gemini&apos;s schedule and our constants.
+                {' '}The tracked number comes from each provider&apos;s usage metadata
+                (input + cached + output + thinking tokens, multiplied by the model&apos;s
+                published per-million-token price). It&apos;s an <strong>estimate</strong> —
+                real invoice totals may differ by a few percent due to token-count rounding,
+                cached-content discounts, and any price drift between the provider&apos;s
+                schedule and our constants.
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
@@ -1081,7 +1110,7 @@ export default function SettingsPage() {
                 Compile model
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Which Gemini model the <strong>compile pipeline</strong> uses for every LLM step
+                Which model the <strong>compile pipeline</strong> uses for every LLM step
                 (extract, resolve, draft, crossref, schema). Flash (default) balances cost and
                 quality; Flash Lite is cheapest; Pro is most capable but most expensive.
                 Compile spend is typically <strong>10-100× higher than chat</strong> because the
@@ -1106,9 +1135,38 @@ export default function SettingsPage() {
                   opacity: compileModel === null ? 0.5 : 1,
                 }}
               >
-                <option value="gemini-2.5-flash-lite">Flash Lite</option>
-                <option value="gemini-2.5-flash">Flash (default)</option>
-                <option value="gemini-2.5-pro">Pro</option>
+                <optgroup label="Gemini">
+                  <option
+                    value="gemini-2.5-flash-lite"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Flash Lite</option>
+                  <option
+                    value="gemini-2.5-flash"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Flash (default)</option>
+                  <option
+                    value="gemini-2.5-pro"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Pro</option>
+                </optgroup>
+                <optgroup label="DeepSeek">
+                  <option
+                    value="deepseek-v4-pro"
+                    disabled={providerKeys ? !providerKeys.deepseek_present : false}
+                    title={providerKeys && !providerKeys.deepseek_present
+                      ? 'Set DEEPSEEK_API_KEY in your environment to enable'
+                      : undefined}
+                  >V4 Pro</option>
+                </optgroup>
               </select>
             </div>
           </div>
@@ -1150,7 +1208,7 @@ export default function SettingsPage() {
                 Chat model
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Which Gemini model the <strong>Chat</strong> page uses to synthesise answers.
+                Which model the <strong>Chat</strong> page uses to synthesise answers.
                 Flash Lite is cheapest and a good default; Pro is the most capable but the most
                 expensive. Changes apply to <strong>new chats only</strong> — conversations
                 already in progress keep the model they started with.
@@ -1171,9 +1229,38 @@ export default function SettingsPage() {
                   opacity: chatModel === null ? 0.5 : 1,
                 }}
               >
-                <option value="gemini-2.5-flash-lite">Flash Lite (default)</option>
-                <option value="gemini-2.5-flash">Flash</option>
-                <option value="gemini-2.5-pro">Pro</option>
+                <optgroup label="Gemini">
+                  <option
+                    value="gemini-2.5-flash-lite"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Flash Lite (default)</option>
+                  <option
+                    value="gemini-2.5-flash"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Flash</option>
+                  <option
+                    value="gemini-2.5-pro"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Pro</option>
+                </optgroup>
+                <optgroup label="DeepSeek">
+                  <option
+                    value="deepseek-v4-pro"
+                    disabled={providerKeys ? !providerKeys.deepseek_present : false}
+                    title={providerKeys && !providerKeys.deepseek_present
+                      ? 'Set DEEPSEEK_API_KEY in your environment to enable'
+                      : undefined}
+                  >V4 Pro</option>
+                </optgroup>
               </select>
             </div>
           </div>

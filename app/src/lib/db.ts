@@ -2531,12 +2531,21 @@ export const CHAT_MODELS = [
   'gemini-2.5-flash-lite',
   'gemini-2.5-flash',
   'gemini-2.5-pro',
+  'deepseek-v4-pro',
 ] as const;
 export type ChatModel = typeof CHAT_MODELS[number];
 export const DEFAULT_CHAT_MODEL: ChatModel = 'gemini-2.5-flash-lite';
 
 export function isChatModel(v: unknown): v is ChatModel {
   return typeof v === 'string' && (CHAT_MODELS as readonly string[]).includes(v);
+}
+
+// Phase 4 multi-provider: prefix dispatch matches the nlp-service factory at
+// nlp-service/services/providers/__init__.py. Settings UI uses this to drive
+// per-provider <optgroup> placement in the dropdowns.
+export function getProviderForModel(m: string): 'gemini' | 'deepseek' {
+  if (m.startsWith('deepseek-')) return 'deepseek';
+  return 'gemini';
 }
 
 export function getChatModel(): ChatModel {
