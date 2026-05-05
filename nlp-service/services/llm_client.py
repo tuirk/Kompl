@@ -321,13 +321,16 @@ def lint_scan(pages: list[str], model: str = _DEFAULT_MODEL) -> LintScanResponse
     if not pages:
         return LintScanResponse(contradictions=[])
 
-    prompt = f"{_LINT_SYSTEM_PROMPT}\n\n---\n\n" + "\n\n".join(pages)
+    user_payload = "\n\n".join(pages)
 
     provider = get_provider(model)
     try:
         result = provider.complete(LLMRequest(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": _LINT_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_payload},
+            ],
             response_model=None,
             thinking_budget=_read_thinking_budget('lint_scan'),
             max_output_tokens=4096,  # lint responses are short
@@ -481,9 +484,7 @@ def extract_source(
     keyphrase_section = _json.dumps(keyphrase_output, ensure_ascii=False) if keyphrase_output else "N/A — no keyphrase output"
     tfidf_section = _json.dumps(tfidf_output, ensure_ascii=False) if tfidf_output else "N/A — first compile, no existing wiki pages"
 
-    prompt = (
-        f"{_EXTRACTION_SYSTEM_PROMPT}\n\n"
-        f"---\n\n"
+    user_payload = (
         f"Source ID: {source_id}\n\n"
         f"NLP extraction results:\n"
         f"Named entities (spaCy NER):\n{ner_section}\n\n"
@@ -497,7 +498,10 @@ def extract_source(
     try:
         result = provider.complete(LLMRequest(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_payload},
+            ],
             response_model=LLMExtractionResponse,
             thinking_budget=_read_thinking_budget('extract_source'),
             max_output_tokens=32768,
@@ -553,9 +557,7 @@ def extract_source(
     if last_para > 0:
         half_markdown = half_markdown[:last_para]
 
-    fallback_prompt = (
-        f"{_EXTRACTION_SYSTEM_PROMPT}\n\n"
-        f"---\n\n"
+    fallback_user_payload = (
         f"Source ID: {source_id}\n\n"
         f"NLP extraction results:\n"
         f"Named entities (spaCy NER):\n{ner_section}\n\n"
@@ -568,7 +570,10 @@ def extract_source(
     try:
         fallback_result = provider.complete(LLMRequest(
             model=model,
-            messages=[{"role": "user", "content": fallback_prompt}],
+            messages=[
+                {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user",   "content": fallback_user_payload},
+            ],
             response_model=LLMExtractionResponse,
             thinking_budget=_read_thinking_budget('extract_source'),
             max_output_tokens=32768,
@@ -710,17 +715,16 @@ def disambiguate_entities(
         if pair_kind == "concept"
         else _DISAMBIGUATION_SYSTEM_PROMPT
     )
-    prompt = (
-        f"{system_prompt}\n\n"
-        f"---\n\n"
-        f"Pairs to resolve:\n{pairs_json}"
-    )
+    user_payload = f"Pairs to resolve:\n{pairs_json}"
 
     provider = get_provider(model)
     try:
         result = provider.complete(LLMRequest(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_payload},
+            ],
             response_model=DisambiguationResponse,
             thinking_budget=_read_thinking_budget('disambiguate_entities'),
             max_output_tokens=2048,
@@ -1299,8 +1303,7 @@ def select_pages_for_query(
     if len(index_text) > _GEMINI_INPUT_TOKEN_CAP:
         index_text = index_text[:_GEMINI_INPUT_TOKEN_CAP]
 
-    prompt = (
-        f"{_SELECT_PAGES_SYSTEM_PROMPT}\n\n"
+    user_payload = (
         f"Wiki index:\n{index_text}\n\n"
         f"Question: {question}"
     )
@@ -1309,7 +1312,10 @@ def select_pages_for_query(
     try:
         result = provider.complete(LLMRequest(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": _SELECT_PAGES_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_payload},
+            ],
             response_model=SelectPagesResponse,
             thinking_budget=_read_thinking_budget('select_pages_for_query'),
             max_output_tokens=1024,
