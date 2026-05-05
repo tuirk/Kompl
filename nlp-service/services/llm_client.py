@@ -120,6 +120,14 @@ def _get_model_prices(model: str) -> dict[str, float]:
 # the historical hardcode so existing behaviour is preserved as a safety net.
 _DEFAULT_MODEL = "gemini-2.5-flash"
 
+# Appended to every schema-bound system prompt. DeepSeek's json_object response
+# mode silently degrades to free-form text unless the literal word "json" is
+# present in the prompt; Gemini ignores the additional natural-language hint.
+_JSON_TRAILER = (
+    "\n\nReturn the response as a single json object matching the schema "
+    "described above. Do not include any text outside the json."
+)
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -504,7 +512,7 @@ Return JSON with one field:
 
 If no contradictions are found, return {"contradictions": []}.
 Do not hallucinate contradictions.
-"""
+""" + _JSON_TRAILER
 
 
 class Contradiction(BaseModel):
