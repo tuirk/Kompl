@@ -51,9 +51,10 @@ class LLMRequest:
         (e.g. ``"extract"``, ``"draft_page"``, ``"crossref"``).
     extra
         Provider-agnostic escape hatches:
-          ``"retry": bool`` — when False, skip the retry wrapper. Use for
-              draft_page / synthesize / digest whose outputs commit downstream
-              state and can't be safely re-executed after a partial response.
+          ``"retry": bool`` — when False, skip the retry wrapper but still
+              acquire the rate-limiter bucket. Use for draft_page /
+              synthesize / digest whose outputs commit downstream state
+              and can't be safely re-executed after a partial response.
           ``"force_json_mime": bool`` — request JSON mime-type without a
               Pydantic schema. Used by lint_scan, which json.loads() the
               response manually downstream.
