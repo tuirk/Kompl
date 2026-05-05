@@ -117,6 +117,114 @@ def test_get_provider_unknown_raises_value_error():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Per-provider extract-input cap (Phase 3 task 3.2)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_input_cap_for_gemini_returns_gemini_cap():
+    from services.llm_client import _extract_input_cap_for, _GEMINI_EXTRACT_INPUT_CAP
+
+    assert _extract_input_cap_for("gemini-2.5-flash") == _GEMINI_EXTRACT_INPUT_CAP
+    assert _extract_input_cap_for("gemini-2.5-pro") == _GEMINI_EXTRACT_INPUT_CAP
+    assert _extract_input_cap_for("gemini-2.5-flash-lite") == _GEMINI_EXTRACT_INPUT_CAP
+
+
+def test_extract_input_cap_for_deepseek_returns_deepseek_cap():
+    from services.llm_client import _extract_input_cap_for, _DEEPSEEK_INPUT_CHAR_CAP
+
+    assert _extract_input_cap_for("deepseek-v4-pro") == _DEEPSEEK_INPUT_CHAR_CAP
+    # Future DeepSeek SKUs would also fall through the prefix branch.
+    assert _extract_input_cap_for("deepseek-v5-something") == _DEEPSEEK_INPUT_CHAR_CAP
+
+
+def test_extract_input_cap_for_unknown_falls_back_to_gemini_cap():
+    """Unknown prefixes default to the tighter Gemini cap. Better to truncate
+    than to ship a bigger input on a provider whose limits we haven't
+    validated yet."""
+    from services.llm_client import _extract_input_cap_for, _GEMINI_EXTRACT_INPUT_CAP
+
+    assert _extract_input_cap_for("anthropic-claude-4-7") == _GEMINI_EXTRACT_INPUT_CAP
+
+
+# ---------------------------------------------------------------------------
+# Halved-input fallback gate (Phase 3 task 3.3)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_provider(call_log):
+    """Build a stub provider whose ``complete()`` always returns a parse
+    failure with finish_reason='MAX_TOKENS'. Records every call into
+    ``call_log`` so tests can assert how many times it was invoked.
+    """
+    from services.providers.base import LLMResult
+
+    class _FakeProvider:
+        name = "fake"
+
+        def complete(self, req):
+            call_log.append(req.step)
+            return LLMResult(
+                text='{"entities": [{"name": "x"',  # truncated mid-string
+                parsed=None,
+                parse_error=ValueError("truncated"),
+                usage={},
+                finish_reason="MAX_TOKENS",
+            )
+
+        def cost_usd(self, model, usage):
+            return 0.0
+
+    return _FakeProvider()
+
+
+def test_extract_halved_fallback_runs_on_gemini(monkeypatch):
+    """On gemini-* models with finish_reason=MAX_TOKENS and salvage failure,
+    extract_source retries once with halved input — provider.complete is
+    called twice (extract + extract-fallback)."""
+    from services import llm_client
+
+    log: list[str] = []
+    monkeypatch.setattr(llm_client, "get_provider", lambda m: _make_fake_provider(log))
+    monkeypatch.setattr(llm_client, "_salvage_extraction", lambda raw: None)
+
+    with pytest.raises(llm_client.LLMCompileError):
+        llm_client.extract_source(
+            source_id="s1",
+            markdown="x" * 1000,
+            ner_output={},
+            keyphrase_output=None,
+            tfidf_output=None,
+            model="gemini-2.5-flash",
+        )
+
+    assert log == ["extract", "extract-fallback"]
+
+
+def test_extract_halved_fallback_skipped_on_non_gemini(monkeypatch):
+    """For deepseek-* (or any non-gemini prefix), the halved-input fallback
+    must be skipped — only one provider.complete call is made and the
+    LLMCompileError surfaces the original parse error."""
+    from services import llm_client
+
+    log: list[str] = []
+    monkeypatch.setattr(llm_client, "get_provider", lambda m: _make_fake_provider(log))
+    monkeypatch.setattr(llm_client, "_salvage_extraction", lambda raw: None)
+
+    with pytest.raises(llm_client.LLMCompileError) as exc:
+        llm_client.extract_source(
+            source_id="s1",
+            markdown="x" * 1000,
+            ner_output={},
+            keyphrase_output=None,
+            tfidf_output=None,
+            model="deepseek-v4-pro",
+        )
+
+    assert log == ["extract"], "halved-fallback must NOT run on deepseek-*"
+    assert "extract_llm_parse_failed" in str(exc.value)
+
+
 def test_cost_cap_error_message_says_llm_not_gemini(monkeypatch, tmp_path):
     """The cap error message generalises now that DeepSeek is on the way.
 

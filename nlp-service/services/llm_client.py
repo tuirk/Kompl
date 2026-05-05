@@ -49,6 +49,22 @@ _GEMINI_INPUT_TOKEN_CAP = int(os.environ.get("GEMINI_INPUT_TOKEN_CAP", "128000")
 # over-long input produces a JSON list that exceeds max_output_tokens (32K) and
 # truncates mid-string. Cap extraction inputs tighter. ~50K chars ≈ 12.5K tokens.
 _GEMINI_EXTRACT_INPUT_CAP = int(os.environ.get("GEMINI_EXTRACT_INPUT_CAP", "50000"))
+# DeepSeek extracted clean from a 95K-char source in the spike where Gemini
+# truncates mid-string at 50K. Higher cap gives DeepSeek operators richer
+# extraction on long sources without changing Gemini's tighter limit.
+_DEEPSEEK_INPUT_CHAR_CAP = int(os.environ.get("DEEPSEEK_INPUT_CHAR_CAP", "200000"))
+
+
+def _extract_input_cap_for(model: str) -> int:
+    """Char cap on the source-document input passed to ``extract_source``.
+
+    Gemini hits MAX_TOKENS in structured output around 50K input chars
+    (the 2.5 Flash repetition-loop bug); DeepSeek empirically handles 95K
+    clean. Each provider gets the cap matching its real-world capacity.
+    """
+    if model.startswith("deepseek-"):
+        return _DEEPSEEK_INPUT_CHAR_CAP
+    return _GEMINI_EXTRACT_INPUT_CAP
 # Fallback when /data/llm-config.json is missing (first boot, dev env, test).
 # Runtime cap comes from _read_daily_cap_usd() below; Next.js writes the file
 # whenever the setting is changed in the Settings UI.
@@ -475,8 +491,9 @@ def extract_source(
     """
     import json as _json
 
-    if len(markdown) > _GEMINI_EXTRACT_INPUT_CAP:
-        truncated = markdown[:_GEMINI_EXTRACT_INPUT_CAP]
+    input_cap = _extract_input_cap_for(model)
+    if len(markdown) > input_cap:
+        truncated = markdown[:input_cap]
         last_para = truncated.rfind("\n\n")
         markdown = truncated[:last_para] if last_para > 0 else truncated
 
@@ -543,6 +560,13 @@ def extract_source(
     if result.finish_reason != "MAX_TOKENS":
         # Not a truncation — parse error is something else (schema drift,
         # malformed response). No point retrying with halved input.
+        raise LLMCompileError(f"extract_llm_parse_failed: {first_err}") from first_err
+
+    if not model.startswith("gemini-"):
+        # The halved-input fallback is a Gemini-bug-specific mitigation for
+        # the 2.5 Flash structured-output repetition loop. DeepSeek (and any
+        # other provider) doesn't share the pathology; surface the original
+        # parse error rather than doubling cost on an unvalidated retry path.
         raise LLMCompileError(f"extract_llm_parse_failed: {first_err}") from first_err
 
     print(
