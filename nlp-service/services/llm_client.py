@@ -124,10 +124,12 @@ _CONFIG_FILE = Path(os.environ.get("DATA_ROOT", "/data")) / "llm-config.json"
 # requiring a service restart.
 _cap_cache: dict[str, Any] = {"value": None, "read_at": 0.0}
 
-# Per-call-site thinking_budget defaults — must match
-# DEFAULT_THINKING_BUDGETS in app/src/lib/db.ts. Source of truth at runtime is
-# /data/llm-config.json; this dict is the fallback when the file is missing
-# (first boot, dev env, test) or a key is absent.
+# Per-call-site thinking_budget values. Hardcoded design-intent: each task
+# was tuned (against Gemini 2.5 Flash docs at the time) to balance reasoning
+# quality against cost. The Phase 8 retirement removed the user-tunable UI
+# surface (settings table row + Settings page section + JSON-mirror read);
+# values stay encoded here as the canonical reference. KeyError on an unknown
+# call_site so a typo surfaces immediately rather than silently using 0.
 _DEFAULT_THINKING_BUDGETS: dict[str, int] = {
     "extract_source": 512,
     "draft_page": 1024,
@@ -141,39 +143,12 @@ _DEFAULT_THINKING_BUDGETS: dict[str, int] = {
     "generate_digest": 1024,
 }
 
-# 30 s mirrors the daily-cap cache window — Settings UI changes take effect
-# within half a minute without a service restart.
-_thinking_cache: dict[str, Any] = {"value": None, "read_at": 0.0}
-
 
 def _read_thinking_budget(call_site: str) -> int:
-    """Return the configured thinking_budget for `call_site`.
-
-    Reads /data/llm-config.json's `thinking_budgets` map, cached for 30 s.
-    Falls back to _DEFAULT_THINKING_BUDGETS[call_site] when the file is
-    missing, malformed, the key is absent, or the value isn't a valid int.
-    Unknown call_site names raise KeyError so a typo at the call site
-    surfaces immediately rather than silently using 0.
-    """
+    """Return the hardcoded thinking_budget for `call_site`."""
     if call_site not in _DEFAULT_THINKING_BUDGETS:
         raise KeyError(f"unknown thinking_budget call_site: {call_site}")
-    now = time.time()
-    if _thinking_cache["value"] is not None and now - _thinking_cache["read_at"] < 30:
-        budgets = _thinking_cache["value"]
-    else:
-        budgets = dict(_DEFAULT_THINKING_BUDGETS)
-        try:
-            data = json.loads(_CONFIG_FILE.read_text())
-            tb = data.get("thinking_budgets") if isinstance(data, dict) else None
-            if isinstance(tb, dict):
-                for k, v in tb.items():
-                    if k in _DEFAULT_THINKING_BUDGETS and isinstance(v, int) and -1 <= v <= 24576:
-                        budgets[k] = v
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            pass
-        _thinking_cache["value"] = budgets
-        _thinking_cache["read_at"] = now
-    return budgets[call_site]
+    return _DEFAULT_THINKING_BUDGETS[call_site]
 
 
 def _read_daily_cap_usd() -> float:
