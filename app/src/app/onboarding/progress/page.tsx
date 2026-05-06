@@ -656,24 +656,41 @@ function ProgressPageInner() {
                     </div>
                   </div>
                 ) : (
-                  /* Done / failed / pending — single line */
-                  <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{
-                      fontFamily: 'var(--font-heading)', fontWeight: 500,
-                      fontSize: isStepDone ? 16 : 14,
-                      lineHeight: isStepDone ? '24px' : '20px',
-                      color: isStepFailed ? 'var(--danger)' : 'var(--fg)',
-                      opacity: isStepDone ? 0.6 : 1,
-                    }}>
-                      {step.label}
-                    </span>
-                    {isStepDone && (
+                  /* Done / failed / pending — single line + optional detail row */
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{
-                        fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
-                        letterSpacing: '-0.5px', textTransform: 'uppercase', color: 'var(--fg-subtle)',
-                        flexShrink: 0,
+                        fontFamily: 'var(--font-heading)', fontWeight: 500,
+                        fontSize: isStepDone ? 16 : 14,
+                        lineHeight: isStepDone ? '24px' : '20px',
+                        color: isStepFailed ? 'var(--danger)' : 'var(--fg)',
+                        opacity: isStepDone ? 0.6 : 1,
                       }}>
-                        Done
+                        {step.label}
+                      </span>
+                      {isStepDone && (
+                        <span style={{
+                          fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                          letterSpacing: '-0.5px', textTransform: 'uppercase', color: 'var(--fg-subtle)',
+                          flexShrink: 0,
+                        }}>
+                          Done
+                        </span>
+                      )}
+                    </div>
+                    {/* Render detail on done/failed rows. Active row already has its own
+                        detail block above; pending rows have nothing to show. */}
+                    {detail && (isStepDone || isStepFailed) && (
+                      <span style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 11,
+                        lineHeight: '16px',
+                        color: isStepFailed ? 'var(--danger)' : 'var(--fg-subtle)',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        opacity: isStepDone ? 0.7 : 1,
+                      }}>
+                        {detail}
                       </span>
                     )}
                   </div>
