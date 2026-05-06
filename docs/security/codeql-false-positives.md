@@ -106,4 +106,4 @@ Re-run /investigate against this list if any of the following changes:
   #21, #22 from the first scan).
 - Commit `e5305cd` — SSRF hardening with IP-pinning.
 - `docs/security/launch-readiness.md` (planned) — full audit report and the
-  remaining launch-blocker items for always-on deployments.
+  remaining launch-blocker items.

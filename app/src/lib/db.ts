@@ -2892,7 +2892,7 @@ export function getStaleSources(thresholdDays: number): StaleSourceRow[] {
 // ============================================================================
 
 /**
- * Whether the scheduled lint pass (n8n Mon 11:30; 36h startup hook on personal-device) is enabled.
+ * Whether the scheduled lint pass (36h startup hook fired by `kompl start`) is enabled.
  * Defaults to true. When false, lint-pass/route.ts returns early immediately.
  * Manual trigger in settings bypasses this flag.
  */
@@ -2902,19 +2902,6 @@ export function getLintEnabled(): boolean {
 
 export function setLintEnabled(value: boolean): void {
   setSetting('lint_enabled', value ? '1' : '0');
-}
-
-// ---------------------------------------------------------------------------
-// Deployment mode
-// ---------------------------------------------------------------------------
-
-export function getDeploymentMode(): 'personal-device' | 'always-on' {
-  const v = getSetting('deployment_mode');
-  return v === 'always-on' ? 'always-on' : 'personal-device';
-}
-
-export function setDeploymentMode(v: 'personal-device' | 'always-on'): void {
-  setSetting('deployment_mode', v);
 }
 
 // ---------------------------------------------------------------------------

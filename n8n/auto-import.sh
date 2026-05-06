@@ -34,6 +34,14 @@ if [ -d /credentials ]; then
   n8n import:credentials --separate --input=/credentials || echo "[auto-import] credentials import failed (non-fatal)"
 fi
 
+# Legacy cleanup: workflows removed from /workflows must also be deleted from
+# n8n's SQLite state (n8n-data volume) — list:workflow + publish:workflow would
+# otherwise re-activate them. Idempotent: silent no-op once the workflow is
+# already gone. Removed entries can be safely deleted from this list one full
+# release cycle after the corresponding workflow file was removed from /workflows.
+echo "[auto-import] purging legacy workflows"
+n8n delete:workflow --id=kompl-lint-wiki >/dev/null 2>&1 || true
+
 # Publish (activate) each workflow. n8n 2.x import deactivates workflows on
 # re-import; we re-activate them here so webhook triggers fire on the next
 # `n8n start`.

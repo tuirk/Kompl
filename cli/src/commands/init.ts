@@ -33,24 +33,8 @@ export async function initCommand(): Promise<void> {
     initial: 3000,
   })
 
-  const { deploymentMode } = await prompts({
-    type: 'select',
-    name: 'deploymentMode',
-    message: 'How is this Kompl instance running?',
-    choices: [
-      { title: 'Personal device  (laptop/desktop — may be off)', value: 'personal-device' },
-      { title: 'Always-on server (VPS, Railway, Raspberry Pi)', value: 'always-on' },
-    ],
-    initial: 0,
-  })
-
-  if (deploymentMode === undefined) {
-    console.log(pc.yellow('Aborted.'))
-    process.exit(0)
-  }
-
   const resolvedDir = path.resolve(projectDir)
-  writeConfig({ projectDir: resolvedDir, port: port ?? 3000, deploymentMode })
+  writeConfig({ projectDir: resolvedDir, port: port ?? 3000 })
 
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
   const envPath = path.join(resolvedDir, '.env')
@@ -62,6 +46,5 @@ export async function initCommand(): Promise<void> {
     fs.appendFileSync(envPath, `${prefix}KOMPL_TIMEZONE=${timezone}\n`, 'utf8')
   }
 
-  const modeLabel = deploymentMode === 'always-on' ? 'Always-on server' : 'Personal device'
-  console.log(pc.green(`\n✓ Config saved. Timezone: ${pc.bold(timezone)}. Mode: ${pc.bold(modeLabel)}. Run ${pc.bold('kompl start')} to launch Kompl.\n`))
+  console.log(pc.green(`\n✓ Config saved. Timezone: ${pc.bold(timezone)}. Run ${pc.bold('kompl start')} to launch Kompl.\n`))
 }
