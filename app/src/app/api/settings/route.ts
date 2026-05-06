@@ -15,7 +15,6 @@ import {
   getDigestSettings, setDigestSettings,
   getLintEnabled, setLintEnabled, getLastLintResult,
   getStaleThresholdDays, setStaleThresholdDays,
-  getDeploymentMode, setDeploymentMode,
   getLastLintAt, getLastBackupAt,
   getMinSourceChars, setMinSourceChars,
   getMinDraftChars, setMinDraftChars,
@@ -40,7 +39,6 @@ function buildResponse() {
     digest_telegram_chat_id: digest.telegram_chat_id,
     lint_enabled: getLintEnabled(),
     lint_last_result: getLastLintResult(),
-    deployment_mode: getDeploymentMode(),
     last_lint_at: getLastLintAt(),
     last_backup_at: getLastBackupAt(),
     min_source_chars: getMinSourceChars(),
@@ -68,7 +66,6 @@ export async function POST(request: Request) {
     digest_telegram_token?: string;
     digest_telegram_chat_id?: string;
     lint_enabled?: boolean;
-    deployment_mode?: 'personal-device' | 'always-on';
     min_source_chars?: number;
     min_draft_chars?: number;
     entity_promotion_threshold?: number;
@@ -84,7 +81,7 @@ export async function POST(request: Request) {
     'auto_approve', 'related_pages_min_sources',
     'stale_threshold_days',
     'digest_enabled', 'digest_telegram_token', 'digest_telegram_chat_id',
-    'lint_enabled', 'deployment_mode',
+    'lint_enabled',
     'min_source_chars', 'min_draft_chars',
     'entity_promotion_threshold',
     'dossier_max_sources', 'dossier_min_score',
@@ -150,16 +147,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'lint_enabled must be a boolean' }, { status: 422 });
     }
     setLintEnabled(body.lint_enabled);
-  }
-
-  if (body.deployment_mode !== undefined) {
-    if (body.deployment_mode !== 'personal-device' && body.deployment_mode !== 'always-on') {
-      return NextResponse.json(
-        { error: "deployment_mode must be 'personal-device' or 'always-on'" },
-        { status: 422 },
-      );
-    }
-    setDeploymentMode(body.deployment_mode);
   }
 
   if (body.min_source_chars !== undefined) {
