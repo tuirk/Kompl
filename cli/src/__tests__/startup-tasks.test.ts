@@ -11,14 +11,12 @@ import { runStartupTasks } from '../startup-tasks'
 type MockResponse = Partial<Response> & { ok: boolean; status?: number; json?: () => Promise<unknown> }
 
 function makeSettings(overrides: {
-  deployment_mode?: string
   last_lint_at?: string | null
   last_backup_at?: string | null
 } = {}): MockResponse {
   return {
     ok: true,
     json: async () => ({
-      deployment_mode: 'personal-device',
       last_lint_at: null,
       last_backup_at: new Date().toISOString(), // not overdue
       ...overrides,
@@ -26,7 +24,7 @@ function makeSettings(overrides: {
   }
 }
 
-const baseConfig = { port: 3000, projectDir: '/tmp/kompl', deploymentMode: 'personal-device' as const }
+const baseConfig = { port: 3000, projectDir: '/tmp/kompl' }
 
 let fetchMock: jest.Mock
 let stdoutSpy: jest.SpyInstance
@@ -73,16 +71,28 @@ it('does NOT show false success when lint returns JSON error body (regression Fi
   expect(output).not.toContain('undefinedms')
 })
 
-// ── mode check ────────────────────────────────────────────────────────────────
+// ── no-gate regression ───────────────────────────────────────────────────────
 
-it('skips lint and backup entirely when deployment_mode is always-on', async () => {
-  fetchMock.mockResolvedValueOnce(makeSettings({ deployment_mode: 'always-on', last_lint_at: null }))
+it('runs lint and backup even when settings response has no deployment_mode key (regression: do not re-introduce the gate)', async () => {
+  // The deployment_mode toggle was removed in 2026-05-06 (chore/strip-deployment-mode).
+  // This test guards against accidentally re-adding an early-return gate that branches
+  // on the absent key — runStartupTasks must always proceed to the 36h overdue checks.
+  fetchMock
+    .mockResolvedValueOnce(makeSettings({ last_lint_at: null, last_backup_at: null }))
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ skipped: false, run_duration_ms: 42 }),
+    } as MockResponse)
+    .mockResolvedValueOnce({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as unknown as MockResponse)
 
   await runStartupTasks(baseConfig)
 
-  // Only the settings fetch should have fired — no lint, no backup
-  expect(fetchMock).toHaveBeenCalledTimes(1)
-  expect(fetchMock.mock.calls[0][0]).toContain('/api/settings')
+  // Settings fetch + lint POST + export GET = three calls. If a gate were re-added,
+  // we'd see exactly one call (settings only).
+  expect(fetchMock).toHaveBeenCalledTimes(3)
 })
 
 it('skips lint and backup when settings fetch fails', async () => {

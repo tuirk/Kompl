@@ -71,10 +71,6 @@ Either path: the script handles everything — creates your config, asks for the
 
 > Your API keys land in `.env` at the repo root. That file is gitignored — never commit it.
 
-During setup you'll be asked how this instance is running: **personal device** (laptop/desktop that may be off) or **always-on server** (VPS, Railway, Raspberry Pi). This controls how scheduled jobs — lint, digest, and local backup — are triggered. Personal-device mode fires them on `kompl start` so nothing is skipped if your machine was off at the scheduled time; always-on mode relies on n8n's built-in cron schedule.
-
-> *⚠️ This mode toggle ships as a demo — expect rough edges, especially in the always-on server path.*
-
 > **First start takes 5–10 minutes** — Docker is building images (~2 GB on first start) and downloading the local AI model from HuggingFace. Make a coffee. Subsequent starts take ~15 seconds.
 
 ## After setup
@@ -198,7 +194,7 @@ To restore on a fresh instance: run setup, skip onboarding, go to Settings → *
 
 ### Automatic backup
 
-If you chose **personal-device** mode during setup, `kompl start` automatically saves a local backup to `~/.kompl/backups/kompl-backup.kompl.zip` (at most once every 36 hours). Settings shows when the last backup ran.
+`kompl start` automatically saves a local backup to `~/.kompl/backups/kompl-backup.kompl.zip` (at most once every 36 hours).
 
 > *⚠️ Auto-backup-on-start is an early feature, wired end-to-end but lacking regression tests on the start-time path. Flag any silent skips.*
 
@@ -224,12 +220,11 @@ kompl backup --schedule                               # register a weekly backup
 - Single-tenant only — no user accounts or access control. Don't expose to the public internet without your own auth layer.
 - Gemini is the only LLM provider. Anthropic and OpenAI-compatible providers are planned.
 - **Current connectors:** URLs (YouTube transcripts and GitHub READMEs included), file uploads (PDF, DOCX, PPTX, XLSX, TXT, MD, HTML), browser bookmarks, Twitter JSON export, Upnote, Apple Notes.
-- Personal-device vs always-on-server mode is a demo feature — the always-on server path hasn't been hardened yet.
 - No mobile app. The web UI works on mobile browsers but isn't optimized for small screens.
 
 ## Security
 
-Kompl is built for personal-device deployment behind a loopback or LAN. The security posture is calibrated for that model.
+Kompl runs on a personal computer behind a loopback or LAN. The security posture is calibrated for that model.
 
 **Hardening shipped (4-commit security pass, April 2026):**
 - SSRF protection on `/metadata/peek` — DNS-resolved IP pinning via httpx `sni_hostname` extension, scheme allowlist, cloud-metadata blocklist, manual redirect revalidation.
@@ -238,11 +233,9 @@ Kompl is built for personal-device deployment behind a loopback or LAN. The secu
 - Log-forging protection on compile pipeline log lines.
 - nlp-service port bound to `127.0.0.1` so the LAN cannot bypass the Next.js front door.
 
-**Open before public-internet (always-on / Railway) deployment:**
-- Markdown HTML output is not yet sanitized — Firecrawl-scraped content can carry XSS payloads. Personal-device users are exposed only to bookmarks they choose to ingest; multi-user/public deploys need DOMPurify in the render pipeline.
+**Known security debt:**
+- Markdown HTML output is not yet sanitized — Firecrawl-scraped content can carry XSS payloads. Even on a single-user install, an ingested bookmark can deliver a payload; needs DOMPurify in the render pipeline.
 - `/convert/url` does not yet share the SSRF gate that protects `/metadata/peek`.
-- No authentication layer — front the deployment with Cloudflare Access, Tailscale Funnel, or your own auth proxy.
-- CSP / X-Frame-Options / HSTS / Referrer-Policy headers not yet set.
 
 **CodeQL alerts.** Some `py/path-injection` and `js/path-injection` alerts re-fire on every push because CodeQL's taint tracker doesn't follow cross-function sanitizers. We dismiss these individually (rather than silencing in CodeQL config) so any genuinely new sink in those files surfaces for review. The audit trail and per-alert reasoning live at [docs/security/codeql-false-positives.md](docs/security/codeql-false-positives.md).
 

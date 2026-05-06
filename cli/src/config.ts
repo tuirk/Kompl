@@ -5,7 +5,6 @@ import path from 'path'
 export interface KomplConfig {
   projectDir: string
   port: number
-  deploymentMode: 'personal-device' | 'always-on'
 }
 
 const CONFIG_DIR = path.join(os.homedir(), '.kompl')
@@ -22,7 +21,7 @@ export function readConfig(): KomplConfig {
     )
   }
   const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))
-  return { deploymentMode: 'personal-device', ...raw } as KomplConfig
+  return raw as KomplConfig
 }
 
 export function writeConfig(config: KomplConfig): void {

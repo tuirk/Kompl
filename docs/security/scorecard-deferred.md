@@ -112,7 +112,7 @@ improvement at disproportionate maintenance cost for this project.
 | 62 | .github/workflows/integration-test.yml:67 — `pip install -r requirements.txt` |
 
 Re-evaluate when:
-- Migrating to a Railway / always-on deployment (supply-chain risk profile changes for hosted infra).
+- Migrating to a non-personal deployment target (supply-chain risk profile changes for hosted infra). [Currently out of roadmap; placeholder.]
 - Upstream PyPI compromise affects any pinned dependency.
 - The pip dependency surface shrinks below ~30 transitive deps.
 

@@ -17,7 +17,7 @@ jest.mock('../health', () => ({
   checkHealth: jest.fn(),
 }))
 jest.mock('../config', () => ({
-  readConfig: jest.fn(() => ({ port: 3000, projectDir: '/tmp/kompl', deploymentMode: 'personal-device' })),
+  readConfig: jest.fn(() => ({ port: 3000, projectDir: '/tmp/kompl' })),
 }))
 
 const mockFs = fs as jest.Mocked<typeof fs>

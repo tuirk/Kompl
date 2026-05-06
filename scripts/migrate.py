@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -419,6 +419,13 @@ MIGRATION_V20_SQL = """
 ALTER TABLE compile_progress ADD COLUMN compile_model TEXT;
 """
 
+# V21: purge the deployment_mode settings row. The personal-device vs always-on
+# toggle was removed in 2026-05-06 — Kompl now targets personal computers
+# exclusively. Idempotent: DELETE on a non-existent row is a no-op.
+MIGRATION_V21_SQL = """
+DELETE FROM settings WHERE key = 'deployment_mode';
+"""
+
 
 
 def migrate():
@@ -582,6 +589,10 @@ def migrate():
         }
         if "compile_model" not in existing_cols:
             conn.executescript(MIGRATION_V20_SQL)
+
+    if current < 21:
+        print("  applying migration v21 (purge deployment_mode settings row)...")
+        conn.executescript(MIGRATION_V21_SQL)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

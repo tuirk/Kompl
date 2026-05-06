@@ -133,18 +133,10 @@ async function main() {
   }
 
   // ── 5. Write ~/.kompl/config.json ──────────────────────────────────────────
-  const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout })
-  console.log('\n  How is this Kompl instance running?')
-  console.log('    1. Personal device  (laptop/desktop — may be off)  ' + dim('[default]'))
-  console.log('    2. Always-on server (VPS, Railway, Raspberry Pi)')
-  const modeAnswer = (await ask(rl2, '  Enter 1 or 2 [1]: ')).trim()
-  rl2.close()
-  const deploymentMode = modeAnswer === '2' ? 'always-on' : 'personal-device'
-
   const configDir  = path.join(os.homedir(), '.kompl')
   const configFile = path.join(configDir, 'config.json')
   fs.mkdirSync(configDir, { recursive: true })
-  fs.writeFileSync(configFile, JSON.stringify({ projectDir: ROOT, port: 3000, deploymentMode }, null, 2), 'utf8')
+  fs.writeFileSync(configFile, JSON.stringify({ projectDir: ROOT, port: 3000 }, null, 2), 'utf8')
   console.log('  CLI configured → ' + dim(configFile))
 
   // ── 5b. Write KOMPL_TIMEZONE to .env ───────────────────────────────────────

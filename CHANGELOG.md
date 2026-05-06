@@ -5,10 +5,29 @@ All notable changes to Kompl are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The application surface (Next.js API, CLI, MCP server, settings) follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The SQLite schema
-uses a separate monotonic version (currently `v20`); breaking schema changes
+uses a separate monotonic version (currently `v21`); breaking schema changes
 ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
+
+### Removed
+
+- **Deployment-mode toggle** (`personal-device` vs `always-on`). Kompl now
+  targets personal computers exclusively — the toggle, its CLI prompt
+  (`kompl init` / `setup.js`), the `/api/settings` GET/POST surface for
+  `deployment_mode`, the Settings page UI section, and the `runStartupTasks`
+  early-return gate are all gone. The 36h `kompl start` startup hook now
+  fires lint + local backup unconditionally on every install.
+- **n8n `lint-wiki.json` workflow** (Mon 11:30 cron + manual `/webhook/lint`).
+  The cron's only justification was always-on coverage; the universal
+  startup hook subsumes it. `n8n/auto-import.sh` gains an idempotent
+  `delete:workflow --id=kompl-lint-wiki` line so existing installs purge
+  the orphan from `n8n-data` SQLite on next restart.
+
+### Migration notes
+
+- **Schema v21**: `migrate.py` deletes the `deployment_mode` settings row
+  on first boot. Idempotent on installs that never had it.
 
 ## [0.1.0] — 2026-04-27
 
