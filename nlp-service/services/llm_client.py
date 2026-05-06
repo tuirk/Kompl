@@ -1670,3 +1670,28 @@ Keep it under 150 words. No markdown formatting — plain text with line breaks.
         raise LLMCompileError("digest_error: empty response text")
 
     return raw_text.strip()
+
+
+# ---------------------------------------------------------------------------
+# Finalize prompts with response-shape contracts
+# ---------------------------------------------------------------------------
+#
+# This block runs at module load. It MUST be after every Pydantic response
+# model is defined — the constants above end with `+ _JSON_TRAILER` and we
+# tack on the model-derived contract block here so the prompts stay readable
+# in their original locations. Do NOT move earlier in the file: forward refs
+# to the response models would crash the import.
+#
+# DeepSeek's json_object mode reads only the prompt text (response_model
+# schema is server-side ignored), so the wrapper-key anchor + filled-in
+# example below is what actually constrains output shape. Two production
+# drift variants ({"pairs":[...]}, bare list [{...}]) both came from the
+# same underspecified disambiguate prompt before this block was added.
+
+_LINT_SYSTEM_PROMPT = _LINT_SYSTEM_PROMPT + _format_response_contract(LintScanResponse)
+_EXTRACTION_SYSTEM_PROMPT = _EXTRACTION_SYSTEM_PROMPT + _format_response_contract(LLMExtractionResponse)
+_DISAMBIGUATION_SYSTEM_PROMPT = _DISAMBIGUATION_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
+_DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
+_CROSSREF_SYSTEM_PROMPT = _CROSSREF_SYSTEM_PROMPT + _format_response_contract(CrossrefResponse)
+_SELECT_PAGES_SYSTEM_PROMPT = _SELECT_PAGES_SYSTEM_PROMPT + _format_response_contract(SelectPagesResponse)
+_SYNTHESIZE_SYSTEM_PROMPT = _SYNTHESIZE_SYSTEM_PROMPT + _format_response_contract(SynthesizeResponse)
