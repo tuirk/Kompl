@@ -1359,6 +1359,69 @@ export function getPagePlansByStatus(sessionId: string, status: string): PagePla
     .all(sessionId, status) as PagePlanRow[];
 }
 
+/**
+ * All page_plans rows for the session, regardless of draft_status. Used by
+ * /api/compile/progress/items?step=plan|draft|crossref to render the per-page
+ * progress list in the expand-to-reveal UI.
+ */
+export function getAllPagePlansBySession(sessionId: string): PagePlanRow[] {
+  return openDb()
+    .prepare(
+      `SELECT plan_id, session_id, title, page_type, action,
+              source_ids, existing_page_id, related_plan_ids,
+              draft_content, draft_status, created_at
+         FROM page_plans
+        WHERE session_id = ?
+        ORDER BY created_at ASC`
+    )
+    .all(sessionId) as PagePlanRow[];
+}
+
+/**
+ * Sources for the session, with a synthetic `extracted` flag based on whether
+ * an extractions row exists. Backs /api/compile/progress/items?step=extract:
+ * the UI shows ✓ for extracted, ⏳ for pending, with no separate failed state
+ * here (per-source extract failures land in activity_log, not as a row state).
+ */
+export function getSourcesForSessionWithExtractStatus(
+  sessionId: string,
+): Array<{ source_id: string; title: string; extracted: boolean }> {
+  const rows = openDb()
+    .prepare(
+      `SELECT s.source_id, s.title,
+              CASE WHEN e.source_id IS NULL THEN 0 ELSE 1 END AS extracted
+         FROM sources s
+         LEFT JOIN extractions e ON e.source_id = s.source_id
+        WHERE s.onboarding_session_id = ?
+        ORDER BY s.date_ingested ASC`
+    )
+    .all(sessionId) as Array<{ source_id: string; title: string; extracted: 0 | 1 }>;
+  return rows.map((r) => ({
+    source_id: r.source_id,
+    title: r.title,
+    extracted: r.extracted === 1,
+  }));
+}
+
+/**
+ * Pages committed during the session — joined via the page_plans rows that
+ * belong to the session. Backs /api/compile/progress/items?step=commit.
+ */
+export function getPagesForSession(
+  sessionId: string,
+): Array<{ page_id: string; title: string }> {
+  return openDb()
+    .prepare(
+      `SELECT DISTINCT p.page_id, p.title
+         FROM pages p
+         JOIN page_plans pp ON pp.existing_page_id = p.page_id
+                            OR (pp.draft_status = 'committed' AND pp.title = p.title)
+        WHERE pp.session_id = ?
+        ORDER BY p.title ASC`
+    )
+    .all(sessionId) as Array<{ page_id: string; title: string }>;
+}
+
 export function updatePlanDraft(planId: string, draftContent: string): void {
   openDb()
     .prepare(
