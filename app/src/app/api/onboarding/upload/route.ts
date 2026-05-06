@@ -44,7 +44,11 @@ const ALLOWED_EXTENSIONS = new Set([
   '.wav',
 ]);
 
-const MAX_FILES_PER_REQUEST = 20;
+// 100 files × 50 MB each = 5 GB max body. Realistic uploads (1-5 MB
+// avg per PDF/doc) → 100-500 MB per request, which Node + Next.js
+// handle without strain. Bumped from 20 to support batch onboarding
+// for users with large source corpora (research-corpus use case).
+const MAX_FILES_PER_REQUEST = 100;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 
 function sanitizeFilename(name: string): string {

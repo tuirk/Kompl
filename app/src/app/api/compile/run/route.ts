@@ -311,29 +311,83 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   } else {
     updateCompileStep(sessionId, 'extract', 'running');
     let extractSucceeded = sources.length - unextracted.length;
-    for (const src of unextracted) {
-      try {
-        await callExtract(src.source_id, sessionId);
-        extractSucceeded++;
-      } catch (err) {
-        logActivity('extraction_failed', {
-          source_id: src.source_id,
-          details: { title: src.title, error: err instanceof Error ? err.message : String(err) },
-        });
+    let extractFailed = 0;
+
+    // Parallel extract: each call is 30-400s on DeepSeek (provider-side
+    // generation latency), and we use <1% of the tier RPM cap. Sequential
+    // for...of made wall-clock = N × 250s; concurrency=4 cuts that 4×.
+    //
+    // Concurrency knob: process.env.EXTRACT_CONCURRENCY (default 4). Higher
+    // = faster wall-clock, more in-flight memory + more risk of the daily $
+    // cap firing in a burst. 4 is conservative — Tier 1 RPM allows 800/min;
+    // 4 concurrent calls × ~0.25 RPS each = 1 RPS, plenty of headroom.
+    //
+    // JS single-threaded ⇒ extractSucceeded/extractFailed/queue.shift()
+    // are race-free without a lock. better-sqlite3 + WAL serializes the
+    // updateCompileStep writes; same for logActivity.
+    const EXTRACT_CONCURRENCY = Math.max(
+      1,
+      parseInt(process.env.EXTRACT_CONCURRENCY ?? '4', 10) || 4,
+    );
+    const queue = [...unextracted];
+    let cancelled = false;
+
+    async function extractWorker(): Promise<void> {
+      while (queue.length > 0 && !cancelled) {
+        const src = queue.shift();
+        if (!src) return;
+        try {
+          // Cancel check inside the worker so an in-flight extract finishes
+          // its current call but no new ones start.
+          assertNotCancelled(sessionId);
+        } catch {
+          cancelled = true;
+          return;
+        }
+        try {
+          await callExtract(src.source_id, sessionId);
+          extractSucceeded++;
+        } catch (err) {
+          extractFailed++;
+          logActivity('extraction_failed', {
+            source_id: src.source_id,
+            details: { title: src.title, error: err instanceof Error ? err.message : String(err) },
+          });
+        }
+        // Progress update after every completion (success or fail). Counter
+        // is JS-int-atomic; concurrent writes to compile_progress.steps land
+        // in WAL serially. Last-write-wins on the detail string is fine —
+        // each writer has the same source-of-truth (succeeded count).
+        updateCompileStep(
+          sessionId,
+          'extract',
+          'running',
+          `${extractSucceeded}/${sources.length} sources extracted`,
+        );
       }
-      updateCompileStep(
-        sessionId,
-        'extract',
-        'running',
-        `${extractSucceeded}/${sources.length} sources extracted`
-      );
+    }
+
+    await Promise.all(
+      Array.from({ length: Math.min(EXTRACT_CONCURRENCY, unextracted.length) }, () =>
+        extractWorker(),
+      ),
+    );
+
+    if (cancelled) {
+      // Cancellation already wrote the cancelled status via cancel route;
+      // bail out without overwriting the step state.
+      assertNotCancelled(sessionId);
     }
     if (extractSucceeded === 0) {
       updateCompileStep(sessionId, 'extract', 'failed', `0/${sources.length} sources extracted`);
       failCompileProgress(sessionId, 'All sources failed extraction');
       return;
     }
-    updateCompileStep(sessionId, 'extract', 'done', `${extractSucceeded}/${sources.length} sources extracted`);
+    const detail =
+      extractFailed > 0
+        ? `${extractSucceeded}/${sources.length} sources extracted (${extractFailed} failed)`
+        : `${extractSucceeded}/${sources.length} sources extracted`;
+    updateCompileStep(sessionId, 'extract', 'done', detail);
   }
   assertNotCancelled(sessionId);
 
