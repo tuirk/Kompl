@@ -149,7 +149,7 @@ async function callDisambiguate(
       pairs,
       ...(compileModel ? { compile_model: compileModel } : {}),
     }),
-    signal: AbortSignal.timeout(120_000), // LLM call — allow 2 min
+    signal: AbortSignal.timeout(600_000), // 10 min — disambiguate batches up to 10 pairs; DeepSeek can run ~200-400s per call on dense pairs. 120s (prior value) was Gemini-only sizing.
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');

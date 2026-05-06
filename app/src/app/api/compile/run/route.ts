@@ -96,7 +96,9 @@ async function callExtract(sourceId: string, sessionId: string): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_id: sourceId }),
-    signal: AbortSignal.timeout(180_000),
+    // 660s = inner extract LLM (600s) + 60s margin for NER/keyphrase/handler I/O.
+    // Prior 180s aborted the extract step before the inner 300s LLM ever fired.
+    signal: AbortSignal.timeout(660_000),
   });
   await throwOnError('extract', res, sessionId);
 }
@@ -106,7 +108,8 @@ async function callResolve(sessionId: string): Promise<{ canonical_entities: unk
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
-    signal: AbortSignal.timeout(180_000),
+    // 660s = inner disambiguate LLM (600s) + 60s margin. Prior 180s aborted before the inner LLM finished on DeepSeek.
+    signal: AbortSignal.timeout(660_000),
   });
   await throwOnError('resolve', res, sessionId);
   const parsed = await res.json() as { canonical_entities?: unknown[]; canonical_concepts?: unknown[] };
@@ -193,7 +196,8 @@ async function callSchema(sessionId: string): Promise<unknown> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
-    signal: AbortSignal.timeout(120_000),
+    // 660s = inner generate-schema LLM (600s) + 60s margin. Prior 120s aborted before inner LLM finished on DeepSeek.
+    signal: AbortSignal.timeout(660_000),
   });
   await throwOnError('schema', res, sessionId);
   return res.json();

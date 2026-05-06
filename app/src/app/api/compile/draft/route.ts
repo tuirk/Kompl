@@ -95,7 +95,7 @@ async function callDraftPage(
       existing_categories: existingCategories ?? [],
       ...(compileModel ? { compile_model: compileModel } : {}),
     }),
-    signal: AbortSignal.timeout(180_000), // 3 min — Gemini thinking can be slow
+    signal: AbortSignal.timeout(600_000), // 10 min — DeepSeek draft can match extract latency on dense sources. Gemini thinking adds margin on top. Same 600s budget as extract/resolve/schema for symmetry.
   });
 
   if (!res.ok) {

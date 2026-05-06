@@ -65,7 +65,7 @@ async function callDraftPage(
       existing_categories: existingCategories,
       compile_model: compileModel,
     }),
-    signal: AbortSignal.timeout(180_000), // 3 min — Gemini thinking can be slow
+    signal: AbortSignal.timeout(600_000), // 10 min — recompile-on-source-delete runs an extract LLM call. DeepSeek can take 200-400s on dense sources. 180s (prior) was Gemini-only sizing.
   });
 
   if (!res.ok) {
