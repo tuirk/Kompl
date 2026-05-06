@@ -62,6 +62,7 @@ npm-debug.log*
 
 # Internal docs (local only — not for public repo)
 docs/spec/
+docs/plans/
 docs/wiki-design-points.md
 docs/kompl-spec.md
 docs/launch/
