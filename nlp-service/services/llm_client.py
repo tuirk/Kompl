@@ -83,6 +83,146 @@ _JSON_TRAILER = (
     "described above. Do not include any text outside the json."
 )
 
+
+# ---------------------------------------------------------------------------
+# Response-shape contract helper
+# ---------------------------------------------------------------------------
+#
+# Builds a 4-layer JSON-shape contract block from a Pydantic response model:
+#   1. Schema  — literal shape with field names, types, Literal enum lists,
+#                nullability marked
+#   2. Example — one filled-in canonical instance with placeholder values
+#   3. Rules   — explicit "keys MUST match, top-level wrapper MUST be object"
+#   4. Verify  — closing self-verification instruction
+#
+# Convergent industry pattern (BAML schema-aligned parsing, OpenAI structured
+# outputs guide, Promptfoo evaluate-json) — measurably reduces drift on
+# DeepSeek's json_object mode where response_model is server-side ignored.
+#
+# Output is appended AFTER _JSON_TRAILER, never replacing it: DeepSeek requires
+# the literal "json" keyword in the prompt to enable json_object mode.
+
+
+def _resolve_ref(ref: str, defs: dict) -> dict:
+    """Resolve a JSON-Schema $ref like '#/$defs/Foo' to its definition."""
+    name = ref.split("/")[-1]
+    return defs.get(name, {})
+
+
+def _render_schema_shape(node: dict, defs: dict, indent: int = 0) -> str:
+    """Render a JSON Schema node as a literal type-placeholder shape."""
+    if "$ref" in node:
+        return _render_schema_shape(_resolve_ref(node["$ref"], defs), defs, indent)
+
+    # Pydantic surfaces Optional[X] as anyOf with a `null` member.
+    if "anyOf" in node:
+        members = node["anyOf"]
+        is_nullable = any(m.get("type") == "null" for m in members)
+        non_null = [m for m in members if m.get("type") != "null"]
+        if non_null and is_nullable:
+            inner = _render_schema_shape(non_null[0], defs, indent)
+            return f"{inner.rstrip()} or null"
+        return _render_schema_shape(
+            non_null[0] if non_null else members[0], defs, indent
+        )
+
+    t = node.get("type")
+    pad = "  " * indent
+
+    if t == "object":
+        props = node.get("properties", {})
+        if not props:
+            return "{}"
+        lines = ["{"]
+        for key, child in props.items():
+            child_rendered = _render_schema_shape(child, defs, indent + 1)
+            lines.append(f"{pad}  \"{key}\": {child_rendered},")
+        if lines[-1].endswith(","):
+            lines[-1] = lines[-1][:-1]
+        lines.append(f"{pad}}}")
+        return "\n".join(lines)
+
+    if t == "array":
+        items = node.get("items", {})
+        item_rendered = _render_schema_shape(items, defs, indent + 1)
+        return f"[\n{pad}  {item_rendered}\n{pad}]"
+
+    if "enum" in node:
+        opts = " | ".join(repr(v) for v in node["enum"])
+        return f"<one of: {opts}>"
+    if t == "string":
+        return "<string>"
+    if t == "integer":
+        return "<integer>"
+    if t == "number":
+        return "<number>"
+    if t == "boolean":
+        return "<true | false>"
+    if t == "null":
+        return "null"
+    return "<value>"
+
+
+def _render_schema_example(node: dict, defs: dict, depth: int = 0):
+    """Render a canonical example value — concrete placeholders, not types."""
+    if "$ref" in node:
+        return _render_schema_example(_resolve_ref(node["$ref"], defs), defs, depth)
+    if "anyOf" in node:
+        non_null = [m for m in node["anyOf"] if m.get("type") != "null"]
+        return _render_schema_example(
+            non_null[0] if non_null else node["anyOf"][0], defs, depth
+        )
+
+    t = node.get("type")
+    if t == "object":
+        props = node.get("properties", {})
+        return {key: _render_schema_example(child, defs, depth + 1) for key, child in props.items()}
+    if t == "array":
+        # One example item — keep prompts compact.
+        return [_render_schema_example(node.get("items", {}), defs, depth + 1)]
+    if "enum" in node:
+        return node["enum"][0]
+    if t == "string":
+        return "example string"
+    if t == "integer":
+        return 1
+    if t == "number":
+        return 1.0
+    if t == "boolean":
+        return True
+    if t == "null":
+        return None
+    return None
+
+
+def _format_response_contract(model_class) -> str:
+    """Render the 4-layer JSON-shape contract block for a Pydantic model.
+
+    Layers (schema, example, rules, self-verify) are derived mechanically
+    from model.model_json_schema(); no hand-rolled examples per call site.
+    """
+    import json as _json
+
+    schema = model_class.model_json_schema()
+    defs = schema.get("$defs", {})
+    rendered_shape = _render_schema_shape(schema, defs, indent=0)
+    rendered_example = _json.dumps(
+        _render_schema_example(schema, defs, depth=0), indent=2
+    )
+
+    return (
+        "\n\n"
+        "Return JSON shaped exactly like this. Keys MUST match exactly.\n"
+        "Top-level wrapper MUST be a JSON object, not a list.\n"
+        "Do not add, rename, or remove fields.\n\n"
+        "Schema:\n"
+        f"{rendered_shape}\n\n"
+        "Example (use this shape with your real values, not these placeholders):\n"
+        f"{rendered_example}\n\n"
+        "Before returning, verify your output matches the shape above."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
