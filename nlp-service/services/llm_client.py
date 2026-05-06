@@ -240,6 +240,49 @@ class LLMCompileError(Exception):
     """Raised when the LLM call succeeds but the response cannot be parsed."""
 
 
+def _parse_failure_tail(
+    step: str,
+    expected_wrapper: str,
+    raw_text: str | None,
+) -> str:
+    """Build the structured tail consumed by /api/compile/progress/events.
+
+    Output shape:
+      parse_failed: step=<step>: expected_wrapper=<key>, got_type=<dict|list|other>,
+      got_keys=[...], raw_excerpt='<first 200 chars>'
+
+    Phase C (progress UI expand-to-reveal) reads this tail to show users
+    the exact wrapper drift inline. Without it, the same information
+    lives only in docker logs.
+    """
+    import json as _json
+
+    got_type = "unknown"
+    got_keys: list[str] = []
+    if raw_text:
+        try:
+            parsed = _json.loads(raw_text)
+            if isinstance(parsed, dict):
+                got_type = "dict"
+                got_keys = list(parsed.keys())[:10]
+            elif isinstance(parsed, list):
+                got_type = "list"
+            elif parsed is None:
+                got_type = "null"
+            else:
+                got_type = type(parsed).__name__
+        except Exception:
+            got_type = "non-json"
+    excerpt = (raw_text or "")[:200].replace("\n", " ")
+    return (
+        f"parse_failed: step={step}: "
+        f"expected_wrapper={expected_wrapper}, "
+        f"got_type={got_type}, "
+        f"got_keys={got_keys!r}, "
+        f"raw_excerpt={excerpt!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pydantic output models (contract 5 shapes)
 # ---------------------------------------------------------------------------
@@ -492,7 +535,12 @@ def lint_scan(pages: list[str], model: str = _DEFAULT_MODEL) -> LintScanResponse
         ]
         return LintScanResponse(contradictions=contras)
     except Exception as e:
-        raise LLMCompileError(f"lint_scan_parse_failed: {e}") from e
+        raise LLMCompileError(
+            f"lint_scan_parse_failed: {e}; "
+            + _parse_failure_tail(
+                step="lint", expected_wrapper="contradictions", raw_text=raw_text,
+            )
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -680,14 +728,24 @@ def extract_source(
     if result.finish_reason != "MAX_TOKENS":
         # Not a truncation — parse error is something else (schema drift,
         # malformed response). No point retrying with halved input.
-        raise LLMCompileError(f"extract_llm_parse_failed: {first_err}") from first_err
+        raise LLMCompileError(
+            f"extract_llm_parse_failed: {first_err}; "
+            + _parse_failure_tail(
+                step="extract", expected_wrapper="entities", raw_text=raw_text,
+            )
+        ) from first_err
 
     if not model.startswith("gemini-"):
         # The halved-input fallback is a Gemini-bug-specific mitigation for
         # the 2.5 Flash structured-output repetition loop. DeepSeek (and any
         # other provider) doesn't share the pathology; surface the original
         # parse error rather than doubling cost on an unvalidated retry path.
-        raise LLMCompileError(f"extract_llm_parse_failed: {first_err}") from first_err
+        raise LLMCompileError(
+            f"extract_llm_parse_failed: {first_err}; "
+            + _parse_failure_tail(
+                step="extract", expected_wrapper="entities", raw_text=raw_text,
+            )
+        ) from first_err
 
     print(
         f"[extract] MAX_TOKENS truncation + salvage failed — "
@@ -736,7 +794,10 @@ def extract_source(
     if not fallback_raw:
         raise LLMCompileError(
             f"extract_llm_parse_failed_after_fallback: "
-            f"first={first_err}; fallback=empty"
+            f"first={first_err}; fallback=empty; "
+            + _parse_failure_tail(
+                step="extract-fallback", expected_wrapper="entities", raw_text=fallback_raw,
+            )
         ) from first_err
 
     if fallback_result.parsed is not None:
@@ -753,7 +814,10 @@ def extract_source(
         return salvaged_fallback
     raise LLMCompileError(
         f"extract_llm_parse_failed_after_fallback: "
-        f"first={first_err}; second={fallback_parse_err}"
+        f"first={first_err}; second={fallback_parse_err}; "
+        + _parse_failure_tail(
+            step="extract-fallback", expected_wrapper="entities", raw_text=fallback_raw,
+        )
     ) from first_err
 
 
@@ -886,7 +950,12 @@ def disambiguate_entities(
 
     if result.parsed is not None:
         return result.parsed  # type: ignore[return-value]
-    raise LLMCompileError(f"disambiguate_llm_parse_failed: {result.parse_error}") from result.parse_error
+    raise LLMCompileError(
+        f"disambiguate_llm_parse_failed: {result.parse_error}; "
+        + _parse_failure_tail(
+            step="disambiguate", expected_wrapper="results", raw_text=raw_text,
+        )
+    ) from result.parse_error
 
 
 # ---------------------------------------------------------------------------
@@ -1260,7 +1329,12 @@ def crossref_pages(pages: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> 
 
     if result.parsed is not None:
         return result.parsed  # type: ignore[return-value]
-    raise LLMCompileError(f"crossref_parse_failed: {result.parse_error}") from result.parse_error
+    raise LLMCompileError(
+        f"crossref_parse_failed: {result.parse_error}; "
+        + _parse_failure_tail(
+            step="crossref", expected_wrapper="updated_pages", raw_text=raw_text,
+        )
+    ) from result.parse_error
 
 
 # ---------------------------------------------------------------------------
@@ -1344,7 +1418,12 @@ def triage_page_update(
         raise LLMCompileError("triage_error: empty response text")
 
     if result.parsed is None:
-        raise LLMCompileError(f"triage_json_parse_failed: {result.parse_error}") from result.parse_error
+        raise LLMCompileError(
+            f"triage_json_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(
+                step="triage", expected_wrapper="decision", raw_text=raw_text,
+            )
+        ) from result.parse_error
     triage = result.parsed
 
     decision = triage.decision if triage.decision in ("update", "contradiction", "skip") else "skip"
@@ -1476,7 +1555,12 @@ def select_pages_for_query(
         return []
 
     if result.parsed is None:
-        raise LLMCompileError(f"select_pages_parse_failed: {result.parse_error}") from result.parse_error
+        raise LLMCompileError(
+            f"select_pages_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(
+                step="select_pages", expected_wrapper="page_ids", raw_text=raw_text,
+            )
+        ) from result.parse_error
     return result.parsed.page_ids
 
 
@@ -1609,7 +1693,12 @@ def synthesize_answer(
         raise LLMCompileError("synthesize_error: empty response text")
 
     if result.parsed is None:
-        raise LLMCompileError(f"synthesize_parse_failed: {result.parse_error}") from result.parse_error
+        raise LLMCompileError(
+            f"synthesize_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(
+                step="synthesize", expected_wrapper="answer", raw_text=raw_text,
+            )
+        ) from result.parse_error
     return result.parsed
 
 
