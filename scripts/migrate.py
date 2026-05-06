@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -593,6 +593,32 @@ def migrate():
     if current < 21:
         print("  applying migration v21 (purge deployment_mode settings row)...")
         conn.executescript(MIGRATION_V21_SQL)
+
+    if current < 22:
+        print("  applying migration v22 (drop retired thinking_budgets state)...")
+        # Phase 8 retired the user-tunable per-call-site thinking_budget knob.
+        # Per-call-site values stay hardcoded in nlp-service/services/llm_client.py;
+        # the SQLite settings row + JSON-mirror key are dead weight. DELETE
+        # is a no-op if the row never existed (idempotent).
+        conn.execute("DELETE FROM settings WHERE key = 'thinking_budgets'")
+        # Strip the thinking_budgets key from /data/llm-config.json if present.
+        # Mirrors nlp-service/services/llm_client.py:120 path resolution exactly
+        # so app-container migrate.py and nlp-service runtime see the same file
+        # regardless of DATA_ROOT override.
+        data_root = os.environ.get("DATA_ROOT", "/data")
+        cfg_path = os.path.join(data_root, "llm-config.json")
+        if os.path.exists(cfg_path):
+            try:
+                import json as _json
+                with open(cfg_path, "r", encoding="utf-8") as fh:
+                    cfg = _json.load(fh)
+                if isinstance(cfg, dict) and "thinking_budgets" in cfg:
+                    cfg.pop("thinking_budgets", None)
+                    with open(cfg_path, "w", encoding="utf-8") as fh:
+                        _json.dump(cfg, fh)
+            except Exception as e:
+                # Non-fatal: nlp-service no longer reads this key after Phase 8.
+                print(f"  v22 cfg cleanup skipped (non-fatal): {e}")
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
