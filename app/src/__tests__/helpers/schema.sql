@@ -55,7 +55,9 @@ CREATE TABLE activity_log (
   timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
   action_type TEXT NOT NULL,
   source_id TEXT,
-  details JSON
+  details JSON,
+  session_id TEXT,
+  step_key TEXT
 );
 
 CREATE TABLE aliases (
@@ -199,6 +201,8 @@ CREATE INDEX idx_drafts_page ON drafts(page_id);
 CREATE INDEX idx_activity_action ON activity_log(action_type);
 CREATE INDEX idx_activity_source ON activity_log(source_id);
 CREATE INDEX idx_activity_timestamp ON activity_log(timestamp);
+CREATE INDEX idx_activity_session ON activity_log(session_id);
+CREATE INDEX idx_activity_session_step ON activity_log(session_id, step_key);
 CREATE INDEX idx_aliases_alias ON aliases(alias);
 CREATE INDEX idx_aliases_canonical ON aliases(canonical_name);
 CREATE INDEX idx_page_links_source ON page_links(source_page_id);
@@ -218,4 +222,4 @@ CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id
 CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '22');
+INSERT INTO settings (key, value) VALUES ('schema_version', '23');
