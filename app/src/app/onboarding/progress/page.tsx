@@ -38,6 +38,31 @@ interface ProgressResponse {
   failed_stage_count?: number;
 }
 
+// ── Per-step expand-to-reveal data ──────────────────────────────────────────
+
+interface StepItem {
+  id: string;
+  label: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  error?: string;
+}
+
+interface StepEvent {
+  id: number;
+  timestamp: string;
+  action_type: string;
+  source_id: string | null;
+  source_title: string | null;
+  details: Record<string, unknown> | string | null;
+}
+
+interface StepData {
+  items: StepItem[];
+  events: StepEvent[];
+  fetchedAt: number;
+  loading: boolean;
+}
+
 const STEPS = COMPILE_STEPS;
 
 function parseCommittedCount(detail: string | undefined): { pages: number; sources: number } {
@@ -89,6 +114,71 @@ function IconPending() {
   );
 }
 
+function IconChevron({ expanded }: { expanded: boolean }) {
+  return (
+    <svg
+      width="10" height="6" viewBox="0 0 10 6" fill="none"
+      style={{
+        transform: expanded ? 'rotate(180deg)' : 'none',
+        transition: 'transform 120ms ease',
+      }}
+    >
+      <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square"/>
+    </svg>
+  );
+}
+
+function IconItemDone() {
+  return (
+    <svg width="10" height="8" viewBox="0 0 14 11" fill="none">
+      <path d="M1 5.5L5 9.5L13 1.5" style={{ stroke: 'var(--accent)' }} strokeWidth="2" strokeLinecap="square"/>
+    </svg>
+  );
+}
+
+function IconItemFail() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+      <path d="M1 1L9 9M9 1L1 9" stroke="var(--danger)" strokeWidth="2" strokeLinecap="square"/>
+    </svg>
+  );
+}
+
+function IconItemRunning() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 18 18" fill="none">
+      <path d="M9 1A8 8 0 1 1 1 9" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconItemPending() {
+  return (
+    <div style={{ width: 8, height: 8, border: '1px solid var(--fg-muted)' }} />
+  );
+}
+
+function summarizeEventDetails(details: Record<string, unknown> | string | null): string {
+  if (!details) return '';
+  if (typeof details === 'string') return details.slice(0, 120);
+  // Pick a few common, useful fields. Strip noisy ones.
+  const skip = new Set(['session_id', 'page_id', 'plan_id', 'stage_id']);
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(details)) {
+    if (skip.has(key)) continue;
+    if (value === null || value === undefined) continue;
+    const rendered =
+      typeof value === 'string'
+        ? value.length > 60 ? `${value.slice(0, 60)}…` : value
+        : typeof value === 'number' || typeof value === 'boolean'
+          ? String(value)
+          : null;
+    if (rendered !== null) parts.push(`${key}=${rendered}`);
+    if (parts.length >= 4) break;
+  }
+  return parts.join('  ');
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 function ProgressPageInner() {
@@ -114,6 +204,11 @@ function ProgressPageInner() {
   const [elapsedSec,      setElapsedSec]      = useState(0);
   const [nowMs,           setNowMs]           = useState(() => Date.now());
 
+  // Expand-to-reveal state — lives OUTSIDE the polling flow so 2s status
+  // re-renders don't clobber the user's expanded panels.
+  const [expandedSteps,   setExpandedSteps]   = useState<Set<string>>(() => new Set());
+  const [stepData,        setStepData]        = useState<Record<string, StepData>>({});
+
   const intervalRef      = useRef<ReturnType<typeof setInterval>  | null>(null);
   const patienceTimerRef = useRef<ReturnType<typeof setTimeout>   | null>(null);
   const queuedTimerRef   = useRef<ReturnType<typeof setTimeout>   | null>(null);
@@ -123,6 +218,51 @@ function ProgressPageInner() {
     if (intervalRef.current)      { clearInterval(intervalRef.current);     intervalRef.current      = null; }
     if (patienceTimerRef.current) { clearTimeout(patienceTimerRef.current); patienceTimerRef.current = null; }
     if (queuedTimerRef.current)   { clearTimeout(queuedTimerRef.current);   queuedTimerRef.current   = null; }
+  }
+
+  // ── Expand-to-reveal handlers ────────────────────────────────────────────
+
+  async function fetchStepData(stepKey: string): Promise<void> {
+    if (!sessionId) return;
+    setStepData((prev) => ({
+      ...prev,
+      [stepKey]: prev[stepKey]
+        ? { ...prev[stepKey], loading: true }
+        : { items: [], events: [], fetchedAt: 0, loading: true },
+    }));
+    try {
+      const [itemsRes, eventsRes] = await Promise.all([
+        fetch(`/api/compile/progress/items?session_id=${encodeURIComponent(sessionId)}&step=${encodeURIComponent(stepKey)}`),
+        fetch(`/api/compile/progress/events?session_id=${encodeURIComponent(sessionId)}&step=${encodeURIComponent(stepKey)}&limit=50`),
+      ]);
+      const items: StepItem[]   = itemsRes.ok  ? ((await itemsRes.json())?.items  ?? []) : [];
+      const events: StepEvent[] = eventsRes.ok ? ((await eventsRes.json())?.events ?? []) : [];
+      setStepData((prev) => ({
+        ...prev,
+        [stepKey]: { items, events, fetchedAt: Date.now(), loading: false },
+      }));
+    } catch {
+      setStepData((prev) => ({
+        ...prev,
+        [stepKey]: { items: [], events: [], fetchedAt: Date.now(), loading: false },
+      }));
+    }
+  }
+
+  function toggleStep(stepKey: string): void {
+    setExpandedSteps((prev) => {
+      const next = new Set(prev);
+      if (next.has(stepKey)) {
+        next.delete(stepKey);
+      } else {
+        next.add(stepKey);
+        // Lazy-fetch on first expand only.
+        if (!stepData[stepKey]) {
+          void fetchStepData(stepKey);
+        }
+      }
+      return next;
+    });
   }
 
   async function fetchProgress() {
@@ -595,9 +735,12 @@ function ProgressPageInner() {
               isStepFailed ? 'rgba(var(--danger-rgb),0.15)' :
                              'var(--bg-track)';
 
+            const isExpanded = expandedSteps.has(step.key);
+            const data = stepData[step.key];
+
             return (
+              <div key={step.key} style={{ display: 'flex', flexDirection: 'column' }}>
               <div
-                key={step.key}
                 style={{
                   display: 'flex',
                   flexDirection: 'row',
@@ -695,6 +838,160 @@ function ProgressPageInner() {
                     )}
                   </div>
                 )}
+
+                {/* Expand/collapse chevron — only on non-pending rows. Lazy-fetches items + events on first expand. */}
+                {!isStepPending && (
+                  <button
+                    onClick={() => toggleStep(step.key)}
+                    aria-label={isExpanded ? `Collapse ${step.label}` : `Expand ${step.label}`}
+                    aria-expanded={isExpanded}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      padding: '8px 4px',
+                      flexShrink: 0,
+                      color: isStepFailed ? 'var(--danger)' : 'var(--fg-subtle)',
+                      display: 'flex',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <IconChevron expanded={isExpanded} />
+                  </button>
+                )}
+              </div>
+
+              {/* Expanded panel — items table + events tail */}
+              {isExpanded && (
+                <div style={{
+                  marginLeft: 64,
+                  marginTop: 12,
+                  marginBottom: 4,
+                  padding: 16,
+                  background: 'var(--bg-track)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 16,
+                }}>
+                  {data?.loading && (
+                    <div style={{
+                      fontFamily: 'var(--font-mono)', fontSize: 10,
+                      letterSpacing: '1px', textTransform: 'uppercase',
+                      color: 'var(--fg-subtle)',
+                    }}>
+                      Loading…
+                    </div>
+                  )}
+
+                  {/* Items table */}
+                  {data && data.items.length > 0 && (
+                    <div>
+                      <div style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 10,
+                        letterSpacing: '2px', textTransform: 'uppercase',
+                        color: 'var(--accent)', marginBottom: 8,
+                      }}>
+                        Items ({data.items.length})
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {data.items.map((it) => (
+                          <div key={it.id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                              <div style={{ width: 12, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+                                {it.status === 'done'    && <IconItemDone />}
+                                {it.status === 'failed'  && <IconItemFail />}
+                                {it.status === 'running' && <IconItemRunning />}
+                                {it.status === 'pending' && <IconItemPending />}
+                              </div>
+                              <span style={{
+                                fontFamily: 'var(--font-heading)', fontSize: 13,
+                                color: it.status === 'failed' ? 'var(--danger)' : 'var(--fg)',
+                                opacity: it.status === 'pending' ? 0.5 : 1,
+                              }}>
+                                {it.label}
+                              </span>
+                            </div>
+                            {it.error && (
+                              <span style={{
+                                marginLeft: 24,
+                                fontFamily: 'var(--font-mono)', fontSize: 10,
+                                color: 'var(--danger)',
+                                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                              }}>
+                                └── {it.error}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Events tail */}
+                  {data && data.events.length > 0 && (
+                    <div>
+                      <div style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 10,
+                        letterSpacing: '2px', textTransform: 'uppercase',
+                        color: 'var(--accent)', marginBottom: 8,
+                      }}>
+                        Events ({data.events.length})
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {data.events.map((ev) => (
+                          <div key={ev.id} style={{
+                            display: 'grid',
+                            gridTemplateColumns: '64px 160px 1fr',
+                            gap: 12,
+                            fontFamily: 'var(--font-mono)', fontSize: 10,
+                            color: ev.action_type.includes('failed') ? 'var(--danger)' : 'var(--fg-subtle)',
+                          }}>
+                            <span>{ev.timestamp.slice(11, 19)}</span>
+                            <span>{ev.action_type}</span>
+                            <span style={{
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}>
+                              {ev.source_title ? `[${ev.source_title}] ` : ''}
+                              {summarizeEventDetails(ev.details)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Empty state — atomic step OR no events yet */}
+                  {data && !data.loading && data.items.length === 0 && data.events.length === 0 && (
+                    <div style={{
+                      fontFamily: 'var(--font-mono)', fontSize: 10,
+                      letterSpacing: '1px', color: 'var(--fg-subtle)',
+                    }}>
+                      No items or events recorded for this step yet.
+                    </div>
+                  )}
+
+                  {/* Refresh */}
+                  <button
+                    onClick={() => fetchStepData(step.key)}
+                    disabled={data?.loading}
+                    style={{
+                      alignSelf: 'flex-end',
+                      background: 'transparent',
+                      border: '1px solid var(--separator)',
+                      cursor: data?.loading ? 'not-allowed' : 'pointer',
+                      padding: '4px 12px',
+                      fontFamily: 'var(--font-mono)', fontSize: 9,
+                      letterSpacing: '1.5px', textTransform: 'uppercase',
+                      color: 'var(--fg-subtle)',
+                      opacity: data?.loading ? 0.4 : 1,
+                    }}
+                  >
+                    Refresh
+                  </button>
+                </div>
+              )}
               </div>
             );
           })}
