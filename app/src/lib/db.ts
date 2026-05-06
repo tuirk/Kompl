@@ -315,6 +315,18 @@ export interface InsertActivityArgs {
   action_type: string;
   source_id: string | null;
   details: Record<string, unknown> | null;
+  /**
+   * Compile-pipeline session UUID. Set by every caller in compile + onboarding
+   * routes so /api/compile/progress/events can return per-(session, step)
+   * audit trails. Null for non-pipeline events (e.g. n8n open-string injection,
+   * boot reconciler, source recompile).
+   */
+  session_id?: string | null;
+  /**
+   * The CompileStepKey the event was emitted from (e.g. 'extract', 'resolve').
+   * Pairs with session_id; null when session_id is null.
+   */
+  step_key?: string | null;
 }
 
 /**
@@ -326,13 +338,15 @@ export interface InsertActivityArgs {
 export function insertActivity(args: InsertActivityArgs): number {
   const info = openDb()
     .prepare(
-      `INSERT INTO activity_log (action_type, source_id, details)
-       VALUES (@action_type, @source_id, @details)`
+      `INSERT INTO activity_log (action_type, source_id, details, session_id, step_key)
+       VALUES (@action_type, @source_id, @details, @session_id, @step_key)`
     )
     .run({
       action_type: args.action_type,
       source_id: args.source_id,
       details: args.details ? JSON.stringify(args.details) : null,
+      session_id: args.session_id ?? null,
+      step_key: args.step_key ?? null,
     });
   return Number(info.lastInsertRowid);
 }
@@ -344,12 +358,21 @@ export function insertActivity(args: InsertActivityArgs): number {
  */
 export function logActivity(
   type: ActivityEventType,
-  args: { source_id: string | null; details?: Record<string, unknown> | null }
+  args: {
+    source_id: string | null;
+    details?: Record<string, unknown> | null;
+    /** Compile-pipeline session UUID, when the event is emitted from a pipeline route. */
+    session_id?: string | null;
+    /** Step the event was emitted from (e.g. 'extract', 'resolve'). */
+    step_key?: string | null;
+  }
 ): number {
   return insertActivity({
     action_type: type,
     source_id: args.source_id,
     details: args.details ?? null,
+    session_id: args.session_id ?? null,
+    step_key: args.step_key ?? null,
   });
 }
 
@@ -724,6 +747,34 @@ export function getRecentActivity(since: string | null, limit = 100): ActivityRo
          LIMIT ?`
     )
     .all(limit) as ActivityRow[];
+}
+
+/**
+ * Activity rows scoped to a specific (session_id, step_key) — used by the
+ * progress UI's expand-to-reveal view (Phase C). Returns most-recent-first;
+ * `limit` is clamped to [1, 200].
+ *
+ * Both columns added in migration v23. Pre-v23 rows have NULL session_id and
+ * step_key, so this function will never return them — desirable, those events
+ * predate the scoping concept.
+ */
+export function getEventsForStep(
+  sessionId: string,
+  stepKey: string,
+  limit = 50,
+): ActivityRow[] {
+  const cap = Math.max(1, Math.min(200, Math.trunc(limit) || 50));
+  return openDb()
+    .prepare(
+      `SELECT a.id, a.timestamp, a.action_type, a.source_id, a.details,
+              s.title AS source_title
+         FROM activity_log a
+         LEFT JOIN sources s ON a.source_id = s.source_id
+         WHERE a.session_id = ? AND a.step_key = ?
+         ORDER BY a.id DESC
+         LIMIT ?`
+    )
+    .all(sessionId, stepKey, cap) as ActivityRow[];
 }
 
 // ============================================================================

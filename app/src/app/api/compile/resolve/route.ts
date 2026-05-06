@@ -373,6 +373,8 @@ export async function POST(request: Request) {
 
     logActivity('resolution_complete', {
       source_id: null,
+      session_id,
+      step_key: 'resolve',
       details: {
         session_id,
         merged_count:   allEntities.length - allCanonical.length,

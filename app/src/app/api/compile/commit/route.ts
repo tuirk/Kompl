@@ -170,6 +170,8 @@ async function commitSession(session_id: string): Promise<Response> {
         updatePlanStatus(plan.plan_id, 'draft_too_thin');
         logActivity('draft_too_thin', {
           source_id: sourceIds[0] ?? null,
+          session_id,
+          step_key: 'commit',
           details: {
             plan_id: plan.plan_id,
             title: plan.title,
@@ -190,6 +192,8 @@ async function commitSession(session_id: string): Promise<Response> {
       updatePlanStatus(plan.plan_id, 'pending_approval');
       logActivity('draft_queued_for_approval', {
         source_id: sourceIds[0] ?? null,
+        session_id,
+        step_key: 'commit',
         details: { plan_id: plan.plan_id, title: plan.title, page_type: plan.page_type, session_id },
       });
       pendingApproval++;
@@ -277,6 +281,8 @@ async function commitSession(session_id: string): Promise<Response> {
         // Log to activity
         logActivity('page_compiled', {
           source_id: sourceIds[0] ?? null,
+          session_id,
+          step_key: 'commit',
           details: {
             page_id,
             title: plan.title,
