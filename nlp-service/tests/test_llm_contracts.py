@@ -61,3 +61,197 @@ def test_format_response_contract_marks_nullable_fields():
     # _Item.value is Optional[int] → must show null marker somewhere
     lowered = rendered.lower()
     assert "null" in lowered
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Per-call-site contract tests (Task A.3)
+#
+#  For every response_model in llm_client.py, four assertions:
+#    1. Canonical-shape input parses cleanly.
+#    2. Wrapper-key drift (e.g. "pairs" instead of "results") raises.
+#    3. Bare list (no wrapper) raises.
+#    4. Prompt constant contains the wrapper key as a literal substring.
+#
+#  Negative-shape variants are derived from real production failures:
+#    • Variant A — session 7ff0547d-… (2026-05-06): {"pairs":[...]}
+#    • Variant B — session 33455fe7-… (2026-05-06): bare list [{...}]
+# ──────────────────────────────────────────────────────────────────────────────
+
+from services.llm_client import (
+    LintScanResponse,
+    LLMExtractionResponse,
+    DisambiguationResponse,
+    CrossrefResponse,
+    SelectPagesResponse,
+    SynthesizeResponse,
+    _LINT_SYSTEM_PROMPT,
+    _EXTRACTION_SYSTEM_PROMPT,
+    _DISAMBIGUATION_SYSTEM_PROMPT,
+    _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT,
+    _CROSSREF_SYSTEM_PROMPT,
+    _SELECT_PAGES_SYSTEM_PROMPT,
+    _SYNTHESIZE_SYSTEM_PROMPT,
+)
+
+
+# ── DisambiguationResponse — wrapper key = "results" ──────────────────────────
+
+def test_disambiguation_canonical():
+    p = DisambiguationResponse.model_validate({
+        "results": [{
+            "entity_a": "OpenAI", "entity_b": "Open AI Inc.",
+            "decision": "same", "canonical": "OpenAI",
+            "reason": "Same legal entity.",
+        }]
+    })
+    assert p.results[0].decision == "same"
+
+
+def test_disambiguation_rejects_pairs_wrapper():
+    # Variant A from session 7ff0547d
+    with pytest.raises(ValidationError):
+        DisambiguationResponse.model_validate({
+            "pairs": [{
+                "entity_a": "OpenAI", "entity_b": "Open AI Inc.",
+                "decision": "same", "canonical": "OpenAI", "reason": "x",
+            }]
+        })
+
+
+def test_disambiguation_rejects_bare_list():
+    # Variant B from session 33455fe7
+    with pytest.raises(ValidationError):
+        DisambiguationResponse.model_validate(
+            [{"entity_a": "OpenAI", "entity_b": "Open AI Inc.",
+              "decision": "same", "canonical": "OpenAI", "reason": "x"}]
+        )
+
+
+def test_disambiguation_prompt_anchors_results():
+    assert "results" in _DISAMBIGUATION_SYSTEM_PROMPT
+    assert "Return JSON" in _DISAMBIGUATION_SYSTEM_PROMPT
+
+
+def test_disambiguation_concept_prompt_anchors_results():
+    assert "results" in _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT
+    assert "Return JSON" in _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT
+
+
+# ── LintScanResponse — wrapper key = "contradictions" ─────────────────────────
+
+def test_lint_canonical():
+    p = LintScanResponse.model_validate({"contradictions": []})
+    assert p.contradictions == []
+
+
+def test_lint_rejects_results_wrapper():
+    with pytest.raises(ValidationError):
+        LintScanResponse.model_validate({"results": []})
+
+
+def test_lint_rejects_bare_list():
+    with pytest.raises(ValidationError):
+        LintScanResponse.model_validate([])
+
+
+def test_lint_prompt_anchors_contradictions():
+    assert "contradictions" in _LINT_SYSTEM_PROMPT
+
+
+# ── LLMExtractionResponse — flat 6-key shape ──────────────────────────────────
+
+def test_extraction_canonical():
+    p = LLMExtractionResponse.model_validate({
+        "entities": [], "concepts": [], "claims": [],
+        "relationships": [], "contradictions": [], "summary": "x",
+    })
+    assert p.summary == "x"
+
+
+def test_extraction_rejects_data_wrapper():
+    with pytest.raises(ValidationError):
+        LLMExtractionResponse.model_validate({"data": {
+            "entities": [], "concepts": [], "claims": [],
+            "relationships": [], "contradictions": [], "summary": "x",
+        }})
+
+
+def test_extraction_rejects_bare_list():
+    with pytest.raises(ValidationError):
+        LLMExtractionResponse.model_validate([])
+
+
+def test_extraction_prompt_anchors_keys():
+    for key in ("entities", "concepts", "claims", "relationships", "summary"):
+        assert key in _EXTRACTION_SYSTEM_PROMPT, f"missing wrapper key: {key}"
+
+
+# ── CrossrefResponse — wrapper keys = "updated_pages", "contradictions_found" ─
+
+def test_crossref_canonical():
+    p = CrossrefResponse.model_validate({
+        "updated_pages": [], "contradictions_found": [],
+    })
+    assert p.updated_pages == []
+
+
+def test_crossref_rejects_pages_wrapper():
+    with pytest.raises(ValidationError):
+        CrossrefResponse.model_validate({"pages": [], "contradictions": []})
+
+
+def test_crossref_rejects_bare_list():
+    with pytest.raises(ValidationError):
+        CrossrefResponse.model_validate([])
+
+
+def test_crossref_prompt_anchors_keys():
+    assert "updated_pages" in _CROSSREF_SYSTEM_PROMPT
+    assert "contradictions_found" in _CROSSREF_SYSTEM_PROMPT
+
+
+# ── SelectPagesResponse — wrapper key = "page_ids" ────────────────────────────
+
+def test_select_pages_canonical():
+    p = SelectPagesResponse.model_validate({"page_ids": ["abc", "def"]})
+    assert p.page_ids == ["abc", "def"]
+
+
+def test_select_pages_rejects_results_wrapper():
+    with pytest.raises(ValidationError):
+        SelectPagesResponse.model_validate({"results": ["abc"]})
+
+
+def test_select_pages_rejects_bare_list():
+    with pytest.raises(ValidationError):
+        SelectPagesResponse.model_validate(["abc"])
+
+
+def test_select_pages_prompt_anchors_page_ids():
+    assert "page_ids" in _SELECT_PAGES_SYSTEM_PROMPT
+
+
+# ── SynthesizeResponse — wrapper keys = "answer", "citations" ─────────────────
+
+def test_synthesize_canonical():
+    p = SynthesizeResponse.model_validate({
+        "answer": "The transformer architecture was introduced in 2017.",
+        "citations": [{"page_id": "p1", "page_title": "Transformer"}],
+    })
+    assert p.answer.startswith("The transformer")
+    assert p.citations[0].page_id == "p1"
+
+
+def test_synthesize_rejects_response_wrapper():
+    with pytest.raises(ValidationError):
+        SynthesizeResponse.model_validate({"response": {"answer": "x", "citations": []}})
+
+
+def test_synthesize_rejects_bare_list():
+    with pytest.raises(ValidationError):
+        SynthesizeResponse.model_validate([])
+
+
+def test_synthesize_prompt_anchors_keys():
+    assert "answer" in _SYNTHESIZE_SYSTEM_PROMPT
+    assert "citations" in _SYNTHESIZE_SYSTEM_PROMPT
