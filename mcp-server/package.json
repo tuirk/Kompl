@@ -18,6 +18,7 @@
     "@types/node": "^24.9.2"
   },
   "overrides": {
-    "hono": "^4.12.14"
+    "hono": "^4.12.14",
+    "ip-address": "^10.1.1"
   }
 }
