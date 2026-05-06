@@ -12,15 +12,14 @@ function isOverdue(lastAt: string | null): boolean {
 }
 
 interface StartupSettings {
-  deployment_mode: 'personal-device' | 'always-on'
   last_lint_at: string | null
   last_backup_at: string | null
 }
 
 /**
- * Runs after `kompl start` health check succeeds — personal-device mode only.
- * Fires lint and local backup if either hasn't run in the last 36 hours.
- * Non-blocking: called fire-and-forget from start.ts.
+ * Runs after `kompl start` health check succeeds. Fires lint and local backup
+ * if either hasn't run in the last 36 hours. Non-blocking: called fire-and-
+ * forget from start.ts.
  */
 export async function runStartupTasks(config: KomplConfig): Promise<void> {
   // Fetch current settings from DB — authoritative source of truth once app is up.
@@ -34,10 +33,6 @@ export async function runStartupTasks(config: KomplConfig): Promise<void> {
   } catch {
     return
   }
-
-  // DB value takes precedence over config.json; fall back to config.json default.
-  const mode = settings.deployment_mode ?? config.deploymentMode ?? 'personal-device'
-  if (mode !== 'personal-device') return
 
   // ── Lint ──────────────────────────────────────────────────────────────────
   if (isOverdue(settings.last_lint_at)) {
