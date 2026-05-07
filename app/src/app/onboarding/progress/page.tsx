@@ -187,8 +187,11 @@ function ProgressPageInner() {
 
   const sessionId   = searchParams.get('session_id') ?? '';
   const sourceCount  = parseInt(searchParams.get('queued') ?? '0', 10);
-  // Overestimate: ~2 min/source, minimum 2 min — always computed from URL params, never changes
-  const estimateMins = sourceCount > 0 ? Math.max(2, sourceCount * 2) : null;
+  // ~6 min/source, minimum 6 min — sized for DeepSeek (extract 200-400s
+  // per source, draft ~3 min per page, plus resolve/match/plan/crossref/
+  // commit/schema overhead). Gemini-only pipelines run shorter so this is
+  // a safe over-estimate. Always computed from URL params, never changes.
+  const estimateMins = sourceCount > 0 ? Math.max(6, sourceCount * 6) : null;
   // If confirm returned 503 n8n_*, review page passed the reason through.
   // UI-A pre-step row starts in danger state so the user can retry immediately.
   const n8nErrorFromUrl = searchParams.get('n8n_error');
@@ -273,10 +276,14 @@ function ProgressPageInner() {
       const data = await res.json() as ProgressResponse;
       if (!isActiveRef.current) return;
 
-      // Hard timeout: if still 'running' for > 30 min, the server likely restarted
+      // Hard timeout matches the server-side markStaleSessionsFailed
+      // cap (per-session adaptive: 60 min floor + 6 min/source). Both
+      // ends use the same formula so the client doesn't fail the session
+      // before the server's cleanup considers it stale.
       if (data.status === 'running' && data.started_at) {
         const elapsed = Date.now() - new Date(data.started_at.replace(' ', 'T') + 'Z').getTime();
-        if (elapsed > 30 * 60 * 1000) {
+        const hardTimeoutMs = Math.max(60, sourceCount * 6) * 60 * 1000;
+        if (elapsed > hardTimeoutMs) {
           stopPolling();
           localStorage.removeItem(LS_KEY);
           sessionStorage.removeItem('kompl_session_id');
