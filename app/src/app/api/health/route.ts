@@ -29,8 +29,10 @@ const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000'
 export async function GET() {
   try {
     // Clean up any sessions left 'running' by a server restart or crash.
-    // This runs on every health probe so stale sessions are fixed automatically on startup.
-    const staleSessionsFixed = markStaleSessionsFailed(30);
+    // This runs on every health probe. The cleanup is per-session adaptive
+    // (60 min floor + 6 min per source) so a 1800-source session is not
+    // killed at the same wall-clock as a 6-source session.
+    const staleSessionsFixed = markStaleSessionsFailed();
     // Clean up 'queued' sessions that never got picked up by n8n (silent
     // webhook drop, n8n down at the time of confirm, process killed mid-flight).
     const stuckQueuedFixed = reconcileStuckCompileSessions(5);
