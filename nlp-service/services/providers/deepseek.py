@@ -118,7 +118,11 @@ def get_client() -> httpx.Client:
         _client = httpx.Client(
             base_url="https://api.deepseek.com",
             headers={"Authorization": f"Bearer {_DEEPSEEK_API_KEY}"},
-            timeout=120.0,
+            # 600s: empirically DeepSeek extract on a 95K-char source reaches
+            # ~290s; the Vilnius travel guide hit ~387s in the Phase 7 rerun.
+            # 120s (the prior value) timed out before the API responded on any
+            # source >25K chars. Headroom over the worst observed: ~55%.
+            timeout=600.0,
         )
     return _client
 
