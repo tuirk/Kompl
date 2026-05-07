@@ -32,10 +32,20 @@ interface ProgressResponse {
   error:        string | null;
   started_at:   string | null;
   completed_at: string | null;
-  // Phase 4: count of collect_staging rows in 'failed' state for this
-  // session. When > 0 AND status is terminal, the "Retry N failed items"
-  // button is shown so the user can re-fire only those items.
+  // Per-item failure counters. When the sum is > 0 AND status is
+  // terminal, the "Retry N failed" button is shown so the user can
+  // re-fire only those items. failed_stage_count is intake-stage
+  // collect_staging failures; failed_draft_count is per-page draft
+  // failures (page_plans.draft_status='failed') — the draft step writes
+  // status='done' regardless so commit can run on what succeeded, so
+  // these don't trip the session-level retry path on their own.
+  // failed_extract_count is sources without an extractions row — the
+  // orchestrator's extract step tolerates per-item failures (only fails
+  // the session if EVERY source fails extraction), so partial-extract
+  // failures also leave the session 'completed' with stranded sources.
   failed_stage_count?: number;
+  failed_draft_count?: number;
+  failed_extract_count?: number;
 }
 
 // ── Per-step expand-to-reveal data ──────────────────────────────────────────
@@ -1097,13 +1107,18 @@ function ProgressPageInner() {
               </button>
             )}
 
-            {/* Phase 4: retry only per-item failed staging rows. Shows when
-                the session reached a terminal state but some items inside
-                ingest_{urls,files,texts} skipped. Distinct from the
-                session-level Retry above — that one resumes from first
-                non-done step, which is a no-op on completed sessions. */}
+            {/* Phase 4: retry per-item failures. Three sources:
+                  - collect_staging.failed (intake-stage URL/file/text skips)
+                  - page_plans.draft_status='failed' (per-page LLM draft errors)
+                  - sources w/o extractions (per-source extract failures —
+                    orchestrator tolerates partial extract failures, so these
+                    leave the session 'completed' with stranded sources)
+                The draft step (and the extract step on partial failures)
+                writes status='done' regardless, so none of these trip the
+                session-level Retry above. Any of the three being > 0
+                surfaces this button on a terminal session. */}
             {(isComplete || isFailedStatus || isCancelled) &&
-             (progress?.failed_stage_count ?? 0) > 0 && (
+             ((progress?.failed_stage_count ?? 0) + (progress?.failed_draft_count ?? 0) + (progress?.failed_extract_count ?? 0)) > 0 && (
               <button
                 onClick={handleRetryFailed}
                 disabled={retryingFailed}
@@ -1118,7 +1133,7 @@ function ProgressPageInner() {
               >
                 {retryingFailed
                   ? 'Retrying…'
-                  : `Retry ${progress?.failed_stage_count} failed`}
+                  : `Retry ${(progress?.failed_stage_count ?? 0) + (progress?.failed_draft_count ?? 0) + (progress?.failed_extract_count ?? 0)} failed`}
               </button>
             )}
           </div>

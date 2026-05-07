@@ -2983,6 +2983,51 @@ export function countFailedStagingBySession(sessionId: string): number {
 }
 
 /**
+ * Count page_plans rows with draft_status='failed' for a session.
+ * Distinct from staging-failure count: these are wiki-page draft attempts
+ * that hit a per-item LLM error after planning — the "Writing pages" step
+ * marks itself 'done' regardless so commit can run on the drafts that
+ * succeeded, which is why these failures don't trip the session-level
+ * retry condition. Powers the "Retry N failed" button when failures live
+ * in the draft stage rather than at intake.
+ */
+export function countFailedDraftPlansBySession(sessionId: string): number {
+  const row = openDb()
+    .prepare(
+      `SELECT COUNT(*) AS n
+         FROM page_plans
+        WHERE session_id   = ?
+          AND draft_status = 'failed'`
+    )
+    .get(sessionId) as { n: number };
+  return row.n;
+}
+
+/**
+ * Count `sources` rows for a session that have no matching `extractions` row.
+ * This is the per-source extract-failure shape: the orchestrator's extract
+ * step tolerates per-item failures (only fails the session if EVERY source
+ * fails extraction — see app/src/app/api/compile/run/route.ts:387). Sources
+ * that failed extraction stay at compile_status='pending' (the initial
+ * value) with no `extractions` row, even after compile_progress reaches
+ * 'completed'. Powers the third arm of the "Retry N failed" button —
+ * alongside countFailedStagingBySession (intake-stage) and
+ * countFailedDraftPlansBySession (per-page LLM).
+ */
+export function countUnextractedSourcesBySession(sessionId: string): number {
+  const row = openDb()
+    .prepare(
+      `SELECT COUNT(*) AS n
+         FROM sources s
+         LEFT JOIN extractions e ON s.source_id = e.source_id
+        WHERE s.onboarding_session_id = ?
+          AND e.source_id IS NULL`
+    )
+    .get(sessionId) as { n: number };
+  return row.n;
+}
+
+/**
  * Return active sources older than thresholdDays, ordered oldest-first.
  * Uses julianday() for correct date arithmetic — avoids the SQLite
  * lexicographic timestamp gotcha.

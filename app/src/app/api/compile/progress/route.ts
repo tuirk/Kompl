@@ -9,16 +9,26 @@
  *
  * Response shape:
  *   { session_id, status, current_step, steps, error, started_at,
- *     completed_at, failed_stage_count }
- *   where steps is an object: { extract: { status, detail? }, resolve: {...}, ... }
- *   and failed_stage_count is the count of collect_staging rows with
- *   status='failed' + included=1 for this session — powers the
- *   "Retry N failed items" button (Phase 4).
+ *     completed_at, failed_stage_count, failed_draft_count, failed_extract_count }
+ *   where steps is an object: { extract: { status, detail? }, resolve: {...}, ... }.
+ *   failed_stage_count counts collect_staging rows with status='failed' +
+ *   included=1 (intake-stage failures). failed_draft_count counts page_plans
+ *   rows with draft_status='failed' (per-page LLM failures after planning).
+ *   failed_extract_count counts `sources` rows with no matching `extractions`
+ *   row (per-source extract-failure shape — orchestrator tolerates partial
+ *   extract failures, leaving the session 'completed' with stranded sources).
+ *   Any of the three being > 0 surfaces the "Retry N failed" button on the
+ *   progress page; the combined sum is what's shown in the label.
  *
  * Returns 404 { status: 'not_found' } if session_id not found.
  */
 import { NextResponse } from 'next/server';
-import { countFailedStagingBySession, getCompileProgress } from '@/lib/db';
+import {
+  countFailedDraftPlansBySession,
+  countFailedStagingBySession,
+  countUnextractedSourcesBySession,
+  getCompileProgress,
+} from '@/lib/db';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -39,5 +49,7 @@ export async function GET(request: Request) {
     started_at: row.started_at,
     completed_at: row.completed_at,
     failed_stage_count: countFailedStagingBySession(sessionId),
+    failed_draft_count: countFailedDraftPlansBySession(sessionId),
+    failed_extract_count: countUnextractedSourcesBySession(sessionId),
   });
 }

@@ -35,6 +35,7 @@ import {
   getExtractionsBySession,
   getStagingBySession,
   countPagePlansByStatus,
+  getDb,
   logActivity,
   markStaleSessionsFailed,
 } from '@/lib/db';
@@ -431,14 +432,42 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   //
   // plan calls clearStagedPagePlans() which deletes all non-committed rows
   // (including 'drafted'/'crossreffed'). So plan must NOT re-run once plans
-  // exist. Once plans exist, draft is responsible for picking up any rows
-  // still in 'planned' or 'failed' (see /api/compile/draft filter).
+  // exist — EXCEPT when extracted sources extend beyond the existing plan set
+  // (hasNewSources below). The /retry-failed path can land new extractions on
+  // a session whose prior plan run only saw a smaller extraction set; in that
+  // case we MUST re-run plan so the newly-extracted sources get pages, even
+  // though committed plans already exist. clearStagedPagePlans only deletes
+  // non-committed plans, so the prior committed pages are preserved.
+  // Once plans exist (and no new sources), draft is responsible for picking
+  // up any rows still in 'planned' or 'failed' (see /api/compile/draft filter).
   const planCounts = countPagePlansByStatus(sessionId);
   const planExists =
     Object.values(planCounts).reduce((sum, c) => sum + c, 0) > 0;
   const pendingDraftCount = (planCounts.planned ?? 0) + (planCounts.failed ?? 0);
 
-  if (!planExists) {
+  // hasNewSources: extractions exist that no plan references. Triggers
+  // re-plan even when committed plans are present — the partial-extract
+  // retry path lands new extractions on a session whose prior plan run
+  // happened against a smaller extraction set, and we need plan to
+  // rebuild over the full set so the new sources produce pages.
+  // Cheap query: page_plans.source_ids is JSON, parsed once per row.
+  const allExtractedIds = new Set(
+    getExtractionsBySession(sessionId).map((e) => e.source_id),
+  );
+  const planSourceIds = new Set<string>();
+  for (const r of getDb()
+    .prepare('SELECT source_ids FROM page_plans WHERE session_id = ?')
+    .all(sessionId) as Array<{ source_ids: string }>) {
+    try {
+      (JSON.parse(r.source_ids) as string[]).forEach((id) => planSourceIds.add(id));
+    } catch {
+      // malformed source_ids — the malformed plan will fail downstream;
+      // skip it for this coverage check
+    }
+  }
+  const hasNewSources = [...allExtractedIds].some((id) => !planSourceIds.has(id));
+
+  if (!planExists || hasNewSources) {
     // Fresh run: plan then draft.
     updateCompileStep(sessionId, 'plan', 'running');
     const planResult = await timed(sessionId, 'plan', () =>
