@@ -188,6 +188,8 @@ export async function POST(request: Request) {
   if (!markdown) {
     logActivity('extraction_failed', {
       source_id,
+      session_id: source.onboarding_session_id ?? null,
+      step_key: 'extract',
       details: { error: 'raw_markdown_not_found', title: source.title },
     });
     return NextResponse.json({ error: 'markdown_not_found' }, { status: 500 });
@@ -336,6 +338,8 @@ export async function POST(request: Request) {
 
     logActivity('extraction_complete', {
       source_id,
+      session_id: source.onboarding_session_id ?? null,
+      step_key: 'extract',
       details: {
         title: source.title,
         entity_count:       ((llmOutput as Record<string, unknown[]>).entities       ?? []).length,

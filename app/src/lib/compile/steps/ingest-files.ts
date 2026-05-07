@@ -132,6 +132,8 @@ export async function runIngestFilesStep(
 
       logActivity('ingest_file_failed', {
         source_id: null,
+        session_id: sessionId,
+        step_key: 'ingest_files',
         details: {
           stage_id: row.stage_id,
           session_id: sessionId,

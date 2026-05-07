@@ -315,6 +315,18 @@ export interface InsertActivityArgs {
   action_type: string;
   source_id: string | null;
   details: Record<string, unknown> | null;
+  /**
+   * Compile-pipeline session UUID. Set by every caller in compile + onboarding
+   * routes so /api/compile/progress/events can return per-(session, step)
+   * audit trails. Null for non-pipeline events (e.g. n8n open-string injection,
+   * boot reconciler, source recompile).
+   */
+  session_id?: string | null;
+  /**
+   * The CompileStepKey the event was emitted from (e.g. 'extract', 'resolve').
+   * Pairs with session_id; null when session_id is null.
+   */
+  step_key?: string | null;
 }
 
 /**
@@ -326,13 +338,15 @@ export interface InsertActivityArgs {
 export function insertActivity(args: InsertActivityArgs): number {
   const info = openDb()
     .prepare(
-      `INSERT INTO activity_log (action_type, source_id, details)
-       VALUES (@action_type, @source_id, @details)`
+      `INSERT INTO activity_log (action_type, source_id, details, session_id, step_key)
+       VALUES (@action_type, @source_id, @details, @session_id, @step_key)`
     )
     .run({
       action_type: args.action_type,
       source_id: args.source_id,
       details: args.details ? JSON.stringify(args.details) : null,
+      session_id: args.session_id ?? null,
+      step_key: args.step_key ?? null,
     });
   return Number(info.lastInsertRowid);
 }
@@ -344,12 +358,21 @@ export function insertActivity(args: InsertActivityArgs): number {
  */
 export function logActivity(
   type: ActivityEventType,
-  args: { source_id: string | null; details?: Record<string, unknown> | null }
+  args: {
+    source_id: string | null;
+    details?: Record<string, unknown> | null;
+    /** Compile-pipeline session UUID, when the event is emitted from a pipeline route. */
+    session_id?: string | null;
+    /** Step the event was emitted from (e.g. 'extract', 'resolve'). */
+    step_key?: string | null;
+  }
 ): number {
   return insertActivity({
     action_type: type,
     source_id: args.source_id,
     details: args.details ?? null,
+    session_id: args.session_id ?? null,
+    step_key: args.step_key ?? null,
   });
 }
 
@@ -724,6 +747,34 @@ export function getRecentActivity(since: string | null, limit = 100): ActivityRo
          LIMIT ?`
     )
     .all(limit) as ActivityRow[];
+}
+
+/**
+ * Activity rows scoped to a specific (session_id, step_key) — used by the
+ * progress UI's expand-to-reveal view (Phase C). Returns most-recent-first;
+ * `limit` is clamped to [1, 200].
+ *
+ * Both columns added in migration v23. Pre-v23 rows have NULL session_id and
+ * step_key, so this function will never return them — desirable, those events
+ * predate the scoping concept.
+ */
+export function getEventsForStep(
+  sessionId: string,
+  stepKey: string,
+  limit = 50,
+): ActivityRow[] {
+  const cap = Math.max(1, Math.min(200, Math.trunc(limit) || 50));
+  return openDb()
+    .prepare(
+      `SELECT a.id, a.timestamp, a.action_type, a.source_id, a.details,
+              s.title AS source_title
+         FROM activity_log a
+         LEFT JOIN sources s ON a.source_id = s.source_id
+         WHERE a.session_id = ? AND a.step_key = ?
+         ORDER BY a.id DESC
+         LIMIT ?`
+    )
+    .all(sessionId, stepKey, cap) as ActivityRow[];
 }
 
 // ============================================================================
@@ -1306,6 +1357,69 @@ export function getPagePlansByStatus(sessionId: string, status: string): PagePla
         ORDER BY created_at ASC`
     )
     .all(sessionId, status) as PagePlanRow[];
+}
+
+/**
+ * All page_plans rows for the session, regardless of draft_status. Used by
+ * /api/compile/progress/items?step=plan|draft|crossref to render the per-page
+ * progress list in the expand-to-reveal UI.
+ */
+export function getAllPagePlansBySession(sessionId: string): PagePlanRow[] {
+  return openDb()
+    .prepare(
+      `SELECT plan_id, session_id, title, page_type, action,
+              source_ids, existing_page_id, related_plan_ids,
+              draft_content, draft_status, created_at
+         FROM page_plans
+        WHERE session_id = ?
+        ORDER BY created_at ASC`
+    )
+    .all(sessionId) as PagePlanRow[];
+}
+
+/**
+ * Sources for the session, with a synthetic `extracted` flag based on whether
+ * an extractions row exists. Backs /api/compile/progress/items?step=extract:
+ * the UI shows ✓ for extracted, ⏳ for pending, with no separate failed state
+ * here (per-source extract failures land in activity_log, not as a row state).
+ */
+export function getSourcesForSessionWithExtractStatus(
+  sessionId: string,
+): Array<{ source_id: string; title: string; extracted: boolean }> {
+  const rows = openDb()
+    .prepare(
+      `SELECT s.source_id, s.title,
+              CASE WHEN e.source_id IS NULL THEN 0 ELSE 1 END AS extracted
+         FROM sources s
+         LEFT JOIN extractions e ON e.source_id = s.source_id
+        WHERE s.onboarding_session_id = ?
+        ORDER BY s.date_ingested ASC`
+    )
+    .all(sessionId) as Array<{ source_id: string; title: string; extracted: 0 | 1 }>;
+  return rows.map((r) => ({
+    source_id: r.source_id,
+    title: r.title,
+    extracted: r.extracted === 1,
+  }));
+}
+
+/**
+ * Pages committed during the session — joined via the page_plans rows that
+ * belong to the session. Backs /api/compile/progress/items?step=commit.
+ */
+export function getPagesForSession(
+  sessionId: string,
+): Array<{ page_id: string; title: string }> {
+  return openDb()
+    .prepare(
+      `SELECT DISTINCT p.page_id, p.title
+         FROM pages p
+         JOIN page_plans pp ON pp.existing_page_id = p.page_id
+                            OR (pp.draft_status = 'committed' AND pp.title = p.title)
+        WHERE pp.session_id = ?
+        ORDER BY p.title ASC`
+    )
+    .all(sessionId) as Array<{ page_id: string; title: string }>;
 }
 
 export function updatePlanDraft(planId: string, draftContent: string): void {

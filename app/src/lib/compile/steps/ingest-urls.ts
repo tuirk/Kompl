@@ -143,6 +143,8 @@ export async function runIngestUrlsStep(
       if (isYouTubeUrl(payload.url)) {
         logActivity('ingest_url_warning', {
           source_id: sourceId,
+          session_id: sessionId,
+          step_key: 'ingest_urls',
           details: { warning: 'youtube_no_transcript', url: payload.url },
         });
       }
@@ -193,6 +195,8 @@ export async function runIngestUrlsStep(
 
       logActivity('ingest_url_failed', {
         source_id: null,
+        session_id: sessionId,
+        step_key: 'ingest_urls',
         details: {
           stage_id: row.stage_id,
           session_id: sessionId,

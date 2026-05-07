@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -619,6 +619,19 @@ def migrate():
             except Exception as e:
                 # Non-fatal: nlp-service no longer reads this key after Phase 8.
                 print(f"  v22 cfg cleanup skipped (non-fatal): {e}")
+
+    if current < 23:
+        print("  applying migration v23 (scope activity_log by compile session + step)...")
+        # Phase B.1: every activity_log row written from a compile pipeline route
+        # gets tagged with its session_id + step_key, so /api/compile/progress/events
+        # (Phase B.4) can return per-(session, step) audit trails for the
+        # expand-to-reveal progress UI (Phase C). Pre-v23 rows stay NULL — no
+        # backfill possible (we have no way to recover the original session/step
+        # for events written before this column existed).
+        conn.execute("ALTER TABLE activity_log ADD COLUMN session_id TEXT")
+        conn.execute("ALTER TABLE activity_log ADD COLUMN step_key TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_session ON activity_log(session_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_session_step ON activity_log(session_id, step_key)")
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
