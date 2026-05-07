@@ -355,6 +355,8 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
           extractFailed++;
           logActivity('extraction_failed', {
             source_id: src.source_id,
+            session_id: sessionId,
+            step_key: 'extract',
             details: { title: src.title, error: err instanceof Error ? err.message : String(err) },
           });
         }

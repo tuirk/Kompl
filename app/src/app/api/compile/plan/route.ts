@@ -458,6 +458,8 @@ export async function POST(request: Request) {
       const srcMeta = sessionSourceMetaById.get(match.source_id);
       logActivity('page_contradiction_detected', {
         source_id: match.source_id,
+        session_id,
+        step_key: 'match',
         details: {
           page_id: match.page_id,
           page_title: match.page_title,

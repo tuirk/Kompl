@@ -242,6 +242,8 @@ export async function runIngestTextsStep(
 
       logActivity('ingest_text_failed', {
         source_id: null,
+        session_id: sessionId,
+        step_key: 'ingest_texts',
         details: {
           stage_id: row.stage_id,
           session_id: sessionId,
