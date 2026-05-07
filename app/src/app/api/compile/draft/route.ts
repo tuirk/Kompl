@@ -39,7 +39,13 @@ import {
 import { yamlDoubleQuote } from '../../../../lib/yaml-escape';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
-const DRAFT_CONCURRENCY = 5;
+// 10 concurrent draft calls. Tier-1 RPM is 1000/min and we use <1% of it,
+// so the rate-limit headroom is huge. Per-page memory cost is ~100 KB
+// (source markdown + dossier + schema) → 10 concurrent ≈ 1 MB, fine.
+// Diminishing returns kick in when a layer has fewer plans than the cap;
+// 10 is chosen so a session with 10+ source-summary pages drafts in a
+// single round-trip instead of two staggered batches at 5.
+const DRAFT_CONCURRENCY = 10;
 
 // Same mapping as plan/route.ts — kept local to avoid a shared-lib extraction for 10 lines.
 // Default is 'Uncategorized' (not 'General') — 'General' as a fallback seeds a universal-matching label into existing_categories and the LLM reuses it for every subsequent draft.
