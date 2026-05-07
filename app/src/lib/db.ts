@@ -1737,11 +1737,15 @@ export function markStaleSessionsFailed(): number {
  * compile_progress row, and the dashboard uses it to disable "Add Sources"
  * at render time.
  *
- * Staleness filter: rows older than 180 min are ignored. 180 min covers the
- * worst-case legit compile (100 sources × 2 min/source budget from
- * /api/compile/run). Older rows are treated as zombies that the reconciler
- * (markStaleSessionsFailed / reconcileStuckCompileSessions) will clean up
- * separately — blocking on them would permanently lock the dashboard.
+ * Staleness filter:
+ *   - queued rows (started_at IS NULL) are always considered active
+ *   - running rows stay active until they exceed the same adaptive timeout as
+ *     markStaleSessionsFailed(): max(60, source_count * 6) minutes
+ *
+ * That keeps the global concurrency gate aligned with the stale-session
+ * cleanup. Otherwise a legit long-running session could disappear from the
+ * gate after a flat 180 minutes and incorrectly allow a second compile to
+ * start in parallel.
  *
  * Queued rows with started_at=NULL (created by createCompileProgress, not
  * yet picked up by n8n) are included — they are fresh-by-definition.
@@ -1765,10 +1769,20 @@ export function getRunningCompileSession(): {
 } | null {
   const row = openDb()
     .prepare(
-      `SELECT session_id, started_at, source_count
-         FROM compile_progress
-        WHERE status IN ('queued', 'running')
-          AND (started_at IS NULL OR datetime(started_at) > datetime('now', '-180 minutes'))
+      `SELECT cp.session_id, cp.started_at, cp.source_count
+         FROM compile_progress cp
+        WHERE cp.status = 'queued'
+           OR (
+                cp.status = 'running'
+            AND cp.started_at IS NOT NULL
+            AND CAST((julianday('now') - julianday(cp.started_at)) * 24 * 60 AS INTEGER)
+                <= MAX(
+                     60,
+                     (SELECT COUNT(*)
+                        FROM sources s
+                       WHERE s.onboarding_session_id = cp.session_id) * 6
+                   )
+              )
         ORDER BY COALESCE(started_at, created_at) DESC
         LIMIT 1`
     )
