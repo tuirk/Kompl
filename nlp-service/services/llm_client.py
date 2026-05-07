@@ -83,6 +83,146 @@ _JSON_TRAILER = (
     "described above. Do not include any text outside the json."
 )
 
+
+# ---------------------------------------------------------------------------
+# Response-shape contract helper
+# ---------------------------------------------------------------------------
+#
+# Builds a 4-layer JSON-shape contract block from a Pydantic response model:
+#   1. Schema  — literal shape with field names, types, Literal enum lists,
+#                nullability marked
+#   2. Example — one filled-in canonical instance with placeholder values
+#   3. Rules   — explicit "keys MUST match, top-level wrapper MUST be object"
+#   4. Verify  — closing self-verification instruction
+#
+# Convergent industry pattern (BAML schema-aligned parsing, OpenAI structured
+# outputs guide, Promptfoo evaluate-json) — measurably reduces drift on
+# DeepSeek's json_object mode where response_model is server-side ignored.
+#
+# Output is appended AFTER _JSON_TRAILER, never replacing it: DeepSeek requires
+# the literal "json" keyword in the prompt to enable json_object mode.
+
+
+def _resolve_ref(ref: str, defs: dict) -> dict:
+    """Resolve a JSON-Schema $ref like '#/$defs/Foo' to its definition."""
+    name = ref.split("/")[-1]
+    return defs.get(name, {})
+
+
+def _render_schema_shape(node: dict, defs: dict, indent: int = 0) -> str:
+    """Render a JSON Schema node as a literal type-placeholder shape."""
+    if "$ref" in node:
+        return _render_schema_shape(_resolve_ref(node["$ref"], defs), defs, indent)
+
+    # Pydantic surfaces Optional[X] as anyOf with a `null` member.
+    if "anyOf" in node:
+        members = node["anyOf"]
+        is_nullable = any(m.get("type") == "null" for m in members)
+        non_null = [m for m in members if m.get("type") != "null"]
+        if non_null and is_nullable:
+            inner = _render_schema_shape(non_null[0], defs, indent)
+            return f"{inner.rstrip()} or null"
+        return _render_schema_shape(
+            non_null[0] if non_null else members[0], defs, indent
+        )
+
+    t = node.get("type")
+    pad = "  " * indent
+
+    if t == "object":
+        props = node.get("properties", {})
+        if not props:
+            return "{}"
+        lines = ["{"]
+        for key, child in props.items():
+            child_rendered = _render_schema_shape(child, defs, indent + 1)
+            lines.append(f"{pad}  \"{key}\": {child_rendered},")
+        if lines[-1].endswith(","):
+            lines[-1] = lines[-1][:-1]
+        lines.append(f"{pad}}}")
+        return "\n".join(lines)
+
+    if t == "array":
+        items = node.get("items", {})
+        item_rendered = _render_schema_shape(items, defs, indent + 1)
+        return f"[\n{pad}  {item_rendered}\n{pad}]"
+
+    if "enum" in node:
+        opts = " | ".join(repr(v) for v in node["enum"])
+        return f"<one of: {opts}>"
+    if t == "string":
+        return "<string>"
+    if t == "integer":
+        return "<integer>"
+    if t == "number":
+        return "<number>"
+    if t == "boolean":
+        return "<true | false>"
+    if t == "null":
+        return "null"
+    return "<value>"
+
+
+def _render_schema_example(node: dict, defs: dict, depth: int = 0):
+    """Render a canonical example value — concrete placeholders, not types."""
+    if "$ref" in node:
+        return _render_schema_example(_resolve_ref(node["$ref"], defs), defs, depth)
+    if "anyOf" in node:
+        non_null = [m for m in node["anyOf"] if m.get("type") != "null"]
+        return _render_schema_example(
+            non_null[0] if non_null else node["anyOf"][0], defs, depth
+        )
+
+    t = node.get("type")
+    if t == "object":
+        props = node.get("properties", {})
+        return {key: _render_schema_example(child, defs, depth + 1) for key, child in props.items()}
+    if t == "array":
+        # One example item — keep prompts compact.
+        return [_render_schema_example(node.get("items", {}), defs, depth + 1)]
+    if "enum" in node:
+        return node["enum"][0]
+    if t == "string":
+        return "example string"
+    if t == "integer":
+        return 1
+    if t == "number":
+        return 1.0
+    if t == "boolean":
+        return True
+    if t == "null":
+        return None
+    return None
+
+
+def _format_response_contract(model_class) -> str:
+    """Render the 4-layer JSON-shape contract block for a Pydantic model.
+
+    Layers (schema, example, rules, self-verify) are derived mechanically
+    from model.model_json_schema(); no hand-rolled examples per call site.
+    """
+    import json as _json
+
+    schema = model_class.model_json_schema()
+    defs = schema.get("$defs", {})
+    rendered_shape = _render_schema_shape(schema, defs, indent=0)
+    rendered_example = _json.dumps(
+        _render_schema_example(schema, defs, depth=0), indent=2
+    )
+
+    return (
+        "\n\n"
+        "Return JSON shaped exactly like this. Keys MUST match exactly.\n"
+        "Top-level wrapper MUST be a JSON object, not a list.\n"
+        "Do not add, rename, or remove fields.\n\n"
+        "Schema:\n"
+        f"{rendered_shape}\n\n"
+        "Example (use this shape with your real values, not these placeholders):\n"
+        f"{rendered_example}\n\n"
+        "Before returning, verify your output matches the shape above."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -98,6 +238,49 @@ class CostCeilingError(Exception):
 
 class LLMCompileError(Exception):
     """Raised when the LLM call succeeds but the response cannot be parsed."""
+
+
+def _parse_failure_tail(
+    step: str,
+    expected_wrapper: str,
+    raw_text: str | None,
+) -> str:
+    """Build the structured tail consumed by /api/compile/progress/events.
+
+    Output shape:
+      parse_failed: step=<step>: expected_wrapper=<key>, got_type=<dict|list|other>,
+      got_keys=[...], raw_excerpt='<first 200 chars>'
+
+    Phase C (progress UI expand-to-reveal) reads this tail to show users
+    the exact wrapper drift inline. Without it, the same information
+    lives only in docker logs.
+    """
+    import json as _json
+
+    got_type = "unknown"
+    got_keys: list[str] = []
+    if raw_text:
+        try:
+            parsed = _json.loads(raw_text)
+            if isinstance(parsed, dict):
+                got_type = "dict"
+                got_keys = list(parsed.keys())[:10]
+            elif isinstance(parsed, list):
+                got_type = "list"
+            elif parsed is None:
+                got_type = "null"
+            else:
+                got_type = type(parsed).__name__
+        except Exception:
+            got_type = "non-json"
+    excerpt = (raw_text or "")[:200].replace("\n", " ")
+    return (
+        f"parse_failed: step={step}: "
+        f"expected_wrapper={expected_wrapper}, "
+        f"got_type={got_type}, "
+        f"got_keys={got_keys!r}, "
+        f"raw_excerpt={excerpt!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +535,12 @@ def lint_scan(pages: list[str], model: str = _DEFAULT_MODEL) -> LintScanResponse
         ]
         return LintScanResponse(contradictions=contras)
     except Exception as e:
-        raise LLMCompileError(f"lint_scan_parse_failed: {e}") from e
+        raise LLMCompileError(
+            f"lint_scan_parse_failed: {e}; "
+            + _parse_failure_tail(
+                step="lint", expected_wrapper="contradictions", raw_text=raw_text,
+            )
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -540,14 +728,24 @@ def extract_source(
     if result.finish_reason != "MAX_TOKENS":
         # Not a truncation — parse error is something else (schema drift,
         # malformed response). No point retrying with halved input.
-        raise LLMCompileError(f"extract_llm_parse_failed: {first_err}") from first_err
+        raise LLMCompileError(
+            f"extract_llm_parse_failed: {first_err}; "
+            + _parse_failure_tail(
+                step="extract", expected_wrapper="entities", raw_text=raw_text,
+            )
+        ) from first_err
 
     if not model.startswith("gemini-"):
         # The halved-input fallback is a Gemini-bug-specific mitigation for
         # the 2.5 Flash structured-output repetition loop. DeepSeek (and any
         # other provider) doesn't share the pathology; surface the original
         # parse error rather than doubling cost on an unvalidated retry path.
-        raise LLMCompileError(f"extract_llm_parse_failed: {first_err}") from first_err
+        raise LLMCompileError(
+            f"extract_llm_parse_failed: {first_err}; "
+            + _parse_failure_tail(
+                step="extract", expected_wrapper="entities", raw_text=raw_text,
+            )
+        ) from first_err
 
     print(
         f"[extract] MAX_TOKENS truncation + salvage failed — "
@@ -596,7 +794,10 @@ def extract_source(
     if not fallback_raw:
         raise LLMCompileError(
             f"extract_llm_parse_failed_after_fallback: "
-            f"first={first_err}; fallback=empty"
+            f"first={first_err}; fallback=empty; "
+            + _parse_failure_tail(
+                step="extract-fallback", expected_wrapper="entities", raw_text=fallback_raw,
+            )
         ) from first_err
 
     if fallback_result.parsed is not None:
@@ -613,7 +814,10 @@ def extract_source(
         return salvaged_fallback
     raise LLMCompileError(
         f"extract_llm_parse_failed_after_fallback: "
-        f"first={first_err}; second={fallback_parse_err}"
+        f"first={first_err}; second={fallback_parse_err}; "
+        + _parse_failure_tail(
+            step="extract-fallback", expected_wrapper="entities", raw_text=fallback_raw,
+        )
     ) from first_err
 
 
@@ -746,7 +950,12 @@ def disambiguate_entities(
 
     if result.parsed is not None:
         return result.parsed  # type: ignore[return-value]
-    raise LLMCompileError(f"disambiguate_llm_parse_failed: {result.parse_error}") from result.parse_error
+    raise LLMCompileError(
+        f"disambiguate_llm_parse_failed: {result.parse_error}; "
+        + _parse_failure_tail(
+            step="disambiguate", expected_wrapper="results", raw_text=raw_text,
+        )
+    ) from result.parse_error
 
 
 # ---------------------------------------------------------------------------
@@ -1120,7 +1329,12 @@ def crossref_pages(pages: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> 
 
     if result.parsed is not None:
         return result.parsed  # type: ignore[return-value]
-    raise LLMCompileError(f"crossref_parse_failed: {result.parse_error}") from result.parse_error
+    raise LLMCompileError(
+        f"crossref_parse_failed: {result.parse_error}; "
+        + _parse_failure_tail(
+            step="crossref", expected_wrapper="updated_pages", raw_text=raw_text,
+        )
+    ) from result.parse_error
 
 
 # ---------------------------------------------------------------------------
@@ -1204,7 +1418,12 @@ def triage_page_update(
         raise LLMCompileError("triage_error: empty response text")
 
     if result.parsed is None:
-        raise LLMCompileError(f"triage_json_parse_failed: {result.parse_error}") from result.parse_error
+        raise LLMCompileError(
+            f"triage_json_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(
+                step="triage", expected_wrapper="decision", raw_text=raw_text,
+            )
+        ) from result.parse_error
     triage = result.parsed
 
     decision = triage.decision if triage.decision in ("update", "contradiction", "skip") else "skip"
@@ -1336,7 +1555,12 @@ def select_pages_for_query(
         return []
 
     if result.parsed is None:
-        raise LLMCompileError(f"select_pages_parse_failed: {result.parse_error}") from result.parse_error
+        raise LLMCompileError(
+            f"select_pages_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(
+                step="select_pages", expected_wrapper="page_ids", raw_text=raw_text,
+            )
+        ) from result.parse_error
     return result.parsed.page_ids
 
 
@@ -1469,7 +1693,12 @@ def synthesize_answer(
         raise LLMCompileError("synthesize_error: empty response text")
 
     if result.parsed is None:
-        raise LLMCompileError(f"synthesize_parse_failed: {result.parse_error}") from result.parse_error
+        raise LLMCompileError(
+            f"synthesize_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(
+                step="synthesize", expected_wrapper="answer", raw_text=raw_text,
+            )
+        ) from result.parse_error
     return result.parsed
 
 
@@ -1530,3 +1759,28 @@ Keep it under 150 words. No markdown formatting — plain text with line breaks.
         raise LLMCompileError("digest_error: empty response text")
 
     return raw_text.strip()
+
+
+# ---------------------------------------------------------------------------
+# Finalize prompts with response-shape contracts
+# ---------------------------------------------------------------------------
+#
+# This block runs at module load. It MUST be after every Pydantic response
+# model is defined — the constants above end with `+ _JSON_TRAILER` and we
+# tack on the model-derived contract block here so the prompts stay readable
+# in their original locations. Do NOT move earlier in the file: forward refs
+# to the response models would crash the import.
+#
+# DeepSeek's json_object mode reads only the prompt text (response_model
+# schema is server-side ignored), so the wrapper-key anchor + filled-in
+# example below is what actually constrains output shape. Two production
+# drift variants ({"pairs":[...]}, bare list [{...}]) both came from the
+# same underspecified disambiguate prompt before this block was added.
+
+_LINT_SYSTEM_PROMPT = _LINT_SYSTEM_PROMPT + _format_response_contract(LintScanResponse)
+_EXTRACTION_SYSTEM_PROMPT = _EXTRACTION_SYSTEM_PROMPT + _format_response_contract(LLMExtractionResponse)
+_DISAMBIGUATION_SYSTEM_PROMPT = _DISAMBIGUATION_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
+_DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
+_CROSSREF_SYSTEM_PROMPT = _CROSSREF_SYSTEM_PROMPT + _format_response_contract(CrossrefResponse)
+_SELECT_PAGES_SYSTEM_PROMPT = _SELECT_PAGES_SYSTEM_PROMPT + _format_response_contract(SelectPagesResponse)
+_SYNTHESIZE_SYSTEM_PROMPT = _SYNTHESIZE_SYSTEM_PROMPT + _format_response_contract(SynthesizeResponse)
