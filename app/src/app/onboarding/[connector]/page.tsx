@@ -252,7 +252,10 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
 
   function addFiles(fileList: FileList | null) {
     if (!fileList) return;
-    setSelectedFiles(prev => [...prev, ...Array.from(fileList)].slice(0, 20));
+    // Cap matches the server side (MAX_FILES_PER_REQUEST in
+    // /api/onboarding/upload). If they drift, the user gets a confusing
+    // 422 only on submit instead of an obvious "(max N)" hint here.
+    setSelectedFiles(prev => [...prev, ...Array.from(fileList)].slice(0, 100));
   }
 
   function removeFile(idx: number) {
@@ -441,7 +444,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
                   fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
                   textTransform: 'uppercase', color: 'var(--accent)', marginTop: 8,
                 }}>
-                  {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} selected{selectedFiles.length >= 20 ? ' (max 20)' : ''}
+                  {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} selected{selectedFiles.length >= 100 ? ' (max 100)' : ''}
                 </p>
               )}
             </div>
