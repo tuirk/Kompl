@@ -136,7 +136,7 @@ async function callExtractLLM(payload: Record<string, unknown>): Promise<any> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(300_000), // 5 min — Gemini thinking can be slow
+    signal: AbortSignal.timeout(600_000), // 10 min — DeepSeek extract on a 95K-char source clocks ~290s; Vilnius travel guide hit ~387s in Phase 7. Gemini thinking adds another minute on top of that on its bad days. 600s gives ~55% headroom over the worst observed for either provider.
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');

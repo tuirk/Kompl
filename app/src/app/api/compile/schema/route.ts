@@ -76,7 +76,7 @@ export async function POST(request: Request) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pages: pagesSummary, compile_model: getEffectiveCompileModel(session_id) }),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(600_000), // 10 min — generate-schema runs an LLM call; DeepSeek can take 200-400s on the page list. 120s (prior value) was Gemini-only sizing.
   });
 
   if (!genRes.ok) {
