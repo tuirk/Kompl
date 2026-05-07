@@ -54,11 +54,12 @@ desktop.ini
 npm-debug.log*
 .gitnexus
 
-# Claude Code — ignore personal/local dirs, commit shared settings
+# Claude Code — ignore personal/local dirs + machine-local settings
 .claude/memory/
 .claude/skills/
 .claude/plans/
 .claude/*.lock
+.claude/settings.json
 
 # Internal docs (local only — not for public repo)
 docs/spec/
