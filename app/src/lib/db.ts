@@ -1650,25 +1650,83 @@ export function cancelCompileProgress(sessionId: string, reason: string): void {
 }
 
 /**
- * Mark all 'running' sessions older than olderThanMinutes as failed.
- * Called on server startup (health check) to recover from mid-pipeline crashes.
- * Uses datetime() wrapper on both sides per the SQLite timestamp comparison gotcha.
+ * Mark stale 'running' sessions as failed using a per-session adaptive
+ * threshold: 60 min floor + 6 min per source.
+ *
+ * Sized for DeepSeek (extract 200-400s/source, draft ~3 min/page); generous
+ * for Gemini. Each session's threshold scales with its own size:
+ *
+ *   1 source       → 60 min  (floor)
+ *   10 sources     → 60 min  (floor)
+ *   30 sources     → 180 min
+ *   100 sources    → 600 min (10h)
+ *   500 sources    → 3000 min (50h)
+ *
+ * A flat cap (the prior shape — `markStaleSessionsFailed(30)` from the
+ * health probe) killed legit DeepSeek sessions at 6 sources mid-pipeline.
+ * A flat cap also makes no sense for the user with 1800 sources who needs
+ * a multi-day session — they batch, but each batch can still be 100+
+ * sources and run for hours.
+ *
+ * Implementation note: per-row threshold can't be expressed as a single
+ * SQL UPDATE because the threshold depends on a JOIN-derived count.
+ * Two-step (SELECT running rows + their source counts → UPDATE the ones
+ * that exceed their personal threshold) is what we want.
+ *
+ * Called on every health probe AND when /api/compile/run starts a new
+ * pipeline — both fine because the operation is idempotent (only marks
+ * sessions that have actually exceeded their per-session cap).
+ *
+ * Uses datetime() wrapper on both sides per the SQLite timestamp comparison
+ * gotcha (CLAUDE.md memory: feedback_sqlite_gotchas).
+ *
  * Returns the number of rows cleaned up.
  */
-export function markStaleSessionsFailed(olderThanMinutes: number): number {
-  const result = openDb()
+export function markStaleSessionsFailed(): number {
+  const db = openDb();
+  // started_at IS NULL means 'queued' (never picked up by n8n) — those are
+  // handled by reconcileStuckCompileSessions, not here.
+  const candidates = db
     .prepare(
-      `UPDATE compile_progress
-          SET status = 'failed',
-              error  = ?
-        WHERE status = 'running'
-          AND datetime(started_at) < datetime('now', ? || ' minutes')`
+      `SELECT cp.session_id,
+              cp.started_at,
+              (SELECT COUNT(*)
+                 FROM sources s
+                WHERE s.onboarding_session_id = cp.session_id) AS source_count,
+              CAST((julianday('now') - julianday(cp.started_at)) * 24 * 60 AS INTEGER) AS elapsed_min
+         FROM compile_progress cp
+        WHERE cp.status = 'running'
+          AND cp.started_at IS NOT NULL`
     )
-    .run(
-      `Pipeline interrupted — timed out after ${olderThanMinutes} minutes. Click Retry to rerun.`,
-      `-${olderThanMinutes}`
-    );
-  return result.changes as number;
+    .all() as Array<{
+      session_id: string;
+      started_at: string;
+      source_count: number;
+      elapsed_min: number;
+    }>;
+
+  if (candidates.length === 0) return 0;
+
+  const updateStmt = db.prepare(
+    `UPDATE compile_progress
+        SET status = 'failed',
+            error  = ?
+      WHERE session_id = ?
+        AND status = 'running'`
+  );
+
+  let cleaned = 0;
+  for (const row of candidates) {
+    const threshold = Math.max(60, row.source_count * 6);
+    if (row.elapsed_min > threshold) {
+      const result = updateStmt.run(
+        `Pipeline interrupted — session of ${row.source_count} sources exceeded ${threshold} min limit. Click Retry to rerun.`,
+        row.session_id,
+      );
+      cleaned += result.changes as number;
+    }
+  }
+  return cleaned;
 }
 
 /**

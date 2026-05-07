@@ -517,11 +517,10 @@ export async function POST(request: Request) {
   if (progress.status === 'completed') return NextResponse.json({ session_id, status: 'already_completed' }, { status: 409 });
 
   if (progress.status === 'running') {
-    // Dynamic stale timeout: 60 min floor + 2 min per source.
-    // 5 sources → 60 min, 50 sources → 100 min, 100 sources → 200 min.
-    const sessionSources = getSourcesBySession(session_id);
-    const staleMinutes = Math.max(60, sessionSources.length * 2);
-    markStaleSessionsFailed(staleMinutes);
+    // Per-session adaptive cleanup (60 min floor + 6 min/source) — see
+    // markStaleSessionsFailed in lib/db.ts. This call is idempotent: only
+    // sessions that have exceeded their personal threshold get marked failed.
+    markStaleSessionsFailed();
     const refreshed = getCompileProgress(session_id);
     if (refreshed?.status === 'running') {
       return NextResponse.json({ error: 'already_running' }, { status: 409 });
