@@ -1055,6 +1055,21 @@ export function markSourceExtracted(sourceId: string): void {
 }
 
 /**
+ * Replace a source's title — used when the extract LLM derives a real
+ * document title for a source whose original title was a filename stub
+ * (arxiv ID, digit-only filename, etc.). Trim + cap at 250 chars to keep
+ * the column index lean. No-op on empty input.
+ */
+export function updateSourceTitle(sourceId: string, newTitle: string): void {
+  const trimmed = (newTitle ?? '').trim();
+  if (!trimmed) return;
+  const capped = trimmed.length > 250 ? trimmed.slice(0, 250) : trimmed;
+  openDb()
+    .prepare(`UPDATE sources SET title = ? WHERE source_id = ?`)
+    .run(capped, sourceId);
+}
+
+/**
  * Reset a source back to 'pending' so the compile pipeline will re-process it.
  * Clears attempt counter and backoff timestamp. Used by the manual recompile
  * endpoint and the UI retry flow.

@@ -43,8 +43,36 @@ import {
   insertRelationshipMentions,
   markSourceExtracted,
   readRawMarkdown,
+  updateSourceTitle,
 } from '../../../../lib/db';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
+
+// "Garbage" source titles — what we get when MarkItDown can't pull a title
+// from PDF metadata and the cascade falls through to the filename stub.
+// When the current title matches, prefer the LLM-derived title instead
+// (the extract LLM is now prompted to return the document's real title).
+//   - arxiv IDs:        2307.08768v4, 1201.6655, 2602.00133v1
+//   - digit prefixes:   12800_Vaughan-Williams, 294907447-MIT, 0611
+//   - pure digits:      0611
+const _GARBAGE_TITLE_PATTERNS: RegExp[] = [
+  /^\d{4}\.\d{4,5}(v\d+)?$/,
+  /^\d{3,}([_-].+)?$/,
+  /^\d+$/,
+];
+
+function isGarbageTitle(s: string): boolean {
+  const trimmed = (s ?? '').trim();
+  if (!trimmed) return true;
+  if (_GARBAGE_TITLE_PATTERNS.some((p) => p.test(trimmed))) return true;
+  // Spaceless filename stubs ≥ 8 chars dominated by digits/punct
+  // (e.g. "DOC-12345-FINAL", "report_v2_final"). Keep regular CamelCase
+  // identifiers alone since those have lots of letters.
+  if (!trimmed.includes(' ') && trimmed.length >= 8) {
+    const punctOrDigit = trimmed.replace(/[A-Za-z]/g, '').length;
+    if (punctOrDigit / trimmed.length >= 0.5) return true;
+  }
+  return false;
+}
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -275,6 +303,18 @@ export async function POST(request: Request) {
       llm_output: llmOutput,
     });
     markSourceExtracted(source_id);
+
+    // Step 7a: title rescue. MarkItDown's PDF path doesn't extract a title
+    // (it's `absent for PDFs (MarkItDown 0.1.5 never sets it)`), so the
+    // ingest cascade falls through to the filename stub — leaving wiki
+    // pages titled `0611`, `2307.08768v4`, `12800_Vaughan-Williams`, etc.
+    // The extract LLM is now prompted to derive the document's real title;
+    // if it did, replace the filename stub with it. Source-summary pages
+    // (Rule 1 in plan/route.ts) then use the rescued title automatically.
+    const llmTitle = (llmOutput?.title ?? '').toString().trim();
+    if (llmTitle && isGarbageTitle(source.title) && !isGarbageTitle(llmTitle)) {
+      updateSourceTitle(source_id, llmTitle);
+    }
 
     // Step 7b: record entity/concept mentions for wiki-wide threshold counting.
     // Alias-pin against the HISTORICAL aliases table so variants discovered in
