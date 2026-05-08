@@ -34,6 +34,7 @@ import {
   readRawMarkdown,
   updatePlanDraft,
   updatePlanFailed,
+  updateCompileStep,
   getDb,
 } from '../../../../lib/db';
 import { yamlDoubleQuote } from '../../../../lib/yaml-escape';
@@ -748,6 +749,18 @@ export async function POST(request: Request) {
           if (newCat && newCat !== 'Uncategorized' && newCat !== 'General') sessionCategorySet.add(newCat);
         }
       }
+      // Live progress detail for the UI's "Writing pages" tracker. Without
+      // this, the draft step shows just "PROCESSING" with no count while
+      // earlier steps show "8/8 sources extracted" etc. Mirrors the per-
+      // completion update pattern used by the extract worker pool.
+      updateCompileStep(
+        session_id,
+        'draft',
+        'running',
+        failed > 0
+          ? `${drafted}/${plans.length} pages drafted, ${failed} failed`
+          : `${drafted}/${plans.length} pages drafted`,
+      );
     }
   }
 
