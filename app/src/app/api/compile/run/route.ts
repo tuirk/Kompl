@@ -427,11 +427,15 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   if (matchResult.skipped) {
     updateCompileStep(sessionId, 'match', 'done', 'First compile — no existing pages');
   } else {
+    // Surface candidates_found + sources_checked so the UI can distinguish
+    // "match found 0 candidates above the TF-IDF threshold" from "match
+    // acted on N candidates and decided u/c/s on each". Without these counts
+    // the prior `0u/0c/0s` rendering looked identical to a bug.
     updateCompileStep(
       sessionId,
       'match',
       'done',
-      `${matchResult.stats.updates} updates, ${matchResult.stats.contradictions} contradictions, ${matchResult.stats.skips} skipped`
+      `${matchResult.stats.candidates_found} candidates from ${matchResult.stats.sources_checked} sources → ${matchResult.stats.updates}u/${matchResult.stats.contradictions}c/${matchResult.stats.skips}s`
     );
   }
   assertNotCancelled(sessionId);
