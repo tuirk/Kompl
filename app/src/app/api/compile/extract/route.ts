@@ -44,6 +44,7 @@ import {
   markSourceExtracted,
   readRawMarkdown,
 } from '../../../../lib/db';
+import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -61,7 +62,9 @@ async function callNer(sourceId: string, text: string): Promise<NerResponse> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_id: sourceId, text }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(360_000), // 6 min — spaCy NER on dense academic PDFs (50K+ chars) busts the prior 60s wall regardless of concurrency; the 1-source ed7f8def session also timed out at 60s.
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT, // 360s AbortSignal > undici 300s default headersTimeout
   });
   if (!res.ok) throw new Error(`ner_failed: ${res.status} ${await res.text().catch(() => '')}`);
   return res.json() as Promise<NerResponse>;
@@ -105,7 +108,9 @@ async function callMethod(method: string, text: string): Promise<KeyphraseRespon
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, top_n: 20 }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(360_000), // 6 min — keyphrase extractors (yake/rake/keybert/textrank) on dense academic text bust 60s; matched to callNer ceiling.
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT, // 360s AbortSignal > undici 300s default headersTimeout
   });
   if (!res.ok) throw new Error(`${method}_failed: ${res.status}`);
   return res.json() as Promise<KeyphraseResponse>;
@@ -124,7 +129,9 @@ async function callTfidfOverlap(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_text: sourceText, corpus_page_ids: corpusPageIds }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(360_000), // 6 min — TF-IDF overlap against full wiki corpus on dense source text busts 60s; matched to callNer ceiling.
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT, // 360s AbortSignal > undici 300s default headersTimeout
   });
   if (!res.ok) throw new Error(`tfidf_overlap_failed: ${res.status}`);
   return res.json() as Promise<TfidfResponse>;
@@ -137,6 +144,8 @@ async function callExtractLLM(payload: Record<string, unknown>): Promise<any> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(600_000), // 10 min — DeepSeek extract on a 95K-char source clocks ~290s; Vilnius travel guide hit ~387s in Phase 7. Gemini thinking adds another minute on top of that on its bad days. 600s gives ~55% headroom over the worst observed for either provider.
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');

@@ -24,7 +24,6 @@
  */
 
 import { NextResponse } from 'next/server';
-import { Agent } from 'undici';
 
 import {
   getCompileProgress,
@@ -44,31 +43,9 @@ import { runIngestFilesStep } from '@/lib/compile/steps/ingest-files';
 import { runIngestUrlsStep } from '@/lib/compile/steps/ingest-urls';
 import { runIngestTextsStep } from '@/lib/compile/steps/ingest-texts';
 import { sanitizeLogValue } from '@/lib/log-safe';
+import { LONG_HTTP_AGENT } from '@/lib/long-http-agent';
 
 const APP_URL = process.env.APP_URL ?? 'http://app:3000';
-
-// Node's built-in fetch (undici) defaults headersTimeout=300_000 ms — shorter
-// than the 600-900 s AbortSignal we set on long LLM steps (draft, crossref),
-// so HeadersTimeoutError fires before our AbortSignal ever kicks in. Scoped
-// Agent with a 16-min headersTimeout/bodyTimeout matches the longest step's
-// deadline plus buffer. Only applied to the steps that genuinely need >5 min;
-// keeping other calls on the default Agent preserves fail-fast behavior for
-// the short paths (extract, resolve, match, plan, commit, schema).
-// Ref: https://nodejs.org/api/globals.html#custom-dispatcher
-//
-// undici pinned to ^7 in package.json. undici 8 reworked dispatcher composition
-// to require an `onRequestStart` interceptor method shape that this Agent does
-// not expose when passed via `dispatcher:` to Node's built-in fetch — fails
-// with `InvalidArgumentError: invalid onRequestStart method` at draft/crossref
-// time. Dependabot will re-propose undici 8: do not merge that bump until
-// callDraft/callCrossref are migrated to undici-8-compatible dispatcher API
-// (`undici.request()` direct, or `setGlobalDispatcher()` on a v8 Agent).
-const LONG_HTTP_AGENT = new Agent({
-  headersTimeout: 16 * 60_000,
-  bodyTimeout: 16 * 60_000,
-  connectTimeout: 10_000,
-  keepAliveTimeout: 60_000,
-});
 
 // Shared error surfacer. On !res.ok, read the response body (race-capped at
 // 3 s so a hung chunked response doesn't stall the orchestrator) and embed
@@ -97,9 +74,16 @@ async function callExtract(sourceId: string, sessionId: string): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_id: sourceId }),
-    // 660s = inner extract LLM (600s) + 60s margin for NER/keyphrase/handler I/O.
-    // Prior 180s aborted the extract step before the inner 300s LLM ever fired.
-    signal: AbortSignal.timeout(660_000),
+    // 1500s = NER (360s, sequential) + route (10s) + keyphrase/tfidf parallel (360s longest) + extract LLM (600s) + ~170s handler+I/O headroom.
+    // Inner NLP sub-call ceilings raised from 60s → 360s after session e2c8a59d (13 academic PDFs) failed all 13 sources twice on 60s NER timeouts under EXTRACT_CONCURRENCY=4 contention; outer wrapper had to grow to match.
+    signal: AbortSignal.timeout(1_500_000),
+    // LONG_HTTP_AGENT (16-min headersTimeout) — needed since the 360s NLP +
+    // 600s LLM bumps push per-source extract past undici's default 300s
+    // headersTimeout. Session 29be62eb hit `[cause] HeadersTimeoutError`
+    // here before the AbortSignal ever fired. Comment above LONG_HTTP_AGENT
+    // initially excluded extract as "short" — no longer true on dense PDFs.
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT,
   });
   await throwOnError('extract', res, sessionId);
 }
@@ -111,6 +95,8 @@ async function callResolve(sessionId: string): Promise<{ canonical_entities: unk
     body: JSON.stringify({ session_id: sessionId }),
     // 660s = inner disambiguate LLM (600s) + 60s margin. Prior 180s aborted before the inner LLM finished on DeepSeek.
     signal: AbortSignal.timeout(660_000),
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT, // 660s AbortSignal > undici 300s default headersTimeout
   });
   await throwOnError('resolve', res, sessionId);
   const parsed = await res.json() as { canonical_entities?: unknown[]; canonical_concepts?: unknown[] };
@@ -199,6 +185,8 @@ async function callSchema(sessionId: string): Promise<unknown> {
     body: JSON.stringify({ session_id: sessionId }),
     // 660s = inner generate-schema LLM (600s) + 60s margin. Prior 120s aborted before inner LLM finished on DeepSeek.
     signal: AbortSignal.timeout(660_000),
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT, // 660s AbortSignal > undici 300s default headersTimeout
   });
   await throwOnError('schema', res, sessionId);
   return res.json();

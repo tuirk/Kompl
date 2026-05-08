@@ -40,6 +40,7 @@ import {
   getPagePlansByStatus,
   getPageTitleMap,
   updatePlanStatus,
+  updatePlanFailed,
   getCurrentPageHash,
   incrementPageSourceCount,
   setPendingContent,
@@ -147,7 +148,7 @@ async function commitSession(session_id: string): Promise<Response> {
       } catch (txErr) {
         const txMsg = txErr instanceof Error ? txErr.message : String(txErr);
         console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'db_transaction_error', context: 'provenance_only_commit', plan_id: plan.plan_id, session_id, error: txMsg }));
-        updatePlanStatus(plan.plan_id, 'failed');
+        updatePlanFailed(plan.plan_id, `db_transaction_error (provenance_only_commit): ${txMsg}`);
         failed++;
       }
       continue;
@@ -155,7 +156,7 @@ async function commitSession(session_id: string): Promise<Response> {
 
     const markdown = plan.draft_content;
     if (!markdown) {
-      updatePlanStatus(plan.plan_id, 'failed');
+      updatePlanFailed(plan.plan_id, 'missing draft_content (commit ran on a plan with no drafted markdown)');
       failed++;
       continue;
     }
@@ -300,7 +301,7 @@ async function commitSession(session_id: string): Promise<Response> {
     } catch (txErr) {
       const txMsg = txErr instanceof Error ? txErr.message : String(txErr);
       console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'db_transaction_error', context: 'session_commit', plan_id: plan.plan_id, page_id, session_id, error: txMsg }));
-      updatePlanStatus(plan.plan_id, 'failed');
+      updatePlanFailed(plan.plan_id, `db_transaction_error (session_commit): ${txMsg}`);
       failed++;
       continue;
     }

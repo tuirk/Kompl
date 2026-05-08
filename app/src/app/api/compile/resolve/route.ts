@@ -41,6 +41,7 @@ import {
   logActivity,
   normalizeSessionMentionsToCanonical,
 } from '../../../../lib/db';
+import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -150,6 +151,8 @@ async function callDisambiguate(
       ...(compileModel ? { compile_model: compileModel } : {}),
     }),
     signal: AbortSignal.timeout(600_000), // 10 min — disambiguate batches up to 10 pairs; DeepSeek can run ~200-400s per call on dense pairs. 120s (prior value) was Gemini-only sizing.
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');

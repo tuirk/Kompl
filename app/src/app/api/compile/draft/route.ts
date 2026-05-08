@@ -33,10 +33,11 @@ import {
   readPageMarkdown,
   readRawMarkdown,
   updatePlanDraft,
-  updatePlanStatus,
+  updatePlanFailed,
   getDb,
 } from '../../../../lib/db';
 import { yamlDoubleQuote } from '../../../../lib/yaml-escape';
+import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 // 10 concurrent draft calls. Tier-1 RPM is 1000/min and we use <1% of it,
@@ -102,6 +103,12 @@ async function callDraftPage(
       ...(compileModel ? { compile_model: compileModel } : {}),
     }),
     signal: AbortSignal.timeout(600_000), // 10 min — DeepSeek draft can match extract latency on dense sources. Gemini thinking adds margin on top. Same 600s budget as extract/resolve/schema for symmetry.
+    // LONG_HTTP_AGENT: undici default headersTimeout=300s would fire before
+    // our 600s AbortSignal on dense source-summary drafts. Session 29be62eb
+    // hit silent HeadersTimeoutError on 15/18 source-summaries (NLP server
+    // returned 200 OK after the client had already given up).
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT,
   });
 
   if (!res.ok) {
@@ -725,7 +732,12 @@ export async function POST(request: Request) {
       const r = results[i];
       if (r instanceof Error) {
         failed++;
-        updatePlanStatus(layerPlans[i].plan_id, 'failed');
+        // Capture the actual error message in the page_plans row + log to
+        // app stdout. Before this, every per-task failure was swallowed —
+        // operators had no clue why a draft died. Session 29be62eb (15
+        // source-summary HeadersTimeoutErrors) wasted 30+ min of debugging.
+        console.error('[draft] plan_id=%s title=%s err=%s', layerPlans[i].plan_id, layerPlans[i].title, r.message);
+        updatePlanFailed(layerPlans[i].plan_id, r.message);
       } else {
         drafted++;
         byType[r.pageType] = (byType[r.pageType] ?? 0) + 1;

@@ -1292,6 +1292,7 @@ export interface PagePlanRow {
   related_plan_ids: string | null;  // JSON TEXT
   draft_content: string | null;
   draft_status: string;
+  draft_error: string | null;  // populated by updatePlanFailed (schema v24)
   created_at: string;
 }
 
@@ -1351,7 +1352,7 @@ export function getPagePlansByStatus(sessionId: string, status: string): PagePla
     .prepare(
       `SELECT plan_id, session_id, title, page_type, action,
               source_ids, existing_page_id, related_plan_ids,
-              draft_content, draft_status, created_at
+              draft_content, draft_status, draft_error, created_at
          FROM page_plans
         WHERE session_id = ? AND draft_status = ?
         ORDER BY created_at ASC`
@@ -1369,7 +1370,7 @@ export function getAllPagePlansBySession(sessionId: string): PagePlanRow[] {
     .prepare(
       `SELECT plan_id, session_id, title, page_type, action,
               source_ids, existing_page_id, related_plan_ids,
-              draft_content, draft_status, created_at
+              draft_content, draft_status, draft_error, created_at
          FROM page_plans
         WHERE session_id = ?
         ORDER BY created_at ASC`
@@ -1446,6 +1447,21 @@ export function updatePlanStatus(planId: string, status: string): void {
   openDb()
     .prepare(`UPDATE page_plans SET draft_status = ? WHERE plan_id = ?`)
     .run(status, planId);
+}
+
+/**
+ * Mark a page_plan as failed AND record the error message in one update.
+ * Replaces the silent `updatePlanStatus(plan_id, 'failed')` pattern that
+ * threw away every per-task error from the draft pLimit pool — operators
+ * had to grep app logs for 30+ min to recover the cause. Truncates to 1000
+ * chars to keep DB row size bounded; full stack lives in `console.error`
+ * at the call site.
+ */
+export function updatePlanFailed(planId: string, errorMessage: string): void {
+  const truncated = errorMessage.length > 1000 ? errorMessage.slice(0, 1000) + '… [truncated]' : errorMessage;
+  openDb()
+    .prepare(`UPDATE page_plans SET draft_status = 'failed', draft_error = ? WHERE plan_id = ?`)
+    .run(truncated, planId);
 }
 
 /** Fetch a page by title (case-insensitive). Returns null if not found. */
@@ -3233,7 +3249,7 @@ export function getPendingDrafts(): PagePlanRow[] {
     .prepare(
       `SELECT plan_id, session_id, title, page_type, action,
               source_ids, existing_page_id, related_plan_ids,
-              draft_content, draft_status, created_at
+              draft_content, draft_status, draft_error, created_at
          FROM page_plans
         WHERE draft_status = 'pending_approval'
         ORDER BY created_at DESC`
