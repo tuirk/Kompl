@@ -945,7 +945,14 @@ def disambiguate_entities(
             ],
             response_model=DisambiguationResponse,
             thinking_budget=_read_thinking_budget('disambiguate_entities'),
-            max_output_tokens=2048,
+            # 8192 sized for the 10-pair batch in routers/resolution.py:665.
+            # Each decision is {entity_a, entity_b, decision, canonical, reason}
+            # where `reason` carries free-text justification (e.g., "Bagging is
+            # a specific ensemble method..."); 10 × ~250 tokens + thinking
+            # overhead easily exceeds 2048. Session 97f58805 hit truncation:
+            # raw_excerpt cut off mid-string at line 50 col 166 of the JSON.
+            # 8192 matches generate_schema (structured-creative reasoning tier).
+            max_output_tokens=8192,
             temperature=0.0,
             step="disambiguate",
         ))
