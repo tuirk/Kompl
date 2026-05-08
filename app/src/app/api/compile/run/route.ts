@@ -93,10 +93,13 @@ async function callResolve(sessionId: string): Promise<{ canonical_entities: unk
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
-    // 660s = inner disambiguate LLM (600s) + 60s margin. Prior 180s aborted before the inner LLM finished on DeepSeek.
-    signal: AbortSignal.timeout(660_000),
+    // 900s = callFuzzy 60s + callEmbedding 60s + callDisambiguate 600s + 180s
+    // headroom. Prior 660s was 60s short of the worst-case sequential sum once
+    // every sub-call hit its individual ceiling. In practice fuzzy+embedding
+    // finish in seconds, but the AbortSignal needs to fit the math.
+    signal: AbortSignal.timeout(900_000),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
-    dispatcher: LONG_HTTP_AGENT, // 660s AbortSignal > undici 300s default headersTimeout
+    dispatcher: LONG_HTTP_AGENT, // 900s AbortSignal > undici 300s default headersTimeout
   });
   await throwOnError('resolve', res, sessionId);
   const parsed = await res.json() as { canonical_entities?: unknown[]; canonical_concepts?: unknown[] };
@@ -114,7 +117,13 @@ async function callMatch(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, canonical_entities: canonicalEntities }),
-    signal: AbortSignal.timeout(300_000), // triage calls can stack up
+    // 1200s = sequential `for source` at match/route.ts:137 × (callTfidfOverlap
+    // 30s + callTriage 30s) per candidate page. The 300s budget never matched
+    // the actual N×M call cost (N sources × M candidate pages); for N=19
+    // sources × 3 candidates × 30s worst-case AbortSignal = 2280s. 1200s
+    // defensively covers the realistic case (triage usually <5s) and matches
+    // commit/draft scale.
+    signal: AbortSignal.timeout(1_200_000),
   });
   await throwOnError('match', res, sessionId);
   return res.json() as Promise<{ skipped: boolean; matches: unknown[]; stats: Record<string, number> }>;
@@ -146,7 +155,12 @@ async function callDraft(sessionId: string): Promise<{ drafted: number; failed: 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
-    signal: AbortSignal.timeout(900_000),
+    // 1500s = pLimit(N plans, DRAFT_CONCURRENCY=10) × inner callDraftPage 600s.
+    // For N=19 plans (~2 batches × ~600s = ~1200s) plus headroom. Prior 900s
+    // fired at 14m 59.9s on session d28d7644 even though all 19 drafts had
+    // succeeded server-side; outer killed the fetch before the inner JSON
+    // response landed. Matches callExtract's outer for symmetry.
+    signal: AbortSignal.timeout(1_500_000),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
     dispatcher: LONG_HTTP_AGENT,
   });
@@ -172,7 +186,12 @@ async function callCommit(sessionId: string): Promise<{ committed: number; thin_
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
-    signal: AbortSignal.timeout(120_000),
+    // 1200s = sequential `for plan` at commit/route.ts:124 × (DB tx + write-page
+    // 30s + vector-upsert 30s) per plan. Prior 120s fit only the trivial case
+    // (~3 plans); for N=19 plans worst case sums to ~20 min. 1200s defensively
+    // covers cases where any plan's file or vector call slows down — realistic
+    // case finishes in <2s/plan.
+    signal: AbortSignal.timeout(1_200_000),
   });
   await throwOnError('commit', res, sessionId);
   return res.json() as Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number }>;
@@ -183,10 +202,13 @@ async function callSchema(sessionId: string): Promise<unknown> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
-    // 660s = inner generate-schema LLM (600s) + 60s margin. Prior 120s aborted before inner LLM finished on DeepSeek.
-    signal: AbortSignal.timeout(660_000),
+    // 720s = file-exists 10s + generate-schema LLM 600s + write-file 10s +
+    // 100s headroom. Prior 660s gave only 40s margin once both file-IO sub-
+    // calls bracketing the LLM were accounted for; on a slow disk + max LLM
+    // run that would have fired before the response landed.
+    signal: AbortSignal.timeout(720_000),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
-    dispatcher: LONG_HTTP_AGENT, // 660s AbortSignal > undici 300s default headersTimeout
+    dispatcher: LONG_HTTP_AGENT, // 720s AbortSignal > undici 300s default headersTimeout
   });
   await throwOnError('schema', res, sessionId);
   return res.json();
