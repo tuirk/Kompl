@@ -158,19 +158,33 @@ def test_lint_prompt_anchors_contradictions():
     assert "contradictions" in _LINT_SYSTEM_PROMPT
 
 
-# ── LLMExtractionResponse — flat 6-key shape ──────────────────────────────────
+# ── LLMExtractionResponse — flat 7-key shape ──────────────────────────────────
 
 def test_extraction_canonical():
     p = LLMExtractionResponse.model_validate({
+        "title": "Sample Paper Title",
         "entities": [], "concepts": [], "claims": [],
         "relationships": [], "contradictions": [], "summary": "x",
     })
     assert p.summary == "x"
+    assert p.title == "Sample Paper Title"
+
+
+def test_extraction_accepts_empty_title():
+    # Per the prompt: LLM returns "" when no title is derivable. Caller falls
+    # back to the filename-based title_hint via updateSourceTitle's no-op path.
+    p = LLMExtractionResponse.model_validate({
+        "title": "",
+        "entities": [], "concepts": [], "claims": [],
+        "relationships": [], "contradictions": [], "summary": "x",
+    })
+    assert p.title == ""
 
 
 def test_extraction_rejects_data_wrapper():
     with pytest.raises(ValidationError):
         LLMExtractionResponse.model_validate({"data": {
+            "title": "",
             "entities": [], "concepts": [], "claims": [],
             "relationships": [], "contradictions": [], "summary": "x",
         }})
@@ -182,7 +196,7 @@ def test_extraction_rejects_bare_list():
 
 
 def test_extraction_prompt_anchors_keys():
-    for key in ("entities", "concepts", "claims", "relationships", "summary"):
+    for key in ("title", "entities", "concepts", "claims", "relationships", "summary"):
         assert key in _EXTRACTION_SYSTEM_PROMPT, f"missing wrapper key: {key}"
 
 

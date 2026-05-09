@@ -43,8 +43,6 @@ const CONNECTOR_LABELS: Record<string, string> = {
   paste: 'Paste Text',
   url: 'URLs',
   'file-upload': 'Files',
-  'google-drive': 'Google Drive',
-  notion: 'Notion',
   bookmarks: 'Browser Bookmarks',
   twitter: 'Twitter / X Bookmarks',
   upnote: 'Upnote',

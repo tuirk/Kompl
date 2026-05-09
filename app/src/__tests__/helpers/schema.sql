@@ -102,6 +102,7 @@ CREATE TABLE page_plans (
   related_plan_ids JSON,
   draft_content TEXT,
   draft_status TEXT DEFAULT 'planned',
+  draft_error TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -222,4 +223,4 @@ CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id
 CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '23');
+INSERT INTO settings (key, value) VALUES ('schema_version', '24');

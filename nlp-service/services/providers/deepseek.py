@@ -14,8 +14,9 @@ DeepSeek API specifics (2026-05-05):
 - Usage fields differ from Gemini: ``prompt_tokens``, ``completion_tokens``,
   ``prompt_cache_hit_tokens``. The Gemini-shape ``thoughts_token_count`` is
   absent — DeepSeek folds reasoning into completion_tokens.
-- Discount window through 2026-05-31T15:59:00Z (UTC). After that the wall
-  clock flips to list pricing automatically; operators can override via
+- Pricing tracks DeepSeek's published list rates only. Promotional discount
+  windows are deliberately ignored (cap counter overestimates during a
+  discount, which is the safe side); operators can pin per-rate via the
   DEEPSEEK_*_USD_PER_M env vars.
 
 Like gemini.py, this module MUST NOT import services.llm_client at module
@@ -28,7 +29,6 @@ from __future__ import annotations
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -52,27 +52,25 @@ _DEEPSEEK_RPM = int(os.environ.get("DEEPSEEK_RPM", "60"))
 # Pricing (DeepSeek V4 Pro, $/M tokens)
 # ---------------------------------------------------------------------------
 #
-# Discount window through 2026-05-31T15:59:00Z UTC. After that the code path
-# automatically flips to the list-pricing dict (no manual edit at deadline).
-# Each rate is ~4× the discount; still below Gemini Flash on equivalent calls
-# in our 28-call spike.
+# List prices per api-docs.deepseek.com/quick_start/pricing (2026-05-09 read).
+# We deliberately do NOT model the promotional 75%-off discount window — when
+# DeepSeek runs a discount, our cap counter overestimates real spend, which is
+# the safe side to err on (cap fires earlier than necessary, never later than
+# the user budget). Constants drift over time; the surfaced "Daily LLM spend"
+# in the UI is an estimate — reconcile with the provider's invoice for ground
+# truth, and treat any V5/V4-Lite/etc. switch as a reason to revisit this dict.
+# Operators can override per-rate via DEEPSEEK_INPUT_USD_PER_M /
+# DEEPSEEK_OUTPUT_USD_PER_M / DEEPSEEK_CACHE_USD_PER_M without touching code.
 
-DISCOUNT_UNTIL = datetime(2026, 5, 31, 15, 59, 0, tzinfo=timezone.utc)
-_PRICES_DISCOUNT = {"input": 0.07, "output": 0.27, "cache": 0.014}
-_PRICES_LIST     = {"input": 0.27, "output": 1.10, "cache": 0.054}
+_PRICES = {"input": 1.74, "output": 3.48, "cache": 0.0145}
 
 
 def _prices_now() -> dict[str, float]:
-    """Per-million-token prices honoring the discount window + env overrides.
-
-    Wall-clock comparison: assumes the container clock is UTC (Docker default).
-    Operators on non-UTC hosts can pin via DEEPSEEK_*_USD_PER_M.
-    """
-    base = _PRICES_DISCOUNT if datetime.now(timezone.utc) < DISCOUNT_UNTIL else _PRICES_LIST
+    """Per-million-token list prices, with optional env-var overrides."""
     return {
-        "input":  float(os.environ.get("DEEPSEEK_INPUT_USD_PER_M",  base["input"])),
-        "output": float(os.environ.get("DEEPSEEK_OUTPUT_USD_PER_M", base["output"])),
-        "cache":  float(os.environ.get("DEEPSEEK_CACHE_USD_PER_M",  base["cache"])),
+        "input":  float(os.environ.get("DEEPSEEK_INPUT_USD_PER_M",  _PRICES["input"])),
+        "output": float(os.environ.get("DEEPSEEK_OUTPUT_USD_PER_M", _PRICES["output"])),
+        "cache":  float(os.environ.get("DEEPSEEK_CACHE_USD_PER_M",  _PRICES["cache"])),
     }
 
 

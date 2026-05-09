@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -632,6 +632,17 @@ def migrate():
         conn.execute("ALTER TABLE activity_log ADD COLUMN step_key TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_session ON activity_log(session_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_session_step ON activity_log(session_id, step_key)")
+
+    if current < 24:
+        print("  applying migration v24 (page_plans.draft_error column)...")
+        # Per-plan error capture for draft + commit failures. Before v24, a
+        # failed page_plan recorded only draft_status='failed' with no
+        # explanation — operators had to grep app logs to diagnose.
+        # Session 29be62eb (15 source-summary HeadersTimeoutErrors) wasted
+        # 30+ min of debugging because the actual error was swallowed by the
+        # pLimit worker pool in /api/compile/draft. Nullable; pre-v24 rows
+        # stay NULL — no backfill possible.
+        conn.execute("ALTER TABLE page_plans ADD COLUMN draft_error TEXT")
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

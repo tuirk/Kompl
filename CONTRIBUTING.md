@@ -6,7 +6,7 @@ This guide is intentionally short. If something here is unclear, open an issue o
 
 ## Looking for something to work on?
 
-- **The "What's next" panel** in the bottom-left footer of the running Kompl app shows what we're planning to build but haven't yet. Examples include Google Drive and Notion connectors, image support via LLM vision, custom LLM provider support, and a Tauri tray app. Pick anything that catches your eye, expand on it, or use it as inspiration for your own idea.
+- **The "What's next" panel** in the bottom-left footer of the running Kompl app shows what we're planning to build but haven't yet. Examples include image support via LLM vision, custom LLM provider support, and a Tauri tray app. Pick anything that catches your eye, expand on it, or use it as inspiration for your own idea.
 - **GitHub issues** — anything labelled `good first issue` is a deliberately scoped entry point.
 - **Bugs you hit yourself** — if you found it, you're already 80% of the way to fixing it.
 

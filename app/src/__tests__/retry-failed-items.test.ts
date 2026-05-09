@@ -17,14 +17,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import {
+  countFailedDraftPlansBySession,
+  countUnextractedSourcesBySession,
   createCompileProgress,
   getCompileProgress,
   getIngestFailures,
   getStagingBySession,
   insertCollectStaging,
+  insertExtraction,
   insertIngestFailure,
+  insertPagePlan,
+  insertSource,
   markStagingFailed,
   markStagingIngested,
+  updatePlanStatus,
   getDb,
 } from '../lib/db';
 import { COMPILE_STEP_KEYS } from '../lib/compile-steps';
@@ -226,6 +232,105 @@ describe('POST /api/compile/retry-failed', () => {
     expect(triggerSessionCompile).not.toHaveBeenCalled();
   });
 
+  it('retries failed page_plans on a completed session with no failed staging rows', async () => {
+    // Seed scenario: completed session, all staging ingested, but
+    // page_plans contains a mix of drafted + failed rows. This is the
+    // "Writing pages — 0 drafts generated, 10 failed" path: draft step
+    // wrote step.status='done' regardless of per-item failures so commit
+    // could run on what succeeded, leaving the session at status=completed
+    // with no session-level retry path. The button must surface here.
+    createCompileProgress(sessionId, 1);
+    getDb()
+      .prepare(
+        `UPDATE compile_progress
+            SET status='completed',
+                started_at='2026-04-20 10:00:00',
+                completed_at='2026-04-20 10:05:00',
+                steps=?
+          WHERE session_id=?`
+      )
+      .run(
+        JSON.stringify(
+          Object.fromEntries(COMPILE_STEP_KEYS.map((k) => [k, { status: 'done' }]))
+        ),
+        sessionId
+      );
+    // 1 ingested staging row (no failed staging — draft retry should still proceed)
+    const okStageId = randomUUID();
+    insertCollectStaging({
+      stage_id: okStageId,
+      session_id: sessionId,
+      connector: 'url',
+      payload: { url: 'https://ok.example.com', display: { hostname: 'ok.example.com' } },
+    });
+    markStagingIngested(okStageId, `src-${okStageId.slice(0, 8)}`);
+    // 1 drafted plan (success, must stay untouched) + 2 failed plans
+    const draftedPlanId = randomUUID();
+    insertPagePlan({
+      plan_id: draftedPlanId,
+      session_id: sessionId,
+      title: 'Drafted Page',
+      page_type: 'concept',
+      action: 'create',
+      source_ids: [`src-${okStageId.slice(0, 8)}`],
+    });
+    updatePlanStatus(draftedPlanId, 'drafted');
+
+    const failedPlanA = randomUUID();
+    insertPagePlan({
+      plan_id: failedPlanA,
+      session_id: sessionId,
+      title: 'Failed Page A',
+      page_type: 'concept',
+      action: 'create',
+      source_ids: [`src-${okStageId.slice(0, 8)}`],
+    });
+    updatePlanStatus(failedPlanA, 'failed');
+
+    const failedPlanB = randomUUID();
+    insertPagePlan({
+      plan_id: failedPlanB,
+      session_id: sessionId,
+      title: 'Failed Page B',
+      page_type: 'concept',
+      action: 'create',
+      source_ids: [`src-${okStageId.slice(0, 8)}`],
+    });
+    updatePlanStatus(failedPlanB, 'failed');
+
+    expect(countFailedDraftPlansBySession(sessionId)).toBe(2);
+
+    const res = await POST(post({ session_id: sessionId }));
+    const body = (await res.json()) as { retried: number; status: string };
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ retried: 2, status: 'retrying' });
+
+    // Failed plans stay 'failed' — orchestrator's draft step re-attempts
+    // them (pendingDraftCount > 0 branch in run/route.ts). retry-failed
+    // doesn't flip plan rows because the draft step itself reads them.
+    const stillFailed = getDb()
+      .prepare(`SELECT plan_id FROM page_plans WHERE session_id=? AND draft_status='failed'`)
+      .all(sessionId) as { plan_id: string }[];
+    expect(stillFailed).toHaveLength(2);
+
+    // Drafted plan untouched
+    const stillDrafted = getDb()
+      .prepare(`SELECT plan_id FROM page_plans WHERE session_id=? AND draft_status='drafted'`)
+      .all(sessionId) as { plan_id: string }[];
+    expect(stillDrafted).toHaveLength(1);
+
+    // compile_progress reset so orchestrator re-enters
+    const cp = getCompileProgress(sessionId)!;
+    expect(cp.status).toBe('queued');
+    expect(cp.completed_at).toBeNull();
+    expect(cp.started_at).toBe('2026-04-20 10:00:00');
+
+    // n8n triggered exactly once
+    expect(triggerSessionCompile).toHaveBeenCalledTimes(1);
+    expect(triggerSessionCompile).toHaveBeenCalledWith(sessionId);
+  });
+
   it('maps n8n trigger failure to 502/504', async () => {
     seedScenario();
     vi.mocked(triggerSessionCompile).mockResolvedValueOnce({
@@ -237,5 +342,223 @@ describe('POST /api/compile/retry-failed', () => {
     expect(res.status).toBe(504);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe('n8n_timeout');
+  });
+
+  it('unextracted source on completed session triggers retry', async () => {
+    // Seed scenario: completed session, all step statuses 'done', 2 source
+    // rows where only 1 has a matching `extractions` row, 1 committed
+    // page_plan referencing the extracted source. The unextracted source
+    // mirrors the per-source extract-failure shape (orchestrator tolerates
+    // partial failures, only fails the session if EVERY source fails).
+    // The committed plan must survive the retry (regression guard — earlier
+    // draft of the plan wanted to clear plans here, which would clobber
+    // the failed-draft retry path).
+    createCompileProgress(sessionId, 1);
+    getDb()
+      .prepare(
+        `UPDATE compile_progress
+            SET status='completed',
+                started_at='2026-04-20 10:00:00',
+                completed_at='2026-04-20 10:05:00',
+                steps=?
+          WHERE session_id=?`
+      )
+      .run(
+        JSON.stringify(
+          Object.fromEntries(COMPILE_STEP_KEYS.map((k) => [k, { status: 'done' }]))
+        ),
+        sessionId
+      );
+
+    const extractedSrcId = `src-extracted-${randomUUID().slice(0, 8)}`;
+    const unextractedSrcId = `src-unextracted-${randomUUID().slice(0, 8)}`;
+
+    insertSource({
+      source_id: extractedSrcId,
+      title: 'Extracted source',
+      source_type: 'url',
+      source_url: 'https://ok.example.com',
+      content_hash: 'hash-ok',
+      file_path: `data/sources/${extractedSrcId}.md`,
+      metadata: null,
+      onboarding_session_id: sessionId,
+    });
+    insertSource({
+      source_id: unextractedSrcId,
+      title: 'Unextracted source',
+      source_type: 'url',
+      source_url: 'https://fail.example.com',
+      content_hash: 'hash-fail',
+      file_path: `data/sources/${unextractedSrcId}.md`,
+      metadata: null,
+      onboarding_session_id: sessionId,
+    });
+    // Only the first source gets an extractions row.
+    insertExtraction({
+      source_id: extractedSrcId,
+      ner_output: { entities: [] },
+      profile: 'plain',
+      keyphrase_output: null,
+      tfidf_output: null,
+      llm_output: { summary: '' },
+    });
+
+    // 1 committed page_plan referencing the extracted source.
+    const committedPlanId = randomUUID();
+    insertPagePlan({
+      plan_id: committedPlanId,
+      session_id: sessionId,
+      title: 'Committed Page',
+      page_type: 'concept',
+      action: 'create',
+      source_ids: [extractedSrcId],
+    });
+    updatePlanStatus(committedPlanId, 'committed');
+
+    expect(countUnextractedSourcesBySession(sessionId)).toBe(1);
+
+    const res = await POST(post({ session_id: sessionId }));
+    const body = (await res.json()) as { retried: number; status: string };
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ retried: 1, status: 'retrying' });
+
+    // Committed plan survives — endpoint MUST NOT touch page_plans (the
+    // orchestrator's hasNewSources check decides re-plan, not this route).
+    const survivingPlans = getDb()
+      .prepare(`SELECT plan_id, draft_status FROM page_plans WHERE session_id=?`)
+      .all(sessionId) as { plan_id: string; draft_status: string }[];
+    expect(survivingPlans).toHaveLength(1);
+    expect(survivingPlans[0].plan_id).toBe(committedPlanId);
+    expect(survivingPlans[0].draft_status).toBe('committed');
+
+    // compile_progress reset so orchestrator re-enters
+    const cp = getCompileProgress(sessionId)!;
+    expect(cp.status).toBe('queued');
+    expect(cp.completed_at).toBeNull();
+    expect(cp.started_at).toBe('2026-04-20 10:00:00');
+
+    // n8n triggered exactly once
+    expect(triggerSessionCompile).toHaveBeenCalledTimes(1);
+    expect(triggerSessionCompile).toHaveBeenCalledWith(sessionId);
+  });
+
+  it('unextracted + failed-draft mix retries both without clobbering failed plans', async () => {
+    // Same shape as above plus 2 page_plans with draft_status='failed'.
+    // Total retried = 1 unextracted + 2 failed-drafts = 3. All three plan
+    // rows (committed + 2 failed) must survive — clearing plans here would
+    // break the failed-draft retry path (the orchestrator's draft step
+    // re-attempts those failed plans on the next run).
+    createCompileProgress(sessionId, 1);
+    getDb()
+      .prepare(
+        `UPDATE compile_progress
+            SET status='completed',
+                started_at='2026-04-20 10:00:00',
+                completed_at='2026-04-20 10:05:00',
+                steps=?
+          WHERE session_id=?`
+      )
+      .run(
+        JSON.stringify(
+          Object.fromEntries(COMPILE_STEP_KEYS.map((k) => [k, { status: 'done' }]))
+        ),
+        sessionId
+      );
+
+    const extractedSrcId = `src-extracted-${randomUUID().slice(0, 8)}`;
+    const unextractedSrcId = `src-unextracted-${randomUUID().slice(0, 8)}`;
+
+    insertSource({
+      source_id: extractedSrcId,
+      title: 'Extracted source',
+      source_type: 'url',
+      source_url: 'https://ok.example.com',
+      content_hash: 'hash-ok',
+      file_path: `data/sources/${extractedSrcId}.md`,
+      metadata: null,
+      onboarding_session_id: sessionId,
+    });
+    insertSource({
+      source_id: unextractedSrcId,
+      title: 'Unextracted source',
+      source_type: 'url',
+      source_url: 'https://fail.example.com',
+      content_hash: 'hash-fail',
+      file_path: `data/sources/${unextractedSrcId}.md`,
+      metadata: null,
+      onboarding_session_id: sessionId,
+    });
+    insertExtraction({
+      source_id: extractedSrcId,
+      ner_output: { entities: [] },
+      profile: 'plain',
+      keyphrase_output: null,
+      tfidf_output: null,
+      llm_output: { summary: '' },
+    });
+
+    const committedPlanId = randomUUID();
+    insertPagePlan({
+      plan_id: committedPlanId,
+      session_id: sessionId,
+      title: 'Committed Page',
+      page_type: 'concept',
+      action: 'create',
+      source_ids: [extractedSrcId],
+    });
+    updatePlanStatus(committedPlanId, 'committed');
+
+    const failedPlanA = randomUUID();
+    insertPagePlan({
+      plan_id: failedPlanA,
+      session_id: sessionId,
+      title: 'Failed Page A',
+      page_type: 'concept',
+      action: 'create',
+      source_ids: [extractedSrcId],
+    });
+    updatePlanStatus(failedPlanA, 'failed');
+
+    const failedPlanB = randomUUID();
+    insertPagePlan({
+      plan_id: failedPlanB,
+      session_id: sessionId,
+      title: 'Failed Page B',
+      page_type: 'concept',
+      action: 'create',
+      source_ids: [extractedSrcId],
+    });
+    updatePlanStatus(failedPlanB, 'failed');
+
+    expect(countUnextractedSourcesBySession(sessionId)).toBe(1);
+    expect(countFailedDraftPlansBySession(sessionId)).toBe(2);
+
+    const res = await POST(post({ session_id: sessionId }));
+    const body = (await res.json()) as { retried: number; status: string };
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ retried: 3, status: 'retrying' });
+
+    // All three plans survive — committed + 2 failed.
+    const survivingPlans = getDb()
+      .prepare(`SELECT plan_id, draft_status FROM page_plans WHERE session_id=? ORDER BY plan_id`)
+      .all(sessionId) as { plan_id: string; draft_status: string }[];
+    expect(survivingPlans).toHaveLength(3);
+    const byStatus = survivingPlans.reduce<Record<string, number>>((acc, p) => {
+      acc[p.draft_status] = (acc[p.draft_status] ?? 0) + 1;
+      return acc;
+    }, {});
+    expect(byStatus.committed).toBe(1);
+    expect(byStatus.failed).toBe(2);
+
+    // compile_progress reset
+    const cp = getCompileProgress(sessionId)!;
+    expect(cp.status).toBe('queued');
+    expect(cp.completed_at).toBeNull();
+    expect(cp.started_at).toBe('2026-04-20 10:00:00');
+
+    expect(triggerSessionCompile).toHaveBeenCalledTimes(1);
+    expect(triggerSessionCompile).toHaveBeenCalledWith(sessionId);
   });
 });
