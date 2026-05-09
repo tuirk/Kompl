@@ -38,37 +38,11 @@ describe('readConfig', () => {
     })
   })
 
-  it('defaults deploymentMode to personal-device when absent from JSON', () => {
-    jest.isolateModules(() => {
-      mockFs.existsSync.mockReturnValue(true)
-      ;(mockFs.readFileSync as jest.Mock).mockReturnValue(
-        JSON.stringify({ projectDir: '/some/dir', port: 3000 })
-      )
-      const { readConfig } = require('../config')
-      const cfg = readConfig()
-      expect(cfg.deploymentMode).toBe('personal-device')
-    })
-  })
-
-  it('respects explicit deploymentMode from JSON (spread order is correct)', () => {
-    jest.isolateModules(() => {
-      mockFs.existsSync.mockReturnValue(true)
-      ;(mockFs.readFileSync as jest.Mock).mockReturnValue(
-        JSON.stringify({ projectDir: '/some/dir', port: 3000, deploymentMode: 'always-on' })
-      )
-      const { readConfig } = require('../config')
-      const cfg = readConfig()
-      // If spread order were wrong ({ deploymentMode:'personal-device', ...raw } with default AFTER spread),
-      // this would incorrectly return 'personal-device'.
-      expect(cfg.deploymentMode).toBe('always-on')
-    })
-  })
-
   it('returns all fields from config file', () => {
     jest.isolateModules(() => {
       mockFs.existsSync.mockReturnValue(true)
       ;(mockFs.readFileSync as jest.Mock).mockReturnValue(
-        JSON.stringify({ projectDir: '/my/dir', port: 4000, deploymentMode: 'personal-device' })
+        JSON.stringify({ projectDir: '/my/dir', port: 4000 })
       )
       const { readConfig } = require('../config')
       const cfg = readConfig()
@@ -85,7 +59,7 @@ describe('writeConfig', () => {
 
     jest.isolateModules(() => {
       const { writeConfig } = require('../config')
-      writeConfig({ projectDir: '/x', port: 3000, deploymentMode: 'personal-device' })
+      writeConfig({ projectDir: '/x', port: 3000 })
     })
 
     expect(mockFs.writeFileSync).toHaveBeenCalledWith(

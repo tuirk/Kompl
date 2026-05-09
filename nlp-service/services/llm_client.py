@@ -33,92 +33,195 @@ import sys
 import time
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any
 
-import httpx
-from google import genai
-from google.genai import types
 from pydantic import BaseModel
-from pyrate_limiter import Duration, InMemoryBucket, Limiter, Rate
 
-# google-genai raises its own error types (ClientError / ServerError / APIError)
-# that generic retry predicates miss — see cookbook issue #1091. We catch the
-# APIError base and filter by status code below. Tolerate SDK layout drift
-# (the class moved between minor releases): a missing module just means the
-# retry loop's `except _APIError` becomes a safe no-op.
-try:
-    from google.genai import errors as _genai_errors
-    _APIError: Any = _genai_errors.APIError
-except (ImportError, AttributeError):  # pragma: no cover
-    _APIError = tuple()
-
-T = TypeVar("T")
+from .providers import LLMRequest, get_provider
 
 # ---------------------------------------------------------------------------
 # Configuration from environment
 # ---------------------------------------------------------------------------
 
-_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-_GEMINI_RPM = int(os.environ.get("GEMINI_RPM", "800"))
 # Rough char budget: 1 token ≈ 4 chars for English. 32,000 tokens → 128,000 chars.
 _GEMINI_INPUT_TOKEN_CAP = int(os.environ.get("GEMINI_INPUT_TOKEN_CAP", "128000"))
 # Extraction output is a structured JSON list of entities/concepts/claims — an
 # over-long input produces a JSON list that exceeds max_output_tokens (32K) and
 # truncates mid-string. Cap extraction inputs tighter. ~50K chars ≈ 12.5K tokens.
 _GEMINI_EXTRACT_INPUT_CAP = int(os.environ.get("GEMINI_EXTRACT_INPUT_CAP", "50000"))
+# DeepSeek extracted clean from a 95K-char source in the spike where Gemini
+# truncates mid-string at 50K. Higher cap gives DeepSeek operators richer
+# extraction on long sources without changing Gemini's tighter limit.
+_DEEPSEEK_INPUT_CHAR_CAP = int(os.environ.get("DEEPSEEK_INPUT_CHAR_CAP", "200000"))
+
+
+def _extract_input_cap_for(model: str) -> int:
+    """Char cap on the source-document input passed to ``extract_source``.
+
+    Gemini hits MAX_TOKENS in structured output around 50K input chars
+    (the 2.5 Flash repetition-loop bug); DeepSeek empirically handles 95K
+    clean. Each provider gets the cap matching its real-world capacity.
+    """
+    if model.startswith("deepseek-"):
+        return _DEEPSEEK_INPUT_CHAR_CAP
+    return _GEMINI_EXTRACT_INPUT_CAP
 # Fallback when /data/llm-config.json is missing (first boot, dev env, test).
 # Runtime cap comes from _read_daily_cap_usd() below; Next.js writes the file
 # whenever the setting is changed in the Settings UI.
 _DAILY_CAP_FALLBACK = float(os.environ.get("GEMINI_DAILY_USD_CAP", "5.00"))
 
-# Gemini 2.5-family pricing ($/M tokens, 2026-04 public rates).
-# Previous env-driven single-price values ($0.075 / $0.300) were stale 1.5-Flash
-# rates and under-counted actual spend by 3-8× depending on model. We now do
-# per-model lookup because each call site knows its model (compile_model or
-# chat_model from the Next.js settings, forwarded as a request field).
-#
-# cost = (prompt_tokens - cached_tokens) * input_rate
-#      + cached_tokens                   * cache_rate    (≈ 0.1x input)
-#      + (candidates_tokens + thoughts_tokens) * output_rate
-#
-# Thinking tokens are billed at the output rate per
-#   https://ai.google.dev/gemini-api/docs/thinking
-# Cached tokens are still counted in prompt_token_count per
-#   https://ai.google.dev/api/generate-content
-# so we subtract explicitly to avoid double-counting.
-_MODEL_PRICES: dict[str, dict[str, float]] = {
-    "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40, "cache": 0.01},
-    "gemini-2.5-flash":      {"input": 0.30, "output": 2.50, "cache": 0.03},
-    # Pro tiered — ≤200k prompts use the small-context SKU. >200k switches to
-    # $2.50 / $15 / $0.25; we don't auto-detect that boundary here. If Pro is
-    # routinely exercised with >200k prompts, override via env vars below.
-    "gemini-2.5-pro":        {"input": 1.25, "output": 10.00, "cache": 0.125},
-}
-
-# Env overrides — last-resort escape hatch when Gemini changes pricing and
-# the code hasn't been updated yet. Apply to all models.
-_INPUT_PRICE_OVERRIDE  = os.environ.get("GEMINI_INPUT_PRICE_PER_M")
-_OUTPUT_PRICE_OVERRIDE = os.environ.get("GEMINI_OUTPUT_PRICE_PER_M")
-_CACHE_PRICE_OVERRIDE  = os.environ.get("GEMINI_CACHE_PRICE_PER_M")
-
-
-def _get_model_prices(model: str) -> dict[str, float]:
-    """Return {input, output, cache} per-million-token prices for `model`.
-
-    Falls back to gemini-2.5-flash-lite rates for unknown models so an SDK
-    bump to a new model name doesn't silently crash pricing.
-    """
-    base = _MODEL_PRICES.get(model, _MODEL_PRICES["gemini-2.5-flash-lite"])
-    return {
-        "input":  float(_INPUT_PRICE_OVERRIDE)  if _INPUT_PRICE_OVERRIDE  else base["input"],
-        "output": float(_OUTPUT_PRICE_OVERRIDE) if _OUTPUT_PRICE_OVERRIDE else base["output"],
-        "cache":  float(_CACHE_PRICE_OVERRIDE)  if _CACHE_PRICE_OVERRIDE  else base["cache"],
-    }
-
 
 # Default for call sites that haven't been updated to pass `model` — matches
 # the historical hardcode so existing behaviour is preserved as a safety net.
 _DEFAULT_MODEL = "gemini-2.5-flash"
+
+# Appended to every schema-bound system prompt. DeepSeek's json_object response
+# mode silently degrades to free-form text unless the literal word "json" is
+# present in the prompt; Gemini ignores the additional natural-language hint.
+_JSON_TRAILER = (
+    "\n\nReturn the response as a single json object matching the schema "
+    "described above. Do not include any text outside the json."
+)
+
+
+# ---------------------------------------------------------------------------
+# Response-shape contract helper
+# ---------------------------------------------------------------------------
+#
+# Builds a 4-layer JSON-shape contract block from a Pydantic response model:
+#   1. Schema  — literal shape with field names, types, Literal enum lists,
+#                nullability marked
+#   2. Example — one filled-in canonical instance with placeholder values
+#   3. Rules   — explicit "keys MUST match, top-level wrapper MUST be object"
+#   4. Verify  — closing self-verification instruction
+#
+# Convergent industry pattern (BAML schema-aligned parsing, OpenAI structured
+# outputs guide, Promptfoo evaluate-json) — measurably reduces drift on
+# DeepSeek's json_object mode where response_model is server-side ignored.
+#
+# Output is appended AFTER _JSON_TRAILER, never replacing it: DeepSeek requires
+# the literal "json" keyword in the prompt to enable json_object mode.
+
+
+def _resolve_ref(ref: str, defs: dict) -> dict:
+    """Resolve a JSON-Schema $ref like '#/$defs/Foo' to its definition."""
+    name = ref.split("/")[-1]
+    return defs.get(name, {})
+
+
+def _render_schema_shape(node: dict, defs: dict, indent: int = 0) -> str:
+    """Render a JSON Schema node as a literal type-placeholder shape."""
+    if "$ref" in node:
+        return _render_schema_shape(_resolve_ref(node["$ref"], defs), defs, indent)
+
+    # Pydantic surfaces Optional[X] as anyOf with a `null` member.
+    if "anyOf" in node:
+        members = node["anyOf"]
+        is_nullable = any(m.get("type") == "null" for m in members)
+        non_null = [m for m in members if m.get("type") != "null"]
+        if non_null and is_nullable:
+            inner = _render_schema_shape(non_null[0], defs, indent)
+            return f"{inner.rstrip()} or null"
+        return _render_schema_shape(
+            non_null[0] if non_null else members[0], defs, indent
+        )
+
+    t = node.get("type")
+    pad = "  " * indent
+
+    if t == "object":
+        props = node.get("properties", {})
+        if not props:
+            return "{}"
+        lines = ["{"]
+        for key, child in props.items():
+            child_rendered = _render_schema_shape(child, defs, indent + 1)
+            lines.append(f"{pad}  \"{key}\": {child_rendered},")
+        if lines[-1].endswith(","):
+            lines[-1] = lines[-1][:-1]
+        lines.append(f"{pad}}}")
+        return "\n".join(lines)
+
+    if t == "array":
+        items = node.get("items", {})
+        item_rendered = _render_schema_shape(items, defs, indent + 1)
+        return f"[\n{pad}  {item_rendered}\n{pad}]"
+
+    if "enum" in node:
+        opts = " | ".join(repr(v) for v in node["enum"])
+        return f"<one of: {opts}>"
+    if t == "string":
+        return "<string>"
+    if t == "integer":
+        return "<integer>"
+    if t == "number":
+        return "<number>"
+    if t == "boolean":
+        return "<true | false>"
+    if t == "null":
+        return "null"
+    return "<value>"
+
+
+def _render_schema_example(node: dict, defs: dict, depth: int = 0):
+    """Render a canonical example value — concrete placeholders, not types."""
+    if "$ref" in node:
+        return _render_schema_example(_resolve_ref(node["$ref"], defs), defs, depth)
+    if "anyOf" in node:
+        non_null = [m for m in node["anyOf"] if m.get("type") != "null"]
+        return _render_schema_example(
+            non_null[0] if non_null else node["anyOf"][0], defs, depth
+        )
+
+    t = node.get("type")
+    if t == "object":
+        props = node.get("properties", {})
+        return {key: _render_schema_example(child, defs, depth + 1) for key, child in props.items()}
+    if t == "array":
+        # One example item — keep prompts compact.
+        return [_render_schema_example(node.get("items", {}), defs, depth + 1)]
+    if "enum" in node:
+        return node["enum"][0]
+    if t == "string":
+        return "example string"
+    if t == "integer":
+        return 1
+    if t == "number":
+        return 1.0
+    if t == "boolean":
+        return True
+    if t == "null":
+        return None
+    return None
+
+
+def _format_response_contract(model_class) -> str:
+    """Render the 4-layer JSON-shape contract block for a Pydantic model.
+
+    Layers (schema, example, rules, self-verify) are derived mechanically
+    from model.model_json_schema(); no hand-rolled examples per call site.
+    """
+    import json as _json
+
+    schema = model_class.model_json_schema()
+    defs = schema.get("$defs", {})
+    rendered_shape = _render_schema_shape(schema, defs, indent=0)
+    rendered_example = _json.dumps(
+        _render_schema_example(schema, defs, depth=0), indent=2
+    )
+
+    return (
+        "\n\n"
+        "Return JSON shaped exactly like this. Keys MUST match exactly.\n"
+        "Top-level wrapper MUST be a JSON object, not a list.\n"
+        "Do not add, rename, or remove fields.\n\n"
+        "Schema:\n"
+        f"{rendered_shape}\n\n"
+        "Example (use this shape with your real values, not these placeholders):\n"
+        f"{rendered_example}\n\n"
+        "Before returning, verify your output matches the shape above."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -135,6 +238,49 @@ class CostCeilingError(Exception):
 
 class LLMCompileError(Exception):
     """Raised when the LLM call succeeds but the response cannot be parsed."""
+
+
+def _parse_failure_tail(
+    step: str,
+    expected_wrapper: str,
+    raw_text: str | None,
+) -> str:
+    """Build the structured tail consumed by /api/compile/progress/events.
+
+    Output shape:
+      parse_failed: step=<step>: expected_wrapper=<key>, got_type=<dict|list|other>,
+      got_keys=[...], raw_excerpt='<first 200 chars>'
+
+    Phase C (progress UI expand-to-reveal) reads this tail to show users
+    the exact wrapper drift inline. Without it, the same information
+    lives only in docker logs.
+    """
+    import json as _json
+
+    got_type = "unknown"
+    got_keys: list[str] = []
+    if raw_text:
+        try:
+            parsed = _json.loads(raw_text)
+            if isinstance(parsed, dict):
+                got_type = "dict"
+                got_keys = list(parsed.keys())[:10]
+            elif isinstance(parsed, list):
+                got_type = "list"
+            elif parsed is None:
+                got_type = "null"
+            else:
+                got_type = type(parsed).__name__
+        except Exception:
+            got_type = "non-json"
+    excerpt = (raw_text or "")[:200].replace("\n", " ")
+    return (
+        f"parse_failed: step={step}: "
+        f"expected_wrapper={expected_wrapper}, "
+        f"got_type={got_type}, "
+        f"got_keys={got_keys!r}, "
+        f"raw_excerpt={excerpt!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +307,12 @@ _CONFIG_FILE = Path(os.environ.get("DATA_ROOT", "/data")) / "llm-config.json"
 # requiring a service restart.
 _cap_cache: dict[str, Any] = {"value": None, "read_at": 0.0}
 
-# Per-call-site thinking_budget defaults — must match
-# DEFAULT_THINKING_BUDGETS in app/src/lib/db.ts. Source of truth at runtime is
-# /data/llm-config.json; this dict is the fallback when the file is missing
-# (first boot, dev env, test) or a key is absent.
+# Per-call-site thinking_budget values. Hardcoded design-intent: each task
+# was tuned (against Gemini 2.5 Flash docs at the time) to balance reasoning
+# quality against cost. The Phase 8 retirement removed the user-tunable UI
+# surface (settings table row + Settings page section + JSON-mirror read);
+# values stay encoded here as the canonical reference. KeyError on an unknown
+# call_site so a typo surfaces immediately rather than silently using 0.
 _DEFAULT_THINKING_BUDGETS: dict[str, int] = {
     "extract_source": 512,
     "draft_page": 1024,
@@ -178,43 +326,16 @@ _DEFAULT_THINKING_BUDGETS: dict[str, int] = {
     "generate_digest": 1024,
 }
 
-# 30 s mirrors the daily-cap cache window — Settings UI changes take effect
-# within half a minute without a service restart.
-_thinking_cache: dict[str, Any] = {"value": None, "read_at": 0.0}
-
 
 def _read_thinking_budget(call_site: str) -> int:
-    """Return the configured thinking_budget for `call_site`.
-
-    Reads /data/llm-config.json's `thinking_budgets` map, cached for 30 s.
-    Falls back to _DEFAULT_THINKING_BUDGETS[call_site] when the file is
-    missing, malformed, the key is absent, or the value isn't a valid int.
-    Unknown call_site names raise KeyError so a typo at the call site
-    surfaces immediately rather than silently using 0.
-    """
+    """Return the hardcoded thinking_budget for `call_site`."""
     if call_site not in _DEFAULT_THINKING_BUDGETS:
         raise KeyError(f"unknown thinking_budget call_site: {call_site}")
-    now = time.time()
-    if _thinking_cache["value"] is not None and now - _thinking_cache["read_at"] < 30:
-        budgets = _thinking_cache["value"]
-    else:
-        budgets = dict(_DEFAULT_THINKING_BUDGETS)
-        try:
-            data = json.loads(_CONFIG_FILE.read_text())
-            tb = data.get("thinking_budgets") if isinstance(data, dict) else None
-            if isinstance(tb, dict):
-                for k, v in tb.items():
-                    if k in _DEFAULT_THINKING_BUDGETS and isinstance(v, int) and -1 <= v <= 24576:
-                        budgets[k] = v
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            pass
-        _thinking_cache["value"] = budgets
-        _thinking_cache["read_at"] = now
-    return budgets[call_site]
+    return _DEFAULT_THINKING_BUDGETS[call_site]
 
 
 def _read_daily_cap_usd() -> float:
-    """Read the user-configurable daily Gemini $ cap from /data/llm-config.json.
+    """Read the user-configurable daily LLM $ cap from /data/llm-config.json.
 
     Next.js writes this file whenever setDailyCapUsd() is called in db.ts
     (backed by the 'daily_cap_usd' settings row). We cache the value for 30 s
@@ -263,184 +384,40 @@ def _check_and_record_cost(
     output_tokens: int,
     thought_tokens: int,
 ) -> None:
-    """Check daily cap then record cost. Raises CostCeilingError if exceeded.
+    """Check daily LLM $ cap then record cost. Raises CostCeilingError if exceeded.
 
-    Per-model pricing via _get_model_prices. Thought tokens billed at the
-    output rate. Cached tokens billed at the cache rate (subtracted from
-    fresh input to avoid double-counting). See module header for formula.
+    Per-call cost is computed by the model's provider (Gemini today; DeepSeek
+    in Phase 4) via ``provider.cost_usd(model, usage_dict)``. The dispatcher
+    enforces the daily LLM $ cap and the on-disk persistence — pricing tables
+    live in the providers.
 
-    Called after every successful Gemini API call. If GEMINI_DAILY_USD_CAP=0
-    the check is skipped (unlimited mode).
+    The token-count signature is preserved for backward compatibility with
+    the existing test fixture ``mock_cost``; the body translates to a usage
+    dict for the provider.
+
+    Called from inside the provider's ``complete()`` after every successful
+    API call. If GEMINI_DAILY_USD_CAP=0 the check is skipped (unlimited mode).
     """
-    prices = _get_model_prices(model)
-    # prompt_token_count includes cached tokens per Gemini API docs.
-    fresh_input = max(0, prompt_tokens - cached_tokens)
-    cost_usd = (
-        (fresh_input      / 1_000_000) * prices["input"]
-      + (cached_tokens    / 1_000_000) * prices["cache"]
-      + (output_tokens    / 1_000_000) * prices["output"]
-      + (thought_tokens   / 1_000_000) * prices["output"]
-    )
+    provider = get_provider(model)
+    usage = {
+        "prompt_token_count":         prompt_tokens,
+        "cached_content_token_count": cached_tokens,
+        "candidates_token_count":     output_tokens,
+        "thoughts_token_count":       thought_tokens,
+    }
+    cost_usd = provider.cost_usd(model, usage)
+
     cap_data = _read_cap()
     daily_cap = _read_daily_cap_usd()
     if daily_cap > 0 and cap_data["total_usd"] + cost_usd > daily_cap:
         raise CostCeilingError(
-            f"Daily Gemini spend limit (${daily_cap:.2f}) reached. "
+            f"Daily LLM spend limit (${daily_cap:.2f}) reached. "
             f"Today's spend: ${cap_data['total_usd']:.4f}. "
             f"Resets at midnight UTC."
         )
     cap_data["total_usd"] = round(cap_data["total_usd"] + cost_usd, 6)
     cap_data["call_count"] = cap_data.get("call_count", 0) + 1
     _write_cap(cap_data)
-
-
-def _record_usage(step: str, model: str, response: Any) -> None:
-    """Unified wrapper: log one-line usage + record cost. Replaces the 5-line
-    boilerplate that used to live at every call site (_log_usage then manual
-    getattr + _check_and_record_cost).
-
-    Reads from response.usage_metadata:
-      - prompt_token_count   — total effective prompt (INCLUDES cached)
-      - cached_content_token_count — discounted portion
-      - candidates_token_count — output (user-visible response text)
-      - thoughts_token_count   — output (thinking mode, billed)
-
-    Silently skips when usage_metadata is None (rare — error responses,
-    streaming edge cases). Cost recording never fails the caller."""
-    _log_usage(step, response)
-    usage = getattr(response, "usage_metadata", None)
-    if usage is None:
-        return
-    prompt_tok = int(getattr(usage, "prompt_token_count", 0) or 0)
-    cached_tok = int(getattr(usage, "cached_content_token_count", 0) or 0)
-    output_tok = int(getattr(usage, "candidates_token_count", 0) or 0)
-    thought_tok = int(getattr(usage, "thoughts_token_count", 0) or 0)
-    _check_and_record_cost(model, prompt_tok, cached_tok, output_tok, thought_tok)
-
-
-# ---------------------------------------------------------------------------
-# Rate limiter — in-process token bucket, async-safe
-# ---------------------------------------------------------------------------
-
-_limiter: Limiter | None = None
-
-
-def _get_limiter() -> Limiter:
-    global _limiter
-    if _limiter is None:
-        _limiter = Limiter(
-            InMemoryBucket([Rate(_GEMINI_RPM, Duration.MINUTE)]),
-            raise_when_fail=False,
-            max_delay=60_000,  # wait up to 60s before giving up
-        )
-    return _limiter
-
-
-# ---------------------------------------------------------------------------
-# Retry wrapper for transient upstream errors (google-genai 1.12.1 has no
-# built-in retry; HttpRetryOptions was added in ≥1.65 which is a 60-version
-# jump we're not taking mid-debug). Retries on connection-class errors +
-# Gemini APIError with retryable status codes (408/429/5xx). Rate-limiter
-# token is re-acquired per attempt so retries count against the 800 RPM cap.
-# Apply only to read-only analyzers (extract/resolve/match/triage/…) — never
-# wrap draft_page / synthesize / digest, whose outputs commit downstream
-# state and can't be safely re-executed after a partial response.
-# ---------------------------------------------------------------------------
-
-
-_RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
-
-
-def _with_retry(fn: Callable[[], T], step: str, *, max_attempts: int = 3, base_delay: float = 0.5) -> T:
-    limiter = _get_limiter()
-    last_exc: Exception | None = None
-
-    for i in range(max_attempts):
-        if not limiter.try_acquire("gemini"):
-            raise LLMRateLimitedError(f"llm_rate_limited: bucket exhausted on {step}")
-
-        try:
-            return fn()
-        except (
-            httpx.ConnectError,
-            httpx.PoolTimeout,
-            httpx.ReadTimeout,
-            httpx.WriteTimeout,
-            httpx.RemoteProtocolError,
-            httpx.WriteError,
-            httpx.ReadError,
-        ) as e:
-            last_exc = e
-            err_class = type(e).__name__
-        except _APIError as e:
-            code = getattr(e, "code", None) or getattr(e, "status_code", None)
-            if code not in _RETRYABLE_STATUSES:
-                raise
-            last_exc = e
-            err_class = f"APIError{code}"
-
-        if i < max_attempts - 1:
-            delay = base_delay * (2 ** i)
-            print(
-                f"[llm-retry] {step} attempt {i + 1}/{max_attempts} after "
-                f"{err_class}: {str(last_exc)[:200]} — sleeping {delay}s",
-                file=sys.stderr,
-                flush=True,
-            )
-            time.sleep(delay)
-
-    assert last_exc is not None
-    raise last_exc
-
-
-def _log_usage(step: str, response: Any) -> None:
-    """One-line stderr log per Gemini call: finish_reason + token counts.
-
-    Ground truth for distinguishing a MAX_TOKENS truncation from a normal
-    STOP, or an empty response, or a thinking-budget exhaustion. Non-fatal:
-    a broken log must never break the caller, so swallow any exception.
-    """
-    try:
-        candidates = getattr(response, "candidates", None) or []
-        finish = "NONE"
-        if candidates:
-            fr = getattr(candidates[0], "finish_reason", None)
-            finish = str(fr).split(".")[-1] if fr is not None else "NONE"
-        usage = getattr(response, "usage_metadata", None)
-        if usage is not None:
-            ptok = getattr(usage, "prompt_token_count", 0) or 0
-            ctok = getattr(usage, "candidates_token_count", 0) or 0
-            ttok = getattr(usage, "thoughts_token_count", 0) or 0
-            print(
-                f"[gemini] step={step} finish={finish} in={ptok} out={ctok} thinking={ttok}",
-                file=sys.stderr,
-                flush=True,
-            )
-        else:
-            print(f"[gemini] step={step} finish={finish} usage=none", file=sys.stderr, flush=True)
-    except Exception:
-        pass
-
-
-def _was_truncated(response: Any) -> bool:
-    """Check if Gemini hit max_output_tokens (ground truth, not regex).
-
-    Gemini 2.5 Flash has a known repetition-loop bug at temperature=0.0 where
-    the sampler enters a fixed-point attractor and emits the same token until
-    max_output_tokens. finish_reason is the authoritative signal — the text-
-    ending heuristic is unreliable (could false-positive on legitimate
-    trailing quotes, or false-negative on loops that happen to close brackets).
-    """
-    try:
-        candidates = getattr(response, "candidates", None) or []
-        if not candidates:
-            return False
-        fr = getattr(candidates[0], "finish_reason", None)
-        if fr is None:
-            return False
-        return str(fr).endswith("MAX_TOKENS")
-    except Exception:
-        return False
 
 
 def _salvage_extraction(raw_text: str) -> "LLMExtractionResponse | None":
@@ -468,22 +445,6 @@ def _salvage_extraction(raw_text: str) -> "LLMExtractionResponse | None":
 
 
 # ---------------------------------------------------------------------------
-# Gemini client (lazy init — validated at startup by main.py lifespan)
-# ---------------------------------------------------------------------------
-
-_client: genai.Client | None = None
-
-
-def get_client() -> genai.Client:
-    global _client
-    if _client is None:
-        if not _GEMINI_API_KEY:
-            raise RuntimeError("GEMINI_API_KEY not set")
-        _client = genai.Client(api_key=_GEMINI_API_KEY)
-    return _client
-
-
-# ---------------------------------------------------------------------------
 # Lint scan — contradiction detection (commit 11)
 # ---------------------------------------------------------------------------
 
@@ -504,7 +465,7 @@ Return JSON with one field:
 
 If no contradictions are found, return {"contradictions": []}.
 Do not hallucinate contradictions.
-"""
+""" + _JSON_TRAILER
 
 
 class Contradiction(BaseModel):
@@ -534,30 +495,28 @@ def lint_scan(pages: list[str], model: str = _DEFAULT_MODEL) -> LintScanResponse
     if not pages:
         return LintScanResponse(contradictions=[])
 
-    prompt = f"{_LINT_SYSTEM_PROMPT}\n\n---\n\n" + "\n\n".join(pages)
+    user_payload = "\n\n".join(pages)
 
-    client = get_client()
+    provider = get_provider(model)
     try:
-        response = _with_retry(
-            lambda: client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('lint_scan')),
-                    max_output_tokens=4096,  # lint responses are short
-                ),
-            ),
+        result = provider.complete(LLMRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": _LINT_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_payload},
+            ],
+            response_model=None,
+            thinking_budget=_read_thinking_budget('lint_scan'),
+            max_output_tokens=4096,  # lint responses are short
             step="lint",
-        )
+            extra={"force_json_mime": True},
+        ))
     except LLMRateLimitedError:
         raise
     except Exception as e:
         raise LLMCompileError(f"lint_scan_failed: {e}") from e
 
-    _record_usage("lint", model, response)
-
-    raw_text = response.text
+    raw_text = result.text
     if not raw_text:
         return LintScanResponse(contradictions=[])
 
@@ -576,7 +535,12 @@ def lint_scan(pages: list[str], model: str = _DEFAULT_MODEL) -> LintScanResponse
         ]
         return LintScanResponse(contradictions=contras)
     except Exception as e:
-        raise LLMCompileError(f"lint_scan_parse_failed: {e}") from e
+        raise LLMCompileError(
+            f"lint_scan_parse_failed: {e}; "
+            + _parse_failure_tail(
+                step="lint", expected_wrapper="contradictions", raw_text=raw_text,
+            )
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +587,7 @@ class LLMExtractionResponse(BaseModel):
     No extra='forbid' — google-genai rejects additionalProperties=false
     in response_schema (consistent with all other LLM output models here).
     """
+    title: str          # document title — empty string if not derivable
     entities: list[ExtractionEntity]
     concepts: list[ExtractionConcept]
     claims: list[ExtractionClaim]
@@ -639,27 +604,41 @@ Your job is precision, not creativity. Only extract information that is
 explicitly or strongly implicitly present in the source. Do not hallucinate.
 
 Return JSON with these fields:
-1. entities      — named entities with type, mentions, and context
+1. title         — the document's actual title as it appears in the source
+   - For papers: the paper's title from the title page (NOT the filename, NOT
+     a publisher boilerplate like "The X Center for Y Research", NOT an
+     arXiv/DOI identifier).
+   - For articles, books, posts: their stated title.
+   - Skip headers, running heads, page numbers, author lists, and any
+     reversed/garbled text from arXiv side stamps.
+   - If the document genuinely has no clear title, return an empty string ""
+     and the caller will fall back to the filename.
+2. entities      — named entities with name, type, mentions, and context
+   - name: canonical name of the entity (a string — do NOT use the entity name as a dict key)
    - type: PERSON | ORG | PRODUCT | CONCEPT | EVENT | LOCATION | OTHER
    - mentions: list of exact text spans from the source
    - context: 1-2 sentence description of this entity as discussed in the source
-2. concepts      — key concepts with descriptions
-3. claims        — specific factual claims
+3. concepts      — key concepts with name and description
+   - name: short canonical name of the concept
+   - description: 1-2 sentence description of the concept
+4. claims        — specific factual claims
+   - claim: the claim text itself (a string — full sentence)
    - confidence: "stated" (explicit) | "implied" (strongly suggested) | "speculative"
    - entities_involved: list of entity/concept names from your entities/concepts lists
-4. relationships — connections between entities/concepts
+5. relationships — connections between entities/concepts
    - from_entity: name of first entity/concept
    - to: name of second entity/concept
    - type: uses | competes_with | part_of | created_by | related_to | contradicts
-5. contradictions — claims that contradict other sources or internal logic
+   - description: 1-sentence explanation of how these entities relate
+6. contradictions — claims that contradict other sources or internal logic
    - claim: what this source claims
    - against: what it contradicts (leave empty string if unknown)
-6. summary       — 2-4 sentence summary of the source
+7. summary       — 2-4 sentence summary of the source
 
 Keep lists focused: 5-15 entities, 3-10 concepts, 3-15 claims, 3-10 relationships.
 Each entity appears once. Stop as soon as the source is covered — do NOT
 repeat names or pad the output.
-"""
+""" + _JSON_TRAILER
 
 
 def extract_source(
@@ -690,8 +669,9 @@ def extract_source(
     """
     import json as _json
 
-    if len(markdown) > _GEMINI_EXTRACT_INPUT_CAP:
-        truncated = markdown[:_GEMINI_EXTRACT_INPUT_CAP]
+    input_cap = _extract_input_cap_for(model)
+    if len(markdown) > input_cap:
+        truncated = markdown[:input_cap]
         last_para = truncated.rfind("\n\n")
         markdown = truncated[:last_para] if last_para > 0 else truncated
 
@@ -699,9 +679,7 @@ def extract_source(
     keyphrase_section = _json.dumps(keyphrase_output, ensure_ascii=False) if keyphrase_output else "N/A — no keyphrase output"
     tfidf_section = _json.dumps(tfidf_output, ensure_ascii=False) if tfidf_output else "N/A — first compile, no existing wiki pages"
 
-    prompt = (
-        f"{_EXTRACTION_SYSTEM_PROMPT}\n\n"
-        f"---\n\n"
+    user_payload = (
         f"Source ID: {source_id}\n\n"
         f"NLP extraction results:\n"
         f"Named entities (spaCy NER):\n{ner_section}\n\n"
@@ -711,131 +689,146 @@ def extract_source(
         f"Source document:\n\n{markdown}"
     )
 
-    client = get_client()
+    provider = get_provider(model)
     try:
-        response = _with_retry(
-            lambda: client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=LLMExtractionResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('extract_source')),
-                    max_output_tokens=32768,
-                    temperature=0.0,
-                ),
-            ),
+        result = provider.complete(LLMRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_payload},
+            ],
+            response_model=LLMExtractionResponse,
+            thinking_budget=_read_thinking_budget('extract_source'),
+            max_output_tokens=32768,
+            temperature=0.0,
             step="extract",
-        )
+        ))
     except LLMRateLimitedError:
         raise
     except Exception as e:
         raise LLMCompileError(f"extract_llm_call_failed: {e}") from e
 
-    _record_usage("extract", model, response)
-
-    raw_text = response.text
+    raw_text = result.text
     if not raw_text:
         raise LLMCompileError("extract_llm_error: empty response text")
 
-    try:
-        return LLMExtractionResponse.model_validate_json(raw_text)
-    except Exception as first_err:
-        # Recovery path for the Gemini 2.5 Flash structured-output repetition
-        # loop (upstream bug, see repo issue). Three attempts in order of cost:
-        #
-        # (1) Salvage the truncated prefix via json-repair — zero extra Gemini
-        #     cost, recovers the majority of repetition-loop responses because
-        #     the valid entities came before the stuck "AI","AI","AI",... tail.
-        # (2) If finish_reason=MAX_TOKENS AND salvage failed, retry once with
-        #     halved input — different prompt path usually escapes the loop.
-        # (3) On all-fail, chain both errors so we can see what each attempt hit.
-        salvaged = _salvage_extraction(raw_text)
-        if salvaged is not None:
-            print(
-                f"[extract] salvaged truncated response via json-repair "
-                f"(entities={len(salvaged.entities)}, concepts={len(salvaged.concepts)})",
-                file=sys.stderr,
-                flush=True,
-            )
-            return salvaged
+    if result.parsed is not None:
+        return result.parsed  # type: ignore[return-value]
 
-        if not _was_truncated(response):
-            # Not a truncation — parse error is something else (schema drift,
-            # malformed response). No point retrying with halved input.
-            raise LLMCompileError(f"extract_llm_parse_failed: {first_err}") from first_err
-
+    # Recovery path for the Gemini 2.5 Flash structured-output repetition
+    # loop (upstream bug, see repo issue). Three attempts in order of cost:
+    #
+    # (1) Salvage the truncated prefix via json-repair — zero extra Gemini
+    #     cost, recovers the majority of repetition-loop responses because
+    #     the valid entities came before the stuck "AI","AI","AI",... tail.
+    # (2) If finish_reason=MAX_TOKENS AND salvage failed, retry once with
+    #     halved input — different prompt path usually escapes the loop.
+    # (3) On all-fail, chain both errors so we can see what each attempt hit.
+    first_err = result.parse_error
+    salvaged = _salvage_extraction(raw_text)
+    if salvaged is not None:
         print(
-            f"[extract] MAX_TOKENS truncation + salvage failed — "
-            f"retrying with halved input",
+            f"[extract] salvaged truncated response via json-repair "
+            f"(entities={len(salvaged.entities)}, concepts={len(salvaged.concepts)})",
             file=sys.stderr,
             flush=True,
         )
+        return salvaged
 
-        half_markdown = markdown[: len(markdown) // 2]
-        last_para = half_markdown.rfind("\n\n")
-        if last_para > 0:
-            half_markdown = half_markdown[:last_para]
-
-        fallback_prompt = (
-            f"{_EXTRACTION_SYSTEM_PROMPT}\n\n"
-            f"---\n\n"
-            f"Source ID: {source_id}\n\n"
-            f"NLP extraction results:\n"
-            f"Named entities (spaCy NER):\n{ner_section}\n\n"
-            f"Keyphrases:\n{keyphrase_section}\n\n"
-            f"TF-IDF overlap with existing wiki:\n{tfidf_section}\n\n"
-            f"---\n\n"
-            f"Source document:\n\n{half_markdown}"
-        )
-
-        try:
-            fallback_response = _with_retry(
-                lambda: client.models.generate_content(
-                    model=model,
-                    contents=fallback_prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=LLMExtractionResponse,
-                        thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('extract_source')),
-                        max_output_tokens=32768,
-                        temperature=0.0,
-                    ),
-                ),
-                step="extract-fallback",
+    if result.finish_reason != "MAX_TOKENS":
+        # Not a truncation — parse error is something else (schema drift,
+        # malformed response). No point retrying with halved input.
+        raise LLMCompileError(
+            f"extract_llm_parse_failed: {first_err}; "
+            + _parse_failure_tail(
+                step="extract", expected_wrapper="entities", raw_text=raw_text,
             )
-        except LLMRateLimitedError:
-            raise
-        except Exception as fallback_call_err:
-            raise LLMCompileError(
-                f"extract_llm_parse_failed_after_fallback: "
-                f"first={first_err}; fallback_call={fallback_call_err}"
-            ) from first_err
+        ) from first_err
 
-        _record_usage("extract-fallback", model, fallback_response)
+    if not model.startswith("gemini-"):
+        # The halved-input fallback is a Gemini-bug-specific mitigation for
+        # the 2.5 Flash structured-output repetition loop. DeepSeek (and any
+        # other provider) doesn't share the pathology; surface the original
+        # parse error rather than doubling cost on an unvalidated retry path.
+        raise LLMCompileError(
+            f"extract_llm_parse_failed: {first_err}; "
+            + _parse_failure_tail(
+                step="extract", expected_wrapper="entities", raw_text=raw_text,
+            )
+        ) from first_err
 
-        fallback_raw = fallback_response.text
-        if not fallback_raw:
-            raise LLMCompileError(
-                f"extract_llm_parse_failed_after_fallback: "
-                f"first={first_err}; fallback=empty"
-            ) from first_err
+    print(
+        f"[extract] MAX_TOKENS truncation + salvage failed — "
+        f"retrying with halved input",
+        file=sys.stderr,
+        flush=True,
+    )
 
-        try:
-            return LLMExtractionResponse.model_validate_json(fallback_raw)
-        except Exception as fallback_parse_err:
-            salvaged_fallback = _salvage_extraction(fallback_raw)
-            if salvaged_fallback is not None:
-                print(
-                    f"[extract] salvaged fallback response via json-repair",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                return salvaged_fallback
-            raise LLMCompileError(
-                f"extract_llm_parse_failed_after_fallback: "
-                f"first={first_err}; second={fallback_parse_err}"
-            ) from first_err
+    half_markdown = markdown[: len(markdown) // 2]
+    last_para = half_markdown.rfind("\n\n")
+    if last_para > 0:
+        half_markdown = half_markdown[:last_para]
+
+    fallback_user_payload = (
+        f"Source ID: {source_id}\n\n"
+        f"NLP extraction results:\n"
+        f"Named entities (spaCy NER):\n{ner_section}\n\n"
+        f"Keyphrases:\n{keyphrase_section}\n\n"
+        f"TF-IDF overlap with existing wiki:\n{tfidf_section}\n\n"
+        f"---\n\n"
+        f"Source document:\n\n{half_markdown}"
+    )
+
+    try:
+        fallback_result = provider.complete(LLMRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user",   "content": fallback_user_payload},
+            ],
+            response_model=LLMExtractionResponse,
+            thinking_budget=_read_thinking_budget('extract_source'),
+            max_output_tokens=32768,
+            temperature=0.0,
+            step="extract-fallback",
+        ))
+    except LLMRateLimitedError:
+        raise
+    except Exception as fallback_call_err:
+        raise LLMCompileError(
+            f"extract_llm_parse_failed_after_fallback: "
+            f"first={first_err}; fallback_call={fallback_call_err}"
+        ) from first_err
+
+    fallback_raw = fallback_result.text
+    if not fallback_raw:
+        raise LLMCompileError(
+            f"extract_llm_parse_failed_after_fallback: "
+            f"first={first_err}; fallback=empty; "
+            + _parse_failure_tail(
+                step="extract-fallback", expected_wrapper="entities", raw_text=fallback_raw,
+            )
+        ) from first_err
+
+    if fallback_result.parsed is not None:
+        return fallback_result.parsed  # type: ignore[return-value]
+
+    fallback_parse_err = fallback_result.parse_error
+    salvaged_fallback = _salvage_extraction(fallback_raw)
+    if salvaged_fallback is not None:
+        print(
+            f"[extract] salvaged fallback response via json-repair",
+            file=sys.stderr,
+            flush=True,
+        )
+        return salvaged_fallback
+    raise LLMCompileError(
+        f"extract_llm_parse_failed_after_fallback: "
+        f"first={first_err}; second={fallback_parse_err}; "
+        + _parse_failure_tail(
+            step="extract-fallback", expected_wrapper="entities", raw_text=fallback_raw,
+        )
+    ) from first_err
 
 
 # ---------------------------------------------------------------------------
@@ -876,7 +869,7 @@ For each pair return:
 
 Be conservative: only return "same" if you are confident. Prefer "ambiguous"
 over a wrong "same" call. Do not hallucinate.
-"""
+""" + _JSON_TRAILER
 
 
 _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = """\
@@ -909,7 +902,7 @@ STRICTNESS RULES for this task:
   - When in doubt, prefer "different" over "same". Wrong merges are costly to
     undo and permanently lose the ability to have a page about the narrower
     concept. Duplicate pages self-heal as more sources arrive.
-"""
+""" + _JSON_TRAILER
 
 
 def disambiguate_entities(
@@ -940,43 +933,46 @@ def disambiguate_entities(
         if pair_kind == "concept"
         else _DISAMBIGUATION_SYSTEM_PROMPT
     )
-    prompt = (
-        f"{system_prompt}\n\n"
-        f"---\n\n"
-        f"Pairs to resolve:\n{pairs_json}"
-    )
+    user_payload = f"Pairs to resolve:\n{pairs_json}"
 
-    client = get_client()
+    provider = get_provider(model)
     try:
-        response = _with_retry(
-            lambda: client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=DisambiguationResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('disambiguate_entities')),
-                    max_output_tokens=2048,
-                    temperature=0.0,
-                ),
-            ),
+        result = provider.complete(LLMRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_payload},
+            ],
+            response_model=DisambiguationResponse,
+            thinking_budget=_read_thinking_budget('disambiguate_entities'),
+            # 8192 sized for the 10-pair batch in routers/resolution.py:665.
+            # Each decision is {entity_a, entity_b, decision, canonical, reason}
+            # where `reason` carries free-text justification (e.g., "Bagging is
+            # a specific ensemble method..."); 10 × ~250 tokens + thinking
+            # overhead easily exceeds 2048. Session 97f58805 hit truncation:
+            # raw_excerpt cut off mid-string at line 50 col 166 of the JSON.
+            # 8192 matches generate_schema (structured-creative reasoning tier).
+            max_output_tokens=8192,
+            temperature=0.0,
             step="disambiguate",
-        )
+        ))
     except LLMRateLimitedError:
         raise
     except Exception as e:
         raise LLMCompileError(f"disambiguate_llm_call_failed: {e}") from e
 
-    _record_usage("disambiguate", model, response)
-
-    raw_text = response.text
+    raw_text = result.text
     if not raw_text:
         raise LLMCompileError("disambiguate_llm_error: empty response text")
 
-    try:
-        return DisambiguationResponse.model_validate_json(raw_text)
-    except Exception as e:
-        raise LLMCompileError(f"disambiguate_llm_parse_failed: {e}") from e
+    if result.parsed is not None:
+        return result.parsed  # type: ignore[return-value]
+    raise LLMCompileError(
+        f"disambiguate_llm_parse_failed: {result.parse_error}; "
+        + _parse_failure_tail(
+            step="disambiguate", expected_wrapper="results", raw_text=raw_text,
+        )
+    ) from result.parse_error
 
 
 # ---------------------------------------------------------------------------
@@ -1196,29 +1192,27 @@ def draft_page(
 
     prompt += cat_suffix
 
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-
-    client = get_client()
+    provider = get_provider(model)
     try:
-        response = client.models.generate_content(
+        result = provider.complete(LLMRequest(
             model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('draft_page')),
-                max_output_tokens=16384,
-                temperature=0.3,
-            ),
-        )
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            response_model=None,
+            thinking_budget=_read_thinking_budget('draft_page'),
+            max_output_tokens=16384,
+            temperature=0.3,
+            step="draft_page",
+            extra={"retry": False},
+        ))
+    except LLMRateLimitedError:
+        raise
     except Exception as e:
         raise LLMCompileError(f"draft_page_llm_failed: {e}") from e
 
-    _record_usage("draft_page", model, response)
-
-    raw_text = response.text
+    raw_text = result.text
     if not raw_text:
         raise LLMCompileError(f"draft_page_error: empty response for '{title}'")
 
@@ -1283,7 +1277,7 @@ Rules:
 - Do NOT modify YAML frontmatter.
 - Do NOT add links to pages that are not in the provided set.
 - Return EVERY page in updated_pages, even if unchanged.
-"""
+""" + _JSON_TRAILER
 
 
 def crossref_pages(pages: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> CrossrefResponse:
@@ -1323,31 +1317,26 @@ def crossref_pages(pages: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> 
     if len(prompt) > _GEMINI_INPUT_TOKEN_CAP:
         prompt = prompt[:_GEMINI_INPUT_TOKEN_CAP]
 
-    client = get_client()
+    provider = get_provider(model)
     try:
-        response = _with_retry(
-            lambda: client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=_CROSSREF_SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    response_schema=CrossrefResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('crossref_pages')),
-                    max_output_tokens=32768,
-                    temperature=0.0,
-                ),
-            ),
+        result = provider.complete(LLMRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": _CROSSREF_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            response_model=CrossrefResponse,
+            thinking_budget=_read_thinking_budget('crossref_pages'),
+            max_output_tokens=32768,
+            temperature=0.0,
             step="crossref",
-        )
+        ))
     except LLMRateLimitedError:
         raise
     except Exception as e:
         raise LLMCompileError(f"crossref_llm_failed: {e}") from e
 
-    _record_usage("crossref", model, response)
-
-    raw_text = response.text
+    raw_text = result.text
     if not raw_text:
         # Return pages unchanged on empty response rather than failing
         return CrossrefResponse(
@@ -1355,10 +1344,14 @@ def crossref_pages(pages: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> 
             contradictions_found=[],
         )
 
-    try:
-        return CrossrefResponse.model_validate_json(raw_text)
-    except Exception as e:
-        raise LLMCompileError(f"crossref_parse_failed: {e}") from e
+    if result.parsed is not None:
+        return result.parsed  # type: ignore[return-value]
+    raise LLMCompileError(
+        f"crossref_parse_failed: {result.parse_error}; "
+        + _parse_failure_tail(
+            step="crossref", expected_wrapper="updated_pages", raw_text=raw_text,
+        )
+    ) from result.parse_error
 
 
 # ---------------------------------------------------------------------------
@@ -1421,37 +1414,34 @@ def triage_page_update(
         f'- "skip": source is redundant or only tangentially mentions the topic'
     )
 
-    client = get_client()
+    provider = get_provider(model)
     try:
-        response = _with_retry(
-            lambda: client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=TriageResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('triage_page_update')),
-                    max_output_tokens=512,
-                    temperature=0.0,
-                ),
-            ),
+        result = provider.complete(LLMRequest(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            response_model=TriageResponse,
+            thinking_budget=_read_thinking_budget('triage_page_update'),
+            max_output_tokens=512,
+            temperature=0.0,
             step="triage",
-        )
+        ))
     except LLMRateLimitedError:
         raise
     except Exception as e:
         raise LLMCompileError(f"triage_llm_call_failed: {e}") from e
 
-    _record_usage("triage", model, response)
-
-    raw_text = response.text
+    raw_text = result.text
     if not raw_text:
         raise LLMCompileError("triage_error: empty response text")
 
-    try:
-        triage = TriageResponse.model_validate_json(raw_text)
-    except Exception as e:
-        raise LLMCompileError(f"triage_json_parse_failed: {e}") from e
+    if result.parsed is None:
+        raise LLMCompileError(
+            f"triage_json_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(
+                step="triage", expected_wrapper="decision", raw_text=raw_text,
+            )
+        ) from result.parse_error
+    triage = result.parsed
 
     decision = triage.decision if triage.decision in ("update", "contradiction", "skip") else "skip"
     return {"decision": decision, "reason": triage.reason}
@@ -1477,29 +1467,26 @@ def generate_schema(pages_summary: list[dict[str, Any]], model: str = _DEFAULT_M
         + _json.dumps(pages_summary, ensure_ascii=False, indent=2)
     )
 
-    client = get_client()
+    provider = get_provider(model)
     try:
-        response = _with_retry(
-            lambda: client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=_SCHEMA_SYSTEM_PROMPT,
-                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('generate_schema')),
-                    max_output_tokens=8192,
-                    temperature=0.0,
-                ),
-            ),
+        result = provider.complete(LLMRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": _SCHEMA_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            response_model=None,
+            thinking_budget=_read_thinking_budget('generate_schema'),
+            max_output_tokens=8192,
+            temperature=0.0,
             step="schema",
-        )
+        ))
     except LLMRateLimitedError:
         raise
     except Exception as e:
         raise LLMCompileError(f"generate_schema_llm_failed: {e}") from e
 
-    _record_usage("schema", model, response)
-
-    raw_text = response.text
+    raw_text = result.text
     if not raw_text:
         raise LLMCompileError("generate_schema_error: empty response")
 
@@ -1526,7 +1513,7 @@ Return JSON with one field:
 
 Only include pages that genuinely help answer the question. If no pages are
 relevant, return an empty list. Do not hallucinate page IDs not in the input.
-"""
+""" + _JSON_TRAILER
 
 
 def select_pages_for_query(
@@ -1556,44 +1543,42 @@ def select_pages_for_query(
     if len(index_text) > _GEMINI_INPUT_TOKEN_CAP:
         index_text = index_text[:_GEMINI_INPUT_TOKEN_CAP]
 
-    prompt = (
-        f"{_SELECT_PAGES_SYSTEM_PROMPT}\n\n"
+    user_payload = (
         f"Wiki index:\n{index_text}\n\n"
         f"Question: {question}"
     )
 
-    client = get_client()
+    provider = get_provider(model)
     try:
-        response = _with_retry(
-            lambda: client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=SelectPagesResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('select_pages_for_query')),
-                    max_output_tokens=1024,
-                    temperature=0.0,
-                ),
-            ),
+        result = provider.complete(LLMRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": _SELECT_PAGES_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_payload},
+            ],
+            response_model=SelectPagesResponse,
+            thinking_budget=_read_thinking_budget('select_pages_for_query'),
+            max_output_tokens=1024,
+            temperature=0.0,
             step="select_pages",
-        )
+        ))
     except LLMRateLimitedError:
         raise
     except Exception as e:
         raise LLMCompileError(f"select_pages_llm_failed: {e}") from e
 
-    _record_usage("select_pages", model, response)
-
-    raw_text = response.text
+    raw_text = result.text
     if not raw_text:
         return []
 
-    try:
-        result = SelectPagesResponse.model_validate_json(raw_text)
-        return result.page_ids
-    except Exception as e:
-        raise LLMCompileError(f"select_pages_parse_failed: {e}") from e
+    if result.parsed is None:
+        raise LLMCompileError(
+            f"select_pages_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(
+                step="select_pages", expected_wrapper="page_ids", raw_text=raw_text,
+            )
+        ) from result.parse_error
+    return result.parsed.page_ids
 
 
 # ---------------------------------------------------------------------------
@@ -1642,7 +1627,7 @@ Return JSON with two fields:
   answer     — your full markdown answer (may use headers, bullets, code blocks)
   citations  — list of {page_id, page_title} for every page you cited
                (only pages you actually used in your answer)
-"""
+""" + _JSON_TRAILER
 
 
 def synthesize_answer(
@@ -1668,11 +1653,6 @@ def synthesize_answer(
         LLMCompileError     — parse failure
     """
     import json as _json
-
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
 
     # Build page context section
     page_sections: list[str] = []
@@ -1701,34 +1681,42 @@ def synthesize_answer(
     if len(prompt) > _GEMINI_INPUT_TOKEN_CAP:
         prompt = prompt[:_GEMINI_INPUT_TOKEN_CAP]
 
-    client = get_client()
+    provider = get_provider(chat_model)
     try:
-        response = client.models.generate_content(
+        # synthesize_answer skips retry (output commits to chat history
+        # downstream and can't be safely re-run after a partial response).
+        # Rate-limiting is preserved: provider.complete() acquires the bucket
+        # in its retry=False path.
+        result = provider.complete(LLMRequest(
             model=chat_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=_SYNTHESIZE_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=SynthesizeResponse,
-                thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('synthesize_answer')),
-                max_output_tokens=4096,
-                temperature=0.2,
-            ),
-        )
+            messages=[
+                {"role": "system", "content": _SYNTHESIZE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            response_model=SynthesizeResponse,
+            thinking_budget=_read_thinking_budget('synthesize_answer'),
+            max_output_tokens=4096,
+            temperature=0.2,
+            step="synthesize",
+            extra={"retry": False},
+        ))
+    except LLMRateLimitedError:
+        raise
     except Exception as e:
         raise LLMCompileError(f"synthesize_llm_failed: {e}") from e
 
-    # chat: model is the user's chat_model setting (stamped per session)
-    _record_usage("synthesize", chat_model, response)
-
-    raw_text = response.text
+    raw_text = result.text
     if not raw_text:
         raise LLMCompileError("synthesize_error: empty response text")
 
-    try:
-        return SynthesizeResponse.model_validate_json(raw_text)
-    except Exception as e:
-        raise LLMCompileError(f"synthesize_parse_failed: {e}") from e
+    if result.parsed is None:
+        raise LLMCompileError(
+            f"synthesize_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(
+                step="synthesize", expected_wrapper="answer", raw_text=raw_text,
+            )
+        ) from result.parse_error
+    return result.parsed
 
 
 # ---------------------------------------------------------------------------
@@ -1751,11 +1739,6 @@ def generate_digest(data: Any, model: str = _DEFAULT_MODEL) -> str:
         CostCeilingError     — daily $ cap exceeded
         LLMCompileError      — empty or failed response
     """
-    limiter = _get_limiter()
-    acquired = limiter.try_acquire("gemini")
-    if not acquired:
-        raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-
     new_titles = ", ".join(data.new_page_titles[:10]) if data.new_page_titles else "none"
     updated_titles = ", ".join(data.updated_page_titles[:10]) if data.updated_page_titles else "none"
 
@@ -1771,24 +1754,50 @@ Summarize what grew this week and what's notable. If nothing happened, say so br
 Suggest 1-2 areas that could use more sources based on the page titles.
 Keep it under 150 words. No markdown formatting — plain text with line breaks."""
 
-    client = get_client()
+    provider = get_provider(model)
     try:
-        response = client.models.generate_content(
+        result = provider.complete(LLMRequest(
             model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_budget=_read_thinking_budget('generate_digest')),
-                max_output_tokens=2048,
-                temperature=0.3,
-            ),
-        )
+            messages=[{"role": "user", "content": prompt}],
+            response_model=None,
+            thinking_budget=_read_thinking_budget('generate_digest'),
+            max_output_tokens=2048,
+            temperature=0.3,
+            step="digest",
+            extra={"retry": False},
+        ))
+    except LLMRateLimitedError:
+        raise
     except Exception as e:
         raise LLMCompileError(f"digest_llm_failed: {e}") from e
 
-    _record_usage("digest", model, response)
-
-    raw_text = response.text
+    raw_text = result.text
     if not raw_text:
         raise LLMCompileError("digest_error: empty response text")
 
     return raw_text.strip()
+
+
+# ---------------------------------------------------------------------------
+# Finalize prompts with response-shape contracts
+# ---------------------------------------------------------------------------
+#
+# This block runs at module load. It MUST be after every Pydantic response
+# model is defined — the constants above end with `+ _JSON_TRAILER` and we
+# tack on the model-derived contract block here so the prompts stay readable
+# in their original locations. Do NOT move earlier in the file: forward refs
+# to the response models would crash the import.
+#
+# DeepSeek's json_object mode reads only the prompt text (response_model
+# schema is server-side ignored), so the wrapper-key anchor + filled-in
+# example below is what actually constrains output shape. Two production
+# drift variants ({"pairs":[...]}, bare list [{...}]) both came from the
+# same underspecified disambiguate prompt before this block was added.
+
+_LINT_SYSTEM_PROMPT = _LINT_SYSTEM_PROMPT + _format_response_contract(LintScanResponse)
+_EXTRACTION_SYSTEM_PROMPT = _EXTRACTION_SYSTEM_PROMPT + _format_response_contract(LLMExtractionResponse)
+_DISAMBIGUATION_SYSTEM_PROMPT = _DISAMBIGUATION_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
+_DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
+_CROSSREF_SYSTEM_PROMPT = _CROSSREF_SYSTEM_PROMPT + _format_response_contract(CrossrefResponse)
+_SELECT_PAGES_SYSTEM_PROMPT = _SELECT_PAGES_SYSTEM_PROMPT + _format_response_contract(SelectPagesResponse)
+_SYNTHESIZE_SYSTEM_PROMPT = _SYNTHESIZE_SYSTEM_PROMPT + _format_response_contract(SynthesizeResponse)

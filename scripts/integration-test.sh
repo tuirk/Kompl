@@ -15,7 +15,7 @@
 #
 # Stage state at commit 8:
 #   Stage 0  — REAL (cold start)
-#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=20)
+#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=24)
 #   Stage 4  — REAL (text connector stage end-to-end, no API key needed)
 #   Stage 11 — REAL (onboarding API canary via /stage → /finalize → pipeline)
 #   Stage 11b — REAL (finalize surfaces n8n-down as 503)
@@ -202,8 +202,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":20'; then
-        echo "  FAIL: schema_version != 20"
+    if ! echo "$response" | grep -q '"schema_version":24'; then
+        echo "  FAIL: schema_version != 24"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -240,7 +240,7 @@ stage_1_migration_schema() {
     # compile. Fixed 2026-04-20 by adding the keys to app.environment.
     # Presence-only check; never compares values (would leak secrets on fail).
     echo "  checking env-var wire (host -> app container)..."
-    for var in GEMINI_API_KEY FIRECRAWL_API_KEY; do
+    for var in GEMINI_API_KEY DEEPSEEK_API_KEY FIRECRAWL_API_KEY; do
         host_val=$(printenv "$var" 2>/dev/null || true)
         if [ -n "$host_val" ]; then
             container_val=$($COMPOSE exec -T app printenv "$var" 2>/dev/null || true)

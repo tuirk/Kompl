@@ -147,9 +147,17 @@ export async function POST(request: Request) {
       continue;
     }
 
-    // Take top 3 with score > 0.3
+    // 0.15 calibrated against the actual cosine-similarity distribution for
+    // long-form sources (~50K chars) vs short wiki pages (~2K chars). On
+    // 2026-05-08 a paper titled "EXPLAINING THE FAVORITE-LONGSHOT BIAS"
+    // (58K chars) compared against a 20-page prediction-markets corpus
+    // produced top similarities at 0.208 / 0.185 / 0.137 / 0.118; the
+    // correct match (Favourite-longshot bias page) and a coauthor entity
+    // (Justin Wolfers) were both below the prior 0.3 cap. The triage LLM
+    // is the precision filter (and the existing slice(0, 3) per source
+    // caps cost at sourceCount × 3 triage calls per session).
     const topCandidates = tfidfResult.top_matches
-      .filter((m) => m.similarity > 0.3)
+      .filter((m) => m.similarity > 0.15)
       .slice(0, 3);
 
     totalCandidates += topCandidates.length;

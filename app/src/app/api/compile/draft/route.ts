@@ -33,13 +33,21 @@ import {
   readPageMarkdown,
   readRawMarkdown,
   updatePlanDraft,
-  updatePlanStatus,
+  updatePlanFailed,
+  updateCompileStep,
   getDb,
 } from '../../../../lib/db';
 import { yamlDoubleQuote } from '../../../../lib/yaml-escape';
+import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
-const DRAFT_CONCURRENCY = 5;
+// 10 concurrent draft calls. Tier-1 RPM is 1000/min and we use <1% of it,
+// so the rate-limit headroom is huge. Per-page memory cost is ~100 KB
+// (source markdown + dossier + schema) → 10 concurrent ≈ 1 MB, fine.
+// Diminishing returns kick in when a layer has fewer plans than the cap;
+// 10 is chosen so a session with 10+ source-summary pages drafts in a
+// single round-trip instead of two staggered batches at 5.
+const DRAFT_CONCURRENCY = 10;
 
 // Same mapping as plan/route.ts — kept local to avoid a shared-lib extraction for 10 lines.
 // Default is 'Uncategorized' (not 'General') — 'General' as a fallback seeds a universal-matching label into existing_categories and the LLM reuses it for every subsequent draft.
@@ -95,7 +103,13 @@ async function callDraftPage(
       existing_categories: existingCategories ?? [],
       ...(compileModel ? { compile_model: compileModel } : {}),
     }),
-    signal: AbortSignal.timeout(180_000), // 3 min — Gemini thinking can be slow
+    signal: AbortSignal.timeout(600_000), // 10 min — DeepSeek draft can match extract latency on dense sources. Gemini thinking adds margin on top. Same 600s budget as extract/resolve/schema for symmetry.
+    // LONG_HTTP_AGENT: undici default headersTimeout=300s would fire before
+    // our 600s AbortSignal on dense source-summary drafts. Session 29be62eb
+    // hit silent HeadersTimeoutError on 15/18 source-summaries (NLP server
+    // returned 200 OK after the client had already given up).
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT,
   });
 
   if (!res.ok) {
@@ -719,7 +733,12 @@ export async function POST(request: Request) {
       const r = results[i];
       if (r instanceof Error) {
         failed++;
-        updatePlanStatus(layerPlans[i].plan_id, 'failed');
+        // Capture the actual error message in the page_plans row + log to
+        // app stdout. Before this, every per-task failure was swallowed —
+        // operators had no clue why a draft died. Session 29be62eb (15
+        // source-summary HeadersTimeoutErrors) wasted 30+ min of debugging.
+        console.error('[draft] plan_id=%s title=%s err=%s', layerPlans[i].plan_id, layerPlans[i].title, r.message);
+        updatePlanFailed(layerPlans[i].plan_id, r.message);
       } else {
         drafted++;
         byType[r.pageType] = (byType[r.pageType] ?? 0) + 1;
@@ -730,6 +749,18 @@ export async function POST(request: Request) {
           if (newCat && newCat !== 'Uncategorized' && newCat !== 'General') sessionCategorySet.add(newCat);
         }
       }
+      // Live progress detail for the UI's "Writing pages" tracker. Without
+      // this, the draft step shows just "PROCESSING" with no count while
+      // earlier steps show "8/8 sources extracted" etc. Mirrors the per-
+      // completion update pattern used by the extract worker pool.
+      updateCompileStep(
+        session_id,
+        'draft',
+        'running',
+        failed > 0
+          ? `${drafted}/${plans.length} pages drafted, ${failed} failed`
+          : `${drafted}/${plans.length} pages drafted`,
+      );
     }
   }
 

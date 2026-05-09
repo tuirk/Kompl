@@ -15,7 +15,6 @@ import {
   getDigestSettings, setDigestSettings,
   getLintEnabled, setLintEnabled, getLastLintResult,
   getStaleThresholdDays, setStaleThresholdDays,
-  getDeploymentMode, setDeploymentMode,
   getLastLintAt, getLastBackupAt,
   getMinSourceChars, setMinSourceChars,
   getMinDraftChars, setMinDraftChars,
@@ -25,8 +24,6 @@ import {
   getDailyCapUsd, setDailyCapUsd,
   getChatModel, setChatModel, isChatModel,
   getCompileModel, setCompileModel,
-  getThinkingBudgets, setThinkingBudgets,
-  THINKING_BUDGET_KEYS, type ThinkingBudgetKey,
 } from '../../../lib/db';
 
 function buildResponse() {
@@ -40,7 +37,6 @@ function buildResponse() {
     digest_telegram_chat_id: digest.telegram_chat_id,
     lint_enabled: getLintEnabled(),
     lint_last_result: getLastLintResult(),
-    deployment_mode: getDeploymentMode(),
     last_lint_at: getLastLintAt(),
     last_backup_at: getLastBackupAt(),
     min_source_chars: getMinSourceChars(),
@@ -51,7 +47,6 @@ function buildResponse() {
     daily_cap_usd: getDailyCapUsd(),
     chat_model: getChatModel(),
     compile_model: getCompileModel(),
-    thinking_budgets: getThinkingBudgets(),
   };
 }
 
@@ -68,7 +63,6 @@ export async function POST(request: Request) {
     digest_telegram_token?: string;
     digest_telegram_chat_id?: string;
     lint_enabled?: boolean;
-    deployment_mode?: 'personal-device' | 'always-on';
     min_source_chars?: number;
     min_draft_chars?: number;
     entity_promotion_threshold?: number;
@@ -77,21 +71,19 @@ export async function POST(request: Request) {
     daily_cap_usd?: number;
     chat_model?: string;
     compile_model?: string;
-    thinking_budgets?: Partial<Record<ThinkingBudgetKey, number>>;
   };
 
   const knownFields = [
     'auto_approve', 'related_pages_min_sources',
     'stale_threshold_days',
     'digest_enabled', 'digest_telegram_token', 'digest_telegram_chat_id',
-    'lint_enabled', 'deployment_mode',
+    'lint_enabled',
     'min_source_chars', 'min_draft_chars',
     'entity_promotion_threshold',
     'dossier_max_sources', 'dossier_min_score',
     'daily_cap_usd',
     'chat_model',
     'compile_model',
-    'thinking_budgets',
   ];
   if (!knownFields.some((f) => f in body)) {
     return NextResponse.json({ error: 'no recognized setting field in request body' }, { status: 422 });
@@ -150,16 +142,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'lint_enabled must be a boolean' }, { status: 422 });
     }
     setLintEnabled(body.lint_enabled);
-  }
-
-  if (body.deployment_mode !== undefined) {
-    if (body.deployment_mode !== 'personal-device' && body.deployment_mode !== 'always-on') {
-      return NextResponse.json(
-        { error: "deployment_mode must be 'personal-device' or 'always-on'" },
-        { status: 422 },
-      );
-    }
-    setDeploymentMode(body.deployment_mode);
   }
 
   if (body.min_source_chars !== undefined) {
@@ -225,7 +207,7 @@ export async function POST(request: Request) {
   if (body.chat_model !== undefined) {
     if (!isChatModel(body.chat_model)) {
       return NextResponse.json(
-        { error: 'chat_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro' },
+        { error: 'chat_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro, deepseek-v4-pro' },
         { status: 422 },
       );
     }
@@ -235,36 +217,11 @@ export async function POST(request: Request) {
   if (body.compile_model !== undefined) {
     if (!isChatModel(body.compile_model)) {
       return NextResponse.json(
-        { error: 'compile_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro' },
+        { error: 'compile_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro, deepseek-v4-pro' },
         { status: 422 },
       );
     }
     setCompileModel(body.compile_model);
-  }
-
-  if (body.thinking_budgets !== undefined) {
-    if (typeof body.thinking_budgets !== 'object' || body.thinking_budgets === null || Array.isArray(body.thinking_budgets)) {
-      return NextResponse.json(
-        { error: 'thinking_budgets must be an object mapping call-site name to integer in [-1, 24576]' },
-        { status: 422 },
-      );
-    }
-    const patch = body.thinking_budgets as Record<string, unknown>;
-    for (const [key, value] of Object.entries(patch)) {
-      if (!THINKING_BUDGET_KEYS.includes(key as ThinkingBudgetKey)) {
-        return NextResponse.json(
-          { error: `unknown thinking_budgets key: ${key}. Valid keys: ${THINKING_BUDGET_KEYS.join(', ')}` },
-          { status: 422 },
-        );
-      }
-      if (!Number.isInteger(value) || (value as number) < -1 || (value as number) > 24576) {
-        return NextResponse.json(
-          { error: `thinking_budgets.${key} must be an integer in [-1, 24576] (-1 = unlimited, 0 = off)` },
-          { status: 422 },
-        );
-      }
-    }
-    setThinkingBudgets(body.thinking_budgets);
   }
 
   return NextResponse.json(buildResponse());

@@ -3,7 +3,6 @@
 import { useState, useRef, useEffect } from 'react';
 
 const DEFERRED = [
-  'Google Drive and Notion connectors',
   'Image support via LLM vision',
   'Custom LLM provider support',
   'Tauri tray app — one-click Start/Stop/Open from the system tray',

@@ -24,7 +24,15 @@ sys.modules.setdefault("chromadb", chromadb_stub)
 
 st_stub = types.ModuleType("sentence_transformers")
 st_stub.SentenceTransformer = MagicMock()
+# KeyBERT (loaded indirectly via routers/extraction.py) reads
+# ``sentence_transformers.util``. Provide a permissive submodule stub so the
+# import chain succeeds during tests that touch main.app.
+st_util_stub = types.ModuleType("sentence_transformers.util")
+st_util_stub.cos_sim = MagicMock()
+st_util_stub.semantic_search = MagicMock()
+st_stub.util = st_util_stub
 sys.modules.setdefault("sentence_transformers", st_stub)
+sys.modules.setdefault("sentence_transformers.util", st_util_stub)
 
 spacy_stub = types.ModuleType("spacy")
 spacy_stub.load = MagicMock(return_value=MagicMock())
@@ -69,7 +77,12 @@ def client(app):
 
 @pytest.fixture
 def mock_gemini(monkeypatch):
-    """Patch get_client() to return a MagicMock Gemini client."""
+    """Patch the Gemini SDK client to a MagicMock.
+
+    Phase 2 moved get_client() out of llm_client into services.providers.gemini.
+    The provider's complete() method calls module-level ``get_client()`` and
+    ``_get_limiter()``; both are monkeypatched here so tests stay hermetic.
+    """
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_response.text = "---\ntitle: Test\npage_type: source-summary\n---\n## Content\nBody."
@@ -77,25 +90,33 @@ def mock_gemini(monkeypatch):
     mock_response.usage_metadata.candidates_token_count = 50
     mock_client.models.generate_content.return_value = mock_response
 
-    from services import llm_client  # noqa: PLC0415
-    monkeypatch.setattr(llm_client, "get_client", lambda: mock_client)
+    from services.providers import gemini as gemini_provider  # noqa: PLC0415
+    monkeypatch.setattr(gemini_provider, "get_client", lambda: mock_client)
     return mock_client
 
 
 @pytest.fixture
 def mock_limiter(monkeypatch):
-    """Patch _get_limiter() so try_acquire always succeeds."""
+    """Patch _get_limiter() so try_acquire always succeeds.
+
+    Phase 2 moved the limiter into services.providers.gemini.
+    """
     mock_lim = MagicMock()
     mock_lim.try_acquire.return_value = True
 
-    from services import llm_client  # noqa: PLC0415
-    monkeypatch.setattr(llm_client, "_get_limiter", lambda: mock_lim)
+    from services.providers import gemini as gemini_provider  # noqa: PLC0415
+    monkeypatch.setattr(gemini_provider, "_get_limiter", lambda: mock_lim)
     return mock_lim
 
 
 @pytest.fixture
 def mock_cost(monkeypatch):
-    """Patch _check_and_record_cost to avoid disk I/O."""
+    """Patch _check_and_record_cost to avoid disk I/O.
+
+    The provider's complete() method calls back into ``llm_client._check_and_record_cost``
+    via lazy module-attribute lookup, so this monkeypatch on the llm_client
+    namespace is still effective.
+    """
     from services import llm_client  # noqa: PLC0415
     mock_fn = MagicMock()
     monkeypatch.setattr(llm_client, "_check_and_record_cost", mock_fn)

@@ -9,7 +9,7 @@ Knowledge compiler — turns scattered links, files, and bookmarks into a living
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/tuirk/Kompl/actions/workflows/integration-test.yml/badge.svg)](https://github.com/tuirk/Kompl/actions)
 [![Docker](https://img.shields.io/badge/Docker-Compose_Ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
-[![LLM](https://img.shields.io/badge/LLM-Gemini_2.5-8E75B2?logo=google&logoColor=white)]()
+[![LLM](https://img.shields.io/badge/LLM-Gemini_%2B_DeepSeek-8E75B2)]()
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tuirk/Kompl/badge)](https://scorecard.dev/viewer/?uri=github.com/tuirk/Kompl)
 
 ## Why Kompl?
@@ -18,7 +18,7 @@ Most tools save your stuff and forget about it. Kompl reads it, extracts the kno
 
 - One new source can update 10+ wiki pages. Cross-references, contradictions, and synthesis are built at ingest time, not re-discovered on every query.
 - Entity pages, concept pages, comparisons, and source summaries are wikilinked together. The wiki gets richer with every source you add.
-- Runs locally via Docker. Outbound calls are limited to your own API keys (Gemini, Firecrawl) and the URLs you choose to ingest.
+- Runs locally via Docker. Outbound calls are limited to your own API keys (Gemini and/or DeepSeek for compilation, Firecrawl for scraping) and the URLs you choose to ingest.
 
 Built with Next.js, Python NLP, n8n orchestration, and SQLite.
 
@@ -37,6 +37,7 @@ You'll also need two API keys, both free to get:
 | | Get key | Free tier | Notes |
 |---|---|---|---|
 | **Gemini** (wiki compilation) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day | Free works for the demo and your first few sources. **Paid Tier 1 is strongly recommended for real use** — Gemini's free per-minute throttle (~10 RPM) will rate-limit a normal ingest, even though daily quota is plenty. Default rate-limiter assumes Tier 1. |
+| **DeepSeek V4 Pro** (alternative compile backend, optional) | [api-docs.deepseek.com](https://api-docs.deepseek.com) | Pay-as-you-go | Selectable in Settings as an alternative to Gemini — useful for sources past Gemini's input cap or when Gemini hits RECITATION. Set `DEEPSEEK_API_KEY` in `.env`. |
 | **Firecrawl** (URL scraping) | [firecrawl.dev](https://firecrawl.dev) | 500 scrapes/month | Free tier covers normal personal use. |
 
 ## Setup
@@ -70,10 +71,6 @@ node setup.js
 Either path: the script handles everything — creates your config, asks for the two API keys, installs the `kompl` CLI, and starts the stack. No other steps needed. Your system timezone is detected and written to `.env` as `KOMPL_TIMEZONE` automatically.
 
 > Your API keys land in `.env` at the repo root. That file is gitignored — never commit it.
-
-During setup you'll be asked how this instance is running: **personal device** (laptop/desktop that may be off) or **always-on server** (VPS, Railway, Raspberry Pi). This controls how scheduled jobs — lint, digest, and local backup — are triggered. Personal-device mode fires them on `kompl start` so nothing is skipped if your machine was off at the scheduled time; always-on mode relies on n8n's built-in cron schedule.
-
-> *⚠️ This mode toggle ships as a demo — expect rough edges, especially in the always-on server path.*
 
 > **First start takes 5–10 minutes** — Docker is building images (~2 GB on first start) and downloading the local AI model from HuggingFace. Make a coffee. Subsequent starts take ~15 seconds.
 
@@ -176,7 +173,8 @@ If you're not using an MCP client, hit the Next.js routes directly: `/api/pages/
 Your wiki content lives in Docker volumes on your machine. Outbound network calls fall into three buckets:
 
 **You drive these — your content goes to a third party:**
-- **Gemini** (`generativelanguage.googleapis.com`) — wiki compilation. Your source text is sent to Google.
+- **Gemini** (`generativelanguage.googleapis.com`) — wiki compilation when the Gemini backend is selected. Your source text is sent to Google.
+- **DeepSeek** (`api.deepseek.com`) — wiki compilation when the DeepSeek backend is selected. Your source text is sent to DeepSeek. Only outbound if `DEEPSEEK_API_KEY` is configured and selected as the compile model.
 - **Firecrawl** (`api.firecrawl.dev`) — URL scraping fallback. The URL you pasted is sent to Firecrawl.
 - **GitHub public API** (`api.github.com`) — when you paste a GitHub repo URL, Kompl fetches the README + metadata.
 - **YouTube** (`youtube.com`) — when you paste a YouTube URL, transcripts are fetched via the public captions endpoint.
@@ -198,7 +196,7 @@ To restore on a fresh instance: run setup, skip onboarding, go to Settings → *
 
 ### Automatic backup
 
-If you chose **personal-device** mode during setup, `kompl start` automatically saves a local backup to `~/.kompl/backups/kompl-backup.kompl.zip` (at most once every 36 hours). Settings shows when the last backup ran.
+`kompl start` automatically saves a local backup to `~/.kompl/backups/kompl-backup.kompl.zip` (at most once every 36 hours).
 
 > *⚠️ Auto-backup-on-start is an early feature, wired end-to-end but lacking regression tests on the start-time path. Flag any silent skips.*
 
@@ -222,14 +220,13 @@ kompl backup --schedule                               # register a weekly backup
 
 **Known limitations:**
 - Single-tenant only — no user accounts or access control. Don't expose to the public internet without your own auth layer.
-- Gemini is the only LLM provider. Anthropic and OpenAI-compatible providers are planned.
+- Two LLM providers selectable per session: Gemini 2.5 (default) and DeepSeek V4 Pro. Anthropic and OpenAI-compatible providers are planned.
 - **Current connectors:** URLs (YouTube transcripts and GitHub READMEs included), file uploads (PDF, DOCX, PPTX, XLSX, TXT, MD, HTML), browser bookmarks, Twitter JSON export, Upnote, Apple Notes.
-- Personal-device vs always-on-server mode is a demo feature — the always-on server path hasn't been hardened yet.
 - No mobile app. The web UI works on mobile browsers but isn't optimized for small screens.
 
 ## Security
 
-Kompl is built for personal-device deployment behind a loopback or LAN. The security posture is calibrated for that model.
+Kompl runs on a personal computer behind a loopback or LAN. The security posture is calibrated for that model.
 
 **Hardening shipped (4-commit security pass, April 2026):**
 - SSRF protection on `/metadata/peek` — DNS-resolved IP pinning via httpx `sni_hostname` extension, scheme allowlist, cloud-metadata blocklist, manual redirect revalidation.
@@ -238,11 +235,9 @@ Kompl is built for personal-device deployment behind a loopback or LAN. The secu
 - Log-forging protection on compile pipeline log lines.
 - nlp-service port bound to `127.0.0.1` so the LAN cannot bypass the Next.js front door.
 
-**Open before public-internet (always-on / Railway) deployment:**
-- Markdown HTML output is not yet sanitized — Firecrawl-scraped content can carry XSS payloads. Personal-device users are exposed only to bookmarks they choose to ingest; multi-user/public deploys need DOMPurify in the render pipeline.
+**Known security debt:**
+- Markdown HTML output is not yet sanitized — Firecrawl-scraped content can carry XSS payloads. Even on a single-user install, an ingested bookmark can deliver a payload; needs DOMPurify in the render pipeline.
 - `/convert/url` does not yet share the SSRF gate that protects `/metadata/peek`.
-- No authentication layer — front the deployment with Cloudflare Access, Tailscale Funnel, or your own auth proxy.
-- CSP / X-Frame-Options / HSTS / Referrer-Policy headers not yet set.
 
 **CodeQL alerts.** Some `py/path-injection` and `js/path-injection` alerts re-fire on every push because CodeQL's taint tracker doesn't follow cross-function sanitizers. We dismiss these individually (rather than silencing in CodeQL config) so any genuinely new sink in those files surfaces for review. The audit trail and per-alert reasoning live at [docs/security/codeql-false-positives.md](docs/security/codeql-false-positives.md).
 

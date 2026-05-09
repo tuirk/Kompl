@@ -29,8 +29,10 @@ const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000'
 export async function GET() {
   try {
     // Clean up any sessions left 'running' by a server restart or crash.
-    // This runs on every health probe so stale sessions are fixed automatically on startup.
-    const staleSessionsFixed = markStaleSessionsFailed(30);
+    // This runs on every health probe. The cleanup is per-session adaptive
+    // (60 min floor + 6 min per source) so a 1800-source session is not
+    // killed at the same wall-clock as a 6-source session.
+    const staleSessionsFixed = markStaleSessionsFailed();
     // Clean up 'queued' sessions that never got picked up by n8n (silent
     // webhook drop, n8n down at the time of confirm, process killed mid-flight).
     const stuckQueuedFixed = reconcileStuckCompileSessions(5);
@@ -55,7 +57,7 @@ export async function GET() {
       nlpOk = nlpRes.ok;
     } catch { /* non-fatal */ }
 
-    const dbOk = dbWritable && allExpectedPresent && schemaVersion === 20;
+    const dbOk = dbWritable && allExpectedPresent && schemaVersion === 24;
 
     // status:'ok' requires DB healthy + NLP reachable + no vector backlog.
     // status:'degraded' means the app is serving but something needs attention.
@@ -76,6 +78,12 @@ export async function GET() {
         vector_backlog: vectorBacklog,
         stale_sessions_fixed: staleSessionsFixed,
         stuck_queued_fixed: stuckQueuedFixed,
+        // Phase 5 multi-provider: presence-only flags consumed by the
+        // Settings UI to gate the model dropdown. No outbound key probe.
+        provider_keys: {
+          gemini_present: !!process.env.GEMINI_API_KEY,
+          deepseek_present: !!process.env.DEEPSEEK_API_KEY,
+        },
       },
       // Return 200 for both 'ok' and 'degraded' so Docker healthcheck only
       // fails on hard errors. The app is usable in degraded state.

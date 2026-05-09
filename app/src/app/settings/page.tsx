@@ -84,47 +84,13 @@ export default function SettingsPage() {
   const [compileModelSaving, setCompileModelSaving] = useState(false);
   const [compileModelSaved, setCompileModelSaved] = useState(false);
 
-  // Thinking budgets — per-LLM-call-site reasoning token allowance.
-  // Source of truth lives in /data/llm-config.json (mirrored from settings
-  // table); nlp-service reads the JSON on each Gemini call. -1 = unlimited,
-  // 0 = thinking off. Defaults match what the code shipped with so toggling
-  // doesn't change behaviour until the user opts in.
-  const THINKING_BUDGET_KEYS = [
-    'extract_source',
-    'draft_page',
-    'disambiguate_entities',
-    'synthesize_answer',
-    'lint_scan',
-    'select_pages_for_query',
-    'generate_schema',
-    'crossref_pages',
-    'triage_page_update',
-    'generate_digest',
-  ] as const;
-  type ThinkingBudgetKey = typeof THINKING_BUDGET_KEYS[number];
-  const THINKING_BUDGET_LABELS: Record<ThinkingBudgetKey, string> = {
-    extract_source: 'Extract entities/concepts/claims from a source',
-    draft_page: 'Draft a wiki page from sources',
-    disambiguate_entities: 'Resolve canonical entities across sources',
-    synthesize_answer: 'Synthesize a chat answer from cited pages',
-    lint_scan: 'Weekly wiki lint pass',
-    select_pages_for_query: 'Pick pages relevant to a chat question',
-    generate_schema: 'Bootstrap schema.md after a compile',
-    crossref_pages: 'Inject [[wikilinks]] across newly-drafted pages',
-    triage_page_update: 'Decide create vs update vs skip per match candidate',
-    generate_digest: 'Compose the weekly Telegram digest',
-  };
-  const [thinkingBudgets, setThinkingBudgets] = useState<Record<ThinkingBudgetKey, number> | null>(null);
-  const [thinkingBudgetsDraft, setThinkingBudgetsDraft] = useState<Record<ThinkingBudgetKey, number> | null>(null);
-  const [thinkingBudgetsSaving, setThinkingBudgetsSaving] = useState(false);
-  const [thinkingBudgetsSaved, setThinkingBudgetsSaved] = useState(false);
-  const [thinkingBudgetsError, setThinkingBudgetsError] = useState<string | null>(null);
-
-  const [deploymentMode, setDeploymentModeState] = useState<'personal-device' | 'always-on' | null>(null);
-  const [deploymentSaving, setDeploymentSaving] = useState(false);
-  const [deploymentSaved, setDeploymentSaved] = useState(false);
-  const [lastLintAt, setLastLintAt] = useState<string | null>(null);
-  const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
+  // Phase 5/6 multi-provider: presence-only flags from /api/health gate the
+  // dropdown options. null = still loading; never throw on a fetch failure
+  // (operator on a broken health endpoint should still see Gemini default).
+  const [providerKeys, setProviderKeys] = useState<{
+    gemini_present: boolean;
+    deepseek_present: boolean;
+  } | null>(null);
 
   const [lintEnabled, setLintEnabledState] = useState<boolean | null>(null);
   const [lintSaving, setLintSaving] = useState(false);
@@ -176,9 +142,6 @@ export default function SettingsPage() {
         digest_telegram_chat_id: string | null;
         lint_enabled: boolean;
         lint_last_result: LintLastResult | null;
-        deployment_mode: 'personal-device' | 'always-on';
-        last_lint_at: string | null;
-        last_backup_at: string | null;
         min_source_chars: number;
         min_draft_chars: number;
         entity_promotion_threshold: number;
@@ -187,7 +150,6 @@ export default function SettingsPage() {
         daily_cap_usd: number;
         chat_model: string;
         compile_model: string;
-        thinking_budgets: Record<ThinkingBudgetKey, number>;
       }) => {
         setAutoApprove(data.auto_approve);
         setRelatedMinSources(data.related_pages_min_sources);
@@ -197,9 +159,6 @@ export default function SettingsPage() {
         setDigestChatId(data.digest_telegram_chat_id ?? '');
         setLintEnabledState(data.lint_enabled);
         setLintLastResult(data.lint_last_result);
-        setDeploymentModeState(data.deployment_mode);
-        setLastLintAt(data.last_lint_at);
-        setLastBackupAt(data.last_backup_at);
         setMinSourceChars(data.min_source_chars);
         setMinDraftChars(data.min_draft_chars);
         setEntityThreshold(data.entity_promotion_threshold);
@@ -208,8 +167,24 @@ export default function SettingsPage() {
         setDailyCapUsd(data.daily_cap_usd);
         setChatModelState(data.chat_model);
         setCompileModelState(data.compile_model);
-        setThinkingBudgets(data.thinking_budgets);
-        setThinkingBudgetsDraft(data.thinking_budgets);
+      });
+  }, []);
+
+  // Phase 5/6 multi-provider: fetch the provider-key presence flags so the
+  // model dropdowns can disable options whose backend isn't configured.
+  // /api/health returns lots of fields; we only read provider_keys here.
+  useEffect(() => {
+    void fetch('/api/health')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { provider_keys?: { gemini_present: boolean; deepseek_present: boolean } } | null) => {
+        if (data?.provider_keys) {
+          setProviderKeys(data.provider_keys);
+        }
+      })
+      .catch(() => {
+        // Non-fatal: dropdowns fall back to "all enabled" while
+        // providerKeys stays null. The POST validator at /api/settings
+        // is the back-stop on actually-invalid selections.
       });
   }, []);
 
@@ -266,7 +241,6 @@ export default function SettingsPage() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      if (format === 'kompl') setLastBackupAt(new Date().toISOString());
     } finally {
       setExportLoading(null);
     }
@@ -339,30 +313,6 @@ export default function SettingsPage() {
   }
   /* eslint-enable @typescript-eslint/no-unused-vars */
 
-  async function toggleDeploymentMode() {
-    if (deploymentMode === null || deploymentSaving) return;
-    const newVal = deploymentMode === 'personal-device' ? 'always-on' : 'personal-device';
-    setDeploymentSaving(true);
-    setDeploymentSaved(false);
-    const _ok = await saveSettingToApi({ deployment_mode: newVal });
-    if (!_ok) { setDeploymentSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
-    setDeploymentModeState(newVal);
-    setDeploymentSaving(false);
-    setDeploymentSaved(true);
-    setTimeout(() => setDeploymentSaved(false), 2000);
-  }
-
-  function formatRelativeTime(iso: string | null): string {
-    if (!iso) return 'Never';
-    const diff = Date.now() - new Date(iso).getTime();
-    if (diff < 0) return 'Just now';
-    const h = Math.floor(diff / 3_600_000);
-    if (h < 1) return 'Less than an hour ago';
-    if (h < 24) return `${h}h ago`;
-    const d = Math.floor(h / 24);
-    return d === 1 ? '1 day ago' : `${d} days ago`;
-  }
-
   async function toggleLint() {
     if (lintEnabled === null || lintSaving) return;
     const newVal = !lintEnabled;
@@ -404,7 +354,6 @@ export default function SettingsPage() {
           contradiction_count: data.contradictions?.length ?? 0,
           run_duration_ms: data.run_duration_ms,
         });
-        setLastLintAt(new Date().toISOString());
       }
     } finally {
       setLintRunning(false);
@@ -497,26 +446,6 @@ export default function SettingsPage() {
     setCompileModelSaving(false);
     setCompileModelSaved(true);
     setTimeout(() => setCompileModelSaved(false), 2000);
-  }
-
-  async function saveThinkingBudgets() {
-    if (thinkingBudgetsDraft === null) return;
-    for (const key of THINKING_BUDGET_KEYS) {
-      const v = thinkingBudgetsDraft[key];
-      if (!Number.isInteger(v) || v < -1 || v > 24576) {
-        setThinkingBudgetsError(`${key}: must be an integer between -1 and 24576 (-1 = unlimited, 0 = off)`);
-        return;
-      }
-    }
-    setThinkingBudgetsError(null);
-    setThinkingBudgetsSaving(true);
-    setThinkingBudgetsSaved(false);
-    const _ok = await saveSettingToApi({ thinking_budgets: thinkingBudgetsDraft });
-    if (!_ok) { setThinkingBudgetsSaving(false); showToast(toUserMessage('settings_save_failed'), 'error'); return; }
-    setThinkingBudgets(thinkingBudgetsDraft);
-    setThinkingBudgetsSaving(false);
-    setThinkingBudgetsSaved(true);
-    setTimeout(() => setThinkingBudgetsSaved(false), 2000);
   }
 
   const MCP_CONFIG_JSON = `{
@@ -991,7 +920,7 @@ export default function SettingsPage() {
           >
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-                Daily Gemini spend cap
+                Daily LLM spend cap
                 <span
                   style={{
                     padding: '1px 6px',
@@ -1009,13 +938,19 @@ export default function SettingsPage() {
                 </span>
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Hard USD ceiling on Gemini API spend per UTC day. When exceeded, LLM calls raise a cost-ceiling error and the pipeline marks affected work as retryable. Resets at midnight UTC.
+                Hard USD ceiling on combined LLM API spend per UTC day across all providers
+                (one shared counter). When exceeded, LLM calls raise a cost-ceiling error and
+                the pipeline marks affected work as retryable. Resets at midnight UTC.
                 Set to <strong>0</strong> for unlimited (no cap).
-                {' '}The tracked number comes from each Gemini call&apos;s <code>usage_metadata</code>
-                (input + cached + output + thinking tokens, multiplied by the model&apos;s published
-                per-million-token price). It&apos;s an <strong>estimate</strong> — real invoice
-                totals may differ by a few percent due to token-count rounding, cached-content
-                discounts, and any price drift between Gemini&apos;s schedule and our constants.
+                {' '}The tracked number is a Kompl-side estimate from each call&apos;s usage
+                metadata (input + cached + output tokens × the model&apos;s per-million-token
+                price). It&apos;s independent of any provider&apos;s prepaid balance — your
+                DeepSeek/Gemini account ledger is separate.
+                {' '}<strong>Prices may be stale.</strong> Per-million-token rates are hard-coded
+                constants and providers update them periodically; we deliberately ignore
+                promotional discounts (overestimating is the safer side — the cap fires sooner
+                than necessary, never later). Reconcile with the provider&apos;s invoice for
+                ground truth.
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
@@ -1081,7 +1016,7 @@ export default function SettingsPage() {
                 Compile model
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Which Gemini model the <strong>compile pipeline</strong> uses for every LLM step
+                Which model the <strong>compile pipeline</strong> uses for every LLM step
                 (extract, resolve, draft, crossref, schema). Flash (default) balances cost and
                 quality; Flash Lite is cheapest; Pro is most capable but most expensive.
                 Compile spend is typically <strong>10-100× higher than chat</strong> because the
@@ -1106,9 +1041,38 @@ export default function SettingsPage() {
                   opacity: compileModel === null ? 0.5 : 1,
                 }}
               >
-                <option value="gemini-2.5-flash-lite">Flash Lite</option>
-                <option value="gemini-2.5-flash">Flash (default)</option>
-                <option value="gemini-2.5-pro">Pro</option>
+                <optgroup label="Gemini">
+                  <option
+                    value="gemini-2.5-flash-lite"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Flash Lite</option>
+                  <option
+                    value="gemini-2.5-flash"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Flash (default)</option>
+                  <option
+                    value="gemini-2.5-pro"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Pro</option>
+                </optgroup>
+                <optgroup label="DeepSeek">
+                  <option
+                    value="deepseek-v4-pro"
+                    disabled={providerKeys ? !providerKeys.deepseek_present : false}
+                    title={providerKeys && !providerKeys.deepseek_present
+                      ? 'Set DEEPSEEK_API_KEY in your environment to enable'
+                      : undefined}
+                  >V4 Pro</option>
+                </optgroup>
               </select>
             </div>
           </div>
@@ -1150,7 +1114,7 @@ export default function SettingsPage() {
                 Chat model
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Which Gemini model the <strong>Chat</strong> page uses to synthesise answers.
+                Which model the <strong>Chat</strong> page uses to synthesise answers.
                 Flash Lite is cheapest and a good default; Pro is the most capable but the most
                 expensive. Changes apply to <strong>new chats only</strong> — conversations
                 already in progress keep the model they started with.
@@ -1171,9 +1135,38 @@ export default function SettingsPage() {
                   opacity: chatModel === null ? 0.5 : 1,
                 }}
               >
-                <option value="gemini-2.5-flash-lite">Flash Lite (default)</option>
-                <option value="gemini-2.5-flash">Flash</option>
-                <option value="gemini-2.5-pro">Pro</option>
+                <optgroup label="Gemini">
+                  <option
+                    value="gemini-2.5-flash-lite"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Flash Lite (default)</option>
+                  <option
+                    value="gemini-2.5-flash"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Flash</option>
+                  <option
+                    value="gemini-2.5-pro"
+                    disabled={providerKeys ? !providerKeys.gemini_present : false}
+                    title={providerKeys && !providerKeys.gemini_present
+                      ? 'Set GEMINI_API_KEY in your environment to enable'
+                      : undefined}
+                  >Pro</option>
+                </optgroup>
+                <optgroup label="DeepSeek">
+                  <option
+                    value="deepseek-v4-pro"
+                    disabled={providerKeys ? !providerKeys.deepseek_present : false}
+                    title={providerKeys && !providerKeys.deepseek_present
+                      ? 'Set DEEPSEEK_API_KEY in your environment to enable'
+                      : undefined}
+                  >V4 Pro</option>
+                </optgroup>
               </select>
             </div>
           </div>
@@ -1214,119 +1207,6 @@ export default function SettingsPage() {
               }}
             >
               Saved — applies to new chats.
-            </div>
-          )}
-        </section>
-
-        {/* Thinking budgets */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-            marginTop: '1rem',
-          }}
-        >
-          <div style={{ padding: '1.25rem 1.5rem' }}>
-            <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-              Thinking budgets
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.75rem' }}>
-              How many <em>reasoning</em> tokens each Gemini call site is allowed to spend before
-              producing the final response. Higher = better quality on hard tasks; lower = cheaper
-              and faster. <strong>-1</strong> = unlimited (model decides), <strong>0</strong> = thinking off.
-              Defaults match what shipped with the build — tune only if you have a specific reason.
-            </div>
-            <div style={{ fontSize: '0.8rem', color: 'var(--fg-dim)', lineHeight: 1.5, marginBottom: '1rem' }}>
-              The Gemini 2.5 Flash docs suggest 0 for mechanical text manipulation, 1024 for
-              selection/ranking, 2048 for structured creative one-offs, and -1 for deep reasoning
-              (extract, draft, disambiguate, synthesize). Range: -1 to 24576.
-            </div>
-
-            {thinkingBudgetsDraft === null ? (
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)' }}>Loading…</div>
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: '0.5rem 1rem', alignItems: 'center' }}>
-                {THINKING_BUDGET_KEYS.map((key) => (
-                  <div key={key} style={{ display: 'contents' }}>
-                    <label htmlFor={`tb-${key}`} style={{ fontSize: '0.85rem' }}>
-                      <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--accent)' }}>
-                        {key}
-                      </code>
-                      <div style={{ fontSize: '0.78rem', color: 'var(--fg-muted)', marginTop: '0.15rem' }}>
-                        {THINKING_BUDGET_LABELS[key]}
-                      </div>
-                    </label>
-                    <input
-                      id={`tb-${key}`}
-                      type="number"
-                      min={-1}
-                      max={24576}
-                      step={1}
-                      value={thinkingBudgetsDraft[key]}
-                      onChange={(e) => {
-                        const next = Number.parseInt(e.target.value, 10);
-                        setThinkingBudgetsDraft({
-                          ...thinkingBudgetsDraft,
-                          [key]: Number.isFinite(next) ? next : 0,
-                        });
-                      }}
-                      disabled={thinkingBudgetsSaving}
-                      style={{
-                        padding: '0.4rem 0.55rem',
-                        borderRadius: 6,
-                        border: '1px solid var(--border)',
-                        background: 'var(--bg-card)',
-                        color: 'var(--fg)',
-                        fontSize: '0.85rem',
-                        fontFamily: 'var(--font-mono)',
-                        width: '100%',
-                      }}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {thinkingBudgetsError && (
-              <div style={{ marginTop: '0.75rem', fontSize: '0.82rem', color: 'var(--danger)' }}>
-                {thinkingBudgetsError}
-              </div>
-            )}
-
-            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem', alignItems: 'center' }}>
-              <button
-                onClick={() => void saveThinkingBudgets()}
-                disabled={thinkingBudgetsDraft === null || thinkingBudgetsSaving}
-                style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
-              >
-                {thinkingBudgetsSaving ? 'Saving…' : 'Save'}
-              </button>
-              <button
-                onClick={() => {
-                  if (thinkingBudgets !== null) {
-                    setThinkingBudgetsDraft(thinkingBudgets);
-                    setThinkingBudgetsError(null);
-                  }
-                }}
-                disabled={thinkingBudgetsDraft === null || thinkingBudgetsSaving}
-                style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
-              >
-                Revert
-              </button>
-            </div>
-          </div>
-          {thinkingBudgetsSaved && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved — nlp-service picks up the new values within ~30 s (cache TTL).
             </div>
           )}
         </section>
@@ -1776,69 +1656,6 @@ export default function SettingsPage() {
 
         {/* ========== Automation & delivery ========== */}
         <h2 id="automation" style={groupHeadingStyleWithTop}>Automation &amp; delivery</h2>
-
-        {/* Deployment Mode */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            style={{
-              padding: '1.25rem 1.5rem',
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: '1.5rem',
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-                Deployment
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                {deploymentMode === 'always-on'
-                  ? 'Always-on server — lint and backup run on n8n\'s Monday 11:30 schedule.'
-                  : 'Personal device — lint and backup run automatically when Kompl starts (at most every 36 hours).'}
-              </div>
-              <div style={{ marginTop: '0.75rem', display: 'flex', gap: '1.5rem', fontSize: '0.8rem', color: 'var(--fg-dim)' }}>
-                <span>Last lint: <span style={{ color: 'var(--fg-secondary)' }}>{formatRelativeTime(lastLintAt)}</span></span>
-                <span>Last backup: <span style={{ color: 'var(--fg-secondary)' }}>{formatRelativeTime(lastBackupAt)}</span></span>
-              </div>
-            </div>
-            <button
-              className={deploymentMode === 'personal-device' ? undefined : 'btn-outline'}
-              onClick={() => void toggleDeploymentMode()}
-              disabled={deploymentMode === null || deploymentSaving}
-              style={{
-                flexShrink: 0,
-                padding: '0.45rem 1rem',
-                borderRadius: 20,
-                fontSize: '0.85rem',
-                opacity: deploymentMode === null ? 0.5 : 1,
-                minWidth: 120,
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {deploymentMode === null ? '…' : deploymentMode === 'personal-device' ? 'Personal device' : 'Always-on server'}
-            </button>
-          </div>
-          {deploymentSaved && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved.
-            </div>
-          )}
-        </section>
 
         {/* Weekly Digest — locked off like Entity Expansion until schedule/copy/credentials fixes land (see docs/Tui-read.me) */}
         <section
