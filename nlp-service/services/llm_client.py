@@ -587,6 +587,7 @@ class LLMExtractionResponse(BaseModel):
     No extra='forbid' — google-genai rejects additionalProperties=false
     in response_schema (consistent with all other LLM output models here).
     """
+    title: str          # document title — empty string if not derivable
     entities: list[ExtractionEntity]
     concepts: list[ExtractionConcept]
     claims: list[ExtractionClaim]
@@ -603,27 +604,36 @@ Your job is precision, not creativity. Only extract information that is
 explicitly or strongly implicitly present in the source. Do not hallucinate.
 
 Return JSON with these fields:
-1. entities      — named entities with name, type, mentions, and context
+1. title         — the document's actual title as it appears in the source
+   - For papers: the paper's title from the title page (NOT the filename, NOT
+     a publisher boilerplate like "The X Center for Y Research", NOT an
+     arXiv/DOI identifier).
+   - For articles, books, posts: their stated title.
+   - Skip headers, running heads, page numbers, author lists, and any
+     reversed/garbled text from arXiv side stamps.
+   - If the document genuinely has no clear title, return an empty string ""
+     and the caller will fall back to the filename.
+2. entities      — named entities with name, type, mentions, and context
    - name: canonical name of the entity (a string — do NOT use the entity name as a dict key)
    - type: PERSON | ORG | PRODUCT | CONCEPT | EVENT | LOCATION | OTHER
    - mentions: list of exact text spans from the source
    - context: 1-2 sentence description of this entity as discussed in the source
-2. concepts      — key concepts with name and description
+3. concepts      — key concepts with name and description
    - name: short canonical name of the concept
    - description: 1-2 sentence description of the concept
-3. claims        — specific factual claims
+4. claims        — specific factual claims
    - claim: the claim text itself (a string — full sentence)
    - confidence: "stated" (explicit) | "implied" (strongly suggested) | "speculative"
    - entities_involved: list of entity/concept names from your entities/concepts lists
-4. relationships — connections between entities/concepts
+5. relationships — connections between entities/concepts
    - from_entity: name of first entity/concept
    - to: name of second entity/concept
    - type: uses | competes_with | part_of | created_by | related_to | contradicts
    - description: 1-sentence explanation of how these entities relate
-5. contradictions — claims that contradict other sources or internal logic
+6. contradictions — claims that contradict other sources or internal logic
    - claim: what this source claims
    - against: what it contradicts (leave empty string if unknown)
-6. summary       — 2-4 sentence summary of the source
+7. summary       — 2-4 sentence summary of the source
 
 Keep lists focused: 5-15 entities, 3-10 concepts, 3-15 claims, 3-10 relationships.
 Each entity appears once. Stop as soon as the source is covered — do NOT
@@ -935,7 +945,14 @@ def disambiguate_entities(
             ],
             response_model=DisambiguationResponse,
             thinking_budget=_read_thinking_budget('disambiguate_entities'),
-            max_output_tokens=2048,
+            # 8192 sized for the 10-pair batch in routers/resolution.py:665.
+            # Each decision is {entity_a, entity_b, decision, canonical, reason}
+            # where `reason` carries free-text justification (e.g., "Bagging is
+            # a specific ensemble method..."); 10 × ~250 tokens + thinking
+            # overhead easily exceeds 2048. Session 97f58805 hit truncation:
+            # raw_excerpt cut off mid-string at line 50 col 166 of the JSON.
+            # 8192 matches generate_schema (structured-creative reasoning tier).
+            max_output_tokens=8192,
             temperature=0.0,
             step="disambiguate",
         ))

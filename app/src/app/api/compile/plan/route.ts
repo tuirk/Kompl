@@ -261,6 +261,13 @@ export async function POST(request: Request) {
     const canonicalKey = concept.canonical.toLowerCase();
     // Within-session dedup: same canonical name seen again → skip.
     if (conceptPlansByCanonical.has(canonicalKey)) continue;
+    // Cross-bucket dedup: if Rule 2 already emitted an entity plan for this
+    // canonical name (because some sources tagged it as PRODUCT/ORG/etc.),
+    // don't ALSO emit a concept plan for it. Without this, "S&P 500" landed
+    // in page_plans twice on session 29be62eb (once entity, once concept,
+    // identical source_ids) — see resolve/route.ts partition logic. Entity
+    // is the more specific bucket, so it wins.
+    if (entityPlansByCanonical.has(canonicalKey)) continue;
 
     const existing = getPageByTitle(concept.canonical);
     const plan_id = randomUUID();

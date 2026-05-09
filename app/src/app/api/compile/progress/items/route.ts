@@ -150,6 +150,10 @@ export async function GET(request: Request): Promise<NextResponse> {
         id: p.plan_id,
         label: p.title,
         status: mapDraftStatus(p.draft_status, step),
+        // page_plans.draft_error is populated by updatePlanFailed (schema v24).
+        // Surface it on the draft step so the UI's expand-to-reveal panel
+        // shows WHY a plan failed (was silent before; users had to grep app logs).
+        ...(step === 'draft' && p.draft_error ? { error: p.draft_error } : {}),
       }));
       break;
     }

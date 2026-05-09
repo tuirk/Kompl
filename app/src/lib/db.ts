@@ -1055,6 +1055,21 @@ export function markSourceExtracted(sourceId: string): void {
 }
 
 /**
+ * Replace a source's title — used when the extract LLM derives a real
+ * document title for a source whose original title was a filename stub
+ * (arxiv ID, digit-only filename, etc.). Trim + cap at 250 chars to keep
+ * the column index lean. No-op on empty input.
+ */
+export function updateSourceTitle(sourceId: string, newTitle: string): void {
+  const trimmed = (newTitle ?? '').trim();
+  if (!trimmed) return;
+  const capped = trimmed.length > 250 ? trimmed.slice(0, 250) : trimmed;
+  openDb()
+    .prepare(`UPDATE sources SET title = ? WHERE source_id = ?`)
+    .run(capped, sourceId);
+}
+
+/**
  * Reset a source back to 'pending' so the compile pipeline will re-process it.
  * Clears attempt counter and backoff timestamp. Used by the manual recompile
  * endpoint and the UI retry flow.
@@ -1292,6 +1307,7 @@ export interface PagePlanRow {
   related_plan_ids: string | null;  // JSON TEXT
   draft_content: string | null;
   draft_status: string;
+  draft_error: string | null;  // populated by updatePlanFailed (schema v24)
   created_at: string;
 }
 
@@ -1351,7 +1367,7 @@ export function getPagePlansByStatus(sessionId: string, status: string): PagePla
     .prepare(
       `SELECT plan_id, session_id, title, page_type, action,
               source_ids, existing_page_id, related_plan_ids,
-              draft_content, draft_status, created_at
+              draft_content, draft_status, draft_error, created_at
          FROM page_plans
         WHERE session_id = ? AND draft_status = ?
         ORDER BY created_at ASC`
@@ -1369,7 +1385,7 @@ export function getAllPagePlansBySession(sessionId: string): PagePlanRow[] {
     .prepare(
       `SELECT plan_id, session_id, title, page_type, action,
               source_ids, existing_page_id, related_plan_ids,
-              draft_content, draft_status, created_at
+              draft_content, draft_status, draft_error, created_at
          FROM page_plans
         WHERE session_id = ?
         ORDER BY created_at ASC`
@@ -1446,6 +1462,21 @@ export function updatePlanStatus(planId: string, status: string): void {
   openDb()
     .prepare(`UPDATE page_plans SET draft_status = ? WHERE plan_id = ?`)
     .run(status, planId);
+}
+
+/**
+ * Mark a page_plan as failed AND record the error message in one update.
+ * Replaces the silent `updatePlanStatus(plan_id, 'failed')` pattern that
+ * threw away every per-task error from the draft pLimit pool — operators
+ * had to grep app logs for 30+ min to recover the cause. Truncates to 1000
+ * chars to keep DB row size bounded; full stack lives in `console.error`
+ * at the call site.
+ */
+export function updatePlanFailed(planId: string, errorMessage: string): void {
+  const truncated = errorMessage.length > 1000 ? errorMessage.slice(0, 1000) + '… [truncated]' : errorMessage;
+  openDb()
+    .prepare(`UPDATE page_plans SET draft_status = 'failed', draft_error = ? WHERE plan_id = ?`)
+    .run(truncated, planId);
 }
 
 /** Fetch a page by title (case-insensitive). Returns null if not found. */
@@ -2983,6 +3014,51 @@ export function countFailedStagingBySession(sessionId: string): number {
 }
 
 /**
+ * Count page_plans rows with draft_status='failed' for a session.
+ * Distinct from staging-failure count: these are wiki-page draft attempts
+ * that hit a per-item LLM error after planning — the "Writing pages" step
+ * marks itself 'done' regardless so commit can run on the drafts that
+ * succeeded, which is why these failures don't trip the session-level
+ * retry condition. Powers the "Retry N failed" button when failures live
+ * in the draft stage rather than at intake.
+ */
+export function countFailedDraftPlansBySession(sessionId: string): number {
+  const row = openDb()
+    .prepare(
+      `SELECT COUNT(*) AS n
+         FROM page_plans
+        WHERE session_id   = ?
+          AND draft_status = 'failed'`
+    )
+    .get(sessionId) as { n: number };
+  return row.n;
+}
+
+/**
+ * Count `sources` rows for a session that have no matching `extractions` row.
+ * This is the per-source extract-failure shape: the orchestrator's extract
+ * step tolerates per-item failures (only fails the session if EVERY source
+ * fails extraction — see app/src/app/api/compile/run/route.ts:387). Sources
+ * that failed extraction stay at compile_status='pending' (the initial
+ * value) with no `extractions` row, even after compile_progress reaches
+ * 'completed'. Powers the third arm of the "Retry N failed" button —
+ * alongside countFailedStagingBySession (intake-stage) and
+ * countFailedDraftPlansBySession (per-page LLM).
+ */
+export function countUnextractedSourcesBySession(sessionId: string): number {
+  const row = openDb()
+    .prepare(
+      `SELECT COUNT(*) AS n
+         FROM sources s
+         LEFT JOIN extractions e ON s.source_id = e.source_id
+        WHERE s.onboarding_session_id = ?
+          AND e.source_id IS NULL`
+    )
+    .get(sessionId) as { n: number };
+  return row.n;
+}
+
+/**
  * Return active sources older than thresholdDays, ordered oldest-first.
  * Uses julianday() for correct date arithmetic — avoids the SQLite
  * lexicographic timestamp gotcha.
@@ -3188,7 +3264,7 @@ export function getPendingDrafts(): PagePlanRow[] {
     .prepare(
       `SELECT plan_id, session_id, title, page_type, action,
               source_ids, existing_page_id, related_plan_ids,
-              draft_content, draft_status, created_at
+              draft_content, draft_status, draft_error, created_at
          FROM page_plans
         WHERE draft_status = 'pending_approval'
         ORDER BY created_at DESC`

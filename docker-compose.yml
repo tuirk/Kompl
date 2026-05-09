@@ -45,6 +45,13 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      # Per-source extract workers in app/src/app/api/compile/run/route.ts.
+      # Default 4 saturated the prior 2GB / 2-CPU nlp-service container (12
+      # in-flight NLP calls = 'fetch failed' cascade on session 453e7fc1).
+      # Set to 2 alongside nlp-service bump to 4g/4.0 — gives 6 in-flight
+      # parallel NLP calls, comfortable on the new cap. Raise to 4 only if
+      # nlp-service memory stays well under limit on a real PDF batch.
+      EXTRACT_CONCURRENCY: ${EXTRACT_CONCURRENCY:-2}
     volumes:
       - kompl-data:/data
     depends_on:
@@ -113,8 +120,14 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2g
-          cpus: '2.0'
+          # Bumped from 2g/2.0 after session 453e7fc1 (18 academic PDFs) saturated
+          # the prior cap (1.85GiB / 2GiB, 208% CPU) under EXTRACT_CONCURRENCY=4
+          # — kernel refused new TCP connections, surfacing as 'fetch failed' on
+          # the orchestrator. 4g/4.0 lets the container hold 4 spaCy NER + 4
+          # parallel keyphrase methods + TF-IDF without memory pressure on a
+          # laptop with 16GB RAM (Docker Desktop allocates 7.6GB).
+          memory: 4g
+          cpus: '4.0'
 
   n8n:
     image: n8nio/n8n:2.15.0
