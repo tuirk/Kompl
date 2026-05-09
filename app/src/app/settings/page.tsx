@@ -938,16 +938,19 @@ export default function SettingsPage() {
                 </span>
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Hard USD ceiling on combined LLM API spend per UTC day (Gemini + DeepSeek share
-                this cap). When exceeded, LLM calls raise a cost-ceiling error and the pipeline
-                marks affected work as retryable. Resets at midnight UTC.
+                Hard USD ceiling on combined LLM API spend per UTC day across all providers
+                (one shared counter). When exceeded, LLM calls raise a cost-ceiling error and
+                the pipeline marks affected work as retryable. Resets at midnight UTC.
                 Set to <strong>0</strong> for unlimited (no cap).
-                {' '}The tracked number comes from each provider&apos;s usage metadata
-                (input + cached + output tokens, multiplied by the model&apos;s
-                published per-million-token price). It&apos;s an <strong>estimate</strong> —
-                real invoice totals may differ by a few percent due to token-count rounding,
-                cached-content discounts, and any price drift between the provider&apos;s
-                schedule and our constants.
+                {' '}The tracked number is a Kompl-side estimate from each call&apos;s usage
+                metadata (input + cached + output tokens × the model&apos;s per-million-token
+                price). It&apos;s independent of any provider&apos;s prepaid balance — your
+                DeepSeek/Gemini account ledger is separate.
+                {' '}<strong>Prices may be stale.</strong> Per-million-token rates are hard-coded
+                constants and providers update them periodically; we deliberately ignore
+                promotional discounts (overestimating is the safer side — the cap fires sooner
+                than necessary, never later). Reconcile with the provider&apos;s invoice for
+                ground truth.
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>

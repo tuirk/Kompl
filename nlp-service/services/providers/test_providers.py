@@ -444,46 +444,23 @@ def test_deepseek_emits_log_line_with_cache_hit(monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_deepseek_prices_in_discount_window(monkeypatch):
-    """One second before DISCOUNT_UNTIL: prices use the discount table."""
+def test_deepseek_prices_default_to_list(monkeypatch):
+    """Without env overrides, _prices_now returns the published list prices.
+
+    Discount-window code was removed 2026-05-09 — the cap counter intentionally
+    over-estimates during DeepSeek promotional periods (safe side: cap fires
+    sooner than necessary, never later than the user budget). See deepseek.py
+    pricing block for the rationale.
+    """
     from services.providers import deepseek as D
     monkeypatch.delenv("DEEPSEEK_INPUT_USD_PER_M", raising=False)
     monkeypatch.delenv("DEEPSEEK_OUTPUT_USD_PER_M", raising=False)
     monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
 
-    import datetime as _dt
-    target = D.DISCOUNT_UNTIL - _dt.timedelta(seconds=1)
-
-    class _FakeDateTime(_dt.datetime):
-        @classmethod
-        def now(cls, tz=None): return target
-
-    monkeypatch.setattr(D, "datetime", _FakeDateTime)
     prices = D._prices_now()
-    assert prices["input"] == D._PRICES_DISCOUNT["input"]
-    assert prices["output"] == D._PRICES_DISCOUNT["output"]
-    assert prices["cache"] == D._PRICES_DISCOUNT["cache"]
-
-
-def test_deepseek_prices_after_discount_window(monkeypatch):
-    """One second after DISCOUNT_UNTIL: prices flip to the list table."""
-    from services.providers import deepseek as D
-    monkeypatch.delenv("DEEPSEEK_INPUT_USD_PER_M", raising=False)
-    monkeypatch.delenv("DEEPSEEK_OUTPUT_USD_PER_M", raising=False)
-    monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
-
-    import datetime as _dt
-    target = D.DISCOUNT_UNTIL + _dt.timedelta(seconds=1)
-
-    class _FakeDateTime(_dt.datetime):
-        @classmethod
-        def now(cls, tz=None): return target
-
-    monkeypatch.setattr(D, "datetime", _FakeDateTime)
-    prices = D._prices_now()
-    assert prices["input"] == D._PRICES_LIST["input"]
-    assert prices["output"] == D._PRICES_LIST["output"]
-    assert prices["cache"] == D._PRICES_LIST["cache"]
+    assert prices["input"] == D._PRICES["input"]
+    assert prices["output"] == D._PRICES["output"]
+    assert prices["cache"] == D._PRICES["cache"]
 
 
 def test_deepseek_prices_env_override_wins(monkeypatch):

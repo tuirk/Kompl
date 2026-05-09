@@ -14,7 +14,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 import {
   Globe, FileUp, Bookmark, BookOpen, AtSign,
-  Smartphone, HardDrive, Book, ArrowRight, ClipboardType,
+  Smartphone, ArrowRight, ClipboardType,
 } from 'lucide-react';
 import { useToast } from '../../components/Toast';
 import { SUPPORTED_FORMATS_SHORT } from '../../lib/supported-formats';
@@ -37,8 +37,6 @@ const CONNECTORS: ConnectorDef[] = [
   { id: 'twitter',      Icon: AtSign,     title: 'Twitter / X',       subtitle: 'Twitter bookmarks export',      status: 'active' },
   { id: 'apple-notes',  Icon: Smartphone, title: 'Apple Notes',       subtitle: 'Notes export',                  status: 'active' },
   { id: 'upnote',       Icon: BookOpen,   title: 'Upnote',            subtitle: 'Markdown notes export',         status: 'active' },
-  { id: 'google-drive', Icon: HardDrive,  title: 'Google Drive',      subtitle: 'Cloud Storage',                 status: 'coming-soon' },
-  { id: 'notion',       Icon: Book,       title: 'Notion',            subtitle: 'Workspace',                     status: 'coming-soon' },
 ];
 
 const ACTIVE_IDS = new Set(CONNECTORS.filter(c => c.status === 'active').map(c => c.id));
@@ -50,6 +48,7 @@ function OnboardingPageInner() {
 
   const [sessionId, setSessionId] = useState<string>('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [compileModel, setCompileModel] = useState<string | null>(null);
 
   useEffect(() => {
     // Resume existing session if URL carries ?session_id (review page back-links).
@@ -58,6 +57,20 @@ function OnboardingPageInner() {
     sessionStorage.setItem('kompl_session_id', id);
     setSessionId(id);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    // Fetch the currently-selected compile model so the user can see which
+    // LLM provider this session will lock to. Per-session model lock means
+    // changing this in Settings mid-compile has no effect — visibility here
+    // catches the "I picked Gemini in Settings but DeepSeek is running"
+    // surprise before the user clicks Next.
+    void fetch('/api/settings')
+      .then((r) => r.json())
+      .then((data: { compile_model?: string }) => {
+        if (typeof data.compile_model === 'string') setCompileModel(data.compile_model);
+      })
+      .catch(() => { /* non-fatal */ });
+  }, []);
 
   function toggleConnector(id: string) {
     setSelected(prev => {
@@ -125,6 +138,19 @@ function OnboardingPageInner() {
           }}>
             {subtitle}
           </p>
+          {compileModel && (
+            <span style={{
+              fontFamily: 'var(--font-mono)',
+              fontWeight: 400,
+              fontSize: 10,
+              letterSpacing: '0.5px',
+              color: 'var(--accent)',
+              opacity: 0.85,
+              marginTop: 4,
+            }}>
+              compile model · {compileModel}
+            </span>
+          )}
         </section>
 
         <div style={{ textAlign: 'center', marginBottom: '0.75rem' }}>

@@ -9,7 +9,7 @@ Knowledge compiler — turns scattered links, files, and bookmarks into a living
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/tuirk/Kompl/actions/workflows/integration-test.yml/badge.svg)](https://github.com/tuirk/Kompl/actions)
 [![Docker](https://img.shields.io/badge/Docker-Compose_Ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
-[![LLM](https://img.shields.io/badge/LLM-Gemini_2.5-8E75B2?logo=google&logoColor=white)]()
+[![LLM](https://img.shields.io/badge/LLM-Gemini_%2B_DeepSeek-8E75B2)]()
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tuirk/Kompl/badge)](https://scorecard.dev/viewer/?uri=github.com/tuirk/Kompl)
 
 ## Why Kompl?
@@ -18,7 +18,7 @@ Most tools save your stuff and forget about it. Kompl reads it, extracts the kno
 
 - One new source can update 10+ wiki pages. Cross-references, contradictions, and synthesis are built at ingest time, not re-discovered on every query.
 - Entity pages, concept pages, comparisons, and source summaries are wikilinked together. The wiki gets richer with every source you add.
-- Runs locally via Docker. Outbound calls are limited to your own API keys (Gemini, Firecrawl) and the URLs you choose to ingest.
+- Runs locally via Docker. Outbound calls are limited to your own API keys (Gemini and/or DeepSeek for compilation, Firecrawl for scraping) and the URLs you choose to ingest.
 
 Built with Next.js, Python NLP, n8n orchestration, and SQLite.
 
@@ -37,6 +37,7 @@ You'll also need two API keys, both free to get:
 | | Get key | Free tier | Notes |
 |---|---|---|---|
 | **Gemini** (wiki compilation) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day | Free works for the demo and your first few sources. **Paid Tier 1 is strongly recommended for real use** — Gemini's free per-minute throttle (~10 RPM) will rate-limit a normal ingest, even though daily quota is plenty. Default rate-limiter assumes Tier 1. |
+| **DeepSeek V4 Pro** (alternative compile backend, optional) | [api-docs.deepseek.com](https://api-docs.deepseek.com) | Pay-as-you-go | Selectable in Settings as an alternative to Gemini — useful for sources past Gemini's input cap or when Gemini hits RECITATION. Set `DEEPSEEK_API_KEY` in `.env`. |
 | **Firecrawl** (URL scraping) | [firecrawl.dev](https://firecrawl.dev) | 500 scrapes/month | Free tier covers normal personal use. |
 
 ## Setup
@@ -172,7 +173,8 @@ If you're not using an MCP client, hit the Next.js routes directly: `/api/pages/
 Your wiki content lives in Docker volumes on your machine. Outbound network calls fall into three buckets:
 
 **You drive these — your content goes to a third party:**
-- **Gemini** (`generativelanguage.googleapis.com`) — wiki compilation. Your source text is sent to Google.
+- **Gemini** (`generativelanguage.googleapis.com`) — wiki compilation when the Gemini backend is selected. Your source text is sent to Google.
+- **DeepSeek** (`api.deepseek.com`) — wiki compilation when the DeepSeek backend is selected. Your source text is sent to DeepSeek. Only outbound if `DEEPSEEK_API_KEY` is configured and selected as the compile model.
 - **Firecrawl** (`api.firecrawl.dev`) — URL scraping fallback. The URL you pasted is sent to Firecrawl.
 - **GitHub public API** (`api.github.com`) — when you paste a GitHub repo URL, Kompl fetches the README + metadata.
 - **YouTube** (`youtube.com`) — when you paste a YouTube URL, transcripts are fetched via the public captions endpoint.
@@ -218,7 +220,7 @@ kompl backup --schedule                               # register a weekly backup
 
 **Known limitations:**
 - Single-tenant only — no user accounts or access control. Don't expose to the public internet without your own auth layer.
-- Gemini is the only LLM provider. Anthropic and OpenAI-compatible providers are planned.
+- Two LLM providers selectable per session: Gemini 2.5 (default) and DeepSeek V4 Pro. Anthropic and OpenAI-compatible providers are planned.
 - **Current connectors:** URLs (YouTube transcripts and GitHub READMEs included), file uploads (PDF, DOCX, PPTX, XLSX, TXT, MD, HTML), browser bookmarks, Twitter JSON export, Upnote, Apple Notes.
 - No mobile app. The web UI works on mobile browsers but isn't optimized for small screens.
 
