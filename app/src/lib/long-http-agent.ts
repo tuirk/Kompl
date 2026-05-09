@@ -28,3 +28,26 @@ export const LONG_HTTP_AGENT = new Agent({
   connectTimeout: 10_000,
   keepAliveTimeout: 60_000,
 });
+
+// Factory for orchestrator outer-call wrappers in run/route.ts. Returns a
+// fresh Agent sized to the work-size N at call-time. Static LONG_HTTP_AGENT
+// at 16-min headersTimeout is a ticking bomb — session 97f58805 hit
+// HeadersTimeoutError at 16m 46s into a 38-plan draft. Every static value
+// fires at some N+1; only formula-from-N keeps the ceiling above the work.
+//
+// Agent is GC'd when the fetch completes and the response body is consumed
+// (per undici #1989). Memory cost ~50KB/Agent; 7 agents per orchestrator
+// session is negligible.
+//
+// The caller MUST also pass `signal: AbortSignal.timeout(timeoutMs)` with
+// the same value — if AbortSignal fires later than headersTimeout, undici
+// raises HeadersTimeoutError instead of a clean AbortError. Keep them
+// equal so the abort signal owns the cancellation contract.
+export function makeDispatcher(timeoutMs: number): Agent {
+  return new Agent({
+    headersTimeout: timeoutMs,
+    bodyTimeout: timeoutMs,
+    connectTimeout: 10_000,
+    keepAliveTimeout: 60_000,
+  });
+}

@@ -43,7 +43,14 @@ import { runIngestFilesStep } from '@/lib/compile/steps/ingest-files';
 import { runIngestUrlsStep } from '@/lib/compile/steps/ingest-urls';
 import { runIngestTextsStep } from '@/lib/compile/steps/ingest-texts';
 import { sanitizeLogValue } from '@/lib/log-safe';
-import { LONG_HTTP_AGENT } from '@/lib/long-http-agent';
+import { LONG_HTTP_AGENT, makeDispatcher } from '@/lib/long-http-agent';
+import {
+  computeResolveMs,
+  computeMatchMs,
+  computeDraftMs,
+  computeCrossrefMs,
+  computeCommitMs,
+} from '@/lib/compile-timeouts';
 
 const APP_URL = process.env.APP_URL ?? 'http://app:3000';
 
@@ -88,18 +95,18 @@ async function callExtract(sourceId: string, sessionId: string): Promise<void> {
   await throwOnError('extract', res, sessionId);
 }
 
-async function callResolve(sessionId: string): Promise<{ canonical_entities: unknown[]; canonical_concepts: unknown[] }> {
+async function callResolve(sessionId: string, sourceCount: number): Promise<{ canonical_entities: unknown[]; canonical_concepts: unknown[] }> {
+  // Dynamic timeout sized to sourceCount (proxy for disambiguate-batch count).
+  // See lib/compile-timeouts.ts:computeResolveMs for the formula. Replaces the
+  // static 900s constant from PR #71 — that was a ticking bomb at N+1.
+  const timeoutMs = computeResolveMs(sourceCount);
   const res = await fetch(`${APP_URL}/api/compile/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
-    // 900s = callFuzzy 60s + callEmbedding 60s + callDisambiguate 600s + 180s
-    // headroom. Prior 660s was 60s short of the worst-case sequential sum once
-    // every sub-call hit its individual ceiling. In practice fuzzy+embedding
-    // finish in seconds, but the AbortSignal needs to fit the math.
-    signal: AbortSignal.timeout(900_000),
+    signal: AbortSignal.timeout(timeoutMs),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
-    dispatcher: LONG_HTTP_AGENT, // 900s AbortSignal > undici 300s default headersTimeout
+    dispatcher: makeDispatcher(timeoutMs),
   });
   await throwOnError('resolve', res, sessionId);
   const parsed = await res.json() as { canonical_entities?: unknown[]; canonical_concepts?: unknown[] };
@@ -111,19 +118,19 @@ async function callResolve(sessionId: string): Promise<{ canonical_entities: unk
 
 async function callMatch(
   sessionId: string,
-  canonicalEntities: unknown[]
+  canonicalEntities: unknown[],
+  sourceCount: number,
 ): Promise<{ skipped: boolean; matches: unknown[]; stats: Record<string, number> }> {
+  // Dynamic timeout sized to sourceCount × candidatesPerSource (default 3, the
+  // slice(0,3) cap in match/route.ts). See compile-timeouts.ts:computeMatchMs.
+  const timeoutMs = computeMatchMs(sourceCount);
   const res = await fetch(`${APP_URL}/api/compile/match`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, canonical_entities: canonicalEntities }),
-    // 1200s = sequential `for source` at match/route.ts:137 × (callTfidfOverlap
-    // 30s + callTriage 30s) per candidate page. The 300s budget never matched
-    // the actual N×M call cost (N sources × M candidate pages); for N=19
-    // sources × 3 candidates × 30s worst-case AbortSignal = 2280s. 1200s
-    // defensively covers the realistic case (triage usually <5s) and matches
-    // commit/draft scale.
-    signal: AbortSignal.timeout(1_200_000),
+    signal: AbortSignal.timeout(timeoutMs),
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: makeDispatcher(timeoutMs),
   });
   await throwOnError('match', res, sessionId);
   return res.json() as Promise<{ skipped: boolean; matches: unknown[]; stats: Record<string, number> }>;
@@ -150,48 +157,52 @@ async function callPlan(
   return res.json() as Promise<{ stats: { total: number } }>;
 }
 
-async function callDraft(sessionId: string): Promise<{ drafted: number; failed: number }> {
+async function callDraft(sessionId: string, planCount: number): Promise<{ drafted: number; failed: number }> {
+  // Dynamic timeout sized to planCount / DRAFT_CONCURRENCY batches × inner
+  // callDraftPage ceiling. See compile-timeouts.ts:computeDraftMs. Replaces
+  // the static 1.5M ms from PR #71 — that fired today at 16m on session
+  // 97f58805's 38-plan compile via undici's HeadersTimeoutError, because the
+  // static LONG_HTTP_AGENT.headersTimeout (16 min) was the real ceiling.
+  const timeoutMs = computeDraftMs(planCount);
   const res = await fetch(`${APP_URL}/api/compile/draft`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
-    // 1500s = pLimit(N plans, DRAFT_CONCURRENCY=10) × inner callDraftPage 600s.
-    // For N=19 plans (~2 batches × ~600s = ~1200s) plus headroom. Prior 900s
-    // fired at 14m 59.9s on session d28d7644 even though all 19 drafts had
-    // succeeded server-side; outer killed the fetch before the inner JSON
-    // response landed. Matches callExtract's outer for symmetry.
-    signal: AbortSignal.timeout(1_500_000),
+    signal: AbortSignal.timeout(timeoutMs),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
-    dispatcher: LONG_HTTP_AGENT,
+    dispatcher: makeDispatcher(timeoutMs),
   });
   await throwOnError('draft', res, sessionId);
   return res.json() as Promise<{ drafted: number; failed: number }>;
 }
 
-async function callCrossref(sessionId: string): Promise<{ wikilinks_added: number }> {
+async function callCrossref(sessionId: string, planCount: number): Promise<{ wikilinks_added: number }> {
+  // Dynamic timeout sized to planCount × per-plan wikilink-injection cost.
+  // See compile-timeouts.ts:computeCrossrefMs.
+  const timeoutMs = computeCrossrefMs(planCount);
   const res = await fetch(`${APP_URL}/api/compile/crossref`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
-    signal: AbortSignal.timeout(600_000),
+    signal: AbortSignal.timeout(timeoutMs),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
-    dispatcher: LONG_HTTP_AGENT,
+    dispatcher: makeDispatcher(timeoutMs),
   });
   await throwOnError('crossref', res, sessionId);
   return res.json() as Promise<{ wikilinks_added: number }>;
 }
 
-async function callCommit(sessionId: string): Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number }> {
+async function callCommit(sessionId: string, planCount: number): Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number }> {
+  // Dynamic timeout sized to planCount × per-plan (DB tx + write-page +
+  // vector-upsert) cost. See compile-timeouts.ts:computeCommitMs.
+  const timeoutMs = computeCommitMs(planCount);
   const res = await fetch(`${APP_URL}/api/compile/commit`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
-    // 1200s = sequential `for plan` at commit/route.ts:124 × (DB tx + write-page
-    // 30s + vector-upsert 30s) per plan. Prior 120s fit only the trivial case
-    // (~3 plans); for N=19 plans worst case sums to ~20 min. 1200s defensively
-    // covers cases where any plan's file or vector call slows down — realistic
-    // case finishes in <2s/plan.
-    signal: AbortSignal.timeout(1_200_000),
+    signal: AbortSignal.timeout(timeoutMs),
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: makeDispatcher(timeoutMs),
   });
   await throwOnError('commit', res, sessionId);
   return res.json() as Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number }>;
@@ -408,9 +419,15 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   }
   assertNotCancelled(sessionId);
 
+  // sourceCount feeds dynamic-timeout sizing for callResolve and callMatch.
+  // Both wrappers compute their outer AbortSignal + per-request undici Agent
+  // headersTimeout from this number — keeping the timer ≥ worst-case work
+  // even as the source pool grows. See lib/compile-timeouts.ts.
+  const sourceCount = sources.length;
+
   // Step 2: resolve — ALWAYS re-run (cheap: reads extractions table directly).
   updateCompileStep(sessionId, 'resolve', 'running');
-  const resolveResult = await timed(sessionId, 'resolve', () => callResolve(sessionId));
+  const resolveResult = await timed(sessionId, 'resolve', () => callResolve(sessionId, sourceCount));
   const canonicalEntities = resolveResult.canonical_entities;
   const canonicalConcepts = resolveResult.canonical_concepts;
   updateCompileStep(
@@ -423,7 +440,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
 
   // Step 3: match — ALWAYS re-run (cheap: TF-IDF, no LLM unless triage).
   updateCompileStep(sessionId, 'match', 'running');
-  const matchResult = await timed(sessionId, 'match', () => callMatch(sessionId, canonicalEntities));
+  const matchResult = await timed(sessionId, 'match', () => callMatch(sessionId, canonicalEntities, sourceCount));
   if (matchResult.skipped) {
     updateCompileStep(sessionId, 'match', 'done', 'First compile — no existing pages');
   } else {
@@ -481,17 +498,25 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   }
   const hasNewSources = [...allExtractedIds].some((id) => !planSourceIds.has(id));
 
+  // planCount feeds dynamic-timeout sizing for callDraft / callCrossref /
+  // callCommit. Fresh path takes it from callPlan's return; retry-skip path
+  // derives it from the existing page_plans row count summed over statuses
+  // that downstream steps still operate on (planned + failed for draft;
+  // drafted + crossreffed for commit). Set inside the branches below.
+  let planCount: number;
+
   if (!planExists || hasNewSources) {
     // Fresh run: plan then draft.
     updateCompileStep(sessionId, 'plan', 'running');
     const planResult = await timed(sessionId, 'plan', () =>
       callPlan(sessionId, canonicalEntities, canonicalConcepts, matchResult.matches)
     );
-    updateCompileStep(sessionId, 'plan', 'done', `${planResult.stats.total} pages planned`);
+    planCount = planResult.stats.total;
+    updateCompileStep(sessionId, 'plan', 'done', `${planCount} pages planned`);
     assertNotCancelled(sessionId);
 
     updateCompileStep(sessionId, 'draft', 'running');
-    const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId));
+    const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId, planCount));
     updateCompileStep(
       sessionId,
       'draft',
@@ -504,9 +529,12 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   } else if (pendingDraftCount > 0) {
     // Retry path: plans exist, some are still 'planned' or were marked
     // 'failed' on a prior Gemini error. Re-draft only those.
+    // planCount uses the full row count (Object.values reduce above) so
+    // crossref/commit timeouts size to the whole plan set, not just pending.
+    planCount = Object.values(planCounts).reduce((sum, c) => sum + c, 0);
     console.log('[compile:%s] %d plans pending — re-drafting without re-planning', sanitizeLogValue(sessionId), pendingDraftCount);
     updateCompileStep(sessionId, 'draft', 'running');
-    const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId));
+    const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId, planCount));
     updateCompileStep(
       sessionId,
       'draft',
@@ -517,6 +545,9 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     );
     assertNotCancelled(sessionId);
   } else {
+    // No plan work to do; downstream still runs against committed plans, so
+    // crossref/commit need a planCount sized to the full plan set.
+    planCount = Object.values(planCounts).reduce((sum, c) => sum + c, 0);
     console.log('[compile:%s] plan+draft already complete — skipping both', sanitizeLogValue(sessionId));
   }
 
@@ -525,7 +556,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   // plans are already 'crossreffed' (commit-failure retry), this returns 0
   // wikilinks as a safe no-op — plans stay 'crossreffed' for commit to consume.
   updateCompileStep(sessionId, 'crossref', 'running');
-  const crossrefResult = await timed(sessionId, 'crossref', () => callCrossref(sessionId));
+  const crossrefResult = await timed(sessionId, 'crossref', () => callCrossref(sessionId, planCount));
   updateCompileStep(sessionId, 'crossref', 'done', `${crossrefResult.wikilinks_added} wikilinks added`);
   assertNotCancelled(sessionId);
 
@@ -533,7 +564,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   // Pass 5 is a synchronous better-sqlite3 transaction — cancel is blocked at
   // the route level once this step is 'running'. No mid-transaction abort.
   updateCompileStep(sessionId, 'commit', 'running');
-  const commitResult = await timed(sessionId, 'commit', () => callCommit(sessionId));
+  const commitResult = await timed(sessionId, 'commit', () => callCommit(sessionId, planCount));
   const thinMsg = commitResult.thin_drafts_skipped > 0 ? `, ${commitResult.thin_drafts_skipped} thin drafts skipped` : '';
   updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages, ${commitResult.sources_activated} sources committed${thinMsg}`);
 
