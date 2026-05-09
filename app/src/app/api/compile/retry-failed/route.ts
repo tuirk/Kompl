@@ -4,13 +4,32 @@
  * Phase 4 — per-item retry. Different shape from `/api/compile/retry`:
  *   - /retry resumes a session-level failure from the first non-done step.
  *     It's a no-op when compile_progress.status='completed'.
- *   - /retry-failed targets a session that LOOKS completed but has
- *     collect_staging.status='failed' rows (individual items that were
- *     skipped inside ingest_urls/files/texts). Flips those rows back to
- *     'pending', resets compile_progress so the orchestrator runs again,
- *     and re-fires n8n. The prelude gate in runCompilePipeline naturally
- *     picks up only the flipped rows; already-ingested items stay
- *     status='ingested' and are ignored.
+ *   - /retry-failed targets a session that LOOKS completed but has any of
+ *     (a) collect_staging.status='failed' rows — items skipped inside
+ *     ingest_urls/files/texts; (b) page_plans.draft_status='failed' rows —
+ *     wiki pages whose LLM draft attempt errored after planning; or
+ *     (c) `sources` rows with no matching `extractions` row — sources whose
+ *     extract step failed (orchestrator tolerates partial extract failures,
+ *     marks the step done if at least one source extracted, leaving the
+ *     session 'completed' with stranded sources).
+ *
+ *     The draft step writes step.status='done' regardless of per-item
+ *     failures (so commit can run on what succeeded), and the extract step
+ *     does the same for partial failures, so neither failure shape trips
+ *     the session-level retry path — this endpoint is the way back in.
+ *     Flips staging rows to 'pending', resets compile_progress so the
+ *     orchestrator runs again, and re-fires n8n. The prelude gate picks
+ *     up flipped staging rows; the plan/draft branch in runCompilePipeline
+ *     picks up failed page_plans (pendingDraftCount > 0 → re-draft only
+ *     those); and the orchestrator's hasNewSources check (run/route.ts)
+ *     re-plans when extracted sources extend beyond the existing plan set —
+ *     which is what unstrand the partial-extract sources after they get
+ *     re-extracted on the next pipeline pass.
+ *
+ *     This endpoint deliberately does NOT touch page_plans. Clearing them
+ *     here would break (b) — failed plans need to survive so the
+ *     orchestrator's draft step can re-attempt them. Plan re-runs are
+ *     decided in runCompilePipeline via hasNewSources, not here.
  *
  * Ghost-row fix: for URL-connector retryable rows, matching
  *   ingest_failures rows (session_id + source_url) are deleted in the
@@ -20,7 +39,7 @@
  *
  * Body: { session_id: string }
  * Response:
- *   200 { retried: N, status: 'retrying' }    — n8n triggered
+ *   200 { retried: N, status: 'retrying' }    — n8n triggered (N = staging + draft + extract)
  *   200 { retried: 0, status: 'noop' }         — nothing to retry
  *   400 { error: 'invalid_json' | 'session_id required' }
  *   404 { error: 'no_progress_record' }
@@ -32,6 +51,8 @@ import {
   COMPILE_STEP_KEYS,
 } from '@/lib/compile-steps';
 import {
+  countFailedDraftPlansBySession,
+  countUnextractedSourcesBySession,
   deleteIngestFailuresBySourceUrls,
   getCompileProgress,
   getDb,
@@ -92,7 +113,10 @@ export async function POST(request: Request) {
     )
     .all(session_id) as StagingMini[];
 
-  if (failedRows.length === 0) {
+  const failedDraftCount = countFailedDraftPlansBySession(session_id);
+  const unextractedCount = countUnextractedSourcesBySession(session_id);
+
+  if (failedRows.length === 0 && failedDraftCount === 0 && unextractedCount === 0) {
     return NextResponse.json({ retried: 0, status: 'noop' });
   }
 
@@ -155,5 +179,8 @@ export async function POST(request: Request) {
     );
   }
 
-  return NextResponse.json({ retried: failedRows.length, status: 'retrying' });
+  return NextResponse.json({
+    retried: failedRows.length + failedDraftCount + unextractedCount,
+    status: 'retrying',
+  });
 }

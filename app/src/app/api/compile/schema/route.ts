@@ -16,6 +16,7 @@
 
 import { NextResponse } from 'next/server';
 import { getEffectiveCompileModel, getPagePlansByStatus } from '../../../../lib/db';
+import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 const SCHEMA_PATH = '/data/schema.md';
@@ -76,7 +77,9 @@ export async function POST(request: Request) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pages: pagesSummary, compile_model: getEffectiveCompileModel(session_id) }),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(600_000), // 10 min — generate-schema runs an LLM call; DeepSeek can take 200-400s on the page list. 120s (prior value) was Gemini-only sizing.
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
   });
 
   if (!genRes.ok) {

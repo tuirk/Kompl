@@ -63,10 +63,20 @@ from routers.vectors import router as vectors_router
 logger = logging.getLogger(__name__)
 
 
+class _ProviderKeys(BaseModel):
+    """Presence-only flags so the Next.js Settings UI can gate dropdown
+    options without an outbound network probe to either provider."""
+    model_config = ConfigDict(extra='forbid')
+
+    gemini: bool
+    deepseek: bool
+
+
 class HealthResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     status: str
+    provider_keys: _ProviderKeys
 
 
 app = FastAPI(title="kompl-nlp-service", version="0.7.0")
@@ -84,21 +94,31 @@ app.include_router(chat_router)
 
 @app.on_event("startup")
 def startup_check() -> None:
-    """Validate required environment variables at startup.
+    """Validate that at least one LLM provider key is configured.
 
-    Fails loudly if GEMINI_API_KEY is not set — better to crash at startup
-    than to get a 500 on the first compile request 30 seconds later.
+    Phase 4 introduced DeepSeek as a second selectable backend. As long as
+    one of GEMINI_API_KEY / DEEPSEEK_API_KEY is set, the LLM endpoints work
+    for sessions targeting that provider. Both unset is the only loudly-
+    warning state — it means LLM endpoints will hard-fail on first call.
     """
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
-    if not gemini_key:
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not gemini_key and not deepseek_key:
         logger.warning(
-            "GEMINI_API_KEY is not set. "
+            "Neither GEMINI_API_KEY nor DEEPSEEK_API_KEY is set. "
             "LLM endpoints (/pipeline/extract-llm, /pipeline/draft, "
             "/pipeline/lint-scan, /resolve/disambiguate, /chat/synthesize) "
-            "will fail with 500. Set GEMINI_API_KEY in docker-compose.yml / .env."
+            "will fail with 500 for any session. "
+            "Set at least one in docker-compose.yml / .env."
         )
 
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    return HealthResponse(status="ok")
+    return HealthResponse(
+        status="ok",
+        provider_keys=_ProviderKeys(
+            gemini=bool(os.environ.get("GEMINI_API_KEY", "").strip()),
+            deepseek=bool(os.environ.get("DEEPSEEK_API_KEY", "").strip()),
+        ),
+    )

@@ -31,6 +31,7 @@ import {
   getPageTitleMap,
 } from './db';
 import { syncPageWikilinks } from './wikilinks';
+import { LONG_HTTP_AGENT } from './long-http-agent';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -65,7 +66,9 @@ async function callDraftPage(
       existing_categories: existingCategories,
       compile_model: compileModel,
     }),
-    signal: AbortSignal.timeout(180_000), // 3 min — Gemini thinking can be slow
+    signal: AbortSignal.timeout(600_000), // 10 min — recompile-on-source-delete runs an extract LLM call. DeepSeek can take 200-400s on dense sources. 180s (prior) was Gemini-only sizing.
+    // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
+    dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
   });
 
   if (!res.ok) {

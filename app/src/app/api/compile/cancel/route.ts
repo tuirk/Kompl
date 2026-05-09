@@ -45,6 +45,8 @@ export async function POST(request: Request) {
   cancelCompileProgress(session_id, 'Cancelled by user');
   logActivity('compile_cancelled', {
     source_id: null,
+    session_id,
+    step_key: progress.current_step ?? null,
     details: { session_id, current_step: progress.current_step },
   });
 

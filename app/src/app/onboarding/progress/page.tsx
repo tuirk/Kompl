@@ -32,10 +32,45 @@ interface ProgressResponse {
   error:        string | null;
   started_at:   string | null;
   completed_at: string | null;
-  // Phase 4: count of collect_staging rows in 'failed' state for this
-  // session. When > 0 AND status is terminal, the "Retry N failed items"
-  // button is shown so the user can re-fire only those items.
+  // Per-item failure counters. When the sum is > 0 AND status is
+  // terminal, the "Retry N failed" button is shown so the user can
+  // re-fire only those items. failed_stage_count is intake-stage
+  // collect_staging failures; failed_draft_count is per-page draft
+  // failures (page_plans.draft_status='failed') — the draft step writes
+  // status='done' regardless so commit can run on what succeeded, so
+  // these don't trip the session-level retry path on their own.
+  // failed_extract_count is sources without an extractions row — the
+  // orchestrator's extract step tolerates per-item failures (only fails
+  // the session if EVERY source fails extraction), so partial-extract
+  // failures also leave the session 'completed' with stranded sources.
   failed_stage_count?: number;
+  failed_draft_count?: number;
+  failed_extract_count?: number;
+}
+
+// ── Per-step expand-to-reveal data ──────────────────────────────────────────
+
+interface StepItem {
+  id: string;
+  label: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  error?: string;
+}
+
+interface StepEvent {
+  id: number;
+  timestamp: string;
+  action_type: string;
+  source_id: string | null;
+  source_title: string | null;
+  details: Record<string, unknown> | string | null;
+}
+
+interface StepData {
+  items: StepItem[];
+  events: StepEvent[];
+  fetchedAt: number;
+  loading: boolean;
 }
 
 const STEPS = COMPILE_STEPS;
@@ -89,6 +124,71 @@ function IconPending() {
   );
 }
 
+function IconChevron({ expanded }: { expanded: boolean }) {
+  return (
+    <svg
+      width="10" height="6" viewBox="0 0 10 6" fill="none"
+      style={{
+        transform: expanded ? 'rotate(180deg)' : 'none',
+        transition: 'transform 120ms ease',
+      }}
+    >
+      <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square"/>
+    </svg>
+  );
+}
+
+function IconItemDone() {
+  return (
+    <svg width="10" height="8" viewBox="0 0 14 11" fill="none">
+      <path d="M1 5.5L5 9.5L13 1.5" style={{ stroke: 'var(--accent)' }} strokeWidth="2" strokeLinecap="square"/>
+    </svg>
+  );
+}
+
+function IconItemFail() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+      <path d="M1 1L9 9M9 1L1 9" stroke="var(--danger)" strokeWidth="2" strokeLinecap="square"/>
+    </svg>
+  );
+}
+
+function IconItemRunning() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 18 18" fill="none">
+      <path d="M9 1A8 8 0 1 1 1 9" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconItemPending() {
+  return (
+    <div style={{ width: 8, height: 8, border: '1px solid var(--fg-muted)' }} />
+  );
+}
+
+function summarizeEventDetails(details: Record<string, unknown> | string | null): string {
+  if (!details) return '';
+  if (typeof details === 'string') return details.slice(0, 120);
+  // Pick a few common, useful fields. Strip noisy ones.
+  const skip = new Set(['session_id', 'page_id', 'plan_id', 'stage_id']);
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(details)) {
+    if (skip.has(key)) continue;
+    if (value === null || value === undefined) continue;
+    const rendered =
+      typeof value === 'string'
+        ? value.length > 60 ? `${value.slice(0, 60)}…` : value
+        : typeof value === 'number' || typeof value === 'boolean'
+          ? String(value)
+          : null;
+    if (rendered !== null) parts.push(`${key}=${rendered}`);
+    if (parts.length >= 4) break;
+  }
+  return parts.join('  ');
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 function ProgressPageInner() {
@@ -97,8 +197,11 @@ function ProgressPageInner() {
 
   const sessionId   = searchParams.get('session_id') ?? '';
   const sourceCount  = parseInt(searchParams.get('queued') ?? '0', 10);
-  // Overestimate: ~2 min/source, minimum 2 min — always computed from URL params, never changes
-  const estimateMins = sourceCount > 0 ? Math.max(2, sourceCount * 2) : null;
+  // ~6 min/source, minimum 6 min — sized for DeepSeek (extract 200-400s
+  // per source, draft ~3 min per page, plus resolve/match/plan/crossref/
+  // commit/schema overhead). Gemini-only pipelines run shorter so this is
+  // a safe over-estimate. Always computed from URL params, never changes.
+  const estimateMins = sourceCount > 0 ? Math.max(6, sourceCount * 6) : null;
   // If confirm returned 503 n8n_*, review page passed the reason through.
   // UI-A pre-step row starts in danger state so the user can retry immediately.
   const n8nErrorFromUrl = searchParams.get('n8n_error');
@@ -114,6 +217,11 @@ function ProgressPageInner() {
   const [elapsedSec,      setElapsedSec]      = useState(0);
   const [nowMs,           setNowMs]           = useState(() => Date.now());
 
+  // Expand-to-reveal state — lives OUTSIDE the polling flow so 2s status
+  // re-renders don't clobber the user's expanded panels.
+  const [expandedSteps,   setExpandedSteps]   = useState<Set<string>>(() => new Set());
+  const [stepData,        setStepData]        = useState<Record<string, StepData>>({});
+
   const intervalRef      = useRef<ReturnType<typeof setInterval>  | null>(null);
   const patienceTimerRef = useRef<ReturnType<typeof setTimeout>   | null>(null);
   const queuedTimerRef   = useRef<ReturnType<typeof setTimeout>   | null>(null);
@@ -125,6 +233,51 @@ function ProgressPageInner() {
     if (queuedTimerRef.current)   { clearTimeout(queuedTimerRef.current);   queuedTimerRef.current   = null; }
   }
 
+  // ── Expand-to-reveal handlers ────────────────────────────────────────────
+
+  async function fetchStepData(stepKey: string): Promise<void> {
+    if (!sessionId) return;
+    setStepData((prev) => ({
+      ...prev,
+      [stepKey]: prev[stepKey]
+        ? { ...prev[stepKey], loading: true }
+        : { items: [], events: [], fetchedAt: 0, loading: true },
+    }));
+    try {
+      const [itemsRes, eventsRes] = await Promise.all([
+        fetch(`/api/compile/progress/items?session_id=${encodeURIComponent(sessionId)}&step=${encodeURIComponent(stepKey)}`),
+        fetch(`/api/compile/progress/events?session_id=${encodeURIComponent(sessionId)}&step=${encodeURIComponent(stepKey)}&limit=50`),
+      ]);
+      const items: StepItem[]   = itemsRes.ok  ? ((await itemsRes.json())?.items  ?? []) : [];
+      const events: StepEvent[] = eventsRes.ok ? ((await eventsRes.json())?.events ?? []) : [];
+      setStepData((prev) => ({
+        ...prev,
+        [stepKey]: { items, events, fetchedAt: Date.now(), loading: false },
+      }));
+    } catch {
+      setStepData((prev) => ({
+        ...prev,
+        [stepKey]: { items: [], events: [], fetchedAt: Date.now(), loading: false },
+      }));
+    }
+  }
+
+  function toggleStep(stepKey: string): void {
+    setExpandedSteps((prev) => {
+      const next = new Set(prev);
+      if (next.has(stepKey)) {
+        next.delete(stepKey);
+      } else {
+        next.add(stepKey);
+        // Lazy-fetch on first expand only.
+        if (!stepData[stepKey]) {
+          void fetchStepData(stepKey);
+        }
+      }
+      return next;
+    });
+  }
+
   async function fetchProgress() {
     if (!sessionId || !isActiveRef.current) return;
     try {
@@ -133,10 +286,14 @@ function ProgressPageInner() {
       const data = await res.json() as ProgressResponse;
       if (!isActiveRef.current) return;
 
-      // Hard timeout: if still 'running' for > 30 min, the server likely restarted
+      // Hard timeout matches the server-side markStaleSessionsFailed
+      // cap (per-session adaptive: 60 min floor + 6 min/source). Both
+      // ends use the same formula so the client doesn't fail the session
+      // before the server's cleanup considers it stale.
       if (data.status === 'running' && data.started_at) {
         const elapsed = Date.now() - new Date(data.started_at.replace(' ', 'T') + 'Z').getTime();
-        if (elapsed > 30 * 60 * 1000) {
+        const hardTimeoutMs = Math.max(60, sourceCount * 6) * 60 * 1000;
+        if (elapsed > hardTimeoutMs) {
           stopPolling();
           localStorage.removeItem(LS_KEY);
           sessionStorage.removeItem('kompl_session_id');
@@ -595,9 +752,12 @@ function ProgressPageInner() {
               isStepFailed ? 'rgba(var(--danger-rgb),0.15)' :
                              'var(--bg-track)';
 
+            const isExpanded = expandedSteps.has(step.key);
+            const data = stepData[step.key];
+
             return (
+              <div key={step.key} style={{ display: 'flex', flexDirection: 'column' }}>
               <div
-                key={step.key}
                 style={{
                   display: 'flex',
                   flexDirection: 'row',
@@ -656,28 +816,199 @@ function ProgressPageInner() {
                     </div>
                   </div>
                 ) : (
-                  /* Done / failed / pending — single line */
-                  <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{
-                      fontFamily: 'var(--font-heading)', fontWeight: 500,
-                      fontSize: isStepDone ? 16 : 14,
-                      lineHeight: isStepDone ? '24px' : '20px',
-                      color: isStepFailed ? 'var(--danger)' : 'var(--fg)',
-                      opacity: isStepDone ? 0.6 : 1,
-                    }}>
-                      {step.label}
-                    </span>
-                    {isStepDone && (
+                  /* Done / failed / pending — single line + optional detail row */
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{
-                        fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
-                        letterSpacing: '-0.5px', textTransform: 'uppercase', color: 'var(--fg-subtle)',
-                        flexShrink: 0,
+                        fontFamily: 'var(--font-heading)', fontWeight: 500,
+                        fontSize: isStepDone ? 16 : 14,
+                        lineHeight: isStepDone ? '24px' : '20px',
+                        color: isStepFailed ? 'var(--danger)' : 'var(--fg)',
+                        opacity: isStepDone ? 0.6 : 1,
                       }}>
-                        Done
+                        {step.label}
+                      </span>
+                      {isStepDone && (
+                        <span style={{
+                          fontFamily: 'var(--font-mono)', fontSize: 10, lineHeight: '15px',
+                          letterSpacing: '-0.5px', textTransform: 'uppercase', color: 'var(--fg-subtle)',
+                          flexShrink: 0,
+                        }}>
+                          Done
+                        </span>
+                      )}
+                    </div>
+                    {/* Render detail on done/failed rows. Active row already has its own
+                        detail block above; pending rows have nothing to show. */}
+                    {detail && (isStepDone || isStepFailed) && (
+                      <span style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 11,
+                        lineHeight: '16px',
+                        color: isStepFailed ? 'var(--danger)' : 'var(--fg-subtle)',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        opacity: isStepDone ? 0.7 : 1,
+                      }}>
+                        {detail}
                       </span>
                     )}
                   </div>
                 )}
+
+                {/* Expand/collapse chevron — only on non-pending rows. Lazy-fetches items + events on first expand. */}
+                {!isStepPending && (
+                  <button
+                    onClick={() => toggleStep(step.key)}
+                    aria-label={isExpanded ? `Collapse ${step.label}` : `Expand ${step.label}`}
+                    aria-expanded={isExpanded}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      padding: '8px 4px',
+                      flexShrink: 0,
+                      color: isStepFailed ? 'var(--danger)' : 'var(--fg-subtle)',
+                      display: 'flex',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <IconChevron expanded={isExpanded} />
+                  </button>
+                )}
+              </div>
+
+              {/* Expanded panel — items table + events tail */}
+              {isExpanded && (
+                <div style={{
+                  marginLeft: 64,
+                  marginTop: 12,
+                  marginBottom: 4,
+                  padding: 16,
+                  background: 'var(--bg-track)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 16,
+                }}>
+                  {data?.loading && (
+                    <div style={{
+                      fontFamily: 'var(--font-mono)', fontSize: 10,
+                      letterSpacing: '1px', textTransform: 'uppercase',
+                      color: 'var(--fg-subtle)',
+                    }}>
+                      Loading…
+                    </div>
+                  )}
+
+                  {/* Items table */}
+                  {data && data.items.length > 0 && (
+                    <div>
+                      <div style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 10,
+                        letterSpacing: '2px', textTransform: 'uppercase',
+                        color: 'var(--accent)', marginBottom: 8,
+                      }}>
+                        Items ({data.items.length})
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {data.items.map((it) => (
+                          <div key={it.id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                              <div style={{ width: 12, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+                                {it.status === 'done'    && <IconItemDone />}
+                                {it.status === 'failed'  && <IconItemFail />}
+                                {it.status === 'running' && <IconItemRunning />}
+                                {it.status === 'pending' && <IconItemPending />}
+                              </div>
+                              <span style={{
+                                fontFamily: 'var(--font-heading)', fontSize: 13,
+                                color: it.status === 'failed' ? 'var(--danger)' : 'var(--fg)',
+                                opacity: it.status === 'pending' ? 0.5 : 1,
+                              }}>
+                                {it.label}
+                              </span>
+                            </div>
+                            {it.error && (
+                              <span style={{
+                                marginLeft: 24,
+                                fontFamily: 'var(--font-mono)', fontSize: 10,
+                                color: 'var(--danger)',
+                                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                              }}>
+                                └── {it.error}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Events tail */}
+                  {data && data.events.length > 0 && (
+                    <div>
+                      <div style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 10,
+                        letterSpacing: '2px', textTransform: 'uppercase',
+                        color: 'var(--accent)', marginBottom: 8,
+                      }}>
+                        Events ({data.events.length})
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {data.events.map((ev) => (
+                          <div key={ev.id} style={{
+                            display: 'grid',
+                            gridTemplateColumns: '64px 160px 1fr',
+                            gap: 12,
+                            fontFamily: 'var(--font-mono)', fontSize: 10,
+                            color: ev.action_type.includes('failed') ? 'var(--danger)' : 'var(--fg-subtle)',
+                          }}>
+                            <span>{ev.timestamp.slice(11, 19)}</span>
+                            <span>{ev.action_type}</span>
+                            <span style={{
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}>
+                              {ev.source_title ? `[${ev.source_title}] ` : ''}
+                              {summarizeEventDetails(ev.details)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Empty state — atomic step OR no events yet */}
+                  {data && !data.loading && data.items.length === 0 && data.events.length === 0 && (
+                    <div style={{
+                      fontFamily: 'var(--font-mono)', fontSize: 10,
+                      letterSpacing: '1px', color: 'var(--fg-subtle)',
+                    }}>
+                      No items or events recorded for this step yet.
+                    </div>
+                  )}
+
+                  {/* Refresh */}
+                  <button
+                    onClick={() => fetchStepData(step.key)}
+                    disabled={data?.loading}
+                    style={{
+                      alignSelf: 'flex-end',
+                      background: 'transparent',
+                      border: '1px solid var(--separator)',
+                      cursor: data?.loading ? 'not-allowed' : 'pointer',
+                      padding: '4px 12px',
+                      fontFamily: 'var(--font-mono)', fontSize: 9,
+                      letterSpacing: '1.5px', textTransform: 'uppercase',
+                      color: 'var(--fg-subtle)',
+                      opacity: data?.loading ? 0.4 : 1,
+                    }}
+                  >
+                    Refresh
+                  </button>
+                </div>
+              )}
               </div>
             );
           })}
@@ -776,13 +1107,18 @@ function ProgressPageInner() {
               </button>
             )}
 
-            {/* Phase 4: retry only per-item failed staging rows. Shows when
-                the session reached a terminal state but some items inside
-                ingest_{urls,files,texts} skipped. Distinct from the
-                session-level Retry above — that one resumes from first
-                non-done step, which is a no-op on completed sessions. */}
+            {/* Phase 4: retry per-item failures. Three sources:
+                  - collect_staging.failed (intake-stage URL/file/text skips)
+                  - page_plans.draft_status='failed' (per-page LLM draft errors)
+                  - sources w/o extractions (per-source extract failures —
+                    orchestrator tolerates partial extract failures, so these
+                    leave the session 'completed' with stranded sources)
+                The draft step (and the extract step on partial failures)
+                writes status='done' regardless, so none of these trip the
+                session-level Retry above. Any of the three being > 0
+                surfaces this button on a terminal session. */}
             {(isComplete || isFailedStatus || isCancelled) &&
-             (progress?.failed_stage_count ?? 0) > 0 && (
+             ((progress?.failed_stage_count ?? 0) + (progress?.failed_draft_count ?? 0) + (progress?.failed_extract_count ?? 0)) > 0 && (
               <button
                 onClick={handleRetryFailed}
                 disabled={retryingFailed}
@@ -797,7 +1133,7 @@ function ProgressPageInner() {
               >
                 {retryingFailed
                   ? 'Retrying…'
-                  : `Retry ${progress?.failed_stage_count} failed`}
+                  : `Retry ${(progress?.failed_stage_count ?? 0) + (progress?.failed_draft_count ?? 0) + (progress?.failed_extract_count ?? 0)} failed`}
               </button>
             )}
           </div>

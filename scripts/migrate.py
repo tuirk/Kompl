@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 24
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -419,6 +419,13 @@ MIGRATION_V20_SQL = """
 ALTER TABLE compile_progress ADD COLUMN compile_model TEXT;
 """
 
+# V21: purge the deployment_mode settings row. The personal-device vs always-on
+# toggle was removed in 2026-05-06 — Kompl now targets personal computers
+# exclusively. Idempotent: DELETE on a non-existent row is a no-op.
+MIGRATION_V21_SQL = """
+DELETE FROM settings WHERE key = 'deployment_mode';
+"""
+
 
 
 def migrate():
@@ -582,6 +589,60 @@ def migrate():
         }
         if "compile_model" not in existing_cols:
             conn.executescript(MIGRATION_V20_SQL)
+
+    if current < 21:
+        print("  applying migration v21 (purge deployment_mode settings row)...")
+        conn.executescript(MIGRATION_V21_SQL)
+
+    if current < 22:
+        print("  applying migration v22 (drop retired thinking_budgets state)...")
+        # Phase 8 retired the user-tunable per-call-site thinking_budget knob.
+        # Per-call-site values stay hardcoded in nlp-service/services/llm_client.py;
+        # the SQLite settings row + JSON-mirror key are dead weight. DELETE
+        # is a no-op if the row never existed (idempotent).
+        conn.execute("DELETE FROM settings WHERE key = 'thinking_budgets'")
+        # Strip the thinking_budgets key from /data/llm-config.json if present.
+        # Mirrors nlp-service/services/llm_client.py:120 path resolution exactly
+        # so app-container migrate.py and nlp-service runtime see the same file
+        # regardless of DATA_ROOT override.
+        data_root = os.environ.get("DATA_ROOT", "/data")
+        cfg_path = os.path.join(data_root, "llm-config.json")
+        if os.path.exists(cfg_path):
+            try:
+                import json as _json
+                with open(cfg_path, "r", encoding="utf-8") as fh:
+                    cfg = _json.load(fh)
+                if isinstance(cfg, dict) and "thinking_budgets" in cfg:
+                    cfg.pop("thinking_budgets", None)
+                    with open(cfg_path, "w", encoding="utf-8") as fh:
+                        _json.dump(cfg, fh)
+            except Exception as e:
+                # Non-fatal: nlp-service no longer reads this key after Phase 8.
+                print(f"  v22 cfg cleanup skipped (non-fatal): {e}")
+
+    if current < 23:
+        print("  applying migration v23 (scope activity_log by compile session + step)...")
+        # Phase B.1: every activity_log row written from a compile pipeline route
+        # gets tagged with its session_id + step_key, so /api/compile/progress/events
+        # (Phase B.4) can return per-(session, step) audit trails for the
+        # expand-to-reveal progress UI (Phase C). Pre-v23 rows stay NULL — no
+        # backfill possible (we have no way to recover the original session/step
+        # for events written before this column existed).
+        conn.execute("ALTER TABLE activity_log ADD COLUMN session_id TEXT")
+        conn.execute("ALTER TABLE activity_log ADD COLUMN step_key TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_session ON activity_log(session_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_session_step ON activity_log(session_id, step_key)")
+
+    if current < 24:
+        print("  applying migration v24 (page_plans.draft_error column)...")
+        # Per-plan error capture for draft + commit failures. Before v24, a
+        # failed page_plan recorded only draft_status='failed' with no
+        # explanation — operators had to grep app logs to diagnose.
+        # Session 29be62eb (15 source-summary HeadersTimeoutErrors) wasted
+        # 30+ min of debugging because the actual error was swallowed by the
+        # pLimit worker pool in /api/compile/draft. Nullable; pre-v24 rows
+        # stay NULL — no backfill possible.
+        conn.execute("ALTER TABLE page_plans ADD COLUMN draft_error TEXT")
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
