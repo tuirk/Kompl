@@ -42,11 +42,13 @@ const expected = (rawMs: number, floorMs: number): number =>
   Math.max(floorMs, Math.ceil(rawMs * OVERHEAD) + HEADROOM_MS);
 
 describe('computeResolveMs', () => {
-  it('returns the floor at N=0', () => {
-    expect(computeResolveMs(0)).toBe(RESOLVE_FLOOR_MS);
+  it('returns prelude + headroom at N=0 (floor enforced as a minimum)', () => {
+    const raw = 120_000 + 0 * RESOLVE_PER_SOURCE_MS;
+    expect(computeResolveMs(0)).toBe(expected(raw, RESOLVE_FLOOR_MS));
+    expect(computeResolveMs(0)).toBeGreaterThanOrEqual(RESOLVE_FLOOR_MS);
   });
 
-  it('returns the floor at N=1 (raw 180s × 1.2 + 180s = 396s, but floor is 300s — wait, raw=180+60=180_000+60_000=180s, *1.2=216s, +180s=396s, max(300s, 396s)=396s)', () => {
+  it('scales linearly at N=1', () => {
     const raw = 120_000 + 1 * RESOLVE_PER_SOURCE_MS;
     expect(computeResolveMs(1)).toBe(expected(raw, RESOLVE_FLOOR_MS));
   });
@@ -63,8 +65,9 @@ describe('computeResolveMs', () => {
 });
 
 describe('computeMatchMs', () => {
-  it('returns the floor at N=0', () => {
-    expect(computeMatchMs(0)).toBe(MATCH_FLOOR_MS);
+  it('returns headroom at N=0 (floor is below headroom; headroom wins)', () => {
+    expect(computeMatchMs(0)).toBe(expected(0, MATCH_FLOOR_MS));
+    expect(computeMatchMs(0)).toBeGreaterThanOrEqual(MATCH_FLOOR_MS);
   });
 
   it('uses default candidatesPerSource=3', () => {
@@ -84,11 +87,14 @@ describe('computeMatchMs', () => {
 });
 
 describe('computeDraftMs', () => {
-  it('returns the floor at N=0', () => {
-    expect(computeDraftMs(0)).toBe(DRAFT_FLOOR_MS);
+  it('returns 1-batch-worth at N=0 (Math.max(1, ...) keeps a single-batch budget)', () => {
+    // batches floor at 1 even when planCount=0; raw = 1 × 600_000
+    const raw = 1 * DRAFT_PER_BATCH_MS;
+    expect(computeDraftMs(0)).toBe(expected(raw, DRAFT_FLOOR_MS));
+    expect(computeDraftMs(0)).toBeGreaterThanOrEqual(DRAFT_FLOOR_MS);
   });
 
-  it('returns the floor at N=1 (1 batch × 600s × 1.2 + 180s = 900s, > 600s floor)', () => {
+  it('returns the same as N=0 at N=1 (1 batch × 600s × 1.2 + 180s = 900s, > 600s floor)', () => {
     const raw = 1 * DRAFT_PER_BATCH_MS;
     expect(computeDraftMs(1)).toBe(expected(raw, DRAFT_FLOOR_MS));
   });
@@ -116,8 +122,9 @@ describe('computeDraftMs', () => {
 });
 
 describe('computeCrossrefMs', () => {
-  it('returns the floor at N=0', () => {
-    expect(computeCrossrefMs(0)).toBe(CROSSREF_FLOOR_MS);
+  it('returns headroom at N=0 (floor is below headroom; headroom wins)', () => {
+    expect(computeCrossrefMs(0)).toBe(expected(0, CROSSREF_FLOOR_MS));
+    expect(computeCrossrefMs(0)).toBeGreaterThanOrEqual(CROSSREF_FLOOR_MS);
   });
 
   it('returns the floor at small N (raw < floor)', () => {
@@ -133,8 +140,9 @@ describe('computeCrossrefMs', () => {
 });
 
 describe('computeCommitMs', () => {
-  it('returns the floor at N=0', () => {
-    expect(computeCommitMs(0)).toBe(COMMIT_FLOOR_MS);
+  it('returns headroom at N=0 (floor is below headroom; headroom wins)', () => {
+    expect(computeCommitMs(0)).toBe(expected(0, COMMIT_FLOOR_MS));
+    expect(computeCommitMs(0)).toBeGreaterThanOrEqual(COMMIT_FLOOR_MS);
   });
 
   it('scales linearly at N=10', () => {
@@ -149,12 +157,12 @@ describe('computeCommitMs', () => {
 });
 
 describe('floor enforcement (degenerate inputs)', () => {
-  it('every compute*Ms returns its floor at N=0 (no NaN, no zero)', () => {
-    expect(computeResolveMs(0)).toBe(RESOLVE_FLOOR_MS);
-    expect(computeMatchMs(0)).toBe(MATCH_FLOOR_MS);
-    expect(computeDraftMs(0)).toBe(DRAFT_FLOOR_MS);
-    expect(computeCrossrefMs(0)).toBe(CROSSREF_FLOOR_MS);
-    expect(computeCommitMs(0)).toBe(COMMIT_FLOOR_MS);
+  it('every compute*Ms returns at least its floor at N=0 (no NaN, no zero, no sub-floor)', () => {
+    expect(computeResolveMs(0)).toBeGreaterThanOrEqual(RESOLVE_FLOOR_MS);
+    expect(computeMatchMs(0)).toBeGreaterThanOrEqual(MATCH_FLOOR_MS);
+    expect(computeDraftMs(0)).toBeGreaterThanOrEqual(DRAFT_FLOOR_MS);
+    expect(computeCrossrefMs(0)).toBeGreaterThanOrEqual(CROSSREF_FLOOR_MS);
+    expect(computeCommitMs(0)).toBeGreaterThanOrEqual(COMMIT_FLOOR_MS);
   });
 
   it('every compute*Ms returns a positive integer at any non-negative N', () => {
