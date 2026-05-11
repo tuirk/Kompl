@@ -134,7 +134,6 @@ function OnboardingPageInner() {
             letterSpacing: '0.2px',
             color: 'var(--fg-dim)',
             margin: 0,
-            maxWidth: 460,
           }}>
             {subtitle}
           </p>
@@ -149,6 +148,17 @@ function OnboardingPageInner() {
               marginTop: 4,
             }}>
               compile model · {compileModel}
+              {' · '}
+              <Link
+                href="/settings#compile-model"
+                style={{
+                  color: 'var(--accent)',
+                  textDecoration: 'underline',
+                  textUnderlineOffset: 2,
+                }}
+              >
+                switch →
+              </Link>
             </span>
           )}
         </section>

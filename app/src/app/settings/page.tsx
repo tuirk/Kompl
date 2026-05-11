@@ -995,11 +995,13 @@ export default function SettingsPage() {
 
         {/* Compile model */}
         <section
+          id="compile-model"
           style={{
             border: '1px solid var(--border)',
             borderRadius: 8,
             overflow: 'hidden',
             marginTop: '1rem',
+            scrollMarginTop: '80px',
           }}
         >
           <div
@@ -1021,9 +1023,25 @@ export default function SettingsPage() {
                 quality; Flash Lite is cheapest; Pro is most capable but most expensive.
                 Compile spend is typically <strong>10-100× higher than chat</strong> because the
                 pipeline drafts many pages per session.
-                Changes apply to <strong>new compile sessions only</strong> — in-flight pipelines
-                keep the model they started with until they finish or fail. If you want to switch
-                a session to a different model, cancel it first and start a new compile.
+                <br /><br />
+                <strong>Long / academic content:</strong> Gemini 2.5 Flash has a documented
+                structured-output truncation pathology on dense inputs above ~50K chars (academic
+                PDFs, surveys, long-form reports). When it triggers, the extract step returns{' '}
+                <code>extract_llm_failed</code> and the source is left without an extraction row.{' '}
+                <strong>DeepSeek V4 Pro handles up to ~200K chars cleanly</strong> — recommended
+                whenever you're ingesting heavy material. Track this in{' '}
+                <a
+                  href="https://github.com/tuirk/Kompl/issues/7"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: 'var(--accent)', textDecoration: 'underline' }}
+                >
+                  issue #7
+                </a>.
+                <br /><br />
+                You can change this any time, but switching mid-session doesn't retro-apply:
+                in-flight pipelines keep the model they started with until they finish or fail.
+                Cancel + restart to switch.
               </div>
             </div>
             <div style={{ flexShrink: 0 }}>
