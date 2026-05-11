@@ -22,6 +22,7 @@ import {
   getPage,
   getSourcesBySession,
   readRawMarkdown,
+  updateCompileStep,
 } from '@/lib/db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -134,7 +135,18 @@ export async function POST(request: Request) {
   let contradictions = 0;
   let skips = 0;
 
-  for (const source of sources) {
+  for (let i = 0; i < sources.length; i++) {
+    const source = sources[i];
+    // Live progress for the UI's "Checking existing wiki" tracker. Without
+    // this the step shows just "PROCESSING" with no count while peer steps
+    // (extract, ingest_*) show X/Y. Mirrors the per-completion update
+    // pattern used by the extract worker pool and runPerItemStep.
+    updateCompileStep(
+      session_id,
+      'match',
+      'running',
+      `${i}/${sources.length} sources checked`,
+    );
     const markdown = readRawMarkdown(source.source_id);
     if (!markdown) continue;
 
