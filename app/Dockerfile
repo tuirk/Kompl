@@ -23,7 +23,7 @@
 # docker ecosystem (.github/dependabot.yml) bumps weekly. This digest MUST
 # match the runtime stage below — cross-stage COPY --from=builder copies
 # native better-sqlite3 binaries that are glibc/ABI-bound to the build base.
-FROM node:24-slim@sha256:03eae3ef7e88a9de535496fb488d67e02b9d96a063a8967bae657744ecd513f2 AS builder
+FROM node:26-slim@sha256:424cafd2a035ed2b2d74acc3142b68b426fb62a47742c80a75e7117db02d6b30 AS builder
 
 # python3 + build tools needed by node-gyp to compile better-sqlite3 from
 # source when the prebuild-install binary download fails (e.g. --no-cache builds).
@@ -43,7 +43,7 @@ RUN npm run build
 
 # ---- Runtime stage ----
 # MUST match the builder digest above (see comment there).
-FROM node:24-slim@sha256:03eae3ef7e88a9de535496fb488d67e02b9d96a063a8967bae657744ecd513f2 AS runtime
+FROM node:26-slim@sha256:424cafd2a035ed2b2d74acc3142b68b426fb62a47742c80a75e7117db02d6b30 AS runtime
 
 # Install python3 (full stdlib, includes sqlite3) for migrate.py.
 # --no-install-recommends keeps pip/setuptools/venv out. migrate.py uses
