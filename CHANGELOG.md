@@ -5,29 +5,209 @@ All notable changes to Kompl are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The application surface (Next.js API, CLI, MCP server, settings) follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The SQLite schema
-uses a separate monotonic version (currently `v21`); breaking schema changes
+uses a separate monotonic version (currently `v23`); breaking schema changes
 ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-11
+
+Multi-provider + visibility + hardening. DeepSeek lands as a second LLM
+backend selectable per session; the compile pipeline gains live per-step
+progress, an orchestrator-driven recovery path for stranded sources, and a
+range-based time estimate; a security pass closes SSRF / path-traversal /
+log-forging surfaces and pins the Scorecard-flagged dependencies; and the
+always-on/personal-device deployment toggle is gone — Kompl is now
+single-mode personal-computer.
+
+### Added
+
+**Multi-provider LLM**
+
+- **DeepSeek V4 Pro as a second selectable compile/chat backend** (#56).
+  Provider abstraction layer (Phases 1–5) routes `gemini-*` and
+  `deepseek-*` model IDs through a single `LLMProvider` interface; per-
+  session model lock stamps the choice at session start so mid-flight
+  Settings changes don't hot-swap. Tier-1 RPM caps and per-provider input
+  caps live in `nlp-service/services/llm_client.py`.
+- **DeepSeek prompt-drift hardening** (#64) — 4-layer JSON-contract block
+  in the extract prompt, 28 new contract tests against the real provider
+  response shape.
+
+**Visibility & recovery**
+
+- **Live compile-progress UI** (#66) — schema v23, new
+  `/api/compile/progress/items` and `/api/compile/progress/events`
+  endpoints, expand-to-reveal per-step item drill-down on the progress
+  page.
+- **Per-step `X/Y` progress detail** — `extract`, `draft`, `ingest_files`,
+  `ingest_urls`, `ingest_texts`, `match`, `crossref`, `commit` all emit
+  `${done}/${total}` mid-flight (the prior session-only `extract` counter
+  is now the pattern everywhere it makes sense; atomic LLM-call steps
+  `resolve` and `schema` deliberately remain status-only).
+- **Stranded-source recovery** (#71 orchestrator re-plan + this release's
+  commit-activation gate) — a source whose extract step fails mid-session
+  no longer becomes unrecoverable. The orchestrator re-plans on retry;
+  commit only marks `compile_status='active'` for sources with an
+  `extractions` row, so both `/api/sources/[id]/recompile` and
+  `/api/compile/retry-failed` can re-attempt the source.
+- **Compile-model advisory** on `/onboarding/review` — dismissible banner
+  recommending DeepSeek for long/academic content, with a deep link to
+  `/settings#compile-model`. Generic — Kompl doesn't model-pick for the
+  user.
+- **Time-estimate range** on `/onboarding/progress` — `EST.` now shows
+  `min–max min` (lower bound = `ceil(max / 3)`) rather than a single
+  conservative value.
+
+**New connectors / ingestion**
+
+- **Paste-text connector** — raw text → source, no URL or file required.
+- **YouTube direct-ingest** (#73) via `youtube-transcript-api` + YouTube
+  Data API v3 `videos.list`. Replaces MarkItDown's silent fallback to
+  scraping watch-page chrome on transcript-less videos. Strict: transcript
+  unavailable OR `YOUTUBE_API_KEY` missing OR Data API error → 422 →
+  routed to Saved Links via the app-side `onFailure` path. Covers `watch`
+  / `youtu.be` / `shorts` / `embed` / `m.` / `music.` / `/v/` URL forms.
+  27 new tests.
+
+**Performance**
+
+- **Parallel extract step** (#67) — `EXTRACT_CONCURRENCY=4`, file-upload
+  cap raised to 100.
+- **`DRAFT_CONCURRENCY` 5 → 10** (#68).
+- **Per-session adaptive stale-session timeout** — replaces the flat
+  30-min ceiling with `60 min + 6 min/source` so 50+ source compiles no
+  longer get falsely marked failed by the stale-cleanup job.
+- **LLM-call timeouts re-sized for DeepSeek** (#62 + #69) — orchestrator
+  outer signals and undici dispatcher `headersTimeout` adjusted so
+  DeepSeek's 30–400 s extract latency doesn't trigger `HeadersTimeoutError`.
+
+**Setup**
+
+- **One-line installers** — `install.sh` (Linux/macOS) + `install.ps1`
+  (Windows). Bootstraps Docker, clones the repo, copies `.env.example`,
+  and runs `kompl init`.
+
+### Changed
+
+- **Settings → Compile model** description now documents the Gemini-2.5
+  truncation pathology on dense inputs (50K+ char academic PDFs), links
+  to [issue #7](https://github.com/tuirk/Kompl/issues/7), and recommends
+  DeepSeek for heavy content.
+- **README** API-keys table cross-references the truncation issue from
+  the Gemini row; Known limitations gains a bullet documenting that
+  Kompl does NOT auto-chunk long sources — split manually if staying on
+  Gemini.
+- **Bulk delete is now batch-aware** (#46) — partial-survivor deletes no
+  longer trigger per-page Gemini recompiles for every removed source.
+- **`min_source_chars` setting honoured in delete cascade** (was
+  hardcoded 500).
+- **Archive timestamp gets microsecond suffix** — prevents collision when
+  3+ versions of the same page archive in the same second.
+- **Compile-progress estimate** uses a range, not a single value (see
+  Added).
+- **`undici` pinned to `^7`** — `undici 8`'s dispatcher composition is
+  incompatible with `Agent` and broke long-running compile calls.
+
 ### Removed
 
-- **Deployment-mode toggle** (`personal-device` vs `always-on`). Kompl now
-  targets personal computers exclusively — the toggle, its CLI prompt
-  (`kompl init` / `setup.js`), the `/api/settings` GET/POST surface for
-  `deployment_mode`, the Settings page UI section, and the `runStartupTasks`
-  early-return gate are all gone. The 36h `kompl start` startup hook now
-  fires lint + local backup unconditionally on every install.
-- **n8n `lint-wiki.json` workflow** (Mon 11:30 cron + manual `/webhook/lint`).
-  The cron's only justification was always-on coverage; the universal
-  startup hook subsumes it. `n8n/auto-import.sh` gains an idempotent
-  `delete:workflow --id=kompl-lint-wiki` line so existing installs purge
-  the orphan from `n8n-data` SQLite on next restart.
+- **Deployment-mode toggle** (`personal-device` vs `always-on`) (#57).
+  Kompl now targets personal computers exclusively — the toggle, its CLI
+  prompt (`kompl init` / `setup.js`), the `/api/settings` GET/POST
+  surface for `deployment_mode`, the Settings page UI section, and the
+  `runStartupTasks` early-return gate are all gone. The 36h `kompl
+  start` startup hook now fires lint + local backup unconditionally on
+  every install.
+- **n8n `lint-wiki.json` workflow** (Mon 11:30 cron + manual
+  `/webhook/lint`). The cron's only justification was always-on coverage;
+  the universal startup hook subsumes it. `n8n/auto-import.sh` gains an
+  idempotent `delete:workflow --id=kompl-lint-wiki` line so existing
+  installs purge the orphan from `n8n-data` SQLite on next restart.
+- **`thinking_budget` UI control + setting** (#59). Investigation against
+  `google-genai` SDK confirmed the field is silently ignored by Gemini —
+  toggling it changed nothing. Setting removed from `/api/settings`, UI
+  section deleted, per-call-site overrides retired (issue #7).
+- **`docs/plans/`** removed from the repo and gitignored — they're
+  local-only working notes.
+- **`isYouTubeUrl` helper** (`app/src/lib/nlp-convert.ts`) — dead after
+  YouTube routing moved to the nlp-service side.
+
+### Fixed
+
+**Compile pipeline**
+
+- Stranded sources after a partial-extract session (described in Added →
+  Visibility & recovery above).
+- Adaptive long-running sessions no longer flip to `failed` while
+  legitimately running.
+- `undici` pin (described in Changed).
+
+**Sources & storage**
+
+- Bulk-delete batching, `min_source_chars` cascade, archive-timestamp
+  collisions (described in Changed).
+
+**Chat / NLP**
+
+- Chat `category`/`summary` regex scoped to YAML frontmatter (was
+  capturing matches deeper in page bodies).
+- Strict Pydantic on vector-router metadata (`extra='forbid'`) — catches
+  drift at the contract boundary instead of producing silent runtime
+  surprises.
+
+### Security
+
+- **SSRF hardening** — IP-pinned validation in `/metadata/peek`. Rejects
+  cloud-metadata IPs, RFC1918 ranges, link-local, multicast.
+- **Path-traversal hardening** — centralised in
+  `nlp-service/services/_safe_paths.py` and Next.js storage layer.
+- **YAML frontmatter escaping** — centralised in
+  `app/src/lib/yaml-frontmatter.ts`; all draft-writer paths go through it.
+- **Log-arg scrubbing** — `app/src/lib/log-safe.ts`. Prevents log
+  forging via injected `\n` + crafted bracket structures in
+  user-controlled fields (URLs, titles).
+- **Scorecard-flagged dependency pins** — `a574c5f` audit pinned all
+  Dependabot-monitored deps to specific versions or version ranges;
+  deferred alerts documented in `docs/security/scorecard-deferred.md`.
+- **`main` branch ruleset** strengthened — required-status-checks sub-gap
+  of Scorecard #27 closed (`46ecfcc`).
+- **mcp-server**: `hono >=4.12.16` (GHSA-69xw-7hcm-h432,
+  GHSA-9vqf-7f2p-gf9v); `ip-address` overridden to `^10.1.1`
+  (GHSA-v2v4-37r5-5v8g).
+- **CI**: Scorecard schedule re-enabled now that GHA budget recovered;
+  Scorecard + Tests badges restored on README.
 
 ### Migration notes
 
-- **Schema v21**: `migrate.py` deletes the `deployment_mode` settings row
-  on first boot. Idempotent on installs that never had it.
+- **Schema v20 → v23** (incremental via `migrate.py` on boot, runs once
+  per version step, idempotent on installs that already migrated):
+  - **v21**: deletes the `deployment_mode` settings row.
+  - **v22 / v23**: adds compile-progress per-step item + event tables
+    backing the live-progress UI.
+- **`YOUTUBE_API_KEY` env var** — optional. Without it, every YouTube URL
+  fails ingest with `422 youtube_metadata_unavailable` and routes to
+  Saved Links. Set in `.env` to enable YouTube ingest; see
+  `.env.example` and README API-keys table.
+- **`docker-compose.yml` `nlp-service.environment`** gained
+  `YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}`. Existing installs need to add
+  this line for the new env var to plumb through.
+
+### Known limitations at 0.2.0
+
+- **Single-tenant only.** Same as 0.1.0.
+- **Two LLM providers**: Gemini 2.5 (default) + DeepSeek V4 Pro.
+  Anthropic and OpenAI-compatible providers planned.
+- **n8n container ships under the [Sustainable Use License](https://docs.n8n.io/sustainable-use-license/)** — unchanged from 0.1.0.
+- **Gemini 2.5 + dense sources**: structured-output truncation pathology
+  on inputs above ~50K chars (academic PDFs, surveys). Workaround:
+  switch the session to DeepSeek V4 Pro. Kompl does NOT auto-chunk.
+  Tracked in [issue #7](https://github.com/tuirk/Kompl/issues/7).
+- **No mobile app.** Same as 0.1.0.
+- **Telegram weekly digest** — backend implementation complete, UI is
+  gated as "Experimental" with the toggle locked OFF pending
+  schedule/copy/credentials fixes.
+- **Auto-backup-on-start** still lacks regression tests on the
+  start-time path (carried over from 0.1.0).
 
 ## [0.1.0] — 2026-04-27
 
@@ -149,5 +329,6 @@ Initial public release.
 - **Auto-backup-on-start** is end-to-end wired but lacks regression tests
   on the start-time path.
 
-[Unreleased]: https://github.com/tuirk/Kompl/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tuirk/Kompl/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tuirk/Kompl/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tuirk/Kompl/releases/tag/v0.1.0
