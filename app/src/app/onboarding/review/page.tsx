@@ -75,6 +75,23 @@ function ReviewPageInner() {
   const [expandedGroups, setExpandedGroups] = useState<Set<VisualGroup>>(new Set());
   const [confirming, setConfirming] = useState(false);
   const [discardState, setDiscardState] = useState<'idle' | 'confirming' | 'deleting'>('idle');
+  // Advisory banner: shown until the user dismisses with ×. Default true so
+  // the banner stays hidden during SSR / first paint to avoid a flash; the
+  // useEffect below reads LocalStorage and reveals when appropriate.
+  const [advisoryDismissed, setAdvisoryDismissed] = useState(true);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const dismissed = localStorage.getItem('kompl_compile_model_advisory_dismissed') === '1';
+    setAdvisoryDismissed(dismissed);
+  }, []);
+
+  const dismissAdvisory = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('kompl_compile_model_advisory_dismissed', '1');
+    }
+    setAdvisoryDismissed(true);
+  };
 
   useEffect(() => {
     const stored = typeof window !== 'undefined' ? sessionStorage.getItem('kompl_session_id') : null;
@@ -295,6 +312,66 @@ function ReviewPageInner() {
       <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 2rem' }}>
         Uncheck anything you don&apos;t want. Nothing is scraped until you click Build.
       </p>
+
+      {/* Compile-model advisory — generic onboarding-time heads-up. Stated, not
+          enforced: Kompl doesn't pick the model for the user, doesn't size-check
+          sources, doesn't auto-chunk. The user takes it from here. */}
+      {!advisoryDismissed && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            padding: '12px 14px',
+            marginBottom: '2rem',
+            border: '1px solid rgba(var(--accent-rgb), 0.25)',
+            borderLeft: '3px solid var(--accent)',
+            borderRadius: 4,
+            background: 'rgba(var(--accent-rgb), 0.04)',
+          }}
+          role="status"
+        >
+          <div style={{ flex: 1, fontSize: 13, color: 'var(--fg-secondary)', lineHeight: 1.55 }}>
+            <div style={{ fontWeight: 600, color: 'var(--fg)', marginBottom: 4 }}>
+              Compile model heads-up
+            </div>
+            If your sources include long academic PDFs, surveys, or other dense
+            long-form content, <strong>DeepSeek V4 Pro</strong> handles them more
+            reliably than Gemini — Gemini 2.5 occasionally truncates structured
+            output on dense inputs, surfacing as <code>extract_llm_failed</code>.
+            Pick the model in{' '}
+            <Link href="/settings" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>
+              Settings → Compile model
+            </Link>
+            .{' '}
+            <a
+              href="https://github.com/tuirk/Kompl/issues/7"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'var(--accent)', textDecoration: 'underline' }}
+            >
+              Why this happens →
+            </a>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={dismissAdvisory}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--fg-dim)',
+              padding: '0 4px',
+              lineHeight: 1,
+              fontSize: 18,
+              alignSelf: 'flex-start',
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Groups */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>

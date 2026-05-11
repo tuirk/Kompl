@@ -297,3 +297,81 @@ describe('Gate 2 — min_draft_chars enforcement at commit', () => {
     expect(body.thin_drafts_skipped).toBe(1);
   });
 });
+
+// ─── Gate 3 (activation) ─────────────────────────────────────────────────────
+// Sources that landed in a page plan but have no extractions row (extract step
+// failed mid-session; downstream drafted from raw markdown) must NOT be marked
+// compile_status='active'. Otherwise the source is stranded: recompile returns
+// 409 source_already_compiled, and retry-failed re-runs but getSourcesBySession
+// filters out 'active' rows, leaving the orchestrator with preludeSources=[]
+// → silent "skipped (no sources)" no-op. Bug surfaced in live session
+// 4a882b4d-... (2026-05-11) where a Gemini-truncated PDF extract left the
+// source unrecoverable.
+
+describe('Gate 3 — commit activates only sources with extractions', () => {
+  it('skips activation for sources that drafted from raw markdown (no extractions row)', async () => {
+    handle = setupTestDb();
+    mockNlpServiceFetch();
+    const session_id = 'sess-g3-partial';
+
+    // Source A — extracted normally.
+    const extracted_id = seedSource(handle.db, {
+      source_id: 'src-extracted',
+      onboarding_session_id: session_id,
+      compile_status: 'in_progress',
+    });
+    seedExtraction(handle.db, { source_id: extracted_id });
+
+    // Source B — extract failed; no extractions row, but it still landed in
+    // a plan (Rule 1 in plan/route.ts builds a source-summary for every
+    // session source regardless of extract status) and got drafted from raw
+    // markdown.
+    const stranded_id = seedSource(handle.db, {
+      source_id: 'src-stranded',
+      onboarding_session_id: session_id,
+      compile_status: 'extracted',
+    });
+
+    seedCompileProgress(handle.db, session_id);
+
+    seedPagePlan(handle.db, {
+      session_id,
+      title: 'Extracted Page',
+      page_type: 'entity',
+      action: 'create',
+      source_ids: [extracted_id],
+      draft_status: 'crossreffed',
+      draft_content: `---\ntitle: "Extracted Page"\n---\n${'x'.repeat(900)}`,
+    });
+    seedPagePlan(handle.db, {
+      session_id,
+      title: 'Stranded Source Summary',
+      page_type: 'source-summary',
+      action: 'create',
+      source_ids: [stranded_id],
+      draft_status: 'crossreffed',
+      draft_content: `---\ntitle: "Stranded Source Summary"\n---\n${'y'.repeat(900)}`,
+    });
+
+    const res = await commitPOST(commitRequest(session_id));
+    const body = (await res.json()) as CommitResponse & { sources_activated: number };
+
+    expect(body.committed).toBe(2);
+    expect(body.sources_activated).toBe(1);
+
+    const statuses = handle.db
+      .prepare(
+        `SELECT source_id, compile_status FROM sources
+          WHERE source_id IN (?, ?)
+          ORDER BY source_id`
+      )
+      .all(extracted_id, stranded_id) as Array<{ source_id: string; compile_status: string }>;
+
+    const byId = new Map(statuses.map((r) => [r.source_id, r.compile_status]));
+    expect(byId.get(extracted_id)).toBe('active');
+    // Stranded source stays in its prior status (here 'extracted'), NOT 'active',
+    // so /api/sources/[id]/recompile and /api/compile/retry-failed can re-attempt
+    // it via getSourcesBySession (which filters out 'active'/'compiled').
+    expect(byId.get(stranded_id)).toBe('extracted');
+  });
+});

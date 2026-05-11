@@ -98,6 +98,12 @@ services:
       GEMINI_INPUT_TOKEN_CAP: ${GEMINI_INPUT_TOKEN_CAP:-128000}
       # Daily $ cost ceiling. nlp-service raises CostCeilingError when exceeded.
       GEMINI_DAILY_USD_CAP: ${GEMINI_DAILY_USD_CAP:-5.00}
+      # YouTube Data API v3 key (videos.list, 1 quota unit per call, 10k/day free).
+      # Used by routers/conversion.py for video metadata (title, channel, publishedAt,
+      # description, duration). When unset, YouTube ingest hard-fails with 422
+      # youtube_metadata_unavailable — by design, no oEmbed fallback. URL routes
+      # to Saved Links via the app-side onFailure path.
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
     volumes:
       # Shared file access to /data/raw so MarkItDown can read uploads
       # that Next.js wrote. Does NOT include write access to /data/db/kompl.db

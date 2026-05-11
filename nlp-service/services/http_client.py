@@ -23,7 +23,7 @@ import httpx
 
 
 class HttpClientError(Exception):
-    """Raised by HttpClient.post_json on final failure.
+    """Raised by HttpClient.post_json / HttpClient.get_json on final failure.
 
     Attributes:
         message: Human-readable description.
@@ -91,6 +91,54 @@ class HttpClient:
 
             if attempt < self.max_retries - 1:
                 # Exponential backoff: 1s, 2s, 4s
+                time.sleep(2 ** attempt)
+
+        raise HttpClientError(
+            message=last_message,
+            status_code=last_status,
+            upstream_body=last_body,
+        )
+
+    def get_json(
+        self,
+        url: str,
+        params: dict | None = None,
+        headers: dict | None = None,
+    ) -> dict:
+        """GET `url` (with optional query params) and return the parsed JSON response.
+
+        Same retry + error semantics as post_json: retries on RequestError
+        and 5xx HTTP errors with exponential backoff; does NOT retry on 4xx;
+        raises HttpClientError on final failure. Added for the YouTube Data API
+        v3 call in routers/conversion.py — the metadata fetch is a GET so
+        post_json wasn't reusable as-is.
+        """
+        last_status: int | None = None
+        last_body: str | None = None
+        last_message: str = ""
+
+        for attempt in range(self.max_retries):
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    response = client.get(url, params=params, headers=headers)
+                    response.raise_for_status()
+                    return response.json()
+            except httpx.HTTPStatusError as e:
+                last_status = e.response.status_code
+                last_body = e.response.text
+                last_message = f"HTTP {last_status} from {url}"
+                if last_status < 500:
+                    raise HttpClientError(
+                        message=last_message,
+                        status_code=last_status,
+                        upstream_body=last_body,
+                    ) from e
+            except httpx.RequestError as e:
+                last_status = None
+                last_body = None
+                last_message = f"network error calling {url}: {e!r}"
+
+            if attempt < self.max_retries - 1:
                 time.sleep(2 ** attempt)
 
         raise HttpClientError(
