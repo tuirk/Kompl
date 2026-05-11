@@ -108,8 +108,9 @@ router = APIRouter(tags=["conversion"])
 _http = HttpClient(timeout=30.0, max_retries=1)
 _FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
 # Minimum character count for a MarkItDown URL result to be considered usable.
-# Results below this threshold indicate a JS-rendered SPA, paywall, or a YouTube
-# video with no available transcript — Firecrawl is used as a fallback in those cases.
+# Results below this threshold indicate a JS-rendered SPA or paywall — Firecrawl
+# is used as a fallback in those cases. YouTube URLs no longer reach MarkItDown
+# (see _convert_youtube).
 _MARKITDOWN_MIN_CHARS = 500
 # Upper bound for MarkItDown URL attempts. MarkItDown uses `requests` under the
 # hood with no default timeout, so a slow DNS or hung socket could pin a worker
@@ -149,6 +150,20 @@ _ALLOWED_EXTENSIONS = {
 _GITHUB_REPO_RE = re.compile(
     r"^https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$"
 )
+# YouTube URL coverage: watch, youtu.be short, shorts, embed, /v/, mobile (m.),
+# music (music.). Anything matching this regex is routed exclusively through the
+# direct transcript-api + Data API v3 path in `_convert_youtube` — MarkItDown
+# and Firecrawl are never invoked for these URLs. See `_convert_youtube` for the
+# rationale (MarkItDown's HTML fallback returns YouTube footer chrome when no
+# transcript exists, which passes our quality gate and produces a useless wiki
+# page — see session 4a00f339-... investigation).
+_YOUTUBE_URL_RE = re.compile(
+    r"^https?://"
+    r"(?:www\.|m\.|music\.)?"
+    r"(?:youtube\.com/(?:watch|shorts/|embed/|v/)|youtu\.be/)"
+)
+_YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+_YOUTUBE_DATA_API_URL = "https://www.googleapis.com/youtube/v3/videos"
 _GITHUB_API = "https://api.github.com"
 _GITHUB_HEADERS = {
     "Accept": "application/vnd.github+json",
@@ -238,6 +253,250 @@ def _convert_github_repo(
 _RFC2606_RESERVED_TLDS = {".invalid", ".test", ".example", ".localhost"}
 
 
+# ---------------------------------------------------------------------------
+# YouTube direct-ingest helpers
+#
+# Why this exists: MarkItDown's YouTubeConverter calls youtube-transcript-api
+# first, then SILENTLY falls back to scraping the watch-page HTML when no
+# transcript is available. The HTML fallback returns ~800 chars of YouTube
+# footer chrome (links, copyright), which passes the 500-char quality gate in
+# `_try_markitdown_url` and ends up compiled as a useless wiki page. There is
+# no way to inspect, from outside MarkItDown.convert(), whether the result
+# came from the transcript path or the HTML-scrape fallback.
+#
+# Fix: route ALL YouTube URLs through this dedicated path before MarkItDown
+# is considered. Transcript or 422 — never an HTML scrape.
+# ---------------------------------------------------------------------------
+
+
+_YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_YOUTUBE_HOSTS = frozenset({
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+    "www.youtu.be",
+})
+
+
+def _extract_youtube_video_id(url: str) -> str | None:
+    """Extract the 11-char YouTube video ID from any of the supported URL forms.
+
+    Returns None if the host isn't a YouTube domain, the URL doesn't parse to
+    a recognisable video form (playlist / channel / @-handle etc), or the
+    extracted ID isn't 11 chars matching [A-Za-z0-9_-]. The 11-char check
+    rejects garbage early so transcript / Data API calls always see a real ID.
+
+    Host allowlist keeps this safe to call as a standalone unit (defence in
+    depth — the route-level _YOUTUBE_URL_RE already filters incoming URLs,
+    but a function that says "extract YouTube ID" must not return an ID for
+    `example.com/watch?v=...`).
+    """
+    from urllib.parse import urlparse, parse_qs
+
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in _YOUTUBE_HOSTS:
+        return None
+    path = parsed.path or ""
+
+    # youtu.be short form: video ID is the entire path component.
+    if host == "youtu.be" or host == "www.youtu.be":
+        vid = path.lstrip("/").split("/", 1)[0]
+    # youtube.com/watch?v=... — video ID is in the `v` query param.
+    elif path == "/watch":
+        vs = parse_qs(parsed.query).get("v") or []
+        vid = vs[0] if vs else ""
+    # /shorts/<id>, /embed/<id>, /v/<id> — video ID is the path segment after the prefix.
+    elif path.startswith("/shorts/") or path.startswith("/embed/") or path.startswith("/v/"):
+        vid = path.split("/", 2)[2].split("/", 1)[0]
+    else:
+        return None
+
+    return vid if _YOUTUBE_VIDEO_ID_RE.match(vid) else None
+
+
+def _fetch_youtube_transcript(video_id: str) -> tuple[list[dict[str, Any]], str | None]:
+    """Fetch the best available transcript for `video_id`.
+
+    Prefers manually-uploaded transcripts over auto-generated. Returns
+    (segments, language_code). Raises HTTPException(422 youtube_no_transcript)
+    when no transcript is available, the video doesn't exist, or YouTube
+    blocks the request (cloud-IP block — see plan "Out of scope" for the
+    Webshare proxy follow-up).
+
+    Imported lazily so a missing youtube-transcript-api install only breaks
+    YouTube ingestion, not the whole nlp-service. The dep is pinned in
+    requirements.txt; this is belt-and-braces against a future trim.
+    """
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        from youtube_transcript_api._errors import (
+            TranscriptsDisabled,
+            NoTranscriptFound,
+            VideoUnavailable,
+            CouldNotRetrieveTranscript,
+        )
+    except ImportError as e:
+        # Misconfiguration — surface clearly rather than silent-falling-through.
+        raise HTTPException(
+            status_code=500,
+            detail=f"youtube_transcript_api_not_installed: {e}",
+        ) from e
+
+    try:
+        tlist = YouTubeTranscriptApi.list_transcripts(video_id)
+        # Prefer human-uploaded over auto-generated. Pick the first available
+        # in either bucket; downstream extract is language-agnostic and the
+        # session is anchored to a single source so we don't need to enforce
+        # a target language here.
+        chosen = None
+        for t in tlist:
+            if not t.is_generated:
+                chosen = t
+                break
+        if chosen is None:
+            chosen = next(iter(tlist), None)
+        if chosen is None:
+            raise NoTranscriptFound(video_id, [], None)
+        segments = chosen.fetch()
+        return segments, getattr(chosen, "language_code", None)
+    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable, CouldNotRetrieveTranscript) as e:
+        # Package's own "no transcript" classes — clean signal.
+        raise HTTPException(
+            status_code=422,
+            detail="youtube_no_transcript",
+        ) from e
+    except Exception as e:
+        # Wider net: youtube-transcript-api leaks bare xml.etree.ElementTree.
+        # ParseError (and similar) when YouTube returns an empty body for the
+        # transcript XML fetch — e.g. rate-limit, bot-detection, or the IP
+        # being on YouTube's blocklist. From the user's perspective this is
+        # still "transcript unavailable", so route to Saved Links rather than
+        # bubbling a 500. See session-smoke test on `youtu.be/Ub3GoFaUcds` —
+        # list_transcripts succeeded, fetch() returned empty XML body.
+        raise HTTPException(
+            status_code=422,
+            detail="youtube_no_transcript",
+        ) from e
+
+
+def _fetch_youtube_metadata(video_id: str) -> dict[str, Any]:
+    """Fetch video metadata (title, channel, publishedAt, description, duration)
+    from YouTube Data API v3 videos.list.
+
+    Strict: no API key → 422. API error → 422. No matching item → 422.
+    The 422 routes the URL to Saved Links via the existing onFailure path
+    in app/src/lib/compile/steps/ingest-urls.ts.
+
+    No oEmbed fallback — explicit user direction. Either Data API answers,
+    or the URL fails the ingest contract.
+    """
+    if not _YOUTUBE_API_KEY:
+        raise HTTPException(
+            status_code=422,
+            detail="youtube_metadata_unavailable",
+        )
+
+    try:
+        response = _http.get_json(
+            url=_YOUTUBE_DATA_API_URL,
+            params={
+                "part": "snippet,contentDetails",
+                "id": video_id,
+                "key": _YOUTUBE_API_KEY,
+            },
+        )
+    except HttpClientError as e:
+        raise HTTPException(
+            status_code=422,
+            detail="youtube_metadata_unavailable",
+        ) from e
+
+    items = response.get("items") or []
+    if not items:
+        # Empty items = video doesn't exist, is private, or was deleted.
+        # Same outcome as a 4xx from the user's perspective.
+        raise HTTPException(
+            status_code=422,
+            detail="youtube_metadata_unavailable",
+        )
+
+    item = items[0]
+    snippet = item.get("snippet") or {}
+    content_details = item.get("contentDetails") or {}
+    return {
+        "title": snippet.get("title") or "",
+        "channel": snippet.get("channelTitle") or "",
+        "published_at": snippet.get("publishedAt"),
+        "description": snippet.get("description"),
+        "duration": content_details.get("duration"),
+        "language": snippet.get("defaultLanguage") or snippet.get("defaultAudioLanguage"),
+    }
+
+
+def _convert_youtube(source_id: str, url: str) -> "ConvertResponse":
+    """Convert a YouTube URL via youtube-transcript-api + Data API v3 only.
+
+    Raises HTTPException(422) when either the transcript or metadata fetch
+    fails. NEVER falls through to MarkItDown or Firecrawl.
+
+    Markdown layout: title heading, then channel / published / duration /
+    description meta lines, then a `## Transcript` section with all transcript
+    segments joined as prose (whitespace-collapsed). Caller stores this in
+    sources.markdown and surfaces metadata.title as sources.title (which
+    becomes the wiki page title — no post-ingest backfill exists for URL
+    sources, so the title must be right from here).
+    """
+    video_id = _extract_youtube_video_id(url)
+    if video_id is None:
+        # Regex matched but ID extraction failed — playlist URLs, channel
+        # pages, etc. Treat as no-transcript so the URL goes to Saved Links.
+        raise HTTPException(
+            status_code=422,
+            detail="youtube_no_transcript",
+        )
+
+    segments, transcript_lang = _fetch_youtube_transcript(video_id)
+    meta = _fetch_youtube_metadata(video_id)
+
+    md_parts: list[str] = [f"# {meta['title']}", ""]
+    if meta["channel"]:
+        md_parts.append(f"**Channel:** {meta['channel']}")
+    if meta["published_at"]:
+        md_parts.append(f"**Published:** {meta['published_at']}")
+    if meta["duration"]:
+        md_parts.append(f"**Duration:** {meta['duration']}")
+    md_parts.append("")
+    if meta["description"]:
+        md_parts.extend([f"**Description:** {meta['description'].strip()}", ""])
+    md_parts.extend(["## Transcript", ""])
+    transcript_text = " ".join(
+        seg["text"].strip() for seg in segments if isinstance(seg, dict) and seg.get("text")
+    )
+    md_parts.append(transcript_text)
+    markdown = "\n".join(md_parts)
+
+    content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+    return ConvertResponse(
+        source_id=source_id,
+        source_type="url",
+        title=meta["title"],
+        source_url=url,
+        markdown=markdown,
+        content_hash=content_hash,
+        metadata=ContentMetadata(
+            language=meta["language"] or transcript_lang,
+            description=meta["description"],
+            status_code=None,
+            content_type="text/html",
+            final_url=url,
+        ),
+    )
+
+
 def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     """
     Attempt to convert a URL via MarkItDown (free, local).
@@ -248,8 +507,8 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     the caller falls back to Firecrawl.
 
     Never raises — all exceptions (including timeout) become None.
-    YouTube URLs are handled by MarkItDown's built-in YouTubeConverter which
-    uses youtube-transcript-api to extract full transcripts.
+    YouTube URLs are intercepted upstream by _convert_youtube (transcript-api +
+    Data API v3) and never reach this function.
     """
     # MarkItDown's internal `requests` calls have no default timeout. Run in a
     # throwaway thread and cap the wait. We deliberately shut the pool down
@@ -320,16 +579,23 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
         if github_result is not None:
             return github_result
 
-    # Layer 1: MarkItDown (free, local). For YouTube, uses YouTubeTranscriptApi
-    # to extract full transcripts — better quality than Firecrawl for captioned
-    # videos. For static articles and docs it also works well.
+    # YouTube pre-check: route all YouTube URLs through transcript-api + Data
+    # API v3, never MarkItDown or Firecrawl. _convert_youtube raises 422 on
+    # missing transcript or missing/invalid metadata — the URL flows to Saved
+    # Links via the app-side onFailure handler. See _convert_youtube docstring
+    # for the rationale (MarkItDown's HTML fallback returns YouTube footer chrome
+    # for transcript-less videos, which silently passes our quality gate).
+    if _YOUTUBE_URL_RE.match(req.url):
+        return _convert_youtube(req.source_id, req.url)
+
+    # Layer 1: MarkItDown (free, local). YouTube URLs are handled above and
+    # never reach this layer.
     markitdown_result = _try_markitdown_url(req.source_id, req.url)
     if markitdown_result is not None:
         return markitdown_result
 
     # Layer 2: Firecrawl fallback (paid). Reached only when MarkItDown returned
-    # insufficient content — JS-rendered SPAs, paywalled pages, YouTube videos
-    # with no available captions.
+    # insufficient content — JS-rendered SPAs, paywalled pages.
     if not _FIRECRAWL_API_KEY:
         raise HTTPException(
             status_code=422,

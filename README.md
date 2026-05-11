@@ -36,8 +36,8 @@ You'll also need two API keys, both free to get:
 
 | | Get key | Free tier | Notes |
 |---|---|---|---|
-| **Gemini** (wiki compilation) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day | Free works for the demo and your first few sources. **Paid Tier 1 is strongly recommended for real use** — Gemini's free per-minute throttle (~10 RPM) will rate-limit a normal ingest, even though daily quota is plenty. Default rate-limiter assumes Tier 1. |
-| **DeepSeek V4 Pro** (alternative compile backend, optional) | [api-docs.deepseek.com](https://api-docs.deepseek.com) | Pay-as-you-go | Selectable in Settings as an alternative to Gemini — useful for sources past Gemini's input cap or when Gemini hits RECITATION. Set `DEEPSEEK_API_KEY` in `.env`. |
+| **Gemini** (wiki compilation) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day | Free works for the demo and your first few sources. **Paid Tier 1 is strongly recommended for real use** — Gemini's free per-minute throttle (~10 RPM) will rate-limit a normal ingest, even though daily quota is plenty. Default rate-limiter assumes Tier 1. Has a known truncation issue on dense inputs — see [issue #7](https://github.com/tuirk/Kompl/issues/7). |
+| **DeepSeek V4 Pro** (alternative compile backend, optional) | [api-docs.deepseek.com](https://api-docs.deepseek.com) | Pay-as-you-go | Selectable in Settings as an alternative to Gemini. Recommended for long/academic content — see [Known limitations](#known-limitations). Set `DEEPSEEK_API_KEY` in `.env`. |
 | **Firecrawl** (URL scraping) | [firecrawl.dev](https://firecrawl.dev) | 500 scrapes/month | Free tier covers normal personal use. |
 
 ## Setup
@@ -221,6 +221,7 @@ kompl backup --schedule                               # register a weekly backup
 **Known limitations:**
 - Single-tenant only — no user accounts or access control. Don't expose to the public internet without your own auth layer.
 - Two LLM providers selectable per session: Gemini 2.5 (default) and DeepSeek V4 Pro. Anthropic and OpenAI-compatible providers are planned.
+- **Gemini 2.5 + dense sources:** structured-output truncation on inputs above ~50K chars (commonly academic PDFs and surveys) causes `extract_llm_failed`. Workaround: switch the session to DeepSeek V4 Pro in Settings — it handles up to ~200K chars cleanly without this pathology. Kompl does **not** auto-chunk long sources; if you'd rather stay on Gemini, split the source into smaller files yourself before ingesting. Tracked in [issue #7](https://github.com/tuirk/Kompl/issues/7).
 - **Current connectors:** URLs (YouTube transcripts and GitHub READMEs included), file uploads (PDF, DOCX, PPTX, XLSX, TXT, MD, HTML), browser bookmarks, Twitter JSON export, Upnote, Apple Notes.
 - No mobile app. The web UI works on mobile browsers but isn't optimized for small screens.
 

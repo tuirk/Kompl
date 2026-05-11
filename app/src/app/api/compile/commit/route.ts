@@ -36,9 +36,11 @@ import {
   insertProvenance,
   markSourcesActive,
   getCompileProgress,
+  getExtractionsBySession,
   getMinDraftChars,
   getPagePlansByStatus,
   getPageTitleMap,
+  updateCompileStep,
   updatePlanStatus,
   updatePlanFailed,
   getCurrentPageHash,
@@ -121,7 +123,17 @@ async function commitSession(session_id: string): Promise<Response> {
       .map((r) => [r.source_id, r.title])
   );
 
-  for (const plan of plans) {
+  for (let i = 0; i < plans.length; i++) {
+    const plan = plans[i];
+    // Live progress for the UI's "Finalizing" tracker — peer step pattern
+    // to extract / ingest_* / match / crossref. Updates BEFORE the work
+    // so the counter reflects "committing page i of N".
+    updateCompileStep(
+      session_id,
+      'commit',
+      'running',
+      `${i}/${plans.length} pages committed`,
+    );
     const sourceIds: string[] = JSON.parse(plan.source_ids);
     sourceIds.forEach((s) => allSourceIds.add(s));
 
@@ -393,10 +405,22 @@ async function commitSession(session_id: string): Promise<Response> {
     }
   }
 
-  // Mark all session sources as active
-  const sourcesActivated = allSourceIds.size;
+  // Mark session sources active only if they have an extractions row. A
+  // source that drafted from raw markdown (because its extract step failed)
+  // appears in plan.source_ids — without this filter it would land in
+  // compile_status='active' and become unrecoverable: recompile/route.ts:39
+  // returns 409 for 'active' sources, and runCompilePipeline's
+  // getSourcesBySession excludes them, so /retry-failed silently no-ops
+  // ("skipped (no sources)") despite countUnextractedSourcesBySession
+  // correctly detecting the stranded source. Keeping 'active' synonymous
+  // with "has extraction" lets both retry paths re-attempt the source.
+  const extractedSet = new Set(
+    getExtractionsBySession(session_id).map((e) => e.source_id),
+  );
+  const eligibleSourceIds = [...allSourceIds].filter((id) => extractedSet.has(id));
+  const sourcesActivated = eligibleSourceIds.length;
   if (sourcesActivated > 0) {
-    markSourcesActive([...allSourceIds]);
+    markSourcesActive(eligibleSourceIds);
   }
 
   return NextResponse.json(

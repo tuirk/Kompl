@@ -25,6 +25,7 @@ import {
   getAliases,
   getAllPages,
   getPagePlansByStatus,
+  updateCompileStep,
   updatePlanCrossref,
 } from '../../../../lib/db';
 import { injectWikilinks, type WikilinkTarget } from '../../../../lib/wikilink-injector';
@@ -86,7 +87,17 @@ export async function POST(request: Request) {
     let pagesUpdated = 0;
     let wikilinksAdded = 0;
 
-    for (const plan of draftedPlans) {
+    for (let i = 0; i < draftedPlans.length; i++) {
+      const plan = draftedPlans[i];
+      // Live progress for the UI's "Cross-referencing" tracker — peer step
+      // pattern to extract / ingest_* / match. Updates BEFORE the work so
+      // the counter reflects "starting page i of N".
+      updateCompileStep(
+        session_id,
+        'crossref',
+        'running',
+        `${i}/${draftedPlans.length} pages cross-referenced`,
+      );
       if (plan.draft_content === null) continue;
 
       // A page must not self-link. Build a per-page target set that excludes

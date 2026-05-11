@@ -30,7 +30,6 @@ import {
 } from '../../db';
 import {
   callConvertUrl,
-  isYouTubeUrl,
   peekMetadata,
 } from '../../nlp-convert';
 import { regenerateSavedLinksPage } from '../../saved-links';
@@ -136,18 +135,11 @@ export async function runIngestUrlsStep(
         onboarding_session_id: sessionId,
       });
 
-      // YouTube warning (soft — not a failure). MarkItDown tries
-      // youtube-transcript-api first; Firecrawl is the fallback and when
-      // that fires the page body is usually the watch-page HTML not a
-      // transcript. Surface as an activity row — UI can badge it.
-      if (isYouTubeUrl(payload.url)) {
-        logActivity('ingest_url_warning', {
-          source_id: sourceId,
-          session_id: sessionId,
-          step_key: 'ingest_urls',
-          details: { warning: 'youtube_no_transcript', url: payload.url },
-        });
-      }
+      // YouTube + no-transcript is now rejected upstream by nlp-service
+      // (conversion.py raises 422 youtube_no_transcript when MarkItDown's
+      // transcript fetch fails, before Firecrawl's chrome-only fallback).
+      // The URL ends up in Saved Links via the onFailure path below; we
+      // never insert a `sources` row with watch-page chrome anymore.
 
       markStagingIngested(row.stage_id, sourceId);
     },

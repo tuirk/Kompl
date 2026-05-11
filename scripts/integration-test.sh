@@ -253,6 +253,26 @@ stage_1_migration_schema() {
         fi
     done
 
+    # nlp-service-specific env vars (read by nlp-service only, not app).
+    # YOUTUBE_API_KEY is required by routers/conversion.py for the YouTube
+    # direct-ingest path (videos.list metadata fetch). Without it the route
+    # 422s on every YouTube URL and routes to Saved Links — that's the
+    # designed graceful degradation, but if the host has the key set we
+    # want to be SURE it reached the nlp-service container.
+    echo "  checking env-var wire (host -> nlp-service container)..."
+    for var in YOUTUBE_API_KEY; do
+        host_val=$(printenv "$var" 2>/dev/null || true)
+        if [ -n "$host_val" ]; then
+            container_val=$($COMPOSE exec -T nlp-service printenv "$var" 2>/dev/null || true)
+            if [ -z "$container_val" ]; then
+                echo "  FAIL: host has $var set but nlp-service container does not"
+                echo "         -> add '$var: \${$var:-}' to the 'nlp-service.environment' block in docker-compose.yml"
+                record_stage 1 REAL FAIL
+                return 1
+            fi
+        fi
+    done
+
     echo "  PASS"
     record_stage 1 REAL PASS
     return 0

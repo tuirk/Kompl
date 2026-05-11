@@ -197,11 +197,16 @@ function ProgressPageInner() {
 
   const sessionId   = searchParams.get('session_id') ?? '';
   const sourceCount  = parseInt(searchParams.get('queued') ?? '0', 10);
-  // ~6 min/source, minimum 6 min — sized for DeepSeek (extract 200-400s
-  // per source, draft ~3 min per page, plus resolve/match/plan/crossref/
-  // commit/schema overhead). Gemini-only pipelines run shorter so this is
-  // a safe over-estimate. Always computed from URL params, never changes.
-  const estimateMins = sourceCount > 0 ? Math.max(6, sourceCount * 6) : null;
+  // Source-count → estimate-window mapping. Upper bound: ~6 min/source,
+  // minimum 6 min — sized for DeepSeek (extract 200-400s per source, draft
+  // ~3 min per page, plus resolve/match/plan/crossref/commit/schema overhead).
+  // Lower bound: upper/3 — Gemini-only pipelines on short sources routinely
+  // come in well under the upper. Range avoids both fake precision (single
+  // ~X min) and pessimism (always the worst case). Always computed from
+  // URL params, never changes.
+  const estimateMinsMax = sourceCount > 0 ? Math.max(6, sourceCount * 6) : null;
+  const estimateMinsMin =
+    estimateMinsMax !== null ? Math.max(1, Math.ceil(estimateMinsMax / 3)) : null;
   // If confirm returned 503 n8n_*, review page passed the reason through.
   // UI-A pre-step row starts in danger state so the user can retry immediately.
   const n8nErrorFromUrl = searchParams.get('n8n_error');
@@ -557,7 +562,7 @@ function ProgressPageInner() {
                                          '—';
   const footerStats: { label: string; value: string }[] = [
     { label: isComplete && committedSources > 0 ? 'SOURCES COMPILED' : 'SELECTED SOURCES', value: selectedSourcesValue },
-    { label: 'EST.',              value: estimateMins !== null ? `~${estimateMins} min`      : '—' },
+    { label: 'EST.',              value: estimateMinsMax !== null ? `${estimateMinsMin}–${estimateMinsMax} min` : '—' },
     { label: 'ELAPSED',           value: formatElapsed(runElapsedMs) },
     ...(isComplete && committedPages > 0
       ? [{ label: 'PAGES CREATED', value: String(committedPages) }]
