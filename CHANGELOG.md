@@ -10,6 +10,54 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-05-14
+
+Security patch release. Closes all 26 open Dependabot alerts (14 high,
+8 medium, 4 low — 13 unique GHSAs, all in `next`) by bumping Next.js to
+16.2.6, and rolls forward the rest of the weekly minor-and-patch
+floor across the app and nlp-service surfaces. CI green throughout;
+no API, schema, or behavioral changes.
+
+### Security
+
+- **Next.js 16.2.4 → 16.2.6** (#81, #82). Closes 13 GHSAs:
+  - High (7): GHSA-8h8q-6873-q5fj (Server Components DoS),
+    GHSA-c4j6-fc7j-m34r (WebSocket-upgrade SSRF),
+    GHSA-492v-c6pp-mqqv (dynamic-route middleware bypass),
+    GHSA-36qx-fr4f-26g5 (Pages-Router i18n middleware bypass),
+    GHSA-267c-6grr-h53f and GHSA-26hh-7cqf-hhc6 (segment-prefetch
+    middleware bypass + incomplete-fix follow-up — the latter is
+    why 16.2.6 is required and 16.2.5 was insufficient),
+    GHSA-mg66-mrh9-m8jx (Cache-Components connection-exhaustion DoS).
+  - Medium (4): GHSA-ffhc-5mcf-pf4q (CSP-nonce XSS),
+    GHSA-gx5p-jg67-6x7h (beforeInteractive XSS),
+    GHSA-h64f-5h5j-jqjh (Image-Optimization-API DoS),
+    GHSA-wfc6-r584-vfw7 (RSC cache poisoning).
+  - Low (2): GHSA-vfv6-92ff-j949 (RSC cache-buster collisions),
+    GHSA-3g8h-86w9-wvmq (middleware-redirect cache poisoning).
+- **`github/codeql-action` 4.35.3 → 4.35.4** (#79). Rolls the bundled
+  CodeQL engine to 2.25.4. SHA pin in `.github/workflows/scorecard.yml`
+  re-anchored per the project's Scorecard-pinning convention.
+
+### Changed
+
+- **`better-sqlite3` 12.9.0 → 12.10.0** (#82). Bundled SQLite engine
+  3.x → 3.53.1. Adds Node 26 prebuilds; drops EOL Node 20/23 prebuilds.
+  No API change — sync-only `transaction()` and pragma usage unaffected.
+  Version 12.9.1 (a poison release flagged by upstream) is correctly
+  skipped.
+- **React 19.2.5 → 19.2.6** (#82). RSC type hardening + perf.
+  `react-dom` paired.
+- **`pydantic` 2.13.3 → 2.13.4** (#74). `RootModel` core-metadata
+  preservation fix; macOS linker-flag and libc bumps in
+  `pydantic-core`.
+- **`vitest` / `@vitest/ui` 4.1.5 → 4.1.6** (#82). Bug-fix release;
+  deprecation of the `sequential` test API does not affect this repo
+  (no usage in `app/vitest.config.ts` or any test file).
+- **`lucide-react` 1.11.0 → 1.14.0** (#82). Additive icons
+  (`repeat-off`, `waves-vertical`, `astroid`, `folder-bookmark`).
+- **`@types/node` 24.12.2 → 24.12.4** (#82). Types only.
+
 ## [0.2.0] — 2026-05-11
 
 Multi-provider + visibility + hardening. DeepSeek lands as a second LLM
@@ -329,6 +377,7 @@ Initial public release.
 - **Auto-backup-on-start** is end-to-end wired but lacks regression tests
   on the start-time path.
 
-[Unreleased]: https://github.com/tuirk/Kompl/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/tuirk/Kompl/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/tuirk/Kompl/releases/tag/v0.2.1
 [0.2.0]: https://github.com/tuirk/Kompl/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tuirk/Kompl/releases/tag/v0.1.0
