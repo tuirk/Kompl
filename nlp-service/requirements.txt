@@ -2,7 +2,7 @@
 # and docs/research/2026-04-09-llm-compile.md.
 fastapi==0.136.1
 uvicorn[standard]==0.46.0
-pydantic==2.13.3
+pydantic==2.13.4
 httpx==0.28.1
 markitdown[all]==0.1.5
 # Promoted to a direct dep so routers/conversion.py can call
