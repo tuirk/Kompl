@@ -34,7 +34,7 @@ import mimetypes
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,20 @@ class ConvertResponse(BaseModel):
     source_id: str
     source_type: str  # "url" or "file"
     title: str
+    # Which step of the title cascade produced `title`. Consumed by the
+    # JS rescue trigger in /api/compile/extract to decide whether to
+    # overwrite with the LLM-derived title. Always populated — never None.
+    title_source: Literal[
+        "markitdown",
+        "body_h1",
+        "body_h2",
+        "filename",
+        "stem",
+        "firecrawl",
+        "firecrawl_url_fallback",
+        "github_api",
+        "youtube_oembed",
+    ]
     source_url: str | None = None
     markdown: str
     content_hash: str
@@ -315,6 +329,7 @@ def _convert_github_repo(
         source_id=source_id,
         source_type="github-repo",
         title=full_name,
+        title_source="github_api",
         source_url=url,
         markdown=markdown,
         content_hash=content_hash,
@@ -566,6 +581,7 @@ def _convert_youtube(source_id: str, url: str) -> "ConvertResponse":
         source_id=source_id,
         source_type="url",
         title=meta["title"],
+        title_source="youtube_oembed",
         source_url=url,
         markdown=markdown,
         content_hash=content_hash,
@@ -615,12 +631,18 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
         return None
 
     title = result.title or url
+    # title_source: "markitdown" when MarkItDown extracted a real title from
+    # the page; "firecrawl_url_fallback" name reused here for the URL-as-title
+    # case (contract value covers any URL-fallback path, regardless of which
+    # converter produced it). Keeps the Literal small.
+    title_source = "markitdown" if result.title else "firecrawl_url_fallback"
     content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
     return ConvertResponse(
         source_id=source_id,
         source_type="url",
         title=title,
+        title_source=title_source,
         source_url=url,
         markdown=markdown,
         content_hash=content_hash,
@@ -752,6 +774,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     # The contract (2a) permits falling back to the request URL when Firecrawl
     # does not surface a title. This is the only allowed `or` fallback.
     title = fc_title if fc_title else req.url
+    title_source = "firecrawl" if fc_title else "firecrawl_url_fallback"
 
     # Prefer sourceURL, fall back to url. Both are the flat root `source_url`.
     fc_source_url = fc_metadata.get("sourceURL")
@@ -786,6 +809,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
         source_id=req.source_id,
         source_type="url",
         title=title,
+        title_source=title_source,
         source_url=fc_source_url,
         markdown=markdown,
         content_hash=content_hash,
@@ -879,6 +903,7 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
         source_id=req.source_id,
         source_type="file",
         title=title,
+        title_source=title_source,
         source_url=None,
         markdown=markdown,
         content_hash=content_hash,
