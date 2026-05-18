@@ -13,7 +13,7 @@ markitdown[all]==0.1.5
 # transcript signal explicitly, which only the direct API exposes.
 youtube-transcript-api>=1.0.0,<2.0.0
 # Commit 4: LLM compile. Use google-genai NOT google-generativeai (deprecated 2025-Q1).
-google-genai==1.73.1
+google-genai==2.4.0
 # Commit 4: async token-bucket rate limiter. Single uvicorn worker only —
 # InMemoryBucket is process-local; see research artifact section 3.
 pyrate-limiter==3.7.0
