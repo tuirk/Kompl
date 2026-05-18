@@ -382,6 +382,26 @@ function renderChatDraftsCleaned(row: FeedActivityRow): RowContent {
   return { primary: <strong>{page_title}</strong>, secondary, action: null, isError: false };
 }
 
+function renderTitleRescued(row: FeedActivityRow): RowContent {
+  // Phase-2 LLM-title rescue: the extract LLM derived a real document title
+  // and replaced the filename stub. Show old → new so the user understands
+  // why the source's display name changed.
+  const { str } = makeGetters(row);
+  const oldTitle = str('old_title') ?? '…';
+  const newTitle = str('new_title') ?? str('title') ?? '…';
+  const source_id = row.source_id;
+  const primary = source_id
+    ? <Link href={`/source/${source_id}`} style={LINK_STYLE}><strong>{newTitle}</strong></Link>
+    : <strong>{newTitle}</strong>;
+  const secondary = (
+    <span style={MONO_DIM}>was: {oldTitle}</span>
+  );
+  const action = source_id
+    ? <Link href={`/source/${source_id}`} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+    : null;
+  return { primary, secondary, action, isError: false };
+}
+
 function renderSavedLinkDismissed(row: FeedActivityRow): RowContent {
   const { str, num } = makeGetters(row);
   const count = num('count');
@@ -547,6 +567,7 @@ export const ACTIVITY_EVENTS = {
   source_unarchived:      { key: 'source_unarchived',      badge: { label: 'RESTORED',   tone: 'dim'  as Tone }, render: renderSourceStateChange(false) },
   source_deleted:         { key: 'source_deleted',         badge: { label: 'DELETED',    tone: 'red'  as Tone }, render: renderSourceStateChange(true) },
   source_recompile_triggered: { key: 'source_recompile_triggered', badge: { label: 'RETRYING', tone: 'dim' as Tone }, render: renderSourceRecompileTriggered },
+  title_rescued:          { key: 'title_rescued',          badge: { label: 'RETITLED',   tone: 'mint' as Tone }, render: renderTitleRescued },
   // ── Pages ───────────────────────────────────────────────────────────────
   page_deleted:           { key: 'page_deleted',           badge: { label: 'PAGE DEL',   tone: 'red'  as Tone }, render: renderPageDeleted },
   page_archived:          { key: 'page_archived',          badge: { label: 'ARCHIVED',   tone: 'dim'  as Tone }, render: renderPageArchived },
