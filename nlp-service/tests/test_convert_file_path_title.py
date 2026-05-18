@@ -13,9 +13,17 @@ with on-disk .md fixtures rooted at a tmp_path-monkeypatched _DATA_ROOT.
 
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
 
-from routers.conversion import _extract_title_from_markdown_body
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from routers import conversion as conv
+from routers.conversion import (
+    _extract_title_from_markdown_body,
+    router as conversion_router,
+)
 
 
 # ─── Unit tests for the helper ───────────────────────────────────────────────
@@ -86,5 +94,88 @@ def test_heading_with_trailing_whitespace_stripped():
     assert _extract_title_from_markdown_body("#   Spaced Title   \n") == "Spaced Title"
 
 
-# End-to-end tests through /convert/file-path are added in commit 2,
-# once the cascade is wired to call _extract_title_from_markdown_body.
+# ─── End-to-end tests through /convert/file-path ─────────────────────────────
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    # _DATA_ROOT controls safe_join; pointing it at tmp_path lets us stage
+    # fixture files under a real tmpdir without needing /data to exist.
+    monkeypatch.setattr(conv, "_DATA_ROOT", Path(tmp_path))
+    app = FastAPI()
+    app.include_router(conversion_router)
+    return TestClient(app), tmp_path
+
+
+def _write_md(root: Path, relpath: str, content: str) -> str:
+    p = root / relpath
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return relpath
+
+
+def test_e2e_md_h1_wins_over_filename(client):
+    tc, root = client
+    rel = _write_md(
+        root,
+        "junk_filename.md",
+        "# Attention Is All You Need\n\n## Abstract\n\nWe propose...",
+    )
+    res = tc.post(
+        "/convert/file-path",
+        json={
+            "source_id": "src-1",
+            "file_path": rel,
+            "title_hint": "junk_filename",
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["title"] == "Attention Is All You Need"
+
+
+def test_e2e_md_h1_beats_junk_filename(client):
+    tc, root = client
+    rel = _write_md(root, "Document1.md", "# Q3 Roadmap\n\nbody")
+    res = tc.post(
+        "/convert/file-path",
+        json={
+            "source_id": "src-2",
+            "file_path": rel,
+            "title_hint": "Document1",
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["title"] == "Q3 Roadmap"
+
+
+def test_e2e_no_h1_falls_through_to_hint(client):
+    tc, root = client
+    rel = _write_md(root, "real_doc.md", "Just body text, no headings here.\n")
+    res = tc.post(
+        "/convert/file-path",
+        json={
+            "source_id": "src-3",
+            "file_path": rel,
+            "title_hint": "real_doc",
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["title"] == "real_doc"
+
+
+def test_e2e_rejected_h1_falls_through_to_hint(client):
+    tc, root = client
+    rel = _write_md(root, "scan_2023.md", "# Abstract\n\nThis is a paper.\n")
+    res = tc.post(
+        "/convert/file-path",
+        json={
+            "source_id": "src-4",
+            "file_path": rel,
+            "title_hint": "scan_2023",
+        },
+    )
+    assert res.status_code == 200, res.text
+    # Body H1 "Abstract" is rejected as section-label; cascade falls through
+    # to title_hint (filename). This is the case phase 2 LLM titling would
+    # address; phase 1 acknowledges it as a known limit.
+    assert res.json()["title"] == "scan_2023"
