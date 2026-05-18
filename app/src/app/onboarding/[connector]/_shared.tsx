@@ -39,7 +39,7 @@ export async function stageItems(
   sessionId: string,
   connector: 'url' | 'file-upload' | 'text' | 'saved-link' | 'paste',
   items: Array<Record<string, unknown>>,
-): Promise<{ stage_ids: string[] }> {
+): Promise<{ stage_ids: string[]; blocked_count: number; blocked_urls?: string[] }> {
   const res = await fetch('/api/onboarding/stage', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -48,13 +48,19 @@ export async function stageItems(
   const body = (await res.json()) as {
     session_id?: string;
     stage_ids?: string[];
+    blocked_count?: number;
+    blocked_urls?: string[];
     error?: string;
     error_code?: string;
   };
   if (!res.ok) {
     throw new Error(body.error_code ?? body.error ?? `stage_failed_${res.status}`);
   }
-  return { stage_ids: body.stage_ids ?? [] };
+  return {
+    stage_ids: body.stage_ids ?? [],
+    blocked_count: body.blocked_count ?? 0,
+    ...(body.blocked_urls ? { blocked_urls: body.blocked_urls } : {}),
+  };
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
