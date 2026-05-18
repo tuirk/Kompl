@@ -1073,19 +1073,45 @@ export function markSourceExtracted(sourceId: string): void {
     .run(sourceId);
 }
 
+export interface UpdateSourceTitleOpts {
+  /** When true, also stamp title_rescued_at = now in the same UPDATE.
+   *  Used by the /api/compile/extract LLM-title rescue path so subsequent
+   *  recompiles can detect "this title was already rescued" and skip
+   *  re-rescuing (prevents wiki-page title churn on every recompile). */
+  markRescued?: boolean;
+}
+
 /**
  * Replace a source's title — used when the extract LLM derives a real
  * document title for a source whose original title was a filename stub
  * (arxiv ID, digit-only filename, etc.). Trim + cap at 250 chars to keep
  * the column index lean. No-op on empty input.
+ *
+ * Atomic when markRescued is set: title and title_rescued_at update in
+ * the same UPDATE statement, so a crash between them cannot leave the
+ * row in a "rescued title, no marker → re-rescue forever" state.
  */
-export function updateSourceTitle(sourceId: string, newTitle: string): void {
+export function updateSourceTitle(
+  sourceId: string,
+  newTitle: string,
+  opts: UpdateSourceTitleOpts = {}
+): void {
   const trimmed = (newTitle ?? '').trim();
   if (!trimmed) return;
   const capped = trimmed.length > 250 ? trimmed.slice(0, 250) : trimmed;
-  openDb()
-    .prepare(`UPDATE sources SET title = ? WHERE source_id = ?`)
-    .run(capped, sourceId);
+  if (opts.markRescued) {
+    openDb()
+      .prepare(
+        `UPDATE sources
+            SET title = ?, title_rescued_at = datetime('now')
+          WHERE source_id = ?`
+      )
+      .run(capped, sourceId);
+  } else {
+    openDb()
+      .prepare(`UPDATE sources SET title = ? WHERE source_id = ?`)
+      .run(capped, sourceId);
+  }
 }
 
 /**
