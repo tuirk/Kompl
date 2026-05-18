@@ -576,7 +576,18 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast, mo
     const reader = new FileReader();
     reader.onload = e => {
       const items = parseBookmarksHtml(e.target?.result as string);
-      setParsedItems(items);
+      // Client-side pre-filter so the user sees the "skipped Twitter URLs"
+      // toast immediately on file pick, not after the stage round-trip.
+      // Server still filters as backstop (handleIngest reads blocked_count
+      // from the response).
+      const valid = items.filter(it => !isBlockedHost(it.url));
+      const blockedCount = items.length - valid.length;
+      setParsedItems(valid);
+      if (blockedCount > 0) {
+        showToast(
+          `Skipping ${blockedCount} X/Twitter URL${blockedCount !== 1 ? 's' : ''} — use the Twitter bookmark connector for those.`
+        );
+      }
     };
     reader.readAsText(file);
   }
@@ -585,7 +596,7 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast, mo
     if (parsedItems.length === 0) { showToast('No valid bookmarks found in this file.', 'error'); return; }
     setSaving(true);
     try {
-      await stageItems(
+      const { blocked_count } = await stageItems(
         sessionId,
         'url',
         parsedItems.map(({ url, title, dateSaved }) => ({
@@ -602,6 +613,14 @@ function BookmarksConnector({ sessionId, connectors, connectorIdx, showToast, mo
           },
         })),
       );
+      // Backstop: pre-filter at file-pick time should mean blocked_count is
+      // 0 here in practice. This covers stale-client / future-blocklist-drift
+      // cases where the server caught something the client missed.
+      if (blocked_count > 0) {
+        showToast(
+          `Skipping ${blocked_count} X/Twitter URL${blocked_count !== 1 ? 's' : ''} — use the Twitter bookmark connector for those.`
+        );
+      }
       navigateNext(sessionId, connectors, connectorIdx, router, mode);
     } catch (e) {
       showToast(toUserMessage(e instanceof Error ? e.message : 'stage_failed'), 'error');
