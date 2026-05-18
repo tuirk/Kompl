@@ -31,17 +31,20 @@ from routers.conversion import (
 
 def test_h1_wins_over_h2_abstract():
     md = "# Attention Is All You Need\n\n## Abstract\n\nWe propose..."
-    assert _extract_title_from_markdown_body(md) == "Attention Is All You Need"
+    assert _extract_title_from_markdown_body(md) == (
+        "Attention Is All You Need",
+        "body_h1",
+    )
 
 
 def test_continues_past_rejected_h1():
     md = "# Abstract\n\n# Real Title\n\nbody"
-    assert _extract_title_from_markdown_body(md) == "Real Title"
+    assert _extract_title_from_markdown_body(md) == ("Real Title", "body_h1")
 
 
 def test_skips_fenced_code_block():
     md = "```\n# not a heading\n```\n\n# Real Title\n"
-    assert _extract_title_from_markdown_body(md) == "Real Title"
+    assert _extract_title_from_markdown_body(md) == ("Real Title", "body_h1")
 
 
 def test_numbered_section_label_rejected():
@@ -50,7 +53,7 @@ def test_numbered_section_label_rejected():
 
 def test_anchored_regex_no_false_reject_abstract_algebra():
     md = "# Abstract Algebra\n\nA textbook by..."
-    assert _extract_title_from_markdown_body(md) == "Abstract Algebra"
+    assert _extract_title_from_markdown_body(md) == ("Abstract Algebra", "body_h1")
 
 
 def test_cap_respected_heading_beyond_4kb():
@@ -68,7 +71,10 @@ def test_too_short_heading_rejected():
 
 
 def test_h2_fallback_when_no_h1():
-    assert _extract_title_from_markdown_body("## Real H2\n\nbody") == "Real H2"
+    assert _extract_title_from_markdown_body("## Real H2\n\nbody") == (
+        "Real H2",
+        "body_h2",
+    )
 
 
 def test_junk_fragment_rejects_untitled():
@@ -81,17 +87,20 @@ def test_junk_fragment_rejects_document1():
 
 def test_continues_past_two_rejected_h1s():
     md = "# Abstract\n\n# Introduction\n\n# Real Title\n"
-    assert _extract_title_from_markdown_body(md) == "Real Title"
+    assert _extract_title_from_markdown_body(md) == ("Real Title", "body_h1")
 
 
 def test_h1_too_long_rejected_then_h2_used():
     long_title = "x" * 201
     md = f"# {long_title}\n\n## Good H2\n"
-    assert _extract_title_from_markdown_body(md) == "Good H2"
+    assert _extract_title_from_markdown_body(md) == ("Good H2", "body_h2")
 
 
 def test_heading_with_trailing_whitespace_stripped():
-    assert _extract_title_from_markdown_body("#   Spaced Title   \n") == "Spaced Title"
+    assert _extract_title_from_markdown_body("#   Spaced Title   \n") == (
+        "Spaced Title",
+        "body_h1",
+    )
 
 
 # ─── End-to-end tests through /convert/file-path ─────────────────────────────
@@ -114,23 +123,26 @@ def _write_md(root: Path, relpath: str, content: str) -> str:
     return relpath
 
 
-def test_e2e_md_h1_wins_over_filename(client):
+def test_e2e_md_h1_wins_over_filename(client, caplog):
     tc, root = client
     rel = _write_md(
         root,
         "junk_filename.md",
         "# Attention Is All You Need\n\n## Abstract\n\nWe propose...",
     )
-    res = tc.post(
-        "/convert/file-path",
-        json={
-            "source_id": "src-1",
-            "file_path": rel,
-            "title_hint": "junk_filename",
-        },
-    )
+    with caplog.at_level("INFO", logger="routers.conversion"):
+        res = tc.post(
+            "/convert/file-path",
+            json={
+                "source_id": "src-1",
+                "file_path": rel,
+                "title_hint": "junk_filename",
+            },
+        )
     assert res.status_code == 200, res.text
     assert res.json()["title"] == "Attention Is All You Need"
+    assert any("title_source=body_h1" in r.message for r in caplog.records)
+    assert any("source_id=src-1" in r.message for r in caplog.records)
 
 
 def test_e2e_md_h1_beats_junk_filename(client):
@@ -148,19 +160,21 @@ def test_e2e_md_h1_beats_junk_filename(client):
     assert res.json()["title"] == "Q3 Roadmap"
 
 
-def test_e2e_no_h1_falls_through_to_hint(client):
+def test_e2e_no_h1_falls_through_to_hint(client, caplog):
     tc, root = client
     rel = _write_md(root, "real_doc.md", "Just body text, no headings here.\n")
-    res = tc.post(
-        "/convert/file-path",
-        json={
-            "source_id": "src-3",
-            "file_path": rel,
-            "title_hint": "real_doc",
-        },
-    )
+    with caplog.at_level("INFO", logger="routers.conversion"):
+        res = tc.post(
+            "/convert/file-path",
+            json={
+                "source_id": "src-3",
+                "file_path": rel,
+                "title_hint": "real_doc",
+            },
+        )
     assert res.status_code == 200, res.text
     assert res.json()["title"] == "real_doc"
+    assert any("title_source=filename" in r.message for r in caplog.records)
 
 
 def test_e2e_rejected_h1_falls_through_to_hint(client):

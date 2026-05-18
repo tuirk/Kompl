@@ -29,11 +29,14 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import logging
 import mimetypes
 import os
 import re
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -159,7 +162,7 @@ _SECTION_LABEL_RE = re.compile(
 )
 
 
-def _extract_title_from_markdown_body(markdown: str) -> str | None:
+def _extract_title_from_markdown_body(markdown: str) -> tuple[str, str] | None:
     """Pick the first usable H1/H2 from the start of a markdown document.
 
     Used as the file-upload title cascade step between MarkItDown's extracted
@@ -168,12 +171,15 @@ def _extract_title_from_markdown_body(markdown: str) -> str | None:
     ``# heading-inside-code`` as the title.
 
     Invariant: on candidate reject, CONTINUES scanning at the SAME heading
-    level. ``# Abstract`` followed by ``# Real Title`` returns ``Real Title``,
-    not ``None``. (This is the subtle bug the original cascade design
-    introduced when it short-circuited from H1-reject straight to H2-only.)
+    level. ``# Abstract`` followed by ``# Real Title`` returns
+    ``("Real Title", "body_h1")``, not ``None``. (This is the subtle bug the
+    original cascade design introduced when it short-circuited from H1-reject
+    straight to H2-only.)
 
-    Returns None when no heading passes validation; the caller's cascade then
-    falls through to the filename hint.
+    Returns ``(title, level)`` where level is ``"body_h1"`` or ``"body_h2"``,
+    or ``None`` when no heading passes validation; the caller's cascade then
+    falls through to the filename hint. The level is consumed by the
+    cascade-source telemetry log.
     """
     head = markdown[:_BODY_TITLE_SCAN_CAP]
     h1_candidates: list[str] = []
@@ -195,10 +201,10 @@ def _extract_title_from_markdown_body(markdown: str) -> str | None:
 
     for cand in h1_candidates:
         if _is_valid_body_title(cand):
-            return cand.strip()
+            return (cand.strip(), "body_h1")
     for cand in h2_candidates:
         if _is_valid_body_title(cand):
-            return cand.strip()
+            return (cand.strip(), "body_h2")
     return None
 
 
@@ -843,8 +849,27 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
     markitdown_title = result.title or ""
     if any(frag in markitdown_title.lower() for frag in _JUNK_TITLE_FRAGMENTS):
         markitdown_title = ""
-    body_title = _extract_title_from_markdown_body(markdown)
+    body_result = _extract_title_from_markdown_body(markdown)
+    body_title = body_result[0] if body_result else ""
     title = markitdown_title or body_title or req.title_hint or p.stem
+
+    # Cascade-winner telemetry — informs the phase-2 decision (whether the
+    # residual filename/stem fallback rate justifies adding an LLM titling
+    # step). One of: markitdown | body_h1 | body_h2 | filename | stem.
+    if markitdown_title:
+        title_source = "markitdown"
+    elif body_result is not None:
+        title_source = body_result[1]
+    elif req.title_hint:
+        title_source = "filename"
+    else:
+        title_source = "stem"
+    logger.info(
+        "convert_file_path done source_id=%s title_source=%s ext=%s",
+        req.source_id,
+        title_source,
+        p.suffix.lower(),
+    )
 
     content_type = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
 
