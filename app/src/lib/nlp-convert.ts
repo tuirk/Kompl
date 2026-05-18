@@ -12,10 +12,25 @@ const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000'
 // Types
 // ---------------------------------------------------------------------------
 
+export type TitleSource =
+  | 'markitdown'
+  | 'body_h1'
+  | 'body_h2'
+  | 'filename'
+  | 'stem'
+  | 'firecrawl'
+  | 'firecrawl_url_fallback'
+  | 'github_api'
+  | 'youtube_oembed';
+
 export interface ConvertResponse {
   source_id: string;
   source_type: string;
   title: string;
+  /** Which step of the title cascade produced `title`. Consumed by the
+   *  /api/compile/extract rescue trigger to decide whether to overwrite
+   *  the title with the LLM-derived one. Always populated. */
+  title_source: TitleSource;
   source_url: string | null;
   markdown: string;
   content_hash: string;

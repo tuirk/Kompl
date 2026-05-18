@@ -140,7 +140,9 @@ def test_e2e_md_h1_wins_over_filename(client, caplog):
             },
         )
     assert res.status_code == 200, res.text
-    assert res.json()["title"] == "Attention Is All You Need"
+    body = res.json()
+    assert body["title"] == "Attention Is All You Need"
+    assert body["title_source"] == "body_h1"
     assert any("title_source=body_h1" in r.message for r in caplog.records)
     assert any("source_id=src-1" in r.message for r in caplog.records)
 
@@ -157,7 +159,9 @@ def test_e2e_md_h1_beats_junk_filename(client):
         },
     )
     assert res.status_code == 200, res.text
-    assert res.json()["title"] == "Q3 Roadmap"
+    body = res.json()
+    assert body["title"] == "Q3 Roadmap"
+    assert body["title_source"] == "body_h1"
 
 
 def test_e2e_no_h1_falls_through_to_hint(client, caplog):
@@ -173,8 +177,43 @@ def test_e2e_no_h1_falls_through_to_hint(client, caplog):
             },
         )
     assert res.status_code == 200, res.text
-    assert res.json()["title"] == "real_doc"
+    body = res.json()
+    assert body["title"] == "real_doc"
+    assert body["title_source"] == "filename"
     assert any("title_source=filename" in r.message for r in caplog.records)
+
+
+def test_convert_response_requires_title_source():
+    # Pydantic extra='forbid' + Literal: missing title_source MUST raise,
+    # invalid value MUST raise. Guards against a future refactor that drops
+    # the field or accepts arbitrary strings (rule #2 — strict contracts).
+    from pydantic import ValidationError
+    from routers.conversion import ConvertResponse, ContentMetadata
+
+    base_kwargs = dict(
+        source_id="x",
+        source_type="file",
+        title="t",
+        source_url=None,
+        markdown="md",
+        content_hash="abc",
+        metadata=ContentMetadata(),
+    )
+
+    # Missing title_source → ValidationError
+    with pytest.raises(ValidationError):
+        ConvertResponse(**base_kwargs)
+
+    # Invalid title_source → ValidationError
+    with pytest.raises(ValidationError):
+        ConvertResponse(**base_kwargs, title_source="not_a_real_value")
+
+    # All valid values construct cleanly
+    for ts in (
+        "markitdown", "body_h1", "body_h2", "filename", "stem",
+        "firecrawl", "firecrawl_url_fallback", "github_api", "youtube_oembed",
+    ):
+        ConvertResponse(**base_kwargs, title_source=ts)
 
 
 def test_e2e_rejected_h1_falls_through_to_hint(client):
@@ -189,7 +228,9 @@ def test_e2e_rejected_h1_falls_through_to_hint(client):
         },
     )
     assert res.status_code == 200, res.text
+    body = res.json()
     # Body H1 "Abstract" is rejected as section-label; cascade falls through
     # to title_hint (filename). This is the case phase 2 LLM titling would
     # address; phase 1 acknowledges it as a known limit.
-    assert res.json()["title"] == "scan_2023"
+    assert body["title"] == "scan_2023"
+    assert body["title_source"] == "filename"
