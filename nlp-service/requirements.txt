@@ -1,7 +1,7 @@
 # Kompl v2 nlp-service — commit 4. Pins per docs/research/2026-04-08-conversion-deps.md
 # and docs/research/2026-04-09-llm-compile.md.
 fastapi==0.136.1
-uvicorn[standard]==0.46.0
+uvicorn[standard]==0.47.0
 pydantic==2.13.4
 httpx==0.28.1
 markitdown[all]==0.1.5
@@ -22,7 +22,7 @@ spacy==3.8.14
 rake-nltk==1.0.6
 yake==0.7.3
 keybert==0.9.0
-sentence-transformers==5.4.1
+sentence-transformers==5.5.0
 # pytextrank: spaCy-native TextRank component (PyPI-available, no git dep).
 pytextrank==3.3.0
 scikit-learn==1.8.0
