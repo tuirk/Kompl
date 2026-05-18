@@ -18,11 +18,17 @@
  *   }
  *
  * Response:
- *   { session_id: string; stage_ids: string[] }
+ *   {
+ *     session_id: string;
+ *     stage_ids: string[];
+ *     blocked_count: number;
+ *     blocked_urls?: string[];   // present when blocked_count > 0, capped at 10
+ *   }
  *
- * No per-item failure path — staging is a local DB insert that shouldn't
- * fail under normal conditions. Whole-batch failure returns 500 with the
- * best available error message.
+ * Per-item failure path — blocked-host URLs (x.com, twitter.com, t.co) are
+ * skipped and reported via blocked_count/blocked_urls without aborting the
+ * batch. Other validation errors still 422 the whole batch (malformed-payload
+ * signal). DB-level batch failure still returns 500 with the underlying error.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -34,7 +40,7 @@ import {
   insertCollectStaging,
   type StagingConnector,
 } from '../../../../lib/db';
-import { isBlockedHost, URL_HOST_BLOCKED_MESSAGE } from '../../../../lib/url-blocklist';
+import { isBlockedHost } from '../../../../lib/url-blocklist';
 
 const VALID_CONNECTORS: readonly StagingConnector[] = [
   'url',
@@ -99,6 +105,7 @@ export async function POST(request: Request) {
   // this route does minimum gating so obviously-broken client calls fail
   // fast rather than at pipeline dispatch time.
   const validatedItems: Array<{ stage_id: string; item: Record<string, unknown> }> = [];
+  const blockedUrls: string[] = [];
   for (const raw of items) {
     if (typeof raw !== 'object' || raw === null) {
       return NextResponse.json(
@@ -118,15 +125,13 @@ export async function POST(request: Request) {
       // The URL connector is user-initiated ("paste a link"); saved-link is
       // internal plumbing that may legitimately carry an x.com tweet_url in
       // its metadata. Only block the user-initiated path.
+      //
+      // Per-item skip, not batch-abort: a Chrome bookmarks export with 300
+      // links and 3 Twitter URLs should stage 297 and report 3 as blocked,
+      // not reject the whole batch (regression from earlier 422 behaviour).
       if (connector === 'url' && isBlockedHost(item.url)) {
-        return NextResponse.json(
-          {
-            error: URL_HOST_BLOCKED_MESSAGE,
-            error_code: 'url_host_blocked',
-            blocked_url: item.url,
-          },
-          { status: 422 }
-        );
+        blockedUrls.push(item.url);
+        continue;
       }
     } else if (connector === 'file-upload') {
       if (typeof item.file_path !== 'string' || !item.file_path) {
@@ -181,27 +186,58 @@ export async function POST(request: Request) {
 
   // Phase 2 — batch insert in one transaction. Matters for bulk imports
   // (200-bookmark exports go from ~100 individual transactions to 1).
-  try {
-    getDb().transaction(() => {
-      for (const { stage_id, item } of validatedItems) {
-        insertCollectStaging({ stage_id, session_id, connector, payload: item });
-      }
-    })();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : 'unknown';
-    return NextResponse.json(
-      { error: `stage_insert_failed: ${msg}` },
-      { status: 500 }
-    );
+  // Skipped when validatedItems is empty (all URLs filtered out) — no point
+  // opening a tx to do nothing.
+  if (validatedItems.length > 0) {
+    try {
+      getDb().transaction(() => {
+        for (const { stage_id, item } of validatedItems) {
+          insertCollectStaging({ stage_id, session_id, connector, payload: item });
+        }
+      })();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'unknown';
+      return NextResponse.json(
+        { error: `stage_insert_failed: ${msg}` },
+        { status: 500 }
+      );
+    }
   }
 
   // Observability: emitted once per batch so the feed shows a timeline of
-  // "user staged X at 14:02".
-  logActivity('onboarding_staged', {
-    source_id: null,
-    details: { session_id, connector, count: validatedItems.length },
-  });
+  // "user staged X at 14:02". Suppressed when count would be 0 (nothing
+  // staged) to keep the feed quiet.
+  if (validatedItems.length > 0) {
+    logActivity('onboarding_staged', {
+      source_id: null,
+      details: { session_id, connector, count: validatedItems.length },
+    });
+  }
+  if (blockedUrls.length > 0) {
+    logActivity('onboarding_blocked_urls_skipped', {
+      source_id: null,
+      details: {
+        session_id,
+        connector,
+        count: blockedUrls.length,
+        sample_urls: blockedUrls.slice(0, 3),
+      },
+    });
+  }
 
   const stage_ids = validatedItems.map((v) => v.stage_id);
-  return NextResponse.json({ session_id, stage_ids }, { status: 200 });
+  const response: {
+    session_id: string;
+    stage_ids: string[];
+    blocked_count: number;
+    blocked_urls?: string[];
+  } = {
+    session_id,
+    stage_ids,
+    blocked_count: blockedUrls.length,
+  };
+  if (blockedUrls.length > 0) {
+    response.blocked_urls = blockedUrls.slice(0, 10);
+  }
+  return NextResponse.json(response, { status: 200 });
 }
