@@ -460,6 +460,28 @@ function renderOnboardingStaged(row: FeedActivityRow): RowContent {
   };
 }
 
+function renderOnboardingBlockedUrlsSkipped(row: FeedActivityRow): RowContent {
+  const { d, str, num } = makeGetters(row);
+  const count = num('count') ?? 0;
+  const connector = str('connector');
+  const samples = d && Array.isArray(d.sample_urls)
+    ? (d.sample_urls as unknown[]).filter((u): u is string => typeof u === 'string')
+    : [];
+  const label = count === 1 ? 'X/Twitter URL skipped' : 'X/Twitter URLs skipped';
+  const parts: string[] = [];
+  if (connector) parts.push(`via ${connector}`);
+  if (samples.length > 0) parts.push(samples.join(', '));
+  const secondary = parts.length > 0
+    ? <span style={MONO_DIM}>{parts.join(' · ')}</span>
+    : null;
+  return {
+    primary: <>{count} {label}</>,
+    secondary,
+    action: null,
+    isError: false,
+  };
+}
+
 function renderIngestUrlWarning(row: FeedActivityRow): RowContent {
   const { str } = makeGetters(row);
   const warning = str('warning');
@@ -568,6 +590,7 @@ export const ACTIVITY_EVENTS = {
   digest_sent:            { key: 'digest_sent',            badge: { label: 'DIGEST',     tone: 'neut' as Tone }, render: renderDigestSent },
   // ── Onboarding v2 Phase 1 (no prior renderer cases) ─────────────────────
   onboarding_staged:      { key: 'onboarding_staged',      badge: { label: 'STAGED',     tone: 'dim'  as Tone }, render: renderOnboardingStaged },
+  onboarding_blocked_urls_skipped: { key: 'onboarding_blocked_urls_skipped', badge: { label: 'SKIPPED', tone: 'dim' as Tone }, render: renderOnboardingBlockedUrlsSkipped },
   ingest_url_warning:     { key: 'ingest_url_warning',     badge: { label: 'WARN',       tone: 'dim'  as Tone }, render: renderIngestUrlWarning },
   ingest_url_failed:      { key: 'ingest_url_failed',      badge: { label: 'URL FAIL',   tone: 'red'  as Tone }, render: renderIngestUrlFailed },
   ingest_file_failed:     { key: 'ingest_file_failed',     badge: { label: 'FILE FAIL',  tone: 'red'  as Tone }, render: renderIngestFileFailed },
