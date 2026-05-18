@@ -30,9 +30,9 @@
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
-    "@types/node": "^24.9.2",
+    "@types/node": "^24.12.4",
     "@types/prompts": "^2.4.9",
-    "jest": "^30.0.0",
+    "jest": "^30.4.2",
     "ts-jest": "^29.4.9",
     "tsup": "^8.3.0",
     "typescript": "^6.0.0"
