@@ -363,22 +363,27 @@ def _fetch_youtube_transcript(video_id: str) -> tuple[list[dict[str, Any]], str 
         segments = chosen.fetch()
         return segments, getattr(chosen, "language_code", None)
     except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable, CouldNotRetrieveTranscript) as e:
-        # Package's own "no transcript" classes — clean signal.
+        # Package's own "no captions exist" classes — clean signal.
         raise HTTPException(
             status_code=422,
             detail="youtube_no_transcript",
         ) from e
     except Exception as e:
-        # Wider net: youtube-transcript-api leaks bare xml.etree.ElementTree.
-        # ParseError (and similar) when YouTube returns an empty body for the
-        # transcript XML fetch — e.g. rate-limit, bot-detection, or the IP
-        # being on YouTube's blocklist. From the user's perspective this is
-        # still "transcript unavailable", so route to Saved Links rather than
-        # bubbling a 500. See session-smoke test on `youtu.be/Ub3GoFaUcds` —
-        # list_transcripts succeeded, fetch() returned empty XML body.
+        # Reached when list_transcripts() SUCCEEDED (captions exist) but
+        # fetch() failed — almost always because YouTube returned HTTP 200
+        # with an empty body for the timedtext request. The classic
+        # cloud-IP / bot-detection fingerprint. The library leaks bare
+        # xml.etree.ElementTree.ParseError("no element found: line 1, column 0")
+        # in that case. Verified live on session-smoke `youtu.be/Ub3GoFaUcds`
+        # AND on Q7Ryv1M7CvI (2026-05-18) — both have auto-generated English
+        # tracks that browser tools can fetch but our datacenter IP cannot.
+        # Distinct from "no captions exist" so the app can show a workaround-
+        # specific message (use a residential proxy) instead of "video has
+        # no captions" (which would be wrong and would push the user to
+        # blame the video).
         raise HTTPException(
             status_code=422,
-            detail="youtube_no_transcript",
+            detail="youtube_transcript_blocked",
         ) from e
 
 
