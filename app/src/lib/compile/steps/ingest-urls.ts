@@ -133,6 +133,7 @@ export async function runIngestUrlsStep(
         metadata: finalMetadata,
         compile_status: 'pending',
         onboarding_session_id: sessionId,
+        title_source: convertResult.title_source,
       });
 
       // YouTube + no-transcript is now rejected upstream by nlp-service
