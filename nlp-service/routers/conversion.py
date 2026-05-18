@@ -826,18 +826,25 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
         raise HTTPException(status_code=422, detail="markitdown_empty_output")
 
     # Title cascade (order matters):
-    #   1. MarkItDown's extracted title — present for DOCX/PPTX with core.xml
-    #      metadata; absent for PDFs (MarkItDown 0.1.5 never sets it for PDFs).
-    #   2. title_hint — original filename without extension, sent by the caller
-    #      before the UUID prefix was added. Guaranteed for browser uploads.
-    #   3. p.stem — last resort; will include the UUID prefix if title_hint
-    #      was omitted, which is the bug we're preventing.
+    #   1.   MarkItDown's extracted title — present for DOCX/PPTX with core.xml
+    #        metadata; absent for PDFs (MarkItDown 0.1.5 never sets it for PDFs).
+    #   1.5. Body-extracted heading — first usable H1 (then H2) in the first
+    #        4 KB of converted markdown. Fixes the dominant file-upload bug:
+    #        PDFs of academic papers, reports, etc. have a real title as the
+    #        first heading but a junk filename (arxiv IDs, scan_*, IMG_*,
+    #        Document1.docx). See _extract_title_from_markdown_body docstring
+    #        for the reject rules.
+    #   2.   title_hint — original filename without extension, sent by the
+    #        caller before the UUID prefix was added. Guaranteed for browser
+    #        uploads.
+    #   3.   p.stem — last resort; will include the UUID prefix if title_hint
+    #        was omitted, which is the bug we're preventing.
     # Discard obviously-junk titles from MarkItDown (Word's default filenames).
-    _JUNK_TITLE_FRAGMENTS = ("untitled", "microsoft word - ", "document1")
     markitdown_title = result.title or ""
     if any(frag in markitdown_title.lower() for frag in _JUNK_TITLE_FRAGMENTS):
         markitdown_title = ""
-    title = markitdown_title or req.title_hint or p.stem
+    body_title = _extract_title_from_markdown_body(markdown)
+    title = markitdown_title or body_title or req.title_hint or p.stem
 
     content_type = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
 
