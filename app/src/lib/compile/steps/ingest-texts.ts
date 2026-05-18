@@ -162,6 +162,7 @@ export async function runIngestTextsStep(
           metadata: payload.metadata ?? null,
           compile_status: 'pending',
           onboarding_session_id: sessionId,
+          title_source: 'paste',
         });
 
         markStagingIngested(row.stage_id, sourceId);
@@ -216,11 +217,29 @@ export async function runIngestTextsStep(
       const sourceId = randomUUID();
       const filePath = storeRawMarkdown(sourceId, payload.markdown);
       const source_type = payload.source_type_hint ?? 'text';
-      const title =
-        payload.title_hint ??
-        // Fall back to first non-empty line, capped at 80 chars.
-        payload.markdown.split('\n').find((l) => l.trim())?.trim().slice(0, 80) ??
-        'Untitled note';
+      // Title cascade for text rows — capture which step won so the rescue
+      // trigger in /api/compile/extract can skip these (text-derived titles
+      // are user-curated input, not document conversion output, so the LLM
+      // rescue would replace user intent with a synthesized title).
+      let title: string;
+      let title_source: string;
+      if (payload.title_hint) {
+        title = payload.title_hint;
+        title_source = 'paste'; // user-supplied caption (Upnote title, etc.)
+      } else {
+        const firstLine = payload.markdown
+          .split('\n')
+          .find((l) => l.trim())
+          ?.trim()
+          .slice(0, 80);
+        if (firstLine) {
+          title = firstLine;
+          title_source = 'text_first_line';
+        } else {
+          title = 'Untitled note';
+          title_source = 'text_first_line';
+        }
+      }
 
       insertSource({
         source_id: sourceId,
@@ -232,6 +251,7 @@ export async function runIngestTextsStep(
         metadata: payload.metadata ?? null,
         compile_status: 'pending',
         onboarding_session_id: sessionId,
+        title_source,
       });
 
       markStagingIngested(row.stage_id, sourceId);
