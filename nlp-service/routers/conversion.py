@@ -137,6 +137,82 @@ _ALLOWED_EXTENSIONS = {
     ".wav",
 }
 
+# Junk-title fragments — case-insensitive substring match. Module-level so the
+# body-heading extractor and the existing MarkItDown title filter share one
+# source of truth.
+_JUNK_TITLE_FRAGMENTS: tuple[str, ...] = ("untitled", "microsoft word - ", "document1")
+
+# Body-heading title extraction (file-upload titles for filename-junk cases:
+# arxiv IDs, scan_*, IMG_*, Document1.docx, etc.).
+_BODY_TITLE_SCAN_CAP = 4096
+_H1_RE = re.compile(r"^#\s+(.+?)\s*$")
+_H2_RE = re.compile(r"^##\s+(.+?)\s*$")
+_FENCE_RE = re.compile(r"^\s*```")
+# Anchored on the full stripped line: "Abstract Algebra" must NOT match, but
+# "Abstract" alone must. Numbered prefixes ("1. Introduction") match too.
+_SECTION_LABEL_RE = re.compile(
+    r"^(abstract|introduction|contents|table of contents|references|"
+    r"bibliography|acknowledgements|appendix|index|chapter \d+|"
+    r"section \d+|\d+\.?\s*introduction|\d+\.?\s*abstract|"
+    r"conclusion|conclusions|summary|preface|foreword)$",
+    re.IGNORECASE,
+)
+
+
+def _extract_title_from_markdown_body(markdown: str) -> str | None:
+    """Pick the first usable H1/H2 from the start of a markdown document.
+
+    Used as the file-upload title cascade step between MarkItDown's extracted
+    title and the filename fallback. Operates on the first 4 KB only (latency
+    + safety cap) and skips fenced code blocks to avoid picking
+    ``# heading-inside-code`` as the title.
+
+    Invariant: on candidate reject, CONTINUES scanning at the SAME heading
+    level. ``# Abstract`` followed by ``# Real Title`` returns ``Real Title``,
+    not ``None``. (This is the subtle bug the original cascade design
+    introduced when it short-circuited from H1-reject straight to H2-only.)
+
+    Returns None when no heading passes validation; the caller's cascade then
+    falls through to the filename hint.
+    """
+    head = markdown[:_BODY_TITLE_SCAN_CAP]
+    h1_candidates: list[str] = []
+    h2_candidates: list[str] = []
+    in_fence = False
+    for line in head.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _H1_RE.match(line)
+        if m:
+            h1_candidates.append(m.group(1))
+            continue
+        m = _H2_RE.match(line)
+        if m:
+            h2_candidates.append(m.group(1))
+
+    for cand in h1_candidates:
+        if _is_valid_body_title(cand):
+            return cand.strip()
+    for cand in h2_candidates:
+        if _is_valid_body_title(cand):
+            return cand.strip()
+    return None
+
+
+def _is_valid_body_title(candidate: str) -> bool:
+    stripped = candidate.strip()
+    if len(stripped) < 3 or len(stripped) > 200:
+        return False
+    lowered = stripped.lower()
+    if any(frag in lowered for frag in _JUNK_TITLE_FRAGMENTS):
+        return False
+    if _SECTION_LABEL_RE.match(stripped):
+        return False
+    return True
+
 
 # ---------------------------------------------------------------------------
 # Endpoint 1 — POST /convert/url
