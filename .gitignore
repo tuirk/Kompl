@@ -71,6 +71,8 @@ docs/launch/
 # Agent instruction files (local only — not for public repo)
 CLAUDE.md
 AGENTS.md
+CURSOR.md
+docs/CURSOR.md
 tui-read.me
 tui-readme.md
 docs/Tui-read.me
