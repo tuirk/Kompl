@@ -228,11 +228,12 @@ def test_youtube_transcripts_disabled(monkeypatch, client):
 
 
 def test_youtube_fetch_raises_unexpected_exception(monkeypatch, client):
-    """youtube-transcript-api's fetch() can raise bare xml.etree.ElementTree.
-    ParseError when YouTube returns empty body (rate-limit / bot-detection / IP
-    block — observed live on session smoke test). The handler must catch any
-    exception during transcript retrieval and 422 to Saved Links rather than
-    bubble a 500."""
+    """list_transcripts() SUCCEEDS (captions exist) but fetch() raises bare
+    xml.etree.ElementTree.ParseError because YouTube returned an empty body —
+    the cloud-IP / bot-detection fingerprint. Must surface as the distinct
+    `youtube_transcript_blocked` code (NOT youtube_no_transcript) so the app
+    can show a workaround-specific message. Observed live on session smoke
+    test `youtu.be/Ub3GoFaUcds` and again on `Q7Ryv1M7CvI` (2026-05-18)."""
     import xml.etree.ElementTree as ET
     from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -253,7 +254,7 @@ def test_youtube_fetch_raises_unexpected_exception(monkeypatch, client):
         json={"source_id": "src-empty-xml", "url": "https://youtu.be/Ub3GoFaUcds"},
     )
     assert res.status_code == 422
-    assert res.json()["detail"] == "youtube_no_transcript"
+    assert res.json()["detail"] == "youtube_transcript_blocked"
 
 
 # ─── /convert/url: metadata missing ──────────────────────────────────────────

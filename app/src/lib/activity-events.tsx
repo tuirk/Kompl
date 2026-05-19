@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { RetryButton } from '@/components/RetryButton';
+import { friendlyIngestError } from './ingest-error-copy';
 
 // ── Shared shapes ──────────────────────────────────────────────────────────
 // FeedActivityRow is the CLIENT-facing row shape — includes server-joined
@@ -482,23 +483,19 @@ function renderOnboardingBlockedUrlsSkipped(row: FeedActivityRow): RowContent {
   };
 }
 
-function renderIngestUrlWarning(row: FeedActivityRow): RowContent {
-  const { str } = makeGetters(row);
-  const warning = str('warning');
-  const url = str('url');
-  const primary = warning === 'youtube_no_transcript'
-    ? <>YouTube transcript unavailable</>
-    : <>{warning ?? 'Ingest warning'}</>;
-  const secondary = url ? <span style={MONO_DIM}>{url}</span> : null;
-  return { primary, secondary, action: null, isError: false };
-}
-
 function renderIngestUrlFailed(row: FeedActivityRow): RowContent {
   const { str } = makeGetters(row);
   const url = str('url');
   const error_code = str('error_code');
+  const error = str('error');
   const name = url ?? '(unknown URL)';
-  const secondary = error_code ? <span style={MONO_ERR}>{error_code}</span> : null;
+  // Prefer the friendly copy for known FastAPI `detail` codes embedded in the
+  // wrapped error string (e.g. `nlp_convert_failed: 422 {"detail":"youtube_transcript_blocked"}`).
+  // Falls back to the bare outer error_code for everything else.
+  const friendly = error ? friendlyIngestError(error) : null;
+  const secondary = friendly
+    ? <span style={MONO_ERR}>{friendly}</span>
+    : error_code ? <span style={MONO_ERR}>{error_code}</span> : null;
   return {
     primary: <strong>{name}</strong>,
     secondary,
@@ -591,7 +588,6 @@ export const ACTIVITY_EVENTS = {
   // ── Onboarding v2 Phase 1 (no prior renderer cases) ─────────────────────
   onboarding_staged:      { key: 'onboarding_staged',      badge: { label: 'STAGED',     tone: 'dim'  as Tone }, render: renderOnboardingStaged },
   onboarding_blocked_urls_skipped: { key: 'onboarding_blocked_urls_skipped', badge: { label: 'SKIPPED', tone: 'dim' as Tone }, render: renderOnboardingBlockedUrlsSkipped },
-  ingest_url_warning:     { key: 'ingest_url_warning',     badge: { label: 'WARN',       tone: 'dim'  as Tone }, render: renderIngestUrlWarning },
   ingest_url_failed:      { key: 'ingest_url_failed',      badge: { label: 'URL FAIL',   tone: 'red'  as Tone }, render: renderIngestUrlFailed },
   ingest_file_failed:     { key: 'ingest_file_failed',     badge: { label: 'FILE FAIL',  tone: 'red'  as Tone }, render: renderIngestFileFailed },
   ingest_text_failed:     { key: 'ingest_text_failed',     badge: { label: 'TEXT FAIL',  tone: 'red'  as Tone }, render: renderIngestTextFailed },
