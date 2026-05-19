@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -643,6 +643,32 @@ def migrate():
         # pLimit worker pool in /api/compile/draft. Nullable; pre-v24 rows
         # stay NULL — no backfill possible.
         conn.execute("ALTER TABLE page_plans ADD COLUMN draft_error TEXT")
+
+    if current < 25:
+        print("  applying migration v25 (sources.title_source + title_rescued_at)...")
+        # Phase-2 title-rescue infrastructure. title_source records which step
+        # of the convert/ingest cascade produced the title — one of:
+        #   markitdown | body_h1 | body_h2 | filename | stem
+        #   firecrawl | firecrawl_url_fallback
+        #   paste | text_first_line | saved_link
+        # The rescue trigger in /api/compile/extract uses this field to decide
+        # whether to overwrite the title with the LLM-derived one.
+        #
+        # title_rescued_at marks rows whose title was already LLM-rescued —
+        # prevents recompile-loop title churn (every recompile would re-rescue,
+        # re-rename the wiki page, and the user would see drift).
+        #
+        # Pre-v25 rows stay NULL on both; the extract route falls back to the
+        # legacy isGarbageTitle heuristic for them, preserving today's
+        # behaviour exactly.
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(sources)").fetchall()
+        }
+        if "title_source" not in existing_cols:
+            conn.execute("ALTER TABLE sources ADD COLUMN title_source TEXT")
+        if "title_rescued_at" not in existing_cols:
+            conn.execute("ALTER TABLE sources ADD COLUMN title_rescued_at TIMESTAMP")
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

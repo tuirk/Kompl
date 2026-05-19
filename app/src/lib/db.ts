@@ -171,6 +171,16 @@ export interface SourceRow {
   compile_status: string | null;
   compile_attempts: number | null;
   onboarding_session_id: string | null;
+  /** Which cascade step produced `title` at ingest time. Drives the
+   *  /api/compile/extract rescue trigger. NULL for rows ingested before
+   *  schema v25 — the rescue trigger falls back to the legacy
+   *  isGarbageTitle heuristic for those rows. */
+  title_source: string | null;
+  /** ISO timestamp when title was LLM-rescued in /api/compile/extract.
+   *  NULL = never rescued (or pre-v25 row). Used as the idempotency
+   *  marker so recompile does not re-rescue and rename the wiki page
+   *  on every cycle. */
+  title_rescued_at: string | null;
 }
 
 export interface ActivityRow {
@@ -239,6 +249,11 @@ export interface InsertSourceArgs {
   metadata: Record<string, unknown> | null;
   compile_status?: 'pending';
   onboarding_session_id?: string | null;
+  /** Cascade winner from the converter (file/url) or ingest-text path
+   *  ('paste'|'text_first_line'|'saved_link'). Optional for backward
+   *  compatibility with call sites not yet updated; missing → NULL,
+   *  which the rescue trigger treats as "legacy row, use isGarbageTitle". */
+  title_source?: string | null;
 }
 
 /**
@@ -251,10 +266,12 @@ export function insertSource(args: InsertSourceArgs): void {
     .prepare(
       `INSERT INTO sources
          (source_id, title, source_type, source_url, content_hash,
-          file_path, status, metadata, compile_status, onboarding_session_id)
+          file_path, status, metadata, compile_status, onboarding_session_id,
+          title_source)
        VALUES
          (@source_id, @title, @source_type, @source_url, @content_hash,
-          @file_path, 'active', @metadata, @compile_status, @onboarding_session_id)`
+          @file_path, 'active', @metadata, @compile_status, @onboarding_session_id,
+          @title_source)`
     )
     .run({
       source_id: args.source_id,
@@ -266,6 +283,7 @@ export function insertSource(args: InsertSourceArgs): void {
       metadata: args.metadata ? JSON.stringify(args.metadata) : null,
       compile_status: args.compile_status ?? 'pending',
       onboarding_session_id: args.onboarding_session_id ?? null,
+      title_source: args.title_source ?? null,
     });
 }
 
@@ -278,7 +296,8 @@ export function getSource(sourceId: string): SourceRow | null {
     .prepare(
       `SELECT source_id, title, source_type, source_url, content_hash,
               file_path, status, date_ingested, metadata,
-              compile_status, compile_attempts, onboarding_session_id
+              compile_status, compile_attempts, onboarding_session_id,
+              title_source, title_rescued_at
          FROM sources
          WHERE source_id = ?`
     )
@@ -1054,19 +1073,45 @@ export function markSourceExtracted(sourceId: string): void {
     .run(sourceId);
 }
 
+export interface UpdateSourceTitleOpts {
+  /** When true, also stamp title_rescued_at = now in the same UPDATE.
+   *  Used by the /api/compile/extract LLM-title rescue path so subsequent
+   *  recompiles can detect "this title was already rescued" and skip
+   *  re-rescuing (prevents wiki-page title churn on every recompile). */
+  markRescued?: boolean;
+}
+
 /**
  * Replace a source's title — used when the extract LLM derives a real
  * document title for a source whose original title was a filename stub
  * (arxiv ID, digit-only filename, etc.). Trim + cap at 250 chars to keep
  * the column index lean. No-op on empty input.
+ *
+ * Atomic when markRescued is set: title and title_rescued_at update in
+ * the same UPDATE statement, so a crash between them cannot leave the
+ * row in a "rescued title, no marker → re-rescue forever" state.
  */
-export function updateSourceTitle(sourceId: string, newTitle: string): void {
+export function updateSourceTitle(
+  sourceId: string,
+  newTitle: string,
+  opts: UpdateSourceTitleOpts = {}
+): void {
   const trimmed = (newTitle ?? '').trim();
   if (!trimmed) return;
   const capped = trimmed.length > 250 ? trimmed.slice(0, 250) : trimmed;
-  openDb()
-    .prepare(`UPDATE sources SET title = ? WHERE source_id = ?`)
-    .run(capped, sourceId);
+  if (opts.markRescued) {
+    openDb()
+      .prepare(
+        `UPDATE sources
+            SET title = ?, title_rescued_at = datetime('now')
+          WHERE source_id = ?`
+      )
+      .run(capped, sourceId);
+  } else {
+    openDb()
+      .prepare(`UPDATE sources SET title = ? WHERE source_id = ?`)
+      .run(capped, sourceId);
+  }
 }
 
 /**
