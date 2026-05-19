@@ -1,7 +1,7 @@
 # Kompl v2 nlp-service — commit 4. Pins per docs/research/2026-04-08-conversion-deps.md
 # and docs/research/2026-04-09-llm-compile.md.
 fastapi==0.136.1
-uvicorn[standard]==0.46.0
+uvicorn[standard]==0.47.0
 pydantic==2.13.4
 httpx==0.28.1
 markitdown[all]==0.1.5
@@ -13,7 +13,7 @@ markitdown[all]==0.1.5
 # transcript signal explicitly, which only the direct API exposes.
 youtube-transcript-api>=1.0.0,<2.0.0
 # Commit 4: LLM compile. Use google-genai NOT google-generativeai (deprecated 2025-Q1).
-google-genai==1.73.1
+google-genai==2.4.0
 # Commit 4: async token-bucket rate limiter. Single uvicorn worker only —
 # InMemoryBucket is process-local; see research artifact section 3.
 pyrate-limiter==3.7.0
@@ -22,7 +22,7 @@ spacy==3.8.14
 rake-nltk==1.0.6
 yake==0.7.3
 keybert==0.9.0
-sentence-transformers==5.4.1
+sentence-transformers==5.5.0
 # pytextrank: spaCy-native TextRank component (PyPI-available, no git dep).
 pytextrank==3.3.0
 scikit-learn==1.8.0
@@ -32,7 +32,7 @@ nltk==3.9.4
 rapidfuzz>=3.14.5
 # Recovers truncated JSON from Gemini 2.5 Flash repetition-loop bug
 # (see issue in repo) — salvages already-billed output on parse failure.
-json-repair>=0.59.5
+json-repair>=0.59.10
 # Commit 7: Chroma vector store (embedded, no separate server). 0.4.x API:
 # PersistentClient, get_or_create_collection, cosine distance.
 chromadb==0.4.24
