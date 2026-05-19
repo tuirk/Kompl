@@ -40,3 +40,32 @@ describe('getRemediation', () => {
     expect(getRemediation('totally_unknown_code')).toBeUndefined();
   });
 });
+
+describe('pre-stage health codes', () => {
+  it.each([
+    ['selected_provider_key_missing', /api key|provider/i],
+    ['firecrawl_key_missing',         /firecrawl/i],
+    ['youtube_key_missing',           /youtube/i],
+  ])('%s has full populated remediation matching %s', (code, titleHint) => {
+    const r = getRemediation(code);
+    expect(r).toBeDefined();
+    expect(r!.title.length).toBeGreaterThan(0);
+    expect(r!.body.length).toBeGreaterThan(0);
+    expect(r!.fix.length).toBeGreaterThan(0);
+    expect(r!.title).toMatch(titleHint);
+  });
+
+  it('firecrawl_key_missing.fix mentions FIRECRAWL_API_KEY env var', () => {
+    expect(getRemediation('firecrawl_key_missing')!.fix).toMatch(/FIRECRAWL_API_KEY/);
+  });
+
+  it('youtube_key_missing.fix mentions YOUTUBE_API_KEY env var', () => {
+    expect(getRemediation('youtube_key_missing')!.fix).toMatch(/YOUTUBE_API_KEY/);
+  });
+
+  it('selected_provider_key_missing.fix mentions both GEMINI_API_KEY and DEEPSEEK_API_KEY (provider-agnostic)', () => {
+    const fix = getRemediation('selected_provider_key_missing')!.fix;
+    expect(fix).toMatch(/GEMINI_API_KEY/);
+    expect(fix).toMatch(/DEEPSEEK_API_KEY/);
+  });
+});

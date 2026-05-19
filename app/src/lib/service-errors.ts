@@ -111,6 +111,23 @@ export const SERVICE_ERROR_MESSAGES = {
     body: 'Only one compile session per database is supported at a time.',
     fix: 'Visit the Progress page, wait for completion, or cancel the active session.',
   },
+
+  // ── Pre-stage health codes (consumed by /onboarding/health table) ──────
+  selected_provider_key_missing: {
+    title: "The API key for your selected compile model isn't set.",
+    body: 'Each compile session locks to one LLM provider at session start. If the selected provider has no API key, no LLM call in the pipeline can run.',
+    fix: 'Set the matching env var in .env (GEMINI_API_KEY=… for Gemini models, DEEPSEEK_API_KEY=… for DeepSeek), ensure it is wired through docker-compose.yml app.environment and nlp-service.environment, then `docker compose restart app nlp-service`.',
+  },
+  firecrawl_key_missing: {
+    title: "FIRECRAWL_API_KEY isn't set.",
+    body: 'URL ingest (web page → markdown via Firecrawl) will fail at compile time. Files, pasted text, Twitter bookmarks, and other connectors are unaffected.',
+    fix: 'Get a key at https://docs.firecrawl.dev/, set FIRECRAWL_API_KEY in .env, wire through docker-compose.yml nlp-service.environment, then `docker compose restart nlp-service`.',
+  },
+  youtube_key_missing: {
+    title: "YOUTUBE_API_KEY isn't set.",
+    body: 'YouTube URL ingest will hard-fail at compile time with HTTP 422 youtube_metadata_unavailable. There is no fallback. Non-YouTube URLs and other connectors still work.',
+    fix: 'Get a key at https://console.cloud.google.com/apis/library/youtube.googleapis.com, set YOUTUBE_API_KEY in .env, wire through docker-compose.yml nlp-service.environment, then `docker compose restart nlp-service`.',
+  },
 } as const;
 
 export type ServiceErrorCode = keyof typeof SERVICE_ERROR_MESSAGES;
