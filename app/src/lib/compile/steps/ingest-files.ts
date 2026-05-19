@@ -116,6 +116,7 @@ export async function runIngestFilesStep(
         metadata: finalMetadata,
         compile_status: 'pending',
         onboarding_session_id: sessionId,
+        title_source: convertResult.title_source,
       });
 
       markStagingIngested(row.stage_id, sourceId);

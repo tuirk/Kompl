@@ -74,6 +74,47 @@ function isGarbageTitle(s: string): boolean {
   return false;
 }
 
+// Known template/placeholder titles the LLM occasionally returns when a
+// document literally contains them as bold body text (e.g., a Word
+// document built from a corporate template with "Document Title" still
+// in the title field). Distinct from `isGarbageTitle`, which is a
+// FILENAME-shape heuristic — those patterns would FALSE-REJECT valid
+// synthesized titles like "2024_03_15_meeting" and FALSE-ACCEPT
+// "Document Title" (has a space). Keep this list lowercase + trimmed.
+const _LLM_TITLE_PLACEHOLDERS: ReadonlySet<string> = new Set([
+  'document title',
+  'untitled',
+  'untitled document',
+  'new document',
+  'document1',
+  'presentation1',
+  'book1',
+  'click here to edit title',
+  'title',
+  'heading',
+  'placeholder',
+  'sample document',
+]);
+function isLLMTitlePlaceholder(s: string): boolean {
+  return _LLM_TITLE_PLACEHOLDERS.has((s ?? '').trim().toLowerCase());
+}
+
+// Cascade-winner values that indicate the title came from a filename-shaped
+// source (no real document title was extracted). Rescue trigger fires for
+// these AND for any title that looks garbage by isGarbageTitle (catches
+// DOCX/PPTX rows where MarkItDown returned a junk author-set title like
+// "TestDoc" — title_source='markitdown' but the title is still garbage).
+const _RESCUE_TITLE_SOURCES: ReadonlySet<string> = new Set(['filename', 'stem']);
+
+// Sources whose title is user-curated, not document-derived. The extract
+// LLM's "real document title" doesn't apply — the user picked these
+// titles deliberately. Never overwrite them.
+const _USER_CURATED_TITLE_SOURCES: ReadonlySet<string> = new Set([
+  'paste',
+  'text_first_line',
+  'saved_link',
+]);
+
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
 // ── NLP service call helpers ──────────────────────────────────────────────────
@@ -304,16 +345,50 @@ export async function POST(request: Request) {
     });
     markSourceExtracted(source_id);
 
-    // Step 7a: title rescue. MarkItDown's PDF path doesn't extract a title
-    // (it's `absent for PDFs (MarkItDown 0.1.5 never sets it)`), so the
-    // ingest cascade falls through to the filename stub — leaving wiki
-    // pages titled `0611`, `2307.08768v4`, `12800_Vaughan-Williams`, etc.
-    // The extract LLM is now prompted to derive the document's real title;
-    // if it did, replace the filename stub with it. Source-summary pages
-    // (Rule 1 in plan/route.ts) then use the rescued title automatically.
+    // Step 7a: title rescue (phase 2). MarkItDown's PDF path doesn't extract
+    // a title, so the ingest cascade falls through to the filename stub —
+    // leaving wiki pages titled `0611`, `2307.08768v4`, `rec_000068`, etc.
+    // The extract LLM is prompted to derive the document's real title;
+    // if it did, replace the stub. Source-summary pages (Rule 1 in
+    // plan/route.ts) then use the rescued title automatically.
+    //
+    // Trigger conditions (ALL must hold):
+    //   - LLM returned a non-empty title that isn't a known placeholder
+    //   - source.title_rescued_at IS NULL (idempotency: don't re-rescue
+    //     on recompile, otherwise the wiki page title flips every cycle)
+    //   - source is NOT user-curated (paste/text_first_line/saved_link —
+    //     those titles are the user's intent, not document extraction)
+    //   - title_source ∈ {filename, stem} OR isGarbageTitle(source.title)
+    //     (the OR clause catches DOCX/PPTX where MarkItDown returned a junk
+    //     author-set title — title_source='markitdown' but title is junk)
+    //
+    // Pre-v25 rows have title_source = NULL: the source==null path falls
+    // through to the isGarbageTitle clause, preserving the legacy
+    // pre-phase-2 behavior exactly for already-ingested sources.
     const llmTitle = (llmOutput?.title ?? '').toString().trim();
-    if (llmTitle && isGarbageTitle(source.title) && !isGarbageTitle(llmTitle)) {
-      updateSourceTitle(source_id, llmTitle);
+    const titleSource = source.title_source ?? null;
+    const isUserCurated =
+      titleSource !== null && _USER_CURATED_TITLE_SOURCES.has(titleSource);
+    const isCascadeStub =
+      titleSource !== null && _RESCUE_TITLE_SOURCES.has(titleSource);
+    const shouldRescue =
+      llmTitle.length > 0 &&
+      !isLLMTitlePlaceholder(llmTitle) &&
+      source.title_rescued_at === null &&
+      !isUserCurated &&
+      (isCascadeStub || isGarbageTitle(source.title));
+    if (shouldRescue) {
+      updateSourceTitle(source_id, llmTitle, { markRescued: true });
+      logActivity('title_rescued', {
+        source_id,
+        session_id: source.onboarding_session_id ?? null,
+        step_key: 'extract',
+        details: {
+          old_title: source.title,
+          new_title: llmTitle,
+          title_source: titleSource,
+        },
+      });
     }
 
     // Step 7b: record entity/concept mentions for wiki-wide threshold counting.

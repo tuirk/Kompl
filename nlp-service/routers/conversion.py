@@ -29,11 +29,14 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import logging
 import mimetypes
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -71,6 +74,20 @@ class ConvertResponse(BaseModel):
     source_id: str
     source_type: str  # "url" or "file"
     title: str
+    # Which step of the title cascade produced `title`. Consumed by the
+    # JS rescue trigger in /api/compile/extract to decide whether to
+    # overwrite with the LLM-derived title. Always populated — never None.
+    title_source: Literal[
+        "markitdown",
+        "body_h1",
+        "body_h2",
+        "filename",
+        "stem",
+        "firecrawl",
+        "firecrawl_url_fallback",
+        "github_api",
+        "youtube_oembed",
+    ]
     source_url: str | None = None
     markdown: str
     content_hash: str
@@ -136,6 +153,85 @@ _ALLOWED_EXTENSIONS = {
     ".mp3",
     ".wav",
 }
+
+# Junk-title fragments — case-insensitive substring match. Module-level so the
+# body-heading extractor and the existing MarkItDown title filter share one
+# source of truth.
+_JUNK_TITLE_FRAGMENTS: tuple[str, ...] = ("untitled", "microsoft word - ", "document1")
+
+# Body-heading title extraction (file-upload titles for filename-junk cases:
+# arxiv IDs, scan_*, IMG_*, Document1.docx, etc.).
+_BODY_TITLE_SCAN_CAP = 4096
+_H1_RE = re.compile(r"^#\s+(.+?)\s*$")
+_H2_RE = re.compile(r"^##\s+(.+?)\s*$")
+_FENCE_RE = re.compile(r"^\s*```")
+# Anchored on the full stripped line: "Abstract Algebra" must NOT match, but
+# "Abstract" alone must. Numbered prefixes ("1. Introduction") match too.
+_SECTION_LABEL_RE = re.compile(
+    r"^(abstract|introduction|contents|table of contents|references|"
+    r"bibliography|acknowledgements|appendix|index|chapter \d+|"
+    r"section \d+|\d+\.?\s*introduction|\d+\.?\s*abstract|"
+    r"conclusion|conclusions|summary|preface|foreword)$",
+    re.IGNORECASE,
+)
+
+
+def _extract_title_from_markdown_body(markdown: str) -> tuple[str, str] | None:
+    """Pick the first usable H1/H2 from the start of a markdown document.
+
+    Used as the file-upload title cascade step between MarkItDown's extracted
+    title and the filename fallback. Operates on the first 4 KB only (latency
+    + safety cap) and skips fenced code blocks to avoid picking
+    ``# heading-inside-code`` as the title.
+
+    Invariant: on candidate reject, CONTINUES scanning at the SAME heading
+    level. ``# Abstract`` followed by ``# Real Title`` returns
+    ``("Real Title", "body_h1")``, not ``None``. (This is the subtle bug the
+    original cascade design introduced when it short-circuited from H1-reject
+    straight to H2-only.)
+
+    Returns ``(title, level)`` where level is ``"body_h1"`` or ``"body_h2"``,
+    or ``None`` when no heading passes validation; the caller's cascade then
+    falls through to the filename hint. The level is consumed by the
+    cascade-source telemetry log.
+    """
+    head = markdown[:_BODY_TITLE_SCAN_CAP]
+    h1_candidates: list[str] = []
+    h2_candidates: list[str] = []
+    in_fence = False
+    for line in head.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _H1_RE.match(line)
+        if m:
+            h1_candidates.append(m.group(1))
+            continue
+        m = _H2_RE.match(line)
+        if m:
+            h2_candidates.append(m.group(1))
+
+    for cand in h1_candidates:
+        if _is_valid_body_title(cand):
+            return (cand.strip(), "body_h1")
+    for cand in h2_candidates:
+        if _is_valid_body_title(cand):
+            return (cand.strip(), "body_h2")
+    return None
+
+
+def _is_valid_body_title(candidate: str) -> bool:
+    stripped = candidate.strip()
+    if len(stripped) < 3 or len(stripped) > 200:
+        return False
+    lowered = stripped.lower()
+    if any(frag in lowered for frag in _JUNK_TITLE_FRAGMENTS):
+        return False
+    if _SECTION_LABEL_RE.match(stripped):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +329,7 @@ def _convert_github_repo(
         source_id=source_id,
         source_type="github-repo",
         title=full_name,
+        title_source="github_api",
         source_url=url,
         markdown=markdown,
         content_hash=content_hash,
@@ -489,6 +586,7 @@ def _convert_youtube(source_id: str, url: str) -> "ConvertResponse":
         source_id=source_id,
         source_type="url",
         title=meta["title"],
+        title_source="youtube_oembed",
         source_url=url,
         markdown=markdown,
         content_hash=content_hash,
@@ -538,12 +636,18 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
         return None
 
     title = result.title or url
+    # title_source: "markitdown" when MarkItDown extracted a real title from
+    # the page; "firecrawl_url_fallback" name reused here for the URL-as-title
+    # case (contract value covers any URL-fallback path, regardless of which
+    # converter produced it). Keeps the Literal small.
+    title_source = "markitdown" if result.title else "firecrawl_url_fallback"
     content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
     return ConvertResponse(
         source_id=source_id,
         source_type="url",
         title=title,
+        title_source=title_source,
         source_url=url,
         markdown=markdown,
         content_hash=content_hash,
@@ -675,6 +779,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     # The contract (2a) permits falling back to the request URL when Firecrawl
     # does not surface a title. This is the only allowed `or` fallback.
     title = fc_title if fc_title else req.url
+    title_source = "firecrawl" if fc_title else "firecrawl_url_fallback"
 
     # Prefer sourceURL, fall back to url. Both are the flat root `source_url`.
     fc_source_url = fc_metadata.get("sourceURL")
@@ -709,6 +814,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
         source_id=req.source_id,
         source_type="url",
         title=title,
+        title_source=title_source,
         source_url=fc_source_url,
         markdown=markdown,
         content_hash=content_hash,
@@ -755,18 +861,44 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
         raise HTTPException(status_code=422, detail="markitdown_empty_output")
 
     # Title cascade (order matters):
-    #   1. MarkItDown's extracted title — present for DOCX/PPTX with core.xml
-    #      metadata; absent for PDFs (MarkItDown 0.1.5 never sets it for PDFs).
-    #   2. title_hint — original filename without extension, sent by the caller
-    #      before the UUID prefix was added. Guaranteed for browser uploads.
-    #   3. p.stem — last resort; will include the UUID prefix if title_hint
-    #      was omitted, which is the bug we're preventing.
+    #   1.   MarkItDown's extracted title — present for DOCX/PPTX with core.xml
+    #        metadata; absent for PDFs (MarkItDown 0.1.5 never sets it for PDFs).
+    #   1.5. Body-extracted heading — first usable H1 (then H2) in the first
+    #        4 KB of converted markdown. Fixes the dominant file-upload bug:
+    #        PDFs of academic papers, reports, etc. have a real title as the
+    #        first heading but a junk filename (arxiv IDs, scan_*, IMG_*,
+    #        Document1.docx). See _extract_title_from_markdown_body docstring
+    #        for the reject rules.
+    #   2.   title_hint — original filename without extension, sent by the
+    #        caller before the UUID prefix was added. Guaranteed for browser
+    #        uploads.
+    #   3.   p.stem — last resort; will include the UUID prefix if title_hint
+    #        was omitted, which is the bug we're preventing.
     # Discard obviously-junk titles from MarkItDown (Word's default filenames).
-    _JUNK_TITLE_FRAGMENTS = ("untitled", "microsoft word - ", "document1")
     markitdown_title = result.title or ""
     if any(frag in markitdown_title.lower() for frag in _JUNK_TITLE_FRAGMENTS):
         markitdown_title = ""
-    title = markitdown_title or req.title_hint or p.stem
+    body_result = _extract_title_from_markdown_body(markdown)
+    body_title = body_result[0] if body_result else ""
+    title = markitdown_title or body_title or req.title_hint or p.stem
+
+    # Cascade-winner telemetry — informs the phase-2 decision (whether the
+    # residual filename/stem fallback rate justifies adding an LLM titling
+    # step). One of: markitdown | body_h1 | body_h2 | filename | stem.
+    if markitdown_title:
+        title_source = "markitdown"
+    elif body_result is not None:
+        title_source = body_result[1]
+    elif req.title_hint:
+        title_source = "filename"
+    else:
+        title_source = "stem"
+    logger.info(
+        "convert_file_path done source_id=%s title_source=%s ext=%s",
+        req.source_id,
+        title_source,
+        p.suffix.lower(),
+    )
 
     content_type = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
 
@@ -776,6 +908,7 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
         source_id=req.source_id,
         source_type="file",
         title=title,
+        title_source=title_source,
         source_url=None,
         markdown=markdown,
         content_hash=content_hash,

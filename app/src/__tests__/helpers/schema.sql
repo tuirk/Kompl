@@ -1,4 +1,4 @@
--- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=19.
+-- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=25.
 -- If migrate.py changes, update this file. Tests will fail loudly on drift.
 
 CREATE TABLE sources (
@@ -14,7 +14,10 @@ CREATE TABLE sources (
   compile_status TEXT DEFAULT 'pending',
   compile_attempts INTEGER DEFAULT 0,
   compile_next_eligible_at DATETIME,
-  onboarding_session_id TEXT
+  onboarding_session_id TEXT,
+  -- v25: cascade-winner + LLM-rescue idempotency
+  title_source TEXT,
+  title_rescued_at TIMESTAMP
 );
 
 CREATE TABLE pages (
@@ -223,4 +226,4 @@ CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id
 CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '24');
+INSERT INTO settings (key, value) VALUES ('schema_version', '25');
