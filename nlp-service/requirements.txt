@@ -11,7 +11,7 @@ markitdown[all]==0.1.5
 # watch-page HTML when no transcript exists (returns ~800 chars of footer
 # chrome — verified live on session 4a00f339). We need the transcript-vs-no-
 # transcript signal explicitly, which only the direct API exposes.
-youtube-transcript-api>=1.2.4,<2.0.0
+youtube-transcript-api>=1.0.0,<2.0.0
 # Commit 4: LLM compile. Use google-genai NOT google-generativeai (deprecated 2025-Q1).
 google-genai==2.4.0
 # Commit 4: async token-bucket rate limiter. Single uvicorn worker only —
