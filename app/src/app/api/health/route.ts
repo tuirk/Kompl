@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import {
   dbPath,
+  getCompileModel,
   getDb,
   getPageCount,
+  getProviderForModel,
   getSchemaVersion,
   getVectorBacklogCount,
   listUserTables,
@@ -83,6 +85,19 @@ export async function GET() {
         provider_keys: {
           gemini_present: !!process.env.GEMINI_API_KEY,
           deepseek_present: !!process.env.DEEPSEEK_API_KEY,
+        },
+        // Pre-stage health table (consumed by /onboarding/health):
+        // - selected_compile_model + selected_compile_provider let the table
+        //   resolve which LLM provider key is the red gate for this session.
+        //   Per CLAUDE.md per-session model lock, the dashboard's "Settings"
+        //   value reflects the next-session choice; this route reads the same.
+        // - integration_keys are amber per INTEGRATION_KEYS severity (missing
+        //   key fails specific ingest types, not the whole pipeline).
+        selected_compile_model: getCompileModel(),
+        selected_compile_provider: getProviderForModel(getCompileModel()),
+        integration_keys: {
+          firecrawl_present: !!process.env.FIRECRAWL_API_KEY,
+          youtube_present: !!process.env.YOUTUBE_API_KEY,
         },
       },
       // Return 200 for both 'ok' and 'degraded' so Docker healthcheck only
