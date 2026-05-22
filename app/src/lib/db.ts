@@ -2794,6 +2794,7 @@ export const CHAT_MODELS = [
   'gemini-2.5-flash',
   'gemini-2.5-pro',
   'deepseek-v4-pro',
+  'deepseek-v4-flash',
 ] as const;
 export type ChatModel = typeof CHAT_MODELS[number];
 export const DEFAULT_CHAT_MODEL: ChatModel = 'gemini-2.5-flash-lite';

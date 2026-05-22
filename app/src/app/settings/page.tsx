@@ -1090,6 +1090,13 @@ export default function SettingsPage() {
                       ? 'Set DEEPSEEK_API_KEY in your environment to enable'
                       : undefined}
                   >V4 Pro</option>
+                  <option
+                    value="deepseek-v4-flash"
+                    disabled={providerKeys ? !providerKeys.deepseek_present : false}
+                    title={providerKeys && !providerKeys.deepseek_present
+                      ? 'Set DEEPSEEK_API_KEY in your environment to enable'
+                      : undefined}
+                  >V4 Flash</option>
                 </optgroup>
               </select>
             </div>
@@ -1184,6 +1191,13 @@ export default function SettingsPage() {
                       ? 'Set DEEPSEEK_API_KEY in your environment to enable'
                       : undefined}
                   >V4 Pro</option>
+                  <option
+                    value="deepseek-v4-flash"
+                    disabled={providerKeys ? !providerKeys.deepseek_present : false}
+                    title={providerKeys && !providerKeys.deepseek_present
+                      ? 'Set DEEPSEEK_API_KEY in your environment to enable'
+                      : undefined}
+                  >V4 Flash</option>
                 </optgroup>
               </select>
             </div>

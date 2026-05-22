@@ -32,6 +32,7 @@ GeminiModel = Literal[
     "gemini-2.5-flash",
     "gemini-2.5-pro",
     "deepseek-v4-pro",
+    "deepseek-v4-flash",
 ]
 
 logger = logging.getLogger(__name__)

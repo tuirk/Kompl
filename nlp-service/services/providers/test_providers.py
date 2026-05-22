@@ -110,6 +110,7 @@ def test_get_provider_dispatches_deepseek_prefix(monkeypatch):
     assert isinstance(p, DeepSeekProvider)
     assert p.name == "deepseek"
     # Singleton cache: same instance on repeat lookup.
+    assert get_provider("deepseek-v4-flash") is p
     assert get_provider("deepseek-v5-future") is p
 
     P._REGISTRY.clear()
@@ -444,8 +445,8 @@ def test_deepseek_emits_log_line_with_cache_hit(monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_deepseek_prices_default_to_list(monkeypatch):
-    """Without env overrides, _prices_now returns the published list prices.
+def test_deepseek_pro_prices_default_to_list(monkeypatch):
+    """Without env overrides, _get_model_prices returns the published list prices.
 
     Discount-window code was removed 2026-05-09 — the cap counter intentionally
     over-estimates during DeepSeek promotional periods (safe side: cap fires
@@ -457,21 +458,71 @@ def test_deepseek_prices_default_to_list(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_OUTPUT_USD_PER_M", raising=False)
     monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
 
-    prices = D._prices_now()
-    assert prices["input"] == D._PRICES["input"]
-    assert prices["output"] == D._PRICES["output"]
-    assert prices["cache"] == D._PRICES["cache"]
+    prices = D._get_model_prices("deepseek-v4-pro")
+    assert prices["input"] == D._MODEL_PRICES["deepseek-v4-pro"]["input"]
+    assert prices["output"] == D._MODEL_PRICES["deepseek-v4-pro"]["output"]
+    assert prices["cache"] == D._MODEL_PRICES["deepseek-v4-pro"]["cache"]
+
+
+def test_deepseek_flash_prices_match_list_rates(monkeypatch):
+    """V4-Flash list prices (2026-05-22): $0.14 / $0.28 / $0.0028 per M tokens."""
+    from services.providers import deepseek as D
+    monkeypatch.delenv("DEEPSEEK_INPUT_USD_PER_M", raising=False)
+    monkeypatch.delenv("DEEPSEEK_OUTPUT_USD_PER_M", raising=False)
+    monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
+
+    prices = D._get_model_prices("deepseek-v4-flash")
+    assert prices["input"] == 0.14
+    assert prices["output"] == 0.28
+    assert prices["cache"] == 0.0028
+
+
+def test_deepseek_pro_and_flash_prices_differ(monkeypatch):
+    """Regression guard: Pro is ~12x more expensive than Flash on input.
+
+    If this assertion fires, _MODEL_PRICES probably got accidentally
+    overwritten or the two model entries got their values swapped.
+    """
+    from services.providers import deepseek as D
+    monkeypatch.delenv("DEEPSEEK_INPUT_USD_PER_M", raising=False)
+    monkeypatch.delenv("DEEPSEEK_OUTPUT_USD_PER_M", raising=False)
+    monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
+
+    pro = D._get_model_prices("deepseek-v4-pro")
+    flash = D._get_model_prices("deepseek-v4-flash")
+    assert pro["input"] >= 10 * flash["input"]
+    assert pro["output"] >= 10 * flash["output"]
+
+
+def test_deepseek_unknown_model_raises_keyerror():
+    """No fallback by design. Unknown names mean a developer added a SKU to
+    the Literals/dropdown but forgot to add its price — fail loud.
+    """
+    from services.providers import deepseek as D
+    with pytest.raises(KeyError):
+        D._get_model_prices("deepseek-v5-future")
+
+
+def test_deepseek_env_override_applies_to_both_models(monkeypatch):
+    """Env-var overrides apply globally to all DeepSeek models — matches the
+    Gemini precedent (gemini.py GEMINI_INPUT_PRICE_PER_M). Per-model env vars
+    would explode the surface area for an emergency-only escape hatch.
+    """
+    monkeypatch.setenv("DEEPSEEK_INPUT_USD_PER_M", "99.0")
+    from services.providers import deepseek as D
+    assert D._get_model_prices("deepseek-v4-pro")["input"] == 99.0
+    assert D._get_model_prices("deepseek-v4-flash")["input"] == 99.0
 
 
 def test_deepseek_prices_env_override_wins(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_INPUT_USD_PER_M", "0.99")
     from services.providers import deepseek as D
-    prices = D._prices_now()
+    prices = D._get_model_prices("deepseek-v4-pro")
     assert prices["input"] == 0.99
 
 
-def test_deepseek_cost_usd_formula(monkeypatch):
-    """Sanity-check the cost arithmetic on a known usage dict."""
+def test_deepseek_pro_cost_usd_formula(monkeypatch):
+    """Sanity-check the cost arithmetic on a known usage dict (V4-Pro)."""
     monkeypatch.setenv("DEEPSEEK_INPUT_USD_PER_M",  "1.00")
     monkeypatch.setenv("DEEPSEEK_OUTPUT_USD_PER_M", "10.00")
     monkeypatch.setenv("DEEPSEEK_CACHE_USD_PER_M",  "0.10")
@@ -490,6 +541,33 @@ def test_deepseek_cost_usd_formula(monkeypatch):
     })
     # fresh = 900_000 -> 0.9; cached = 100_000 -> 0.01; output = 500_000 -> 5.00
     assert abs(cost - (0.9 + 0.01 + 5.0)) < 1e-9
+    P._REGISTRY.clear()
+
+
+def test_deepseek_flash_cost_usd_formula(monkeypatch):
+    """Cost arithmetic at V4-Flash list rates ($0.14 / $0.28 / $0.0028)."""
+    monkeypatch.delenv("DEEPSEEK_INPUT_USD_PER_M", raising=False)
+    monkeypatch.delenv("DEEPSEEK_OUTPUT_USD_PER_M", raising=False)
+    monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    from services import providers as P
+    P._REGISTRY.clear()
+    from services.providers import get_provider
+
+    p = get_provider("deepseek-v4-flash")
+    # 1M prompt tokens, 100K cached, 500K output (Gemini-shape keys).
+    cost = p.cost_usd("deepseek-v4-flash", {
+        "prompt_token_count":         1_000_000,
+        "cached_content_token_count": 100_000,
+        "candidates_token_count":     500_000,
+        "thoughts_token_count":       0,
+    })
+    # fresh = 900_000 -> $0.126 (0.14 * 0.9); cached = 100_000 -> $0.00028
+    # (0.0028 * 0.1); output = 500_000 -> $0.14 (0.28 * 0.5)
+    expected = (900_000 / 1_000_000) * 0.14 \
+             + (100_000 / 1_000_000) * 0.0028 \
+             + (500_000 / 1_000_000) * 0.28
+    assert abs(cost - expected) < 1e-9
     P._REGISTRY.clear()
 
 
