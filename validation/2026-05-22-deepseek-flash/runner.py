@@ -1,0 +1,142 @@
+"""Phase 8 V4-Flash validation runner.
+
+Walks nlp-service/test_corpus/ and posts each source to /pipeline/extract-llm
+with compile_model=deepseek-v4-flash. Captures entity/concept/claim/
+relationship counts, finish_reason, latency, http_status into results.json
+for the REPORT.md table.
+
+Flash-only by design — V4-Pro and Gemini-2.5-Flash were validated against
+the same corpus on 2026-05-05; this run validates the new Flash SKU at the
+same Phase 7 bar (7/7 ok, 0 salvage events).
+
+Run with the docker compose stack up (nlp-service on 127.0.0.1:8000):
+
+    python validation/2026-05-22-deepseek-flash/runner.py
+
+Cost: 7 sources x 1 provider = 7 LLM calls. At V4-Flash list rates
+($0.14 input / $0.28 output / $0.0028 cache) the corpus should cost
+~$0.01-0.02 total. Daily LLM cap is $5.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+CORPUS = Path(__file__).resolve().parents[2] / "nlp-service" / "test_corpus"
+NLP_BASE = "http://localhost:8000"
+PROVIDERS = ["deepseek-v4-flash"]
+
+
+def _git_head() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).resolve().parent
+        ).decode().strip()
+    except Exception:
+        return "unknown"
+
+
+def _post_extract(source_id: str, markdown: str, model: str) -> tuple[int, dict | None]:
+    payload = json.dumps(
+        {
+            "source_id": source_id,
+            "markdown": markdown,
+            "ner_output": {"entities": []},
+            "keyphrase_output": None,
+            "tfidf_output": None,
+            "compile_model": model,
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"{NLP_BASE}/pipeline/extract-llm",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    # 600s timeout — Phase 7 settled on this after the 240s v1 runner caught
+    # successful DeepSeek calls mid-flight; the 95K Open Standards source
+    # peaks ~290s on Pro and Flash may need similar headroom.
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            return r.status, json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            return e.code, json.loads(body)
+        except Exception:
+            return e.code, {"raw": body[:1000]}
+    except Exception as e:
+        return -1, {"error": str(e)}
+
+
+def _summarize(resp: dict) -> dict:
+    if not isinstance(resp, dict):
+        return {"ok": False, "raw": str(resp)[:300]}
+    if "entities" in resp and "concepts" in resp:
+        return {
+            "ok": True,
+            "entity_count":       len(resp.get("entities", []) or []),
+            "concept_count":      len(resp.get("concepts", []) or []),
+            "claim_count":        len(resp.get("claims", []) or []),
+            "relationship_count": len(resp.get("relationships", []) or []),
+            "contradiction_count": len(resp.get("contradictions", []) or []),
+            "summary_chars":      len(resp.get("summary", "") or ""),
+        }
+    return {"ok": False, "detail": resp.get("detail", "")[:500] if isinstance(resp.get("detail"), str) else str(resp)[:500]}
+
+
+def main() -> int:
+    sources = sorted(p for p in CORPUS.glob("*.md") if p.name != "_manifest.json")
+    if not sources:
+        print(f"[runner] no sources found in {CORPUS}", file=sys.stderr)
+        return 1
+
+    out: dict = {
+        "run_at": datetime.now(timezone.utc).isoformat(),
+        "branch": "feat/deepseek-v4-flash",
+        "head_commit": _git_head(),
+        "providers": PROVIDERS,
+        "nlp_service_url": NLP_BASE,
+        "sources": [],
+    }
+
+    for src in sources:
+        markdown = src.read_text(encoding="utf-8")
+        chars = len(markdown)
+        print(f"[runner] {src.name} ({chars} chars)", flush=True)
+        entry: dict = {"name": src.name, "markdown_chars": chars, "results": {}}
+
+        for model in PROVIDERS:
+            t0 = time.time()
+            status, body = _post_extract(src.stem, markdown, model)
+            elapsed = time.time() - t0
+            summary = _summarize(body)
+            summary["http_status"] = status
+            summary["elapsed_s"] = round(elapsed, 2)
+            entry["results"][model] = summary
+            ok_str = "ok" if summary.get("ok") else "FAIL"
+            counts = (
+                f"e={summary.get('entity_count')} c={summary.get('concept_count')} "
+                f"cl={summary.get('claim_count')} r={summary.get('relationship_count')}"
+                if summary.get("ok") else summary.get("detail", "")[:120]
+            )
+            print(f"  [{model}] HTTP {status} {ok_str} ({elapsed:.1f}s) {counts}", flush=True)
+
+        out["sources"].append(entry)
+
+    out_path = Path(__file__).resolve().parent / "results.json"
+    out_path.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"[runner] wrote {out_path}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
