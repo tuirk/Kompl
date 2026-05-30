@@ -88,7 +88,10 @@ function OnboardingPageInner() {
     if (activeSelected.length === 0 || !sessionId) return;
     sessionStorage.setItem('kompl_connectors', JSON.stringify(activeSelected));
     sessionStorage.setItem('kompl_connector_idx', '0');
-    router.push(`/onboarding/${activeSelected[0]}?session_id=${sessionId}`);
+    // Pre-stage health step gates red configuration failures before the user
+    // walks through individual connector pages. HealthClient forwards to
+    // /onboarding/${connectors[0]} on its own Next click.
+    router.push(`/onboarding/health?session_id=${sessionId}`);
   }
 
   const heading = 'Select Your Data Sources.';
