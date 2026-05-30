@@ -1,0 +1,48 @@
+---
+description: Kompl PR/commit rules — DCO, CI gates, branch protection, commit style
+alwaysApply: true
+---
+
+# Kompl contributing (repo rules)
+
+## Commits
+
+- **DCO required**: every commit must use `git commit -s` (`Signed-off-by` trailer). PRs fail DCO check without it. Fix: `git rebase HEAD~N --signoff && git push --force-with-lease`.
+- **Conventional Commits**: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:` — optional scope; body explains *why*.
+- **Author**: tuirk only. No `Co-authored-by:`. No AI/Claude in commit messages or code comments.
+- **No commit/push** unless the user explicitly asks.
+
+## `main` branch protection (ruleset `main-protection`)
+
+- 1 approving review required; stale reviews dismissed on push.
+- **Required status checks** (strict, branch must be up to date): `unit-tests-app`, `unit-tests-cli`, `unit-tests-nlp`, `integration-test`.
+- Also runs on PRs: DCO, CodeQL, Scorecard, Dependabot (DCO not in ruleset but enforced in practice).
+- Admin bypass enabled (solo maintainer).
+
+## After push
+
+```bash
+gh run list --limit 1
+gh run watch <id> --exit-status
+```
+
+After merge milestone: `npx gitnexus@1.6.1 analyze` (add `--embeddings` if `.gitnexus/meta.json` stats.embeddings > 0).
+
+## PR template
+
+- Sign off every commit; explain why; note how tested.
+- Prefer PRs under ~300 lines; large deps need issue first.
+
+## Blocked pip upgrades (do not merge Dependabot until resolved)
+
+- **chromadb** pinned `0.4.24` — `numpy<2` required (`np.float_` removed in NumPy 2). PRs bumping chromadb to 1.x or numpy to 2.x must be **closed** until a deliberate chromadb migration (integration test + vector_store API).
+- **mcp-server `qs`**: use `package.json` override `>=6.15.2 <7.0.0` (GHSA-q8mj-m7cp-5q26); lockfile-only bump via Dependabot is insufficient without override.
+
+## Dependabot
+
+- Weekly Mon 09:00 UTC: `app/`, `cli/`, `mcp-server/`, `nlp-service/`, github-actions, docker.
+- `@types/node` ignored for `>=25` in npm ecosystems.
+
+## Security deferrals
+
+- Scorecard pip hash-pinning #40/#41/#62: intentional — see `docs/security/scorecard-deferred.md`.
