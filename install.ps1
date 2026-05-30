@@ -91,6 +91,6 @@ Write-Ok "Cloned"
 # ── Hand off to setup.js ────────────────────────────────────────────────────
 Set-Location $target
 Write-Host ""
-Write-Host "  Handing off to setup.js (interactive — needs your Gemini + Firecrawl API keys and a deployment-mode choice)."
+Write-Host "  Handing off to setup.js (interactive — needs your Gemini + Firecrawl API keys; YouTube + DeepSeek prompts are optional)."
 Write-Host ""
 & node setup.js

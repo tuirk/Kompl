@@ -32,13 +32,14 @@ You'll need three things on your machine:
 - **[Node.js](https://nodejs.org/) ≥ 24** — to install and run the `kompl` CLI.
 - **~5 GB free disk and 4 GB free RAM** — Kompl runs three containers (app, NLP service, n8n) plus pulls a ~90 MB embedding model on first compile.
 
-You'll also need two API keys, both free to get:
+You'll also need API keys. Two are required, two are optional:
 
-| | Get key | Free tier | Notes |
-|---|---|---|---|
-| **Gemini** (wiki compilation) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day | Free works for the demo and your first few sources. **Paid Tier 1 is strongly recommended for real use** — Gemini's free per-minute throttle (~10 RPM) will rate-limit a normal ingest, even though daily quota is plenty. Default rate-limiter assumes Tier 1. Has a known truncation issue on dense inputs — see [issue #7](https://github.com/tuirk/Kompl/issues/7). |
-| **DeepSeek V4 Pro** (alternative compile backend, optional) | [api-docs.deepseek.com](https://api-docs.deepseek.com) | Pay-as-you-go | Selectable in Settings as an alternative to Gemini. Recommended for long/academic content — see [Known limitations](#known-limitations). Set `DEEPSEEK_API_KEY` in `.env`. |
-| **Firecrawl** (URL scraping) | [firecrawl.dev](https://firecrawl.dev) | 500 scrapes/month | Free tier covers normal personal use. |
+| | Required? | Get key | Free tier | Notes |
+|---|---|---|---|---|
+| **Gemini** (wiki compilation) | Required | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day | Free works for the demo and your first few sources. **Paid Tier 1 is strongly recommended for real use** — Gemini's free per-minute throttle (~10 RPM) will rate-limit a normal ingest, even though daily quota is plenty. Default rate-limiter assumes Tier 1. Has a known truncation issue on dense inputs — see [issue #7](https://github.com/tuirk/Kompl/issues/7). |
+| **Firecrawl** (URL scraping) | Required | [firecrawl.dev](https://firecrawl.dev) | 500 scrapes/month | Free tier covers normal personal use. |
+| **YouTube Data API v3** (YouTube ingestion) | Optional | [console.cloud.google.com](https://console.cloud.google.com/apis/library/youtube.googleapis.com) | 10,000 units/day (1 unit per video) | Required to ingest YouTube URLs — without it, every YouTube URL hard-fails and routes to Saved Links. Restrict the key to "YouTube Data API v3" only in the GCP console. Set `YOUTUBE_API_KEY` in `.env`. |
+| **DeepSeek V4 Pro** (alternative compile backend) | Optional | [api-docs.deepseek.com](https://api-docs.deepseek.com) | Pay-as-you-go | Selectable in Settings as an alternative to Gemini. Recommended for long/academic content — see [Known limitations](#known-limitations). Set `DEEPSEEK_API_KEY` in `.env`. |
 
 ## Setup
 
@@ -68,7 +69,7 @@ cd kompl
 node setup.js
 ```
 
-Either path: the script handles everything — creates your config, asks for the two API keys, installs the `kompl` CLI, and starts the stack. No other steps needed. Your system timezone is detected and written to `.env` as `KOMPL_TIMEZONE` automatically.
+Either path: the script handles everything — creates your config, asks for the two required API keys (and offers prompts for the two optional ones), installs the `kompl` CLI, and starts the stack. No other steps needed. Your system timezone is detected and written to `.env` as `KOMPL_TIMEZONE` automatically.
 
 > Your API keys land in `.env` at the repo root. That file is gitignored — never commit it.
 
@@ -177,7 +178,7 @@ Your wiki content lives in Docker volumes on your machine. Outbound network call
 - **DeepSeek** (`api.deepseek.com`) — wiki compilation when the DeepSeek backend is selected. Your source text is sent to DeepSeek. Only outbound if `DEEPSEEK_API_KEY` is configured and selected as the compile model.
 - **Firecrawl** (`api.firecrawl.dev`) — URL scraping fallback. The URL you pasted is sent to Firecrawl.
 - **GitHub public API** (`api.github.com`) — when you paste a GitHub repo URL, Kompl fetches the README + metadata.
-- **YouTube** (`youtube.com`) — when you paste a YouTube URL, transcripts are fetched via the public captions endpoint.
+- **YouTube** (`youtube.com` + `youtube.googleapis.com`) — when you paste a YouTube URL, transcripts are fetched via the public captions endpoint and metadata (title, channel, duration) via YouTube Data API v3. Requires `YOUTUBE_API_KEY`; without it, YouTube URLs route to Saved Links.
 - **OG-tag preview** — pasted URLs are fetched once with `User-Agent: KomplBot/1.0` to grab title + description.
 - **Telegram** (`api.telegram.org`) — wired for the weekly digest, but the Settings UI is currently locked until two known issues are resolved. No outbound Telegram calls happen on a default install.
 

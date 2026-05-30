@@ -49,10 +49,10 @@ _DEEPSEEK_RPM = int(os.environ.get("DEEPSEEK_RPM", "60"))
 
 
 # ---------------------------------------------------------------------------
-# Pricing (DeepSeek V4 Pro, $/M tokens)
+# Pricing (DeepSeek V4 family, $/M tokens)
 # ---------------------------------------------------------------------------
 #
-# List prices per api-docs.deepseek.com/quick_start/pricing (2026-05-09 read).
+# List prices per api-docs.deepseek.com/quick_start/pricing (2026-05-22 read).
 # We deliberately do NOT model the promotional 75%-off discount window — when
 # DeepSeek runs a discount, our cap counter overestimates real spend, which is
 # the safe side to err on (cap fires earlier than necessary, never later than
@@ -61,16 +61,30 @@ _DEEPSEEK_RPM = int(os.environ.get("DEEPSEEK_RPM", "60"))
 # truth, and treat any V5/V4-Lite/etc. switch as a reason to revisit this dict.
 # Operators can override per-rate via DEEPSEEK_INPUT_USD_PER_M /
 # DEEPSEEK_OUTPUT_USD_PER_M / DEEPSEEK_CACHE_USD_PER_M without touching code.
+# Env overrides apply to all DeepSeek models (matching gemini.py's escape-
+# hatch convention) — emergency-use-only when DeepSeek changes pricing before
+# we ship a code update.
 
-_PRICES = {"input": 1.74, "output": 3.48, "cache": 0.0145}
+_MODEL_PRICES: dict[str, dict[str, float]] = {
+    "deepseek-v4-pro":   {"input": 1.74, "output": 3.48, "cache": 0.0145},
+    "deepseek-v4-flash": {"input": 0.14, "output": 0.28, "cache": 0.0028},
+}
 
 
-def _prices_now() -> dict[str, float]:
-    """Per-million-token list prices, with optional env-var overrides."""
+def _get_model_prices(model: str) -> dict[str, float]:
+    """Per-million-token list prices for ``model``, with env-var overrides.
+
+    Unknown model names raise KeyError. By design — every model name reaching
+    this function passed through the Settings dropdown allowlist
+    (app/src/lib/db.ts CHAT_MODELS) and the Pydantic Literal at the route
+    boundary. An unknown name here means a developer added a SKU to the
+    Literals/dropdown but forgot to add its price; fail loud in tests.
+    """
+    base = _MODEL_PRICES[model]
     return {
-        "input":  float(os.environ.get("DEEPSEEK_INPUT_USD_PER_M",  _PRICES["input"])),
-        "output": float(os.environ.get("DEEPSEEK_OUTPUT_USD_PER_M", _PRICES["output"])),
-        "cache":  float(os.environ.get("DEEPSEEK_CACHE_USD_PER_M",  _PRICES["cache"])),
+        "input":  float(os.environ.get("DEEPSEEK_INPUT_USD_PER_M",  base["input"])),
+        "output": float(os.environ.get("DEEPSEEK_OUTPUT_USD_PER_M", base["output"])),
+        "cache":  float(os.environ.get("DEEPSEEK_CACHE_USD_PER_M",  base["cache"])),
     }
 
 
@@ -280,7 +294,7 @@ class DeepSeekProvider:
         (prompt_token_count, cached_content_token_count, candidates_token_count,
         thoughts_token_count) — translate to DeepSeek's pricing formula.
         """
-        prices = _prices_now()
+        prices = _get_model_prices(model)
         prompt = usage.get("prompt_token_count", 0)
         cached = usage.get("cached_content_token_count", 0)
         # DeepSeek folds reasoning into completion_tokens; the dispatcher's

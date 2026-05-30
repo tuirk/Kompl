@@ -112,5 +112,5 @@ ok "Cloned"
 
 # ── Hand off to setup.js ────────────────────────────────────────────────────
 cd "$TARGET"
-printf "\n  Handing off to setup.js (interactive — needs your Gemini + Firecrawl API keys and a deployment-mode choice).\n\n"
+printf "\n  Handing off to setup.js (interactive — needs your Gemini + Firecrawl API keys; YouTube + DeepSeek prompts are optional).\n\n"
 exec node setup.js

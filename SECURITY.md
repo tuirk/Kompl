@@ -22,7 +22,7 @@ Include:
 Kompl runs locally on your machine. The attack surface is:
 
 - **Local network exposure.** Kompl binds to `localhost:3000` by default. If you expose it to your network or the internet, you are responsible for adding authentication — Kompl has none.
-- **API key handling.** Gemini and Firecrawl keys are stored in `.env` on disk. They are never logged, never sent to Kompl's own services, and excluded from `.kompl.zip` exports.
+- **API key handling.** Gemini, Firecrawl, YouTube, and (optional) DeepSeek keys are stored in `.env` on disk. They are never logged, never sent to Kompl's own services, and excluded from `.kompl.zip` exports.
 - **Docker container isolation.** Kompl's containers run with default Docker security. No `--privileged`, no host network mode, no volume mounts outside the project directory.
 - **n8n webhooks.** Internal webhooks between services are unauthenticated. This is safe when running locally. If exposed to the internet, n8n's webhook endpoints could be triggered by anyone.
 
