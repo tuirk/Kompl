@@ -5,10 +5,116 @@ All notable changes to Kompl are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The application surface (Next.js API, CLI, MCP server, settings) follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The SQLite schema
-uses a separate monotonic version (currently `v23`); breaking schema changes
+uses a separate monotonic version (currently `v25`); breaking schema changes
 ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
+
+## [0.2.2] — 2026-05-30
+
+Incremental release over 0.2.1: pre-compile health checks, DeepSeek V4 Flash,
+smarter file-upload titles, clearer YouTube failure messages, per-item URL
+blocklist skipping, dependency roll-forward (including `google-genai` 2.x),
+and an mcp-server `qs` security pin. Schema v24 → v25.
+
+### Added
+
+**Onboarding health (#114)**
+
+- **`/onboarding/health`** — pre-compile checklist after source selection.
+  Red/green rows for NLP service reachability, selected compile-model provider
+  key, Firecrawl, and YouTube. **Next** stays blocked until red rows are fixed.
+- **`GET /api/health`** extended additively with `selected_compile_model`,
+  `selected_compile_provider`, and `integration_keys`.
+- Provider registries (`LLM_PROVIDERS`, `INTEGRATION_KEYS`) and pure-function
+  evaluator (`onboarding-health-evaluator.ts`).
+- Structured pre-stage error codes in `service-errors.ts`
+  (`selected_provider_key_missing`, `firecrawl_key_missing`,
+  `youtube_key_missing`).
+
+**DeepSeek V4 Flash (#117)**
+
+- **`deepseek-v4-flash`** as a third selectable compile and chat model in
+  Settings, API validation, NLP provider registry, and per-session model lock.
+- Chat routes fixed to accept DeepSeek SKUs on `/chat/select-pages` and
+  `/chat/synthesize`.
+- Phase 8 validation harness under
+  `validation/2026-05-22-deepseek-flash/` (report template; corpus run
+  still marked pending in `REPORT.md`).
+
+**File-upload titles (#86)**
+
+- **Phase 1 (zero LLM cost):** body-heading title extraction on
+  `/convert/file-path` — first usable H1/H2 in the first 4 KB of converted
+  markdown (skips fenced code, rejects section labels like `Abstract`).
+- **Phase 2 (piggybacks existing extract LLM call):** one-shot title rescue
+  when `title_source` is `filename`/`stem` or title matches garbage heuristics;
+  `title_rescued_at` prevents recompile title churn.
+- **`ConvertResponse.title_source`** — always-populated contract field (9 known
+  values); cascade-winner telemetry log on every file conversion.
+- **`title_rescued` activity event** registered for the feed.
+
+**YouTube / Saved Links copy (#84)**
+
+- **`ingest-error-copy.ts`** maps known ingest error codes to friendly
+  one-liners; unwraps the FastAPI `{"detail":"..."}` envelope that was
+  leaking into Saved Links.
+
+### Changed
+
+- **Bookmark / URL staging (#85):** blocked-host URLs (X/Twitter/t.co) are
+  skipped **per item** instead of failing the whole batch with HTTP 422.
+  `blocked_count` / `blocked_urls` returned on 200; BookmarksConnector
+  pre-filters at file-pick with a toast; `onboarding_blocked_urls_skipped`
+  activity event.
+- **`service-errors` entries** reshaped to `{ title, body, fix }` while
+  preserving the `toUserMessage` string contract (#114 groundwork).
+- **Dependabot (#94):** bundled roll-forward — `google-genai` 1.73.1 → **2.4.0**,
+  `uvicorn[standard]` 0.46 → 0.47, `sentence-transformers` 5.4.1 → 5.5.0,
+  `youtube-transcript-api` floor → `>=1.2.4`, `json-repair` floor →
+  `>=0.59.10`, `codeql-action` 4.35.4 → 4.35.5.
+- **Dependabot (#110):** `github/codeql-action` 4.35.5 → **4.36.0**,
+  `docker/setup-buildx-action` → **4.1.0**, `@types/node` patch in
+  mcp-server.
+- **Dependabot config:** ignore `chromadb >=1.0.0` and `numpy >=2` (blocked by
+  `chromadb==0.4.24` + `numpy<2` pin until deliberate migration).
+
+### Fixed
+
+- **YouTube ingest errors (#84):** cloud-IP / bot-detection empty transcript
+  responses now return **`422 youtube_transcript_blocked`** instead of
+  **`youtube_no_transcript`**.
+- **Chat DeepSeek routing (#117):** `/chat/select-pages` and `/chat/synthesize`
+  no longer reject DeepSeek model IDs.
+
+### Security
+
+- **mcp-server `qs` (#105, GHSA-q8mj-m7cp-5q26 / CVE-2026-8723):** npm
+  override `>=6.15.2 <7.0.0` on transitive `qs` via
+  `@modelcontextprotocol/sdk` → `express` (6.15.1 → 6.15.2).
+
+### Migration notes
+
+- **Schema v24 → v25** (incremental via `migrate.py` on boot):
+  - **`sources.title_source TEXT`** — which cascade step produced the title.
+  - **`sources.title_rescued_at TIMESTAMP`** — idempotency marker for LLM
+    title rescue.
+  - Pre-v25 rows stay `NULL`; extract route falls back to legacy
+    `isGarbageTitle` behaviour.
+- **No new required env vars.** `DEEPSEEK_API_KEY` and `YOUTUBE_API_KEY`
+  remain optional; onboarding health surfaces when they are missing for the
+  selected model or YouTube ingest.
+
+### Known limitations at 0.2.2
+
+- **Three compile/chat backends:** Gemini 2.5 (default), DeepSeek V4 Pro,
+  DeepSeek V4 Flash (opt-in, lower cost/latency; Phase 8 corpus validation
+  report not yet filled in).
+- **Single-tenant only.** Same as prior releases.
+- **YouTube from datacenter IPs:** `youtube_transcript_blocked` is expected;
+  residential proxy not wired (deferred).
+- **chromadb 0.4.24 / numpy <2** pin unchanged; Dependabot PRs for chromadb 1.x
+  and numpy 2.x remain blocked.
 
 ## [0.2.1] — 2026-05-14
 
@@ -377,7 +483,8 @@ Initial public release.
 - **Auto-backup-on-start** is end-to-end wired but lacks regression tests
   on the start-time path.
 
-[Unreleased]: https://github.com/tuirk/Kompl/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/tuirk/Kompl/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/tuirk/Kompl/releases/tag/v0.2.2
 [0.2.1]: https://github.com/tuirk/Kompl/releases/tag/v0.2.1
 [0.2.0]: https://github.com/tuirk/Kompl/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tuirk/Kompl/releases/tag/v0.1.0
