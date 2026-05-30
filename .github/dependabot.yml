@@ -64,6 +64,12 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # chromadb 0.4.24 requires numpy<2; 1.x needs a deliberate migration (vector_store API).
+      - dependency-name: chromadb
+        versions: [">=1.0.0"]
+      - dependency-name: numpy
+        versions: [">=2.0.0"]
 
   - package-ecosystem: github-actions
     directory: /
