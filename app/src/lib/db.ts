@@ -1666,12 +1666,16 @@ export function updateCompileStep(
 
   let overallStatus = row.status;
   let setStartedAt = '';
-  if (status === 'running' && row.status === 'queued') {
-    overallStatus = 'running';
-    setStartedAt = ", started_at = CURRENT_TIMESTAMP";
-  }
-  if (status === 'failed') {
-    overallStatus = 'failed';
+  // In-flight workers may still report step progress after cancel; never
+  // resurrect the session gate (queued → running) from a cancelled row.
+  if (row.status !== 'cancelled') {
+    if (status === 'running' && row.status === 'queued') {
+      overallStatus = 'running';
+      setStartedAt = ", started_at = CURRENT_TIMESTAMP";
+    }
+    if (status === 'failed') {
+      overallStatus = 'failed';
+    }
   }
 
   db.prepare(
@@ -1723,6 +1727,29 @@ export function cancelCompileProgress(sessionId: string, reason: string): void {
         WHERE session_id = ?`
     )
     .run(reason, sessionId);
+}
+
+/**
+ * Cancel never-started queued sessions for other session_ids.
+ *
+ * Orphan rows are left when /api/onboarding/finalize created compile_progress
+ * but the n8n trigger failed (row stays queued, started_at NULL). They hold
+ * the global concurrency gate until the user manually cancels — blocking a
+ * new onboarding run with "Another compile session is already running."
+ */
+export function supersedeOrphanQueuedSessions(exceptSessionId: string): number {
+  const result = openDb()
+    .prepare(
+      `UPDATE compile_progress
+          SET status = 'cancelled',
+              error = 'Superseded by new compile session',
+              completed_at = CURRENT_TIMESTAMP
+        WHERE session_id != ?
+          AND status = 'queued'
+          AND started_at IS NULL`
+    )
+    .run(exceptSessionId);
+  return result.changes as number;
 }
 
 /**
