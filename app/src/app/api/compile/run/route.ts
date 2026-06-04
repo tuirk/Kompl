@@ -589,6 +589,9 @@ export async function POST(request: Request) {
   const progress = getCompileProgress(session_id);
   if (!progress) return NextResponse.json({ error: 'no_progress_record' }, { status: 404 });
   if (progress.status === 'completed') return NextResponse.json({ session_id, status: 'already_completed' }, { status: 409 });
+  if (progress.status === 'cancelled') {
+    return NextResponse.json({ error: 'session_cancelled' }, { status: 409 });
+  }
 
   if (progress.status === 'running') {
     // Per-session adaptive cleanup (60 min floor + 6 min/source) — see

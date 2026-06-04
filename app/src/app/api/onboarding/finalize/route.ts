@@ -24,6 +24,7 @@ import {
   getStagingBySession,
   logActivity,
   setSetting,
+  supersedeOrphanQueuedSessions,
 } from '../../../../lib/db';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
@@ -62,6 +63,10 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
+
+  // Clear orphan queued rows (failed n8n trigger, abandoned tab) so they
+  // do not hold the global gate while the user starts a fresh session.
+  supersedeOrphanQueuedSessions(session_id);
 
   // Global concurrency gate: only one compile session at a time. Two
   // concurrent pipelines collide on the Gemini rate limiter singleton,

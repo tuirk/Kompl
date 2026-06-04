@@ -172,6 +172,7 @@ function ReviewPageInner() {
         queued?: number;
         error?: string;
         error_code?: string;
+        active_session_id?: string;
       };
       if (!res.ok) {
         // n8n_* errors still navigate to progress so the retry button lives there.
@@ -182,7 +183,15 @@ function ReviewPageInner() {
           );
           return;
         }
-        showToast(toUserMessage(body.error_code ?? 'commit_failed'), 'error');
+        if (body.error_code === 'session_in_progress' && body.active_session_id) {
+          const short = body.active_session_id.slice(0, 8);
+          showToast(
+            `${toUserMessage('session_in_progress')} Open Progress for session ${short}… or cancel it there first.`,
+            'error',
+          );
+        } else {
+          showToast(toUserMessage(body.error_code ?? 'commit_failed'), 'error');
+        }
         setConfirming(false);
         return;
       }
