@@ -418,10 +418,11 @@ def _fetch_youtube_transcript(video_id: str) -> tuple[list[dict[str, Any]], str 
     """Fetch the best available transcript for `video_id`.
 
     Prefers manually-uploaded transcripts over auto-generated. Returns
-    (segments, language_code). Raises HTTPException(422 youtube_no_transcript)
-    when no transcript is available, the video doesn't exist, or YouTube
-    blocks the request (cloud-IP block — see plan "Out of scope" for the
-    Webshare proxy follow-up).
+    (segments, language_code).     Raises HTTPException(422 youtube_no_transcript)
+    when no transcript is available or the video doesn't exist.
+    Raises HTTPException(422 youtube_transcript_blocked) when captions exist
+    but YouTube refuses the timedtext fetch (IpBlocked / RequestBlocked, or
+    legacy empty-body ParseError on youtube-transcript-api 1.0.x).
 
     Imported lazily so a missing youtube-transcript-api install only breaks
     YouTube ingestion, not the whole nlp-service. The dep is pinned in
@@ -434,6 +435,8 @@ def _fetch_youtube_transcript(video_id: str) -> tuple[list[dict[str, Any]], str 
             NoTranscriptFound,
             VideoUnavailable,
             CouldNotRetrieveTranscript,
+            IpBlocked,
+            RequestBlocked,
         )
     except ImportError as e:
         # Misconfiguration — surface clearly rather than silent-falling-through.
@@ -443,41 +446,26 @@ def _fetch_youtube_transcript(video_id: str) -> tuple[list[dict[str, Any]], str 
         ) from e
 
     try:
-        tlist = YouTubeTranscriptApi.list_transcripts(video_id)
-        # Prefer human-uploaded over auto-generated. Pick the first available
-        # in either bucket; downstream extract is language-agnostic and the
-        # session is anchored to a single source so we don't need to enforce
-        # a target language here.
-        chosen = None
-        for t in tlist:
-            if not t.is_generated:
-                chosen = t
-                break
-        if chosen is None:
-            chosen = next(iter(tlist), None)
-        if chosen is None:
-            raise NoTranscriptFound(video_id, [], None)
-        segments = chosen.fetch()
-        return segments, getattr(chosen, "language_code", None)
+        # youtube-transcript-api 1.2+: instance fetch() picks the best track
+        # (manual over auto-generated). to_raw_data() preserves the dict shape
+        # downstream markdown assembly expects.
+        fetched = YouTubeTranscriptApi().fetch(video_id)
+        return fetched.to_raw_data(), fetched.language_code
     except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable, CouldNotRetrieveTranscript) as e:
         # Package's own "no captions exist" classes — clean signal.
         raise HTTPException(
             status_code=422,
             detail="youtube_no_transcript",
         ) from e
+    except (IpBlocked, RequestBlocked) as e:
+        raise HTTPException(
+            status_code=422,
+            detail="youtube_transcript_blocked",
+        ) from e
     except Exception as e:
-        # Reached when list_transcripts() SUCCEEDED (captions exist) but
-        # fetch() failed — almost always because YouTube returned HTTP 200
-        # with an empty body for the timedtext request. The classic
-        # cloud-IP / bot-detection fingerprint. The library leaks bare
-        # xml.etree.ElementTree.ParseError("no element found: line 1, column 0")
-        # in that case. Verified live on session-smoke `youtu.be/Ub3GoFaUcds`
-        # AND on Q7Ryv1M7CvI (2026-05-18) — both have auto-generated English
-        # tracks that browser tools can fetch but our datacenter IP cannot.
-        # Distinct from "no captions exist" so the app can show a workaround-
-        # specific message (use a residential proxy) instead of "video has
-        # no captions" (which would be wrong and would push the user to
-        # blame the video).
+        # 1.0.x leaked ParseError on empty timedtext bodies; keep mapping those
+        # to youtube_transcript_blocked so the app message stays accurate when
+        # an old pin slips through, and for any future empty-body regressions.
         raise HTTPException(
             status_code=422,
             detail="youtube_transcript_blocked",

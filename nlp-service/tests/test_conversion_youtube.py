@@ -46,30 +46,19 @@ def client():
 # ─── Stubs for youtube-transcript-api ────────────────────────────────────────
 
 
-class _StubTranscript:
-    def __init__(self, segments: list[dict[str, Any]], language_code: str = "en", is_generated: bool = False) -> None:
+class _StubFetched:
+    """Minimal youtube-transcript-api 1.2 FetchedTranscript stand-in."""
+
+    def __init__(self, segments: list[dict[str, Any]], language_code: str = "en") -> None:
         self._segments = segments
         self.language_code = language_code
-        self.is_generated = is_generated
 
-    def fetch(self) -> list[dict[str, Any]]:
+    def to_raw_data(self) -> list[dict[str, Any]]:
         return self._segments
 
 
-class _StubTranscriptList:
-    """Iterable wrapper matching the youtube-transcript-api TranscriptList shape
-    that our code consumes (iterates + `is_generated` per item)."""
-
-    def __init__(self, transcripts: list[_StubTranscript]) -> None:
-        self._transcripts = transcripts
-
-    def __iter__(self):
-        return iter(self._transcripts)
-
-
 def _stub_transcript_api(monkeypatch, *, segments=None, raise_class=None):
-    """Patch youtube-transcript-api.YouTubeTranscriptApi.list_transcripts to
-    return a stubbed transcript list or raise a given exception class.
+    """Patch youtube-transcript-api.YouTubeTranscriptApi.fetch (1.2+ API).
 
     Imports inside the patched module so we don't pull the real package's
     network side effects into test collection. The real exception classes are
@@ -77,23 +66,22 @@ def _stub_transcript_api(monkeypatch, *, segments=None, raise_class=None):
     """
     from youtube_transcript_api import YouTubeTranscriptApi
 
+    seg = segments or [{"text": "hello world", "start": 0.0, "duration": 2.0}]
+
     if raise_class is not None:
-        def _raise(_video_id):  # noqa: ARG001 - signature match
-            # Most exception classes in this package take a video_id arg; others
-            # need (video_id, language_codes). Construct defensively.
+        def _fetch(self, video_id):  # noqa: ARG001
             try:
-                raise raise_class(_video_id)
+                raise raise_class(video_id)
             except TypeError:
-                raise raise_class(_video_id, [], None)
-        monkeypatch.setattr(YouTubeTranscriptApi, "list_transcripts", _raise)
+                raise raise_class(video_id, [], None)
+
+        monkeypatch.setattr(YouTubeTranscriptApi, "fetch", _fetch)
         return
 
-    transcripts = [_StubTranscript(segments or [{"text": "hello world", "start": 0.0, "duration": 2.0}])]
-    monkeypatch.setattr(
-        YouTubeTranscriptApi,
-        "list_transcripts",
-        lambda _video_id: _StubTranscriptList(transcripts),
-    )
+    def _fetch(self, video_id):  # noqa: ARG001
+        return _StubFetched(seg)
+
+    monkeypatch.setattr(YouTubeTranscriptApi, "fetch", _fetch)
 
 
 def _stub_data_api(monkeypatch, *, payload=None, raises: HttpClientError | None = None, api_key: str = "fake-key"):
@@ -228,26 +216,16 @@ def test_youtube_transcripts_disabled(monkeypatch, client):
 
 
 def test_youtube_fetch_raises_unexpected_exception(monkeypatch, client):
-    """list_transcripts() SUCCEEDS (captions exist) but fetch() raises bare
-    xml.etree.ElementTree.ParseError because YouTube returned an empty body —
-    the cloud-IP / bot-detection fingerprint. Must surface as the distinct
-    `youtube_transcript_blocked` code (NOT youtube_no_transcript) so the app
-    can show a workaround-specific message. Observed live on session smoke
-    test `youtu.be/Ub3GoFaUcds` and again on `Q7Ryv1M7CvI` (2026-05-18)."""
+    """fetch() raises bare xml.etree.ElementTree.ParseError (empty timedtext
+    body on youtube-transcript-api 1.0.x). Must surface as
+    `youtube_transcript_blocked` (NOT youtube_no_transcript)."""
     import xml.etree.ElementTree as ET
     from youtube_transcript_api import YouTubeTranscriptApi
 
-    class _BadTranscript:
-        is_generated = False
-        language_code = "en"
-        def fetch(self):
-            raise ET.ParseError("no element found: line 1, column 0")
+    def _bad_fetch(self, _video_id):  # noqa: ARG001
+        raise ET.ParseError("no element found: line 1, column 0")
 
-    monkeypatch.setattr(
-        YouTubeTranscriptApi,
-        "list_transcripts",
-        lambda _vid: _StubTranscriptList([_BadTranscript()]),
-    )
+    monkeypatch.setattr(YouTubeTranscriptApi, "fetch", _bad_fetch)
 
     res = client.post(
         "/convert/url",

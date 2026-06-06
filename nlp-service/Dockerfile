@@ -47,6 +47,14 @@ RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Fail the image build if torch/transformers pins drift (pytest stubs hide this).
+RUN python -c "import transformers; from sentence_transformers import SentenceTransformer; assert transformers.__version__.startswith('4.')"
+
+# Override markitdown's youtube-transcript-api~=1.0.0 pin. 1.0.x returns empty
+# timedtext bodies on current YouTube (ParseError) even from residential IPs;
+# Kompl's YouTube ingest uses the direct API in routers/conversion.py (1.2+).
+RUN pip install --no-cache-dir --upgrade "youtube-transcript-api>=1.2.4,<2.0.0"
+
 # Part 2a: download spaCy model and NLTK corpora required by rake-nltk.
 # en_core_web_sm is ~12 MB; punkt_tab and stopwords are small.
 RUN python -m spacy download en_core_web_sm && \

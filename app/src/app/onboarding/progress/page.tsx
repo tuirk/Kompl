@@ -82,6 +82,16 @@ function parseCommittedCount(detail: string | undefined): { pages: number; sourc
   return { pages: pM ? parseInt(pM[1], 10) : 0, sources: sM ? parseInt(sM[1], 10) : 0 };
 }
 
+function stepDataFingerprint(items: StepItem[], events: StepEvent[]): string {
+  const itemKey = items.map((i) => `${i.id}:${i.status}:${i.error ?? ''}`).join('|');
+  const eventKey = events.map((e) => `${e.id}:${e.action_type}`).join('|');
+  return `${itemKey}#${eventKey}`;
+}
+
+function isTerminalStatus(status: string): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
 // ── Icon components ────────────────────────────────────────────────────────────
 
 function IconDone() {
@@ -222,15 +232,19 @@ function ProgressPageInner() {
   const [elapsedSec,      setElapsedSec]      = useState(0);
   const [nowMs,           setNowMs]           = useState(() => Date.now());
 
-  // Expand-to-reveal state — lives OUTSIDE the polling flow so 2s status
-  // re-renders don't clobber the user's expanded panels.
   const [expandedSteps,   setExpandedSteps]   = useState<Set<string>>(() => new Set());
   const [stepData,        setStepData]        = useState<Record<string, StepData>>({});
 
-  const intervalRef      = useRef<ReturnType<typeof setInterval>  | null>(null);
-  const patienceTimerRef = useRef<ReturnType<typeof setTimeout>   | null>(null);
-  const queuedTimerRef   = useRef<ReturnType<typeof setTimeout>   | null>(null);
-  const isActiveRef      = useRef(true);
+  const intervalRef           = useRef<ReturnType<typeof setInterval>  | null>(null);
+  const patienceTimerRef      = useRef<ReturnType<typeof setTimeout>   | null>(null);
+  const queuedTimerRef        = useRef<ReturnType<typeof setTimeout>   | null>(null);
+  const isActiveRef           = useRef(true);
+  const expandedStepsRef      = useRef(expandedSteps);
+  const prevSessionStatusRef  = useRef<string | null>(null);
+
+  useEffect(() => {
+    expandedStepsRef.current = expandedSteps;
+  }, [expandedSteps]);
 
   function stopPolling() {
     if (intervalRef.current)      { clearInterval(intervalRef.current);     intervalRef.current      = null; }
@@ -242,12 +256,13 @@ function ProgressPageInner() {
 
   async function fetchStepData(stepKey: string): Promise<void> {
     if (!sessionId) return;
-    setStepData((prev) => ({
-      ...prev,
-      [stepKey]: prev[stepKey]
-        ? { ...prev[stepKey], loading: true }
-        : { items: [], events: [], fetchedAt: 0, loading: true },
-    }));
+    setStepData((prev) => {
+      if (prev[stepKey]) return prev;
+      return {
+        ...prev,
+        [stepKey]: { items: [], events: [], fetchedAt: 0, loading: true },
+      };
+    });
     try {
       const [itemsRes, eventsRes] = await Promise.all([
         fetch(`/api/compile/progress/items?session_id=${encodeURIComponent(sessionId)}&step=${encodeURIComponent(stepKey)}`),
@@ -255,15 +270,38 @@ function ProgressPageInner() {
       ]);
       const items: StepItem[]   = itemsRes.ok  ? ((await itemsRes.json())?.items  ?? []) : [];
       const events: StepEvent[] = eventsRes.ok ? ((await eventsRes.json())?.events ?? []) : [];
-      setStepData((prev) => ({
-        ...prev,
-        [stepKey]: { items, events, fetchedAt: Date.now(), loading: false },
-      }));
+      const fingerprint = stepDataFingerprint(items, events);
+      setStepData((prev) => {
+        const existing = prev[stepKey];
+        if (
+          existing &&
+          !existing.loading &&
+          stepDataFingerprint(existing.items, existing.events) === fingerprint
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [stepKey]: { items, events, fetchedAt: Date.now(), loading: false },
+        };
+      });
     } catch {
-      setStepData((prev) => ({
-        ...prev,
-        [stepKey]: { items: [], events: [], fetchedAt: Date.now(), loading: false },
-      }));
+      setStepData((prev) => {
+        const existing = prev[stepKey];
+        if (existing && !existing.loading && existing.items.length === 0 && existing.events.length === 0) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [stepKey]: { items: [], events: [], fetchedAt: Date.now(), loading: false },
+        };
+      });
+    }
+  }
+
+  function refreshOpenSteps(): void {
+    for (const stepKey of expandedStepsRef.current) {
+      void fetchStepData(stepKey);
     }
   }
 
@@ -314,6 +352,12 @@ function ProgressPageInner() {
       }
 
       setProgress(data);
+
+      const justTerminal = isTerminalStatus(data.status) && !isTerminalStatus(prevSessionStatusRef.current ?? '');
+      if (data.status === 'running' || data.status === 'queued' || justTerminal) {
+        refreshOpenSteps();
+      }
+      prevSessionStatusRef.current = data.status;
 
       if (data.status === 'running' || data.status === 'queued') {
         // Overwrite unconditionally. The server enforces single-session via a
@@ -894,6 +938,7 @@ function ProgressPageInner() {
                   display: 'flex',
                   flexDirection: 'column',
                   gap: 16,
+                  opacity: isStepDone && !isStepActive ? 0.75 : 1,
                 }}>
                   {data?.loading && (
                     <div style={{
