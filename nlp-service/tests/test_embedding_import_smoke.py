@@ -1,12 +1,12 @@
 """Smoke test: real sentence-transformers import stack (not conftest-stubbed).
 
 conftest.py stubs sentence_transformers for speed, so a fresh ``pip install``
-can pull transformers 5.x incompatible with the Dockerfile's torch==2.5.1 pin
+can pull transformers/torch versions incompatible with the Dockerfile pins
 without any unit test failing. This runs the import in a subprocess so the
 stub never applies.
 
-Regression: resolve 500 ``embedding_failed`` when transformers 5.10+ met
-torch 2.5.1 after a Docker requirements-layer cache bust (2026-06-06).
+Regression: resolve 500 ``embedding_failed`` when transformers 5.x met
+torch 2.5.1 (missing float8) or torch >=2.7 (meta-tensor .to(device)).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ def test_sentence_transformer_imports_with_pinned_torch() -> None:
     script = (
         "import transformers; "
         "from sentence_transformers import SentenceTransformer; "
-        "assert transformers.__version__.startswith('4.'), transformers.__version__; "
+        "assert transformers.__version__.startswith('5.'), transformers.__version__; "
         "print('ok')"
     )
     result = subprocess.run(

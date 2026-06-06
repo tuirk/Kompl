@@ -36,19 +36,19 @@ COPY requirements.txt /app/requirements.txt
 # (~2 GB) from PyPI, bloating the image to 10 GB+. sentence-transformers and
 # keybert find torch already installed and skip their own resolution.
 #
-# Torch MUST be pinned. sentence-transformers==3.3.1 (Nov 2024) calls
-# `.to(device)` on meta-device-initialised weights; torch >=2.7 raises
-# NotImplementedError("Cannot copy out of meta tensor") and requires
-# `.to_empty()` instead. An unpinned install after a --no-cache rebuild
-# pulls the latest torch and breaks /resolve/embedding + /extract/keybert
-# at runtime — and the unit tests stub sentence_transformers, so nothing
-# catches the drift.
-RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+# Torch MUST be pinned. sentence-transformers calls `.to(device)` on meta-
+# device-initialised weights; torch >=2.7 raises NotImplementedError
+# ("Cannot copy out of meta tensor") and requires `.to_empty()` instead.
+# 2.6.x has float8 symbols transformers 5.x needs; 2.5.1 does not.
+# An unpinned install after a --no-cache rebuild pulls the latest torch
+# and breaks /resolve/embedding + /extract/keybert at runtime — and unit
+# tests stub sentence_transformers, so nothing catches the drift.
+RUN pip install --no-cache-dir torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
 
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Fail the image build if torch/transformers pins drift (pytest stubs hide this).
-RUN python -c "import transformers; from sentence_transformers import SentenceTransformer; assert transformers.__version__.startswith('4.')"
+RUN python -c "import transformers; from sentence_transformers import SentenceTransformer; assert transformers.__version__.startswith('5.')"
 
 # Override markitdown's youtube-transcript-api~=1.0.0 pin. 1.0.x returns empty
 # timedtext bodies on current YouTube (ParseError) even from residential IPs;

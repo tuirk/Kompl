@@ -1,178 +1,64 @@
-# Scorecard deferred-alerts audit
+# Scorecard Deferred Alerts
 
-Last audited: 2026-06-06 — extends 2026-05-02 audit. Alert #27 status-check
-gap closed in ruleset `main-protection` (id 15607385); 4 solo-dev sub-gaps
-remain open by design. Bucket C pip alerts renumbered after Dockerfile edits
-(#121 youtube-transcript-api install); count 3 → 5 open SARIF findings.
+Last audited: 2026-06-07.
 
-OpenSSF Scorecard runs weekly via `.github/workflows/scorecard.yml`. This
-file documents which alerts are dismissed, which are deferred with rationale,
-and which remain open as tracked TODOs. Mirrors the format of
-[codeql-false-positives.md](codeql-false-positives.md).
+This file tracks only Scorecard findings that are currently open or intentionally
+deferred. Historical false-positive ledgers were pruned; GitHub code scanning
+keeps the dismissed alert records.
 
-## Alert ledger after commit (post-pinning)
+## Current State
 
-| Bucket | Count | Disposition |
-|---|---|---|
-| Pinned (closes on next Scorecard run) | 12 | Action SHA pins (×8) + container digests (×3) + `npm ci` (×1) |
-| Dismissed in UI as false positive | 20 | `downloadThenRun` heuristic on `curl localhost \| python3 -c '<literal>'` |
-| Dismissed in UI as won't-fix | 5 | Structural alerts inapplicable to a solo-dev / single-user model |
-| Deferred with documented rationale | 5 | `pip` hash-pinning across the ML stack — out of proportion to risk |
-| Tracked TODO | 1 | `BranchProtectionID` — partially actionable in repo settings |
+| Alert | Rule | Status | Disposition |
+|---|---|---|---|
+| #27 | `BranchProtectionID` | Open | Tracked solo-dev gap |
+| #74 | `PinnedDependenciesID` | Deferred | Dismiss as `won't fix` |
+| #75 | `PinnedDependenciesID` | Deferred | Dismiss as `won't fix` |
 
-Total: 41.
+Alert #70 (`VulnerabilitiesID`) is fixed as of 2026-06-07 by exact-pinning
+`transformers==5.9.0` with `torch==2.6.0` CPU.
 
-## Bucket A — false positives (20 alerts, dismissed)
-
-**Rule:** `PinnedDependenciesID` / `downloadThenRun`.
-
-Scorecard's heuristic flags any `curl ... | <interpreter>` shape as
-"download remote code and run it." Every flagged line in this repo is the
-same pattern:
-
-```bash
-curl -sf "http://localhost:3000/api/..." \
-  | python3 -c '<literal one-liner that calls json.load(sys.stdin)>'
-```
-
-The piped data is JSON from the local Next.js test server, not executable
-code. `python3 -c '<literal>'` runs a hard-coded one-liner with stdin as
-data — never `eval`/`exec`s the stdin content.
-
-| Alert | File:Line |
-|---|---|
-| 42 | scripts/demo-comparison-wiki.sh:46 |
-| 43 | scripts/demo-live-phases.sh:50 |
-| 44 | scripts/demo-match-triage-boardgames.sh:50 |
-| 45 | scripts/integration-test.sh:431 |
-| 46 | scripts/integration-test.sh:1036 |
-| 47 | scripts/integration-test.sh:1059 |
-| 48 | scripts/integration-test.sh:1083 |
-| 49 | scripts/integration-test.sh:1188 |
-| 50 | scripts/integration-test.sh:1627 |
-| 51 | scripts/integration-test.sh:1652 |
-| 52 | scripts/integration-test.sh:1676 |
-| 53 | scripts/integration-test.sh:1826 |
-| 54 | scripts/integration-test.sh:1859 |
-| 55 | scripts/integration-test.sh:1969 |
-| 56 | scripts/integration-test.sh:1978 |
-| 57 | scripts/manual-alias-dossier-test.sh:55 |
-| 58 | scripts/manual-dossier-cap-test.sh:53 |
-| 59 | scripts/manual-draft-update-test.sh:61 |
-| 60 | scripts/manual-match-triage-test.sh:62 |
-| 61 | scripts/manual-split-session-test.sh:67 |
-
-**Persistence:** dismissals stick across Scorecard re-runs.
-`github/codeql-action/upload-sarif` auto-generates `partialFingerprints`
-from line content when the SARIF doesn't include them (Scorecard does not
-emit them). The dismissal sticks as long as the line content at that path
-is unchanged.
-
-## Bucket B — structural alerts (5 alerts, dismissed as won't-fix)
-
-These check repo-level policy that does not apply to a solo-developer,
-single-user product.
-
-| Alert | Rule | Reason |
-|---|---|---|
-| 63 | CodeReviewID | "0/26 approved changesets" — solo dev, no PR-mediated review. Standard OSSF gap (see [scorecard issue #4036](https://github.com/ossf/scorecard/issues/4036)). |
-| 64 | MaintainedID | "Repository created within 90 days" — auto-resolves at the 90-day mark; pure age check. |
-| 65 | CIIBestPracticesID | OpenSSF best-practices badge is a separate manual workflow on bestpractices.coreinfrastructure.org. Out of scope. |
-| 66 | FuzzingID | Kompl is a deterministic content compiler — no fuzz-target shape. Adding OSS-Fuzz is not justified. |
-| 67 | SASTID | "0/9 commits checked with SAST" — CodeQL was added recently; older commits will never be retroactively scanned. Future commits count. |
-
-Total: 43.
-
-## Bucket C — deferred (5 alerts, dismiss as won't-fix in GitHub UI)
-
-**Rule:** `PinnedDependenciesID` / `pipCommand`.
+## #74 / #75 — Pip Hash Pinning
 
 Scorecard wants every `pip install` to use `--require-hashes` against a
-hash-pinned lockfile. The `nlp-service` Python stack has ~200 transitive
-dependencies through torch, sentence-transformers, spaCy, KeyBERT, RAKE,
-YAKE, and FastAPI. A hash-pinned `requirements.txt` would:
+hash-pinned lockfile.
 
-1. Conflict with the CPU-only torch index-url pin in
-   [nlp-service/Dockerfile:35-46](../../nlp-service/Dockerfile#L35-L46).
-   `--require-hashes` mode disallows mixed index sources without
-   regenerating hashes for every CUDA-vs-CPU wheel variant.
-2. Break Dependabot's `pip` ecosystem auto-PRs (which assume
-   non-hash-pinned input).
-3. Require a `pip-compile --generate-hashes` regeneration on every
-   single dependency bump — high churn, high break risk on
-   platform-specific wheels.
+Current findings:
 
-The risk these alerts surface is "an upstream version is replaced
-mid-release" — already mitigated by version pinning in `requirements.txt`
-and weekly Dependabot freshness checks. Hash-pinning is a marginal
-improvement at disproportionate maintenance cost for this project.
+| Alert | Location | Finding |
+|---|---|---|
+| #74 | `nlp-service/Dockerfile:46` | `pip install ... torch==2.6.0 --index-url <cpu>` |
+| #75 | `.github/workflows/integration-test.yml:69` | CI parity install for `torch==2.6.0 --index-url <cpu>` |
 
-| Alert | File:Line |
-|---|---|
-| 40 | nlp-service/Dockerfile:46 — `pip install ... torch==2.5.1 --index-url <cpu>` (was :44 pre-#121) |
-| 41 | nlp-service/Dockerfile:48 — `pip install -r requirements.txt` (was :46 pre-#121) |
-| 62 | .github/workflows/integration-test.yml:67 — `pip install -r requirements.txt` |
-| 71 | nlp-service/Dockerfile:48 — same finding as #41 (Scorecard re-file after line shift) |
-| 72 | nlp-service/Dockerfile:56 — `pip install youtube-transcript-api>=1.2.4` (#121) |
+Rationale for deferral:
 
-**Score impact:** These alerts keep the **Pinned-Dependencies** sub-check
-below 10/10 on each weekly Scorecard run. That is expected and accepted.
-The public composite badge (~5.9) is **not** dominated by pip pinning —
-it is capped by **Branch-Protection** solo-dev structural gaps (Bucket D,
-alert #27). Fixing #71/#72 with hash-pinning would not move the composite
-badge meaningfully until a second maintainer joins and Tier-2 branch rules
-become satisfiable.
+- The NLP stack has a large transitive dependency surface through torch,
+  sentence-transformers, spaCy, KeyBERT, RAKE, YAKE, and FastAPI.
+- The CPU-only torch index is intentional; without it pip resolves CUDA wheels
+  and the Docker image grows dramatically.
+- Hash-pinning this stack would require `pip-compile --generate-hashes` churn
+  across platform-specific wheels and would fight Dependabot's pip workflow.
+- The practical risk is already reduced by direct version pins plus weekly
+  Dependabot freshness checks.
 
-**GitHub UI:** Dismiss each alert as **won't fix** with a link to this
-file. Dismissals persist while the flagged line content is unchanged
-(same mechanism as Bucket A). Dismissing cleans the Security → Code
-scanning inbox; the OpenSSF badge still reflects unpinned `pip install`
-lines on the next run — that is cosmetic unless you hash-pin.
+Dismiss #74 and #75 as **won't fix** with this comment:
 
-Re-evaluate when:
-- Migrating to a non-personal deployment target (supply-chain risk profile changes for hosted infra). [Currently out of roadmap; placeholder.]
-- Upstream PyPI compromise affects any pinned dependency.
-- The pip dependency surface shrinks below ~30 transitive deps.
+> Deferred by documented policy: pip hash-pinning across the ML stack is out of
+> proportion to risk for this project. See docs/security/scorecard-deferred.md.
 
-## Bucket D — tracked TODO (1 alert, left open)
+Re-evaluate if the Python dependency surface shrinks materially, torch is
+removed, or Kompl moves from single-user/local deployment to hosted multi-tenant
+infrastructure.
 
-**Alert 27 — `BranchProtectionID`.**
+## #27 — Branch Protection
 
 Scorecard wants:
-- Branch protection settings apply to administrators ✗ (solo admin)
-- Required approving review count ≥ 2 ✗ (solo dev)
-- Codeowners review required ✗ (solo dev)
-- Last-push approval enabled ✗ (no second reviewer)
-- Required status checks present ✓ (added 2026-05-02)
 
-**Status:** required-status-checks rule added to ruleset `main-protection`
-(id 15607385) on 2026-05-02 with contexts `unit-tests-app`,
-`unit-tests-cli`, `unit-tests-nlp`, `integration-test` and
-`strict_required_status_checks_policy: true` (require branches up to date
-before merging). Admin bypass remains enabled, so this never deadlocks a
-solo-merge if CI breaks. Sub-gaps now down from 5 → 4. Branch-protection
-sub-score remained 5/10 — Tier 2 structural failures (admins-bypass,
-2-reviewer, codeowners, last-push) cap the score regardless of Tier 3
-fixes. Scorecard composite stays ~5.9 until a second maintainer joins.
-Real-world value of the change is the actual enforcement (status checks
-must pass + branch must be current), not the score number.
+- Branch protection settings apply to administrators
+- Required approving review count >= 2
+- Codeowners review required
+- Last-push approval enabled
 
-## Re-audit triggers
-
-Re-run /full-pipeline against this list if any of the following changes:
-
-- A new `curl ... | <interpreter>` line is added that is **not** a
-  `localhost` JSON parse — re-evaluate Bucket A scope.
-- The `nlp-service` Python dependency surface shrinks meaningfully
-  (e.g., torch is removed) — re-evaluate Bucket C.
-- A second maintainer joins the project — re-evaluate Buckets B and D
-  (codeowners, review counts, last-push approval all become satisfiable).
-
-## See also
-
-- [codeql-false-positives.md](codeql-false-positives.md) — companion
-  audit for CodeQL alerts.
-- `.github/dependabot.yml` — weekly bumps for npm, pip, github-actions,
-  and docker ecosystems (this is what keeps pinned digests fresh).
-- `.github/workflows/scorecard.yml` — the Scorecard workflow itself, with
-  its own actions already SHA-pinned.
+Required status checks are already configured on `main` (`unit-tests-app`,
+`unit-tests-cli`, `unit-tests-nlp`, `integration-test`) with up-to-date branches
+required. The remaining gaps are solo-maintainer constraints. Keep #27 open as
+the tracked repo-policy TODO until a second maintainer joins.
