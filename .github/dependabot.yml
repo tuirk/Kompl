@@ -16,6 +16,9 @@ updates:
     ignore:
       - dependency-name: "@types/node"
         versions: [">=25"]
+      # marked v18 changed renderer.heading API — migrate lib/markdown.ts first.
+      - dependency-name: marked
+        versions: [">=13"]
 
   - package-ecosystem: npm
     directory: /mcp-server
@@ -65,9 +68,9 @@ updates:
           - minor
           - patch
     ignore:
-      # chromadb 0.4.24 requires numpy<2; 1.x needs a deliberate migration (vector_store API).
+      # chromadb 0.4.24 requires numpy<2; 0.5+ / 1.x need deliberate migration (vector_store API).
       - dependency-name: chromadb
-        versions: [">=1.0.0"]
+        versions: [">=0.5.0"]
       - dependency-name: numpy
         versions: [">=2.0.0"]
 
