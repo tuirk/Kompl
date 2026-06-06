@@ -29,7 +29,7 @@ sentence-transformers==5.5.0
 # torch.float8_e8m0fnu at load time, which 2.5.1 lacks — breaks
 # /resolve/embedding on fresh pip installs. Cap at 4.x; pytest stubs ST so
 # only test_embedding_import_smoke.py catches drift.
-transformers>=4.41.0,<5.0.0
+transformers>=5.10.2,<6.0.0
 # pytextrank: spaCy-native TextRank component (PyPI-available, no git dep).
 pytextrank==3.3.0
 scikit-learn==1.8.0
