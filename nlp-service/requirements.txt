@@ -11,7 +11,9 @@ markitdown[all]==0.1.5
 # watch-page HTML when no transcript exists (returns ~800 chars of footer
 # chrome — verified live on session 4a00f339). We need the transcript-vs-no-
 # transcript signal explicitly, which only the direct API exposes.
-youtube-transcript-api>=1.0.0,<2.0.0
+# markitdown[all]==0.1.5 constrains ~=1.0.0; Dockerfile upgrades to 1.2.x
+# after pip install (1.0.x breaks on current YouTube timedtext responses).
+youtube-transcript-api~=1.0.0
 # Commit 4: LLM compile. Use google-genai NOT google-generativeai (deprecated 2025-Q1).
 google-genai==2.4.0
 # Commit 4: async token-bucket rate limiter. Single uvicorn worker only —
@@ -23,6 +25,11 @@ rake-nltk==1.0.6
 yake==0.7.3
 keybert==0.9.0
 sentence-transformers==5.5.0
+# Dockerfile pins torch==2.5.1 (meta-tensor compat). transformers 5.x imports
+# torch.float8_e8m0fnu at load time, which 2.5.1 lacks — breaks
+# /resolve/embedding on fresh pip installs. Cap at 4.x; pytest stubs ST so
+# only test_embedding_import_smoke.py catches drift.
+transformers>=4.41.0,<5.0.0
 # pytextrank: spaCy-native TextRank component (PyPI-available, no git dep).
 pytextrank==3.3.0
 scikit-learn==1.8.0

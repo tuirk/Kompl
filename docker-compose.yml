@@ -45,6 +45,9 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      # Presence-only for /api/health integration_keys.youtube_present (ingest
+      # calls YouTube Data API inside nlp-service, not Next.js).
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
       # Per-source extract workers in app/src/app/api/compile/run/route.ts.
       # Default 4 saturated the prior 2GB / 2-CPU nlp-service container (12
       # in-flight NLP calls = 'fetch failed' cascade on session 453e7fc1).

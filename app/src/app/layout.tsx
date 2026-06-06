@@ -3,7 +3,6 @@ import { Suspense } from 'react';
 import { Space_Grotesk, Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import TopNav from '@/components/TopNav';
-import WhatsNext from '@/components/WhatsNext';
 
 // Obsidian Kinetic — font loading via next/font (zero layout shift, self-hosted)
 const spaceGrotesk = Space_Grotesk({
@@ -49,15 +48,13 @@ export default function RootLayout({
           height: 32,
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          paddingLeft: 4,
+          justifyContent: 'flex-end',
           paddingRight: 20,
           gap: 6,
           background: 'var(--bg)',
           borderTop: '1px solid var(--border)',
           zIndex: 50,
         }}>
-          <WhatsNext />
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <span style={{ fontSize: 14 }}>🥞</span>
             <span style={{
