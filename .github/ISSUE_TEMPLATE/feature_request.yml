@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the idea. Before filing, peek at the **What's next** panel in the bottom-left footer of the running Kompl app — it lists things we already plan to build. If your idea is close to one of those, you can comment on or expand the existing roadmap item instead.
+        Thanks for the idea. Before filing, check [existing GitHub issues](https://github.com/tuirk/Kompl/issues) — if your idea is already tracked, comment on or expand that issue instead of opening a duplicate.
 
   - type: textarea
     id: problem
