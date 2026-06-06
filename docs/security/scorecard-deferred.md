@@ -1,9 +1,9 @@
 # Scorecard deferred-alerts audit
 
-Last audited: 2026-05-02 — covers the 41 open alerts after commit 8672980
-restored the Scorecard schedule. 2026-05-02 update: alert #27 status-check
+Last audited: 2026-06-06 — extends 2026-05-02 audit. Alert #27 status-check
 gap closed in ruleset `main-protection` (id 15607385); 4 solo-dev sub-gaps
-remain open by design.
+remain open by design. Bucket C pip alerts renumbered after Dockerfile edits
+(#121 youtube-transcript-api install); count 3 → 5 open SARIF findings.
 
 OpenSSF Scorecard runs weekly via `.github/workflows/scorecard.yml`. This
 file documents which alerts are dismissed, which are deferred with rationale,
@@ -17,7 +17,7 @@ and which remain open as tracked TODOs. Mirrors the format of
 | Pinned (closes on next Scorecard run) | 12 | Action SHA pins (×8) + container digests (×3) + `npm ci` (×1) |
 | Dismissed in UI as false positive | 20 | `downloadThenRun` heuristic on `curl localhost \| python3 -c '<literal>'` |
 | Dismissed in UI as won't-fix | 5 | Structural alerts inapplicable to a solo-dev / single-user model |
-| Deferred with documented rationale | 3 | `pip` hash-pinning across the ML stack — out of proportion to risk |
+| Deferred with documented rationale | 5 | `pip` hash-pinning across the ML stack — out of proportion to risk |
 | Tracked TODO | 1 | `BranchProtectionID` — partially actionable in repo settings |
 
 Total: 41.
@@ -81,7 +81,9 @@ single-user product.
 | 66 | FuzzingID | Kompl is a deterministic content compiler — no fuzz-target shape. Adding OSS-Fuzz is not justified. |
 | 67 | SASTID | "0/9 commits checked with SAST" — CodeQL was added recently; older commits will never be retroactively scanned. Future commits count. |
 
-## Bucket C — deferred (3 alerts, left open)
+Total: 43.
+
+## Bucket C — deferred (5 alerts, dismiss as won't-fix in GitHub UI)
 
 **Rule:** `PinnedDependenciesID` / `pipCommand`.
 
@@ -91,7 +93,7 @@ dependencies through torch, sentence-transformers, spaCy, KeyBERT, RAKE,
 YAKE, and FastAPI. A hash-pinned `requirements.txt` would:
 
 1. Conflict with the CPU-only torch index-url pin in
-   [nlp-service/Dockerfile:33-44](../../nlp-service/Dockerfile#L33-L44).
+   [nlp-service/Dockerfile:35-46](../../nlp-service/Dockerfile#L35-L46).
    `--require-hashes` mode disallows mixed index sources without
    regenerating hashes for every CUDA-vs-CPU wheel variant.
 2. Break Dependabot's `pip` ecosystem auto-PRs (which assume
@@ -107,9 +109,25 @@ improvement at disproportionate maintenance cost for this project.
 
 | Alert | File:Line |
 |---|---|
-| 40 | nlp-service/Dockerfile:44 — `pip install ... torch==2.5.1 --index-url <cpu>` |
-| 41 | nlp-service/Dockerfile:46 — `pip install -r requirements.txt` |
+| 40 | nlp-service/Dockerfile:46 — `pip install ... torch==2.5.1 --index-url <cpu>` (was :44 pre-#121) |
+| 41 | nlp-service/Dockerfile:48 — `pip install -r requirements.txt` (was :46 pre-#121) |
 | 62 | .github/workflows/integration-test.yml:67 — `pip install -r requirements.txt` |
+| 71 | nlp-service/Dockerfile:48 — same finding as #41 (Scorecard re-file after line shift) |
+| 72 | nlp-service/Dockerfile:56 — `pip install youtube-transcript-api>=1.2.4` (#121) |
+
+**Score impact:** These alerts keep the **Pinned-Dependencies** sub-check
+below 10/10 on each weekly Scorecard run. That is expected and accepted.
+The public composite badge (~5.9) is **not** dominated by pip pinning —
+it is capped by **Branch-Protection** solo-dev structural gaps (Bucket D,
+alert #27). Fixing #71/#72 with hash-pinning would not move the composite
+badge meaningfully until a second maintainer joins and Tier-2 branch rules
+become satisfiable.
+
+**GitHub UI:** Dismiss each alert as **won't fix** with a link to this
+file. Dismissals persist while the flagged line content is unchanged
+(same mechanism as Bucket A). Dismissing cleans the Security → Code
+scanning inbox; the OpenSSF badge still reflects unpinned `pip install`
+lines on the next run — that is cosmetic unless you hash-pin.
 
 Re-evaluate when:
 - Migrating to a non-personal deployment target (supply-chain risk profile changes for hosted infra). [Currently out of roadmap; placeholder.]
