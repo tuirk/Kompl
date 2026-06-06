@@ -109,7 +109,7 @@ improvement at disproportionate maintenance cost for this project.
 
 | Alert | File:Line |
 |---|---|
-| 40 | nlp-service/Dockerfile:46 — `pip install ... torch==2.5.1 --index-url <cpu>` (was :44 pre-#121) |
+| 40 | nlp-service/Dockerfile:46 — `pip install ... torch==2.6.0 --index-url <cpu>` |
 | 41 | nlp-service/Dockerfile:48 — `pip install -r requirements.txt` (was :46 pre-#121) |
 | 62 | .github/workflows/integration-test.yml:67 — `pip install -r requirements.txt` |
 | 71 | nlp-service/Dockerfile:48 — same finding as #41 (Scorecard re-file after line shift) |
@@ -133,6 +133,17 @@ Re-evaluate when:
 - Migrating to a non-personal deployment target (supply-chain risk profile changes for hosted infra). [Currently out of roadmap; placeholder.]
 - Upstream PyPI compromise affects any pinned dependency.
 - The pip dependency surface shrinks below ~30 transitive deps.
+
+## Bucket E — resolved (alert #70, VulnerabilitiesID)
+
+**Rule:** `VulnerabilitiesID` — OSV scan of dependency manifests.
+
+Scorecard #70 reported 27 open OSV IDs; triage (2026-06-06) found all 27 in
+`transformers` on PyPI. npm lockfiles (`app`, `cli`, `mcp-server`) were clean.
+Fix: bump `torch` to **2.6.0** (CPU wheel) and `transformers` to **>=5.0.0,<5.10.0**
+in [nlp-service/requirements.txt](../../nlp-service/requirements.txt) (5.10+ needs
+torch float8 symbols 2.6 lacks). Alert should auto-close on the next Scorecard
+run after merge.
 
 ## Bucket D — tracked TODO (1 alert, left open)
 

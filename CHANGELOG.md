@@ -10,6 +10,13 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+### Security
+
+- **nlp-service:** bump `torch` to 2.6.0 (CPU) and `transformers` to
+  >=5.0.0,<5.10.0 to clear Scorecard alert #70 (27 OSV IDs). Cap below 5.10
+  because 5.10+ requires torch float8 symbols 2.6.0 lacks. CI `unit-tests-nlp`
+  now installs the CPU torch wheel before `requirements.txt` (Dockerfile parity).
+
 ## [0.2.2] — 2026-05-30
 
 Incremental release over 0.2.1: pre-compile health checks, DeepSeek V4 Flash,
