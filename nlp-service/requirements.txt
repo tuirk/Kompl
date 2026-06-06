@@ -18,7 +18,7 @@ youtube-transcript-api~=1.0.0
 google-genai==2.4.0
 # Commit 4: async token-bucket rate limiter. Single uvicorn worker only —
 # InMemoryBucket is process-local; see research artifact section 3.
-pyrate-limiter==3.7.0
+pyrate-limiter==4.2.0
 # Part 2a: multi-layer NLP extraction pipeline.
 spacy==3.8.14
 rake-nltk==1.0.6
