@@ -10,12 +10,54 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-07
+
+Security and dependency-maintenance release over 0.2.2. Clears the Scorecard
+vulnerability alert, closes the Hono CVE chain in the MCP server, and tightens
+Dependabot policy around intentionally deferred major migrations.
+
+### Fixed
+
+- **Compile cancellation (#119):** queued compile rows orphaned by cancel are
+  now cleared so cancelled sessions do not stay visible as active work.
+- **YouTube ingest (#121):** direct `youtube-transcript-api` install is upgraded
+  to 1.2.x in the Docker image, restoring transcript fetches that broke on
+  1.0.x timedtext responses.
+- **Embedding import drift (#121, #136):** Docker and CI now install CPU torch
+  before `requirements.txt`, and the import smoke test catches
+  torch/transformers incompatibilities that normal pytest stubs would miss.
+
 ### Security
 
-- **nlp-service:** bump `torch` to 2.6.0 (CPU) and exact-pin `transformers`
-  to 5.9.0 to clear Scorecard alert #70 (27 OSV IDs). Keep below 5.10 because
-  5.10+ requires torch float8 symbols 2.6.0 lacks. CI `unit-tests-nlp` now
-  installs the CPU torch wheel before `requirements.txt` (Dockerfile parity).
+- **MCP server Hono CVEs (#122):** `hono` override raised to `^4.12.21`
+  (resolved lockfile: 4.12.23), closing CVE-2026-47673 through CVE-2026-47676
+  in the unused HTTP transport path of `@modelcontextprotocol/sdk`.
+- **Scorecard #70 / OSV (#136):** `torch` bumped to 2.6.0 (CPU) and
+  `transformers` exact-pinned to 5.9.0, clearing 27 OSV IDs reported against
+  the previous 4.x transformer range.
+- **Scorecard pip hash-pinning (#133, #136):** deferred pip hash-pinning alerts
+  are documented in `docs/security/scorecard-deferred.md`; current open
+  security-scanning state is intentionally reduced to branch-protection #27.
+
+### Changed
+
+- **Dependabot policy (#124, #133):** ignore rules now document blocked major
+  migrations for `chromadb >=0.5.0`, `marked >=13`, `transformers >=5.10.0`,
+  and `pyrate-limiter >=4.0.0`.
+- **Dependency roll-forward (#100, #125-#128):** app, CLI, MCP server, CodeQL,
+  and checkout actions received minor/patch maintenance updates, including
+  `next` 16.2.7, `react` 19.2.7, `better-sqlite3` 12.10.0,
+  `github/codeql-action` 4.36.2, and `actions/checkout` 6.0.3.
+
+### Known limitations at 0.3.0
+
+- **Branch-protection Scorecard alert #27** remains open by design for solo-dev
+  policy gaps (admin bypass, two-reviewer approval, codeowners, last-push
+  approval).
+- **Pip hash-pinning** remains deferred for the NLP ML stack; see
+  `docs/security/scorecard-deferred.md`.
+- **Chroma/numpy migration** is still deferred: `chromadb==0.4.24` and
+  `numpy<2` remain pinned until a deliberate vector-store migration.
 
 ## [0.2.2] — 2026-05-30
 
