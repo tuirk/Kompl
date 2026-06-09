@@ -5,15 +5,14 @@
  *
  * Settings:
  *   - auto_approve              — commit wiki changes immediately vs. queue as drafts
- *   - digest_enabled            — send weekly Telegram digest every Sunday 00:00 UTC
- *   - digest_telegram_token     — Telegram bot token (masked in GET, write-only)
- *   - digest_telegram_chat_id   — Telegram chat ID for the bot to send to
  */
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useToast } from '../../components/Toast';
+import WikiLintResults from '../../components/WikiLintResults';
+import { normalizeLintResult, type LintResult } from '@/lib/lint-result';
 import { toUserMessage } from '@/lib/service-errors';
 
 async function saveSettingToApi(body: Record<string, unknown>): Promise<boolean> {
@@ -97,36 +96,8 @@ export default function SettingsPage() {
   const [lintSaved, setLintSaved] = useState(false);
   const [lintRunning, setLintRunning] = useState(false);
 
-  interface MissingCrossRef { entity_text: string; mention_count: number; }
-  interface LintLastResult {
-    orphan_pages?: number;
-    stale_pages?: number;
-    missing_cross_refs?: MissingCrossRef[];
-    dead_provenance?: number;
-    contradiction_count?: number;
-    run_duration_ms?: number;
-  }
-  const [lintLastResult, setLintLastResult] = useState<LintLastResult | null>(null);
-
-  // Weekly Digest state — intentionally preserved while the Digest section is
-  // locked off (see the LOCKED-style section below and docs/Tui-read.me).
-  // Unlocking is a one-section swap; these hooks populate from /api/settings
-  // on mount and are ready for the interactive form to come back. DO NOT
-  // delete as unused — lint may flag them, they are load-bearing for re-enable.
-  /* eslint-disable @typescript-eslint/no-unused-vars */
-  const [digestEnabled, setDigestEnabled] = useState<boolean | null>(null);
-  const [digestSaving, setDigestSaving] = useState(false);
-  const [digestSaved, setDigestSaved] = useState(false);
-  const [digestToken, setDigestToken] = useState('');
-  const [digestTokenIsSet, setDigestTokenIsSet] = useState(false);
-  const [digestTokenSaving, setDigestTokenSaving] = useState(false);
-  const [digestTokenSaved, setDigestTokenSaved] = useState(false);
-  const [digestShowToken, setDigestShowToken] = useState(false);
-  const [digestChatId, setDigestChatId] = useState('');
-  const [digestChatIdSaving, setDigestChatIdSaving] = useState(false);
-  const [digestChatIdSaved, setDigestChatIdSaved] = useState(false);
-  const [digestShowChatId, setDigestShowChatId] = useState(false);
-  /* eslint-enable @typescript-eslint/no-unused-vars */
+  const [lintLastResult, setLintLastResult] = useState<LintResult | null>(null);
+  const [lintLastResultRaw, setLintLastResultRaw] = useState<Record<string, unknown> | null>(null);
 
   const [mcpCopied, setMcpCopied] = useState(false);
 
@@ -137,11 +108,8 @@ export default function SettingsPage() {
         auto_approve: boolean;
         related_pages_min_sources: number;
         stale_threshold_days: number;
-        digest_enabled: boolean;
-        digest_telegram_token: string | null;
-        digest_telegram_chat_id: string | null;
         lint_enabled: boolean;
-        lint_last_result: LintLastResult | null;
+        lint_last_result: Record<string, unknown> | null;
         min_source_chars: number;
         min_draft_chars: number;
         entity_promotion_threshold: number;
@@ -154,11 +122,9 @@ export default function SettingsPage() {
         setAutoApprove(data.auto_approve);
         setRelatedMinSources(data.related_pages_min_sources);
         setStaleThreshold(data.stale_threshold_days);
-        setDigestEnabled(data.digest_enabled);
-        setDigestTokenIsSet(data.digest_telegram_token !== null);
-        setDigestChatId(data.digest_telegram_chat_id ?? '');
         setLintEnabledState(data.lint_enabled);
-        setLintLastResult(data.lint_last_result);
+        setLintLastResultRaw(data.lint_last_result);
+        setLintLastResult(normalizeLintResult(data.lint_last_result));
         setMinSourceChars(data.min_source_chars);
         setMinDraftChars(data.min_draft_chars);
         setEntityThreshold(data.entity_promotion_threshold);
@@ -270,49 +236,6 @@ export default function SettingsPage() {
     }
   }
 
-  // Weekly Digest handlers — intentionally preserved, see Weekly Digest state
-  // block above and the LOCKED section below. DO NOT delete as unused — they
-  // are what the interactive form wires back to when the section is unlocked.
-  /* eslint-disable @typescript-eslint/no-unused-vars */
-  async function toggleDigest() {
-    if (digestEnabled === null || digestSaving) return;
-    const newVal = !digestEnabled;
-    setDigestSaving(true);
-    setDigestSaved(false);
-    const _ok = await saveSettingToApi({ digest_enabled: newVal });
-    if (!_ok) { setDigestSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
-    setDigestEnabled(newVal);
-    setDigestSaving(false);
-    setDigestSaved(true);
-    setTimeout(() => setDigestSaved(false), 2000);
-  }
-
-  async function saveDigestToken() {
-    if (!digestToken.trim() || digestTokenSaving) return;
-    setDigestTokenSaving(true);
-    setDigestTokenSaved(false);
-    const _ok = await saveSettingToApi({ digest_telegram_token: digestToken.trim() });
-    if (!_ok) { setDigestTokenSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
-    setDigestToken('');
-    setDigestTokenIsSet(true);
-    setDigestShowToken(false);
-    setDigestTokenSaving(false);
-    setDigestTokenSaved(true);
-    setTimeout(() => setDigestTokenSaved(false), 2000);
-  }
-
-  async function saveDigestChatId() {
-    if (!digestChatId.trim() || digestChatIdSaving) return;
-    setDigestChatIdSaving(true);
-    setDigestChatIdSaved(false);
-    const _ok = await saveSettingToApi({ digest_telegram_chat_id: digestChatId.trim() });
-    if (!_ok) { setDigestChatIdSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
-    setDigestChatIdSaving(false);
-    setDigestChatIdSaved(true);
-    setTimeout(() => setDigestChatIdSaved(false), 2000);
-  }
-  /* eslint-enable @typescript-eslint/no-unused-vars */
-
   async function toggleLint() {
     if (lintEnabled === null || lintSaving) return;
     const newVal = !lintEnabled;
@@ -336,24 +259,9 @@ export default function SettingsPage() {
         body: JSON.stringify({ manual: true }),
       });
       if (res.ok) {
-        // Route returns arrays of ids; normalize to counts to match LintLastResult
-        // (which mirrors the activity_log details shape written by the same route).
-        const data = (await res.json()) as {
-          orphan_pages: string[];
-          stale_pages: string[];
-          missing_cross_refs: MissingCrossRef[];
-          dead_provenance: number;
-          contradictions?: unknown[];
-          run_duration_ms: number;
-        };
-        setLintLastResult({
-          orphan_pages: data.orphan_pages.length,
-          stale_pages: data.stale_pages.length,
-          missing_cross_refs: data.missing_cross_refs,
-          dead_provenance: data.dead_provenance,
-          contradiction_count: data.contradictions?.length ?? 0,
-          run_duration_ms: data.run_duration_ms,
-        });
+        const data = (await res.json()) as Record<string, unknown>;
+        setLintLastResultRaw(data);
+        setLintLastResult(normalizeLintResult(data));
       }
     } finally {
       setLintRunning(false);
@@ -771,23 +679,8 @@ export default function SettingsPage() {
               }}
             >
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
                   Max sources per page
-                  <span
-                    style={{
-                      padding: '1px 6px',
-                      fontSize: '0.65rem',
-                      fontWeight: 700,
-                      letterSpacing: '0.08em',
-                      textTransform: 'uppercase',
-                      background: 'rgba(var(--warning-rgb), 0.1)',
-                      border: '1px solid rgba(var(--warning-rgb), 0.25)',
-                      color: 'var(--warning)',
-                      borderRadius: 4,
-                    }}
-                  >
-                    Beta
-                  </span>
                 </div>
                 <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                   When a page has many contributing sources, the drafter only sees
@@ -831,23 +724,8 @@ export default function SettingsPage() {
               }}
             >
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
                   Minimum relevance score
-                  <span
-                    style={{
-                      padding: '1px 6px',
-                      fontSize: '0.65rem',
-                      fontWeight: 700,
-                      letterSpacing: '0.08em',
-                      textTransform: 'uppercase',
-                      background: 'rgba(var(--warning-rgb), 0.1)',
-                      border: '1px solid rgba(var(--warning-rgb), 0.25)',
-                      color: 'var(--warning)',
-                      borderRadius: 4,
-                    }}
-                  >
-                    Beta
-                  </span>
                 </div>
                 <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                   Sources scoring below this TF-IDF cosine similarity against the
@@ -1534,9 +1412,9 @@ export default function SettingsPage() {
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                 Scans for orphan pages, stale summaries, dead provenance links,
                 entity names with no wiki page (3+ sources mention them), and
-                contradictions between pages. Runs weekly on Mondays at 11:30 local time
-                when enabled. Personal-device installs also run lint at startup if it
-                hasn&apos;t run in the last 36 hours.
+                contradictions between pages. Runs when you click Run Now, or
+                automatically at startup if lint hasn&apos;t run in the last 36 hours
+                (when lint is enabled).
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0, alignItems: 'center' }}>
@@ -1580,169 +1458,20 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* Last run result */}
-          {lintLastResult && !lintRunning && (
+          {(lintLastResult || lintRunning) && (
             <div
               style={{
                 padding: '0 1.5rem 1.25rem',
                 borderTop: '1px solid var(--border)',
               }}
             >
-              <div
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 10,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.8px',
-                  color: 'var(--fg-dim)',
-                  marginBottom: '0.75rem',
-                  paddingTop: '1rem',
-                }}
-              >
-                Last run
-                {lintLastResult.run_duration_ms !== undefined && (
-                  <span style={{ marginLeft: 8 }}>({lintLastResult.run_duration_ms}ms)</span>
-                )}
-              </div>
-
-              {/* Summary row */}
-              <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginBottom: '0.85rem' }}>
-                {[
-                  { label: 'Orphans', value: lintLastResult.orphan_pages ?? 0 },
-                  { label: 'Stale', value: lintLastResult.stale_pages ?? 0 },
-                  { label: 'Missing cross-refs', value: lintLastResult.missing_cross_refs?.length ?? 0 },
-                  { label: 'Dead provenance', value: lintLastResult.dead_provenance ?? 0 },
-                  { label: 'Contradictions', value: lintLastResult.contradiction_count ?? 0 },
-                ].map(({ label, value }) => (
-                  <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 20, fontWeight: 700, color: value > 0 ? 'var(--fg)' : 'var(--fg-dim)' }}>
-                      {value}
-                    </span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--fg-dim)' }}>
-                      {label}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              {/* Missing cross-refs list */}
-              {(lintLastResult.missing_cross_refs?.length ?? 0) > 0 && (
-                <div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 9,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.6px',
-                      color: 'var(--fg-dim)',
-                      marginBottom: '0.5rem',
-                    }}
-                  >
-                    Missing entity pages — search wiki to alias or create
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    {lintLastResult.missing_cross_refs!.map((ref) => (
-                      <div key={ref.entity_text} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        <Link
-                          href={`/wiki/search?q=${encodeURIComponent(ref.entity_text)}`}
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: '0.82rem',
-                            color: 'var(--accent)',
-                            textDecoration: 'none',
-                          }}
-                        >
-                          {ref.entity_text}
-                        </Link>
-                        <span
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: 10,
-                            color: 'var(--fg-dim)',
-                          }}
-                        >
-                          {ref.mention_count} source{ref.mention_count !== 1 ? 's' : ''}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <WikiLintResults
+                result={lintLastResult}
+                raw={lintLastResultRaw}
+                running={lintRunning}
+              />
             </div>
           )}
-
-          {lintRunning && (
-            <div
-              style={{
-                padding: '0.75rem 1.5rem',
-                borderTop: '1px solid var(--border)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 12,
-                color: 'var(--fg-dim)',
-              }}
-            >
-              Running checks…
-            </div>
-          )}
-        </section>
-
-        {/* ========== Automation & delivery ========== */}
-        <h2 id="automation" style={groupHeadingStyleWithTop}>Automation &amp; delivery</h2>
-
-        {/* Weekly Digest — locked off like Entity Expansion until schedule/copy/credentials fixes land (see docs/Tui-read.me) */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-            marginTop: '1rem',
-            opacity: 0.75,
-          }}
-        >
-          <div
-            style={{
-              padding: '1.25rem 1.5rem',
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: '1.5rem',
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '0.35rem' }}>
-                <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>Weekly Digest</span>
-                <span style={{
-                  fontFamily: 'var(--font-mono)', fontSize: 8, letterSpacing: '0.8px',
-                  textTransform: 'uppercase', color: 'var(--fg-dim)',
-                  border: '1px solid var(--border)', padding: '2px 6px',
-                }}>
-                  Experimental
-                </span>
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.6 }}>
-                A weekly summary of your wiki activity — sources ingested, pages created/updated, drafts approved,
-                and a health-check section — delivered to a Telegram chat of your choice.
-              </div>
-            </div>
-            <div
-              style={{
-                flexShrink: 0,
-                padding: '0.45rem 1rem',
-                borderRadius: 20,
-                border: '1px solid var(--border)',
-                background: 'var(--bg-card)',
-                color: 'var(--fg-dim)',
-                fontWeight: 600,
-                fontSize: '0.85rem',
-                cursor: 'not-allowed',
-                userSelect: 'none',
-                minWidth: 80,
-                textAlign: 'center',
-              }}
-            >
-              OFF
-            </div>
-          </div>
         </section>
 
         {/* ========== Integrations ========== */}

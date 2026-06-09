@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { RetryButton } from '@/components/RetryButton';
 import { friendlyIngestError } from './ingest-error-copy';
+import { normalizeLintResult, lintCounts } from './lint-result';
 
 // ── Shared shapes ──────────────────────────────────────────────────────────
 // FeedActivityRow is the CLIENT-facing row shape — includes server-joined
@@ -310,19 +311,18 @@ function renderPageRecompileFailed(row: FeedActivityRow): RowContent {
 
 function renderLintComplete(row: FeedActivityRow): RowContent {
   const { d } = makeGetters(row);
-  const orphans = d && typeof d['orphan_pages'] === 'number' ? (d['orphan_pages'] as number) : null;
-  const stale = d && typeof d['stale_pages'] === 'number' ? (d['stale_pages'] as number) : null;
-  const crossRefs = d && Array.isArray(d['missing_cross_refs']) ? (d['missing_cross_refs'] as unknown[]).length : null;
-  const contradictions = d && typeof d['contradiction_count'] === 'number' ? (d['contradiction_count'] as number) : null;
-  const hasCounts = orphans !== null || stale !== null || crossRefs !== null;
-  const secondary = hasCounts
+  const raw = d as Record<string, unknown> | null;
+  const normalized = raw ? normalizeLintResult(raw) : null;
+  const c = normalized ? lintCounts(normalized, raw) : null;
+  const secondary = c
     ? (
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-dim)' }}>
         {[
-          orphans !== null && `${orphans} orphan${orphans !== 1 ? 's' : ''}`,
-          stale !== null && `${stale} stale`,
-          crossRefs !== null && `${crossRefs} cross-ref${crossRefs !== 1 ? 's' : ''}`,
-          contradictions !== null && `${contradictions} contradiction${contradictions !== 1 ? 's' : ''}`,
+          `${c.orphans} orphan${c.orphans !== 1 ? 's' : ''}`,
+          `${c.stale} stale`,
+          `${c.crossRefs} cross-ref${c.crossRefs !== 1 ? 's' : ''}`,
+          c.deadProv > 0 && `${c.deadProv} dead prov`,
+          `${c.contradictions} contradiction${c.contradictions !== 1 ? 's' : ''}`,
         ].filter(Boolean).join(' · ')}
       </span>
     )
@@ -415,22 +415,6 @@ function renderSavedLinkDismissed(row: FeedActivityRow): RowContent {
     ? null
     : (source_url && title ? <span style={MONO_DIM}>{source_url}</span> : null);
   return { primary, secondary, action: null, isError: false };
-}
-
-function renderDigestSent(row: FeedActivityRow): RowContent {
-  const { str, num } = makeGetters(row);
-  const channel = str('channel');
-  const sources = num('sources_ingested');
-  const pages = num('pages_created');
-  const parts = [
-    channel,
-    sources !== null && `${sources} source${sources !== 1 ? 's' : ''}`,
-    pages !== null && `${pages} page${pages !== 1 ? 's' : ''}`,
-  ].filter(Boolean);
-  const secondary = parts.length > 0
-    ? <span style={MONO_DIM}>{parts.join(' · ')}</span>
-    : null;
-  return { primary: <>Weekly digest sent</>, secondary, action: null, isError: false };
 }
 
 function renderDigestOrLintFailed(label: string) {
@@ -605,7 +589,6 @@ export const ACTIVITY_EVENTS = {
   wiki_imported:          { key: 'wiki_imported',          badge: { label: 'IMPORTED',   tone: 'mint' as Tone }, render: renderWikiImported },
   lint_complete:          { key: 'lint_complete',          badge: { label: 'LINT',       tone: 'neut' as Tone }, render: renderLintComplete },
   onboarding_confirmed:   { key: 'onboarding_confirmed',   badge: { label: 'ONBOARDING', tone: 'dim'  as Tone }, render: renderOnboardingConfirmed },
-  digest_sent:            { key: 'digest_sent',            badge: { label: 'DIGEST',     tone: 'neut' as Tone }, render: renderDigestSent },
   // ── Onboarding v2 Phase 1 (no prior renderer cases) ─────────────────────
   onboarding_staged:      { key: 'onboarding_staged',      badge: { label: 'STAGED',     tone: 'dim'  as Tone }, render: renderOnboardingStaged },
   onboarding_blocked_urls_skipped: { key: 'onboarding_blocked_urls_skipped', badge: { label: 'SKIPPED', tone: 'dim' as Tone }, render: renderOnboardingBlockedUrlsSkipped },
@@ -614,7 +597,6 @@ export const ACTIVITY_EVENTS = {
   ingest_text_failed:     { key: 'ingest_text_failed',     badge: { label: 'TEXT FAIL',  tone: 'red'  as Tone }, render: renderIngestTextFailed },
   // ── n8n-written (POST /api/activity is the writer, no TS call site) ─────
   lint_failed:            { key: 'lint_failed',            badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderDigestOrLintFailed('Wiki lint failed') },
-  digest_failed:          { key: 'digest_failed',          badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderDigestOrLintFailed('Weekly digest failed') },
   // ── Legacy / never-written by TS — kept for historical DB rows ──────────
   ingest_accepted:        { key: 'ingest_accepted',        badge: { label: 'QUEUED',     tone: 'dim'  as Tone }, render: renderSourceOnly },
   ingest_complete:        { key: 'ingest_complete',        badge: { label: 'INDEXED',    tone: 'dim'  as Tone }, render: renderSourceOnly },
@@ -642,8 +624,8 @@ export function resolveBadge(def: ActivityEventDef, row: FeedActivityRow): Badge
   return typeof def.badge === 'function' ? def.badge(row) : def.badge;
 }
 
-// Shared discriminator for page_compiled — used by the feed renderer AND the
-// digest counters. Takes a structural subset so server-side code (db.ts's
+// Shared discriminator for page_compiled — used by the feed renderer and
+// activity counters. Takes a structural subset so server-side code (db.ts's
 // internal row type) and client-side code (FeedActivityRow) both work
 // without cast-lies.
 //

@@ -10,6 +10,12 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+### Removed
+
+- **Weekly Telegram digest** — removed the digest API route, n8n workflow,
+  NLP digest-summary endpoint, and Settings UI. Activity feed and wiki lint
+  remain the supported ways to review wiki health.
+
 ## [0.3.0] — 2026-06-07
 
 Security and dependency-maintenance release over 0.2.2. Clears the Scorecard
@@ -406,9 +412,6 @@ single-mode personal-computer.
   switch the session to DeepSeek V4 Pro. Kompl does NOT auto-chunk.
   Tracked in [issue #7](https://github.com/tuirk/Kompl/issues/7).
 - **No mobile app.** Same as 0.1.0.
-- **Telegram weekly digest** — backend implementation complete, UI is
-  gated as "Experimental" with the toggle locked OFF pending
-  schedule/copy/credentials fixes.
 - **Auto-backup-on-start** still lacks regression tests on the
   start-time path (carried over from 0.1.0).
 
@@ -527,8 +530,6 @@ Initial public release.
   been hardened.
 - **No mobile app.** Web UI works on mobile browsers but isn't optimised
   for small screens.
-- **Telegram digest** is wired but Settings UI is locked until two known
-  issues are resolved. No outbound Telegram calls on a default install.
 - **Auto-backup-on-start** is end-to-end wired but lacks regression tests
   on the start-time path.
 

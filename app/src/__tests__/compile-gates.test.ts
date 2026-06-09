@@ -210,8 +210,7 @@ describe('Gate 2 — min_draft_chars enforcement at commit', () => {
     expect(body.committed).toBe(0);
     expect(body.thin_drafts_skipped).toBe(1);
 
-    // The activity log entry is what /api/digest reads to surface thin drafts —
-    // assert the action_type a downstream consumer would filter on.
+    // The activity log entry records thin drafts for downstream consumers.
     const activity = handle.db
       .prepare('SELECT action_type FROM activity_log WHERE source_id = ?')
       .get(source_id) as { action_type: string } | undefined;
