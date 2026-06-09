@@ -34,7 +34,6 @@ from services.llm_client import (
     crossref_pages,
     draft_page,
     extract_source,
-    generate_digest,
     generate_schema,
     lint_scan,
     triage_page_update,
@@ -305,52 +304,6 @@ def pipeline_generate_schema(req: GenerateSchemaRequest) -> GenerateSchemaRespon
     try:
         markdown = generate_schema([p.model_dump() for p in req.pages], model=req.compile_model)
         return GenerateSchemaResponse(markdown=markdown)
-    except LLMRateLimitedError as e:
-        raise HTTPException(status_code=429, detail="llm_rate_limited") from e
-    except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
-    except LLMCompileError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-# ---------------------------------------------------------------------------
-# Weekly Digest
-# ---------------------------------------------------------------------------
-
-
-class DigestRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-
-    sources_ingested: int
-    pages_created: int
-    pages_updated: int
-    new_page_titles: list[str]
-    updated_page_titles: list[str]
-    drafts_created: int
-    drafts_approved: int
-    compile_model: GeminiModel = "gemini-2.5-flash"
-
-
-class DigestResponse(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-
-    summary: str
-
-
-@router.post("/pipeline/digest-summary", response_model=DigestResponse)
-def pipeline_digest_summary(req: DigestRequest) -> DigestResponse:
-    """Generate a short weekly digest summary via Gemini.
-
-    Called by POST /api/digest/generate (Next.js) every Sunday.
-    temp=0.3, thinking_budget=1024, max_output_tokens=2048.
-
-    HTTP 429 when rate limit bucket is full.
-    HTTP 503 when daily cost ceiling is exceeded.
-    HTTP 500 when the LLM call fails.
-    """
-    try:
-        summary = generate_digest(req, model=req.compile_model)
-        return DigestResponse(summary=summary)
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:

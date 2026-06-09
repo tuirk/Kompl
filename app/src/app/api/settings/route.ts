@@ -2,9 +2,7 @@
  * GET  /api/settings — return current settings
  * POST /api/settings — update settings
  *
- * Exposes: auto_approve (boolean), digest_enabled (boolean),
- *          digest_telegram_token (masked on GET),
- *          digest_telegram_chat_id (string | null),
+ * Exposes: auto_approve (boolean),
  *          lint_enabled (boolean), lint_last_result (details from last lint_complete | null)
  */
 
@@ -12,7 +10,6 @@ import { NextResponse } from 'next/server';
 import {
   getAutoApprove, setAutoApprove,
   getRelatedPagesMinSources, setRelatedPagesMinSources,
-  getDigestSettings, setDigestSettings,
   getLintEnabled, setLintEnabled, getLastLintResult,
   getStaleThresholdDays, setStaleThresholdDays,
   getLastLintAt, getLastBackupAt,
@@ -27,14 +24,10 @@ import {
 } from '../../../lib/db';
 
 function buildResponse() {
-  const digest = getDigestSettings();
   return {
     auto_approve: getAutoApprove(),
     related_pages_min_sources: getRelatedPagesMinSources(),
     stale_threshold_days: getStaleThresholdDays(),
-    digest_enabled: digest.enabled,
-    digest_telegram_token: digest.telegram_token ? '••••••••' : null,
-    digest_telegram_chat_id: digest.telegram_chat_id,
     lint_enabled: getLintEnabled(),
     lint_last_result: getLastLintResult(),
     last_lint_at: getLastLintAt(),
@@ -59,9 +52,6 @@ export async function POST(request: Request) {
     auto_approve?: boolean;
     related_pages_min_sources?: number;
     stale_threshold_days?: number;
-    digest_enabled?: boolean;
-    digest_telegram_token?: string;
-    digest_telegram_chat_id?: string;
     lint_enabled?: boolean;
     min_source_chars?: number;
     min_draft_chars?: number;
@@ -76,7 +66,6 @@ export async function POST(request: Request) {
   const knownFields = [
     'auto_approve', 'related_pages_min_sources',
     'stale_threshold_days',
-    'digest_enabled', 'digest_telegram_token', 'digest_telegram_chat_id',
     'lint_enabled',
     'min_source_chars', 'min_draft_chars',
     'entity_promotion_threshold',
@@ -114,27 +103,6 @@ export async function POST(request: Request) {
       );
     }
     setStaleThresholdDays(body.stale_threshold_days);
-  }
-
-  if (body.digest_enabled !== undefined) {
-    if (typeof body.digest_enabled !== 'boolean') {
-      return NextResponse.json({ error: 'digest_enabled must be a boolean' }, { status: 422 });
-    }
-    setDigestSettings({ enabled: body.digest_enabled });
-  }
-
-  if (body.digest_telegram_token !== undefined) {
-    if (typeof body.digest_telegram_token !== 'string') {
-      return NextResponse.json({ error: 'digest_telegram_token must be a string' }, { status: 422 });
-    }
-    setDigestSettings({ telegram_token: body.digest_telegram_token });
-  }
-
-  if (body.digest_telegram_chat_id !== undefined) {
-    if (typeof body.digest_telegram_chat_id !== 'string') {
-      return NextResponse.json({ error: 'digest_telegram_chat_id must be a string' }, { status: 422 });
-    }
-    setDigestSettings({ telegram_chat_id: body.digest_telegram_chat_id });
   }
 
   if (body.lint_enabled !== undefined) {

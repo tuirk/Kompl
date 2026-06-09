@@ -1049,13 +1049,10 @@ export function getAllExtractions(): ExtractionRow[] {
     .all() as ExtractionRow[];
 }
 
-/** All settings rows except sensitive keys (Telegram token/chat_id). */
+/** All settings rows for wiki export. */
 export function getExportableSettings(): Array<{ key: string; value: string }> {
   return openDb()
-    .prepare(
-      `SELECT key, value FROM settings
-        WHERE key NOT IN ('digest_telegram_token', 'digest_telegram_chat_id')`
-    )
+    .prepare(`SELECT key, value FROM settings`)
     .all() as Array<{ key: string; value: string }>;
 }
 
@@ -3205,65 +3202,6 @@ export function getLastLintResult(): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-// ============================================================================
-// Weekly Digest settings helpers
-// ============================================================================
-
-export function getDigestSettings(): {
-  enabled: boolean;
-  telegram_token: string | null;
-  telegram_chat_id: string | null;
-} {
-  return {
-    enabled: getSetting('digest_enabled') === '1',
-    telegram_token: getSetting('digest_telegram_token'),
-    telegram_chat_id: getSetting('digest_telegram_chat_id'),
-  };
-}
-
-export function setDigestSettings(data: {
-  enabled?: boolean;
-  telegram_token?: string;
-  telegram_chat_id?: string;
-}): void {
-  if (data.enabled !== undefined) {
-    setSetting('digest_enabled', data.enabled ? '1' : '0');
-  }
-  if (data.telegram_token !== undefined) {
-    setSetting('digest_telegram_token', data.telegram_token);
-  }
-  if (data.telegram_chat_id !== undefined) {
-    setSetting('digest_telegram_chat_id', data.telegram_chat_id);
-  }
-}
-
-// Narrower shape than ActivityRow (lib/db.ts:175) — getActivitySince only
-// selects the 4 columns the digest consumer needs. Declared separately so
-// TS doesn't merge with ActivityRow (which advertises id/source_title that
-// this query doesn't fetch — callers would see undefined at runtime).
-export interface DigestActivityRow {
-  action_type: string;
-  source_id: string | null;
-  details: string | null;
-  timestamp: string;
-}
-
-/**
- * Fetch all activity_log rows newer than `since` (ISO 8601 string).
- * Uses datetime() wrapping to avoid the SQLite lexicographic timestamp gotcha
- * (CURRENT_TIMESTAMP stores 'YYYY-MM-DD HH:MM:SS', not ISO 8601).
- */
-export function getActivitySince(since: string): DigestActivityRow[] {
-  return openDb()
-    .prepare(
-      `SELECT action_type, source_id, details, timestamp
-       FROM activity_log
-       WHERE datetime(timestamp) > datetime(?)
-       ORDER BY timestamp DESC`
-    )
-    .all(since) as DigestActivityRow[];
 }
 
 // ============================================================================

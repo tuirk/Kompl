@@ -180,7 +180,6 @@ Your wiki content lives in Docker volumes on your machine. Outbound network call
 - **GitHub public API** (`api.github.com`) — when you paste a GitHub repo URL, Kompl fetches the README + metadata.
 - **YouTube** (`youtube.com` + `youtube.googleapis.com`) — when you paste a YouTube URL, transcripts are fetched via the public captions endpoint and metadata (title, channel, duration) via YouTube Data API v3. Requires `YOUTUBE_API_KEY`; without it, YouTube URLs route to Saved Links.
 - **OG-tag preview** — pasted URLs are fetched once with `User-Agent: KomplBot/1.0` to grab title + description.
-- **Telegram** (`api.telegram.org`) — wired for the weekly digest, but the Settings UI is currently locked until two known issues are resolved. No outbound Telegram calls happen on a default install.
 
 **One-time, on first use:**
 - **HuggingFace Hub** (`huggingface.co`) — ~90 MB download of the `all-MiniLM-L6-v2` embedding model on the first compile. After that, no further HF traffic.

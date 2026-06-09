@@ -323,7 +323,6 @@ _DEFAULT_THINKING_BUDGETS: dict[str, int] = {
     "generate_schema": 2048,
     "crossref_pages": 0,
     "triage_page_update": 0,
-    "generate_digest": 1024,
 }
 
 
@@ -1717,65 +1716,6 @@ def synthesize_answer(
             )
         ) from result.parse_error
     return result.parsed
-
-
-# ---------------------------------------------------------------------------
-# Weekly Digest — summary generation
-# ---------------------------------------------------------------------------
-
-
-def generate_digest(data: Any, model: str = _DEFAULT_MODEL) -> str:
-    """Generate a brief weekly digest summary via Gemini 2.5 Flash.
-
-    Args:
-        data: Object with fields matching DigestRequest in pipeline.py
-              (sources_ingested, pages_created, pages_updated, new_page_titles,
-               updated_page_titles, drafts_created, drafts_approved).
-
-    Returns plain-text summary string under ~150 words.
-
-    Raises:
-        LLMRateLimitedError  — bucket exhausted
-        CostCeilingError     — daily $ cap exceeded
-        LLMCompileError      — empty or failed response
-    """
-    new_titles = ", ".join(data.new_page_titles[:10]) if data.new_page_titles else "none"
-    updated_titles = ", ".join(data.updated_page_titles[:10]) if data.updated_page_titles else "none"
-
-    prompt = f"""Write a brief weekly digest for a personal knowledge wiki. Be concise, warm, and highlight what's interesting.
-
-This week:
-- {data.sources_ingested} new source{"s" if data.sources_ingested != 1 else ""} ingested
-- {data.pages_created} new page{"s" if data.pages_created != 1 else ""} created: {new_titles}
-- {data.pages_updated} page{"s" if data.pages_updated != 1 else ""} updated: {updated_titles}
-- {data.drafts_created} draft{"s" if data.drafts_created != 1 else ""} created, {data.drafts_approved} approved
-
-Summarize what grew this week and what's notable. If nothing happened, say so briefly.
-Suggest 1-2 areas that could use more sources based on the page titles.
-Keep it under 150 words. No markdown formatting — plain text with line breaks."""
-
-    provider = get_provider(model)
-    try:
-        result = provider.complete(LLMRequest(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            response_model=None,
-            thinking_budget=_read_thinking_budget('generate_digest'),
-            max_output_tokens=2048,
-            temperature=0.3,
-            step="digest",
-            extra={"retry": False},
-        ))
-    except LLMRateLimitedError:
-        raise
-    except Exception as e:
-        raise LLMCompileError(f"digest_llm_failed: {e}") from e
-
-    raw_text = result.text
-    if not raw_text:
-        raise LLMCompileError("digest_error: empty response text")
-
-    return raw_text.strip()
 
 
 # ---------------------------------------------------------------------------

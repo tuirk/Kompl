@@ -1,6 +1,6 @@
 /**
  * Canonical shape for wiki lint findings — shared by lint-pass route,
- * Settings UI, digest, and activity feed.
+ * Settings UI and activity feed.
  */
 
 export interface LintOrphanPage {

@@ -41,6 +41,7 @@ fi
 # release cycle after the corresponding workflow file was removed from /workflows.
 echo "[auto-import] purging legacy workflows"
 n8n delete:workflow --id=kompl-lint-wiki >/dev/null 2>&1 || true
+n8n delete:workflow --id=kompl-weekly-digest >/dev/null 2>&1 || true
 
 # Publish (activate) each workflow. n8n 2.x import deactivates workflows on
 # re-import; we re-activate them here so webhook triggers fire on the next

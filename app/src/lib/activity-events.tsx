@@ -417,22 +417,6 @@ function renderSavedLinkDismissed(row: FeedActivityRow): RowContent {
   return { primary, secondary, action: null, isError: false };
 }
 
-function renderDigestSent(row: FeedActivityRow): RowContent {
-  const { str, num } = makeGetters(row);
-  const channel = str('channel');
-  const sources = num('sources_ingested');
-  const pages = num('pages_created');
-  const parts = [
-    channel,
-    sources !== null && `${sources} source${sources !== 1 ? 's' : ''}`,
-    pages !== null && `${pages} page${pages !== 1 ? 's' : ''}`,
-  ].filter(Boolean);
-  const secondary = parts.length > 0
-    ? <span style={MONO_DIM}>{parts.join(' · ')}</span>
-    : null;
-  return { primary: <>Weekly digest sent</>, secondary, action: null, isError: false };
-}
-
 function renderDigestOrLintFailed(label: string) {
   return (row: FeedActivityRow): RowContent => {
     const { str } = makeGetters(row);
@@ -605,7 +589,6 @@ export const ACTIVITY_EVENTS = {
   wiki_imported:          { key: 'wiki_imported',          badge: { label: 'IMPORTED',   tone: 'mint' as Tone }, render: renderWikiImported },
   lint_complete:          { key: 'lint_complete',          badge: { label: 'LINT',       tone: 'neut' as Tone }, render: renderLintComplete },
   onboarding_confirmed:   { key: 'onboarding_confirmed',   badge: { label: 'ONBOARDING', tone: 'dim'  as Tone }, render: renderOnboardingConfirmed },
-  digest_sent:            { key: 'digest_sent',            badge: { label: 'DIGEST',     tone: 'neut' as Tone }, render: renderDigestSent },
   // ── Onboarding v2 Phase 1 (no prior renderer cases) ─────────────────────
   onboarding_staged:      { key: 'onboarding_staged',      badge: { label: 'STAGED',     tone: 'dim'  as Tone }, render: renderOnboardingStaged },
   onboarding_blocked_urls_skipped: { key: 'onboarding_blocked_urls_skipped', badge: { label: 'SKIPPED', tone: 'dim' as Tone }, render: renderOnboardingBlockedUrlsSkipped },
@@ -614,7 +597,6 @@ export const ACTIVITY_EVENTS = {
   ingest_text_failed:     { key: 'ingest_text_failed',     badge: { label: 'TEXT FAIL',  tone: 'red'  as Tone }, render: renderIngestTextFailed },
   // ── n8n-written (POST /api/activity is the writer, no TS call site) ─────
   lint_failed:            { key: 'lint_failed',            badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderDigestOrLintFailed('Wiki lint failed') },
-  digest_failed:          { key: 'digest_failed',          badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderDigestOrLintFailed('Weekly digest failed') },
   // ── Legacy / never-written by TS — kept for historical DB rows ──────────
   ingest_accepted:        { key: 'ingest_accepted',        badge: { label: 'QUEUED',     tone: 'dim'  as Tone }, render: renderSourceOnly },
   ingest_complete:        { key: 'ingest_complete',        badge: { label: 'INDEXED',    tone: 'dim'  as Tone }, render: renderSourceOnly },
@@ -642,8 +624,8 @@ export function resolveBadge(def: ActivityEventDef, row: FeedActivityRow): Badge
   return typeof def.badge === 'function' ? def.badge(row) : def.badge;
 }
 
-// Shared discriminator for page_compiled — used by the feed renderer AND the
-// digest counters. Takes a structural subset so server-side code (db.ts's
+// Shared discriminator for page_compiled — used by the feed renderer and
+// activity counters. Takes a structural subset so server-side code (db.ts's
 // internal row type) and client-side code (FeedActivityRow) both work
 // without cast-lies.
 //
