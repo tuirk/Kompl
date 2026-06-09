@@ -14,6 +14,8 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useToast } from '../../components/Toast';
+import WikiLintResults from '../../components/WikiLintResults';
+import { normalizeLintResult, type LintResult } from '@/lib/lint-result';
 import { toUserMessage } from '@/lib/service-errors';
 
 async function saveSettingToApi(body: Record<string, unknown>): Promise<boolean> {
@@ -97,16 +99,8 @@ export default function SettingsPage() {
   const [lintSaved, setLintSaved] = useState(false);
   const [lintRunning, setLintRunning] = useState(false);
 
-  interface MissingCrossRef { entity_text: string; mention_count: number; }
-  interface LintLastResult {
-    orphan_pages?: number;
-    stale_pages?: number;
-    missing_cross_refs?: MissingCrossRef[];
-    dead_provenance?: number;
-    contradiction_count?: number;
-    run_duration_ms?: number;
-  }
-  const [lintLastResult, setLintLastResult] = useState<LintLastResult | null>(null);
+  const [lintLastResult, setLintLastResult] = useState<LintResult | null>(null);
+  const [lintLastResultRaw, setLintLastResultRaw] = useState<Record<string, unknown> | null>(null);
 
   // Weekly Digest state — intentionally preserved while the Digest section is
   // locked off (see the LOCKED-style section below and docs/Tui-read.me).
@@ -141,7 +135,7 @@ export default function SettingsPage() {
         digest_telegram_token: string | null;
         digest_telegram_chat_id: string | null;
         lint_enabled: boolean;
-        lint_last_result: LintLastResult | null;
+        lint_last_result: Record<string, unknown> | null;
         min_source_chars: number;
         min_draft_chars: number;
         entity_promotion_threshold: number;
@@ -158,7 +152,8 @@ export default function SettingsPage() {
         setDigestTokenIsSet(data.digest_telegram_token !== null);
         setDigestChatId(data.digest_telegram_chat_id ?? '');
         setLintEnabledState(data.lint_enabled);
-        setLintLastResult(data.lint_last_result);
+        setLintLastResultRaw(data.lint_last_result);
+        setLintLastResult(normalizeLintResult(data.lint_last_result));
         setMinSourceChars(data.min_source_chars);
         setMinDraftChars(data.min_draft_chars);
         setEntityThreshold(data.entity_promotion_threshold);
@@ -336,24 +331,9 @@ export default function SettingsPage() {
         body: JSON.stringify({ manual: true }),
       });
       if (res.ok) {
-        // Route returns arrays of ids; normalize to counts to match LintLastResult
-        // (which mirrors the activity_log details shape written by the same route).
-        const data = (await res.json()) as {
-          orphan_pages: string[];
-          stale_pages: string[];
-          missing_cross_refs: MissingCrossRef[];
-          dead_provenance: number;
-          contradictions?: unknown[];
-          run_duration_ms: number;
-        };
-        setLintLastResult({
-          orphan_pages: data.orphan_pages.length,
-          stale_pages: data.stale_pages.length,
-          missing_cross_refs: data.missing_cross_refs,
-          dead_provenance: data.dead_provenance,
-          contradiction_count: data.contradictions?.length ?? 0,
-          run_duration_ms: data.run_duration_ms,
-        });
+        const data = (await res.json()) as Record<string, unknown>;
+        setLintLastResultRaw(data);
+        setLintLastResult(normalizeLintResult(data));
       }
     } finally {
       setLintRunning(false);
@@ -1534,9 +1514,9 @@ export default function SettingsPage() {
               <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                 Scans for orphan pages, stale summaries, dead provenance links,
                 entity names with no wiki page (3+ sources mention them), and
-                contradictions between pages. Runs weekly on Mondays at 11:30 local time
-                when enabled. Personal-device installs also run lint at startup if it
-                hasn&apos;t run in the last 36 hours.
+                contradictions between pages. Runs when you click Run Now, or
+                automatically at startup if lint hasn&apos;t run in the last 36 hours
+                (when lint is enabled).
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0, alignItems: 'center' }}>
@@ -1580,108 +1560,18 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* Last run result */}
-          {lintLastResult && !lintRunning && (
+          {(lintLastResult || lintRunning) && (
             <div
               style={{
                 padding: '0 1.5rem 1.25rem',
                 borderTop: '1px solid var(--border)',
               }}
             >
-              <div
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 10,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.8px',
-                  color: 'var(--fg-dim)',
-                  marginBottom: '0.75rem',
-                  paddingTop: '1rem',
-                }}
-              >
-                Last run
-                {lintLastResult.run_duration_ms !== undefined && (
-                  <span style={{ marginLeft: 8 }}>({lintLastResult.run_duration_ms}ms)</span>
-                )}
-              </div>
-
-              {/* Summary row */}
-              <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginBottom: '0.85rem' }}>
-                {[
-                  { label: 'Orphans', value: lintLastResult.orphan_pages ?? 0 },
-                  { label: 'Stale', value: lintLastResult.stale_pages ?? 0 },
-                  { label: 'Missing cross-refs', value: lintLastResult.missing_cross_refs?.length ?? 0 },
-                  { label: 'Dead provenance', value: lintLastResult.dead_provenance ?? 0 },
-                  { label: 'Contradictions', value: lintLastResult.contradiction_count ?? 0 },
-                ].map(({ label, value }) => (
-                  <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 20, fontWeight: 700, color: value > 0 ? 'var(--fg)' : 'var(--fg-dim)' }}>
-                      {value}
-                    </span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--fg-dim)' }}>
-                      {label}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              {/* Missing cross-refs list */}
-              {(lintLastResult.missing_cross_refs?.length ?? 0) > 0 && (
-                <div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 9,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.6px',
-                      color: 'var(--fg-dim)',
-                      marginBottom: '0.5rem',
-                    }}
-                  >
-                    Missing entity pages — search wiki to alias or create
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    {lintLastResult.missing_cross_refs!.map((ref) => (
-                      <div key={ref.entity_text} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        <Link
-                          href={`/wiki/search?q=${encodeURIComponent(ref.entity_text)}`}
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: '0.82rem',
-                            color: 'var(--accent)',
-                            textDecoration: 'none',
-                          }}
-                        >
-                          {ref.entity_text}
-                        </Link>
-                        <span
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: 10,
-                            color: 'var(--fg-dim)',
-                          }}
-                        >
-                          {ref.mention_count} source{ref.mention_count !== 1 ? 's' : ''}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {lintRunning && (
-            <div
-              style={{
-                padding: '0.75rem 1.5rem',
-                borderTop: '1px solid var(--border)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 12,
-                color: 'var(--fg-dim)',
-              }}
-            >
-              Running checks…
+              <WikiLintResults
+                result={lintLastResult}
+                raw={lintLastResultRaw}
+                running={lintRunning}
+              />
             </div>
           )}
         </section>

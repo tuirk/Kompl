@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { RetryButton } from '@/components/RetryButton';
 import { friendlyIngestError } from './ingest-error-copy';
+import { normalizeLintResult, lintCounts } from './lint-result';
 
 // ── Shared shapes ──────────────────────────────────────────────────────────
 // FeedActivityRow is the CLIENT-facing row shape — includes server-joined
@@ -310,19 +311,18 @@ function renderPageRecompileFailed(row: FeedActivityRow): RowContent {
 
 function renderLintComplete(row: FeedActivityRow): RowContent {
   const { d } = makeGetters(row);
-  const orphans = d && typeof d['orphan_pages'] === 'number' ? (d['orphan_pages'] as number) : null;
-  const stale = d && typeof d['stale_pages'] === 'number' ? (d['stale_pages'] as number) : null;
-  const crossRefs = d && Array.isArray(d['missing_cross_refs']) ? (d['missing_cross_refs'] as unknown[]).length : null;
-  const contradictions = d && typeof d['contradiction_count'] === 'number' ? (d['contradiction_count'] as number) : null;
-  const hasCounts = orphans !== null || stale !== null || crossRefs !== null;
-  const secondary = hasCounts
+  const raw = d as Record<string, unknown> | null;
+  const normalized = raw ? normalizeLintResult(raw) : null;
+  const c = normalized ? lintCounts(normalized, raw) : null;
+  const secondary = c
     ? (
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-dim)' }}>
         {[
-          orphans !== null && `${orphans} orphan${orphans !== 1 ? 's' : ''}`,
-          stale !== null && `${stale} stale`,
-          crossRefs !== null && `${crossRefs} cross-ref${crossRefs !== 1 ? 's' : ''}`,
-          contradictions !== null && `${contradictions} contradiction${contradictions !== 1 ? 's' : ''}`,
+          `${c.orphans} orphan${c.orphans !== 1 ? 's' : ''}`,
+          `${c.stale} stale`,
+          `${c.crossRefs} cross-ref${c.crossRefs !== 1 ? 's' : ''}`,
+          c.deadProv > 0 && `${c.deadProv} dead prov`,
+          `${c.contradictions} contradiction${c.contradictions !== 1 ? 's' : ''}`,
         ].filter(Boolean).join(' · ')}
       </span>
     )

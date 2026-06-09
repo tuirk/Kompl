@@ -13,6 +13,7 @@
 
 import { NextResponse } from 'next/server';
 import { getDigestSettings, getActivitySince, logActivity, getLastLintResult, getCompileModel } from '../../../../lib/db';
+import { normalizeLintResult, lintCounts } from '../../../../lib/lint-result';
 import { readPageAction } from '../../../../lib/activity-events';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -80,23 +81,22 @@ export async function POST() {
     .filter((t): t is string => t !== null);
 
   // Step 3b: Read most recent lint result for health section (written by lint-pass Sat 22:00 UTC)
-  const lintResult = getLastLintResult();
+  const lintResultRaw = getLastLintResult();
   let healthSection = '';
-  if (lintResult) {
-    const orphans = (lintResult.orphan_pages as number) ?? 0;
-    const stale = (lintResult.stale_pages as number) ?? 0;
-    const crossRefs = Array.isArray(lintResult.missing_cross_refs)
-      ? (lintResult.missing_cross_refs as unknown[]).length
-      : 0;
-    const contradictions = (lintResult.contradiction_count as number) ?? 0;
-    healthSection = [
-      ``,
-      `🔍 <b>Wiki Health:</b>`,
-      `• ${orphans} orphaned page${orphans !== 1 ? 's' : ''}`,
-      `• ${stale} stale page${stale !== 1 ? 's' : ''}`,
-      `• ${crossRefs} missing cross-ref${crossRefs !== 1 ? 's' : ''}`,
-      `• ${contradictions} contradiction${contradictions !== 1 ? 's' : ''} detected`,
-    ].join('\n');
+  if (lintResultRaw) {
+    const normalized = normalizeLintResult(lintResultRaw);
+    if (normalized) {
+      const c = lintCounts(normalized, lintResultRaw);
+      healthSection = [
+        ``,
+        `🔍 <b>Wiki Health:</b>`,
+        `• ${c.orphans} orphaned page${c.orphans !== 1 ? 's' : ''}`,
+        `• ${c.stale} stale page${c.stale !== 1 ? 's' : ''}`,
+        `• ${c.crossRefs} missing cross-ref${c.crossRefs !== 1 ? 's' : ''}`,
+        `• ${c.deadProv} dead provenance row${c.deadProv !== 1 ? 's' : ''}`,
+        `• ${c.contradictions} contradiction${c.contradictions !== 1 ? 's' : ''} detected`,
+      ].join('\n');
+    }
   }
 
   // Step 4: Generate summary via NLP service (Gemini)
