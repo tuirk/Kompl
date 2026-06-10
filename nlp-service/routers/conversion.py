@@ -45,6 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from services._safe_paths import safe_join
 from services.http_client import HttpClient, HttpClientError
+from services.url_safety import validate_outbound_url
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +685,32 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     # for transcript-less videos, which silently passes our quality gate).
     if _YOUTUBE_URL_RE.match(req.url):
         return _convert_youtube(req.source_id, req.url)
+
+    # SSRF guard (CWE-918): resolve and validate the target before the
+    # generic fetch layers (MarkItDown, Firecrawl) touch it. Blocks
+    # non-http(s) schemes, cloud-metadata hosts, literal private IPs, and
+    # hostnames that resolve to private/loopback/link-local ranges —
+    # including Docker DNS names like `app` / `n8n` / `nlp-service`.
+    # 422 (not 502) so the app-side onFailure handler routes the URL to
+    # Saved Links like other unconvertible inputs.
+    #
+    # Placed AFTER the GitHub/YouTube pre-checks: those only call fixed
+    # public API hosts (api.github.com / googleapis) with IDs extracted
+    # from the URL — they never fetch the user URL itself — and keeping
+    # them above preserves their network-free unit tests.
+    #
+    # Residual risk: MarkItDown re-resolves DNS internally, so an
+    # attacker-controlled authoritative nameserver could rebind between
+    # this check and the fetch (TOCTOU). Eliminating that requires
+    # replacing MarkItDown's fetcher with the IP-pinned httpx client used
+    # by metadata_peek — accepted residual risk for now.
+    try:
+        validate_outbound_url(req.url)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"url_blocked: {e} — URL does not resolve to a fetchable public address",
+        ) from e
 
     # Layer 1: MarkItDown (free, local). YouTube URLs are handled above and
     # never reach this layer.

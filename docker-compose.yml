@@ -32,7 +32,13 @@ services:
       dockerfile: app/Dockerfile
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Loopback-only, matching nlp-service/n8n below and the localhost-only
+      # model documented in SECURITY.md. The /api/* surface is unauthenticated
+      # by design (single-tenant sidecar) — binding to 0.0.0.0 would expose
+      # destructive routes (/api/import, /api/admin/*, /api/compile/run) to
+      # the LAN. Front with an authenticating reverse proxy to expose beyond
+      # this machine.
+      - "127.0.0.1:3000:3000"
     environment:
       DB_PATH: /data/db/kompl.db
       NODE_ENV: production
