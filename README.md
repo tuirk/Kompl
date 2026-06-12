@@ -38,7 +38,7 @@ You'll also need API keys. Two are required, two are optional:
 |---|---|---|---|---|
 | **Gemini** (wiki compilation) | Required | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day | Free works for the demo and your first few sources. **Paid Tier 1 is strongly recommended for real use** — Gemini's free per-minute throttle (~10 RPM) will rate-limit a normal ingest, even though daily quota is plenty. Default rate-limiter assumes Tier 1. Has a known truncation issue on dense inputs — see [issue #7](https://github.com/tuirk/Kompl/issues/7). |
 | **Firecrawl** (URL scraping) | Required | [firecrawl.dev](https://firecrawl.dev) | 500 scrapes/month | Free tier covers normal personal use. |
-| **YouTube Data API v3** (YouTube ingestion) | Optional | [console.cloud.google.com](https://console.cloud.google.com/apis/library/youtube.googleapis.com) | 10,000 units/day (1 unit per video) | Required to ingest YouTube URLs — without it, every YouTube URL hard-fails and routes to Saved Links. Restrict the key to "YouTube Data API v3" only in the GCP console. Set `YOUTUBE_API_KEY` in `.env`. |
+| **YouTube Data API v3** (YouTube ingestion) | Optional | [console.cloud.google.com](https://console.cloud.google.com/apis/library/youtube.googleapis.com) | 10,000 units/day (1 unit per video) | Needed for YouTube **metadata** at compile time (title, channel, duration). Captions use `youtube-transcript-api` (no key). Without this key, convert fails with `youtube_metadata_unavailable` and the URL lands on **Saved Links** — not a compiled source. Restrict the key to "YouTube Data API v3" only in the GCP console. Set `YOUTUBE_API_KEY` in `.env`. |
 | **DeepSeek V4 Pro** (alternative compile backend) | Optional | [api-docs.deepseek.com](https://api-docs.deepseek.com) | Pay-as-you-go | Selectable in Settings as an alternative to Gemini. Recommended for long/academic content — see [Known limitations](#known-limitations). Set `DEEPSEEK_API_KEY` in `.env`. |
 
 ## Setup
@@ -113,14 +113,49 @@ kompl restart    # stop + start in one command
 kompl open       # open in browser
 kompl status     # health check: page count, NLP service, vector backlog
 kompl logs       # stream logs if something looks wrong
-kompl update     # pull latest version and restart
+kompl update     # pull latest source, rebuild images, and restart (~5–10 min)
 kompl backup     # download a full backup to ~/.kompl/backups/kompl-backup.kompl.zip
 kompl init       # re-run the first-time setup wizard (rarely needed)
 ```
 
+## Updating
+
+Pulled latest `main` but don't see new UI (health checks, bookmark filters, etc.)? Your **Docker images are probably stale** — `git pull` updates files on disk, but the running `app` and `nlp-service` containers are built from source at install time. Only the `n8n` image updates via `docker compose pull`.
+
+**Your wiki is safe on a normal update.** Page data lives on the Docker volume `kompl-data`. `kompl update` and `docker compose up --build -d` rebuild containers but **do not** wipe that volume. Back up anyway before major upgrades:
+
+```bash
+kompl backup     # ~/.kompl/backups/kompl-backup.kompl.zip
+kompl update
+```
+
+> ⚠ **Never** run `docker compose down -v` unless you intend to delete everything. The `-v` flag removes volumes. `bash scripts/integration-test.sh` is also destructive — see [Backup and restore](#backup-and-restore).
+
+**Recommended:**
+
+```bash
+kompl update
+```
+
+This pulls source, refreshes the `kompl` CLI, pulls registry images, rebuilds `app` + `nlp-service`, and waits for `/api/health` (~5–10 min).
+
+**Manual fallback** (same steps; use if your `kompl` binary predates this fix):
+
+```bash
+cd <projectDir>    # path in ~/.kompl/config.json
+git pull --ff-only
+cd cli && npm install && npm run build && npm link
+docker compose pull
+docker compose up --build -d
+```
+
+`kompl start` and `kompl restart` restart existing images in ~15 seconds — they do **not** rebuild after a pull.
+
+**Verify:** onboarding should route through `/onboarding/health`; importing browser bookmarks should skip `x.com` / `twitter.com` URLs with a toast.
+
 ## Use with AI agents (MCP)
 
-Kompl ships an MCP server so any MCP-capable agent — Claude Code, Claude Desktop, Cursor, or a custom client built on `@modelcontextprotocol/sdk` — can query your compiled wiki. Ask *"what does my wiki say about X?"* and the agent gets pre-synthesized pages with provenance back to the originals, not raw chunks.
+Kompl ships an MCP server so any MCP-capable agent built on `@modelcontextprotocol/sdk` can query your compiled wiki. Ask *"what does my wiki say about X?"* and the agent gets pre-synthesized pages with provenance back to the originals, not raw chunks.
 
 > ⚠ **Single-tenant.** Kompl assumes you own the host. There's no multi-user auth — don't expose your instance to the public internet without putting your own auth in front.
 
@@ -130,44 +165,15 @@ Kompl ships an MCP server so any MCP-capable agent — Claude Code, Claude Deskt
 cd mcp-server && npm install && npm run build
 ```
 
-Kompl must be running (`kompl start`) for the MCP tools to respond.
-
-### Claude Code
-
-Create `.mcp.json` in the repo root with:
-
-```json
-{
-  "mcpServers": {
-    "kompl-wiki": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["mcp-server/dist/index.js"],
-      "env": { "KOMPL_URL": "http://localhost:3000" }
-    }
-  }
-}
-```
-
-Claude Code picks it up automatically next session. Try: *"search my wiki for [topic]"* or *"read the relevant page from my wiki for [topic]."*
-
-### Claude Desktop
-
-| OS | Config file |
-|---|---|
-| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
-| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Linux | `~/.config/Claude/claude_desktop_config.json` (no official Linux release; convention if a build is available) |
-
-Add the same `mcpServers` block as above, but with the **absolute** path to `mcp-server/dist/index.js` instead of relative.
+Configure your MCP client to run `node mcp-server/dist/index.js` with `KOMPL_URL=http://localhost:3000`. Kompl must be running (`kompl start`) for the MCP tools to respond.
 
 ### Tools
 
 The server exposes four: `search_wiki`, `read_page`, `list_pages`, `wiki_stats`.
 
-### Non-MCP / direct HTTP
+### Direct HTTP
 
-If you're not using an MCP client, hit the Next.js routes directly: `/api/pages/search`, `/api/wiki/{page_id}/data`, `/api/wiki/index`.
+If you're not using MCP, hit the Next.js routes directly: `/api/pages/search`, `/api/wiki/{page_id}/data`, `/api/wiki/index`.
 
 ## Your data
 
@@ -178,7 +184,7 @@ Your wiki content lives in Docker volumes on your machine. Outbound network call
 - **DeepSeek** (`api.deepseek.com`) — wiki compilation when the DeepSeek backend is selected. Your source text is sent to DeepSeek. Only outbound if `DEEPSEEK_API_KEY` is configured and selected as the compile model.
 - **Firecrawl** (`api.firecrawl.dev`) — URL scraping fallback. The URL you pasted is sent to Firecrawl.
 - **GitHub public API** (`api.github.com`) — when you paste a GitHub repo URL, Kompl fetches the README + metadata.
-- **YouTube** (`youtube.com` + `youtube.googleapis.com`) — when you paste a YouTube URL, transcripts are fetched via the public captions endpoint and metadata (title, channel, duration) via YouTube Data API v3. Requires `YOUTUBE_API_KEY`; without it, YouTube URLs route to Saved Links.
+- **YouTube** (`youtube.com` + `youtube.googleapis.com`) — at compile time, captions via `youtube-transcript-api`, then metadata via YouTube Data API v3 (`YOUTUBE_API_KEY` required). Missing key → `youtube_metadata_unavailable` → Saved Links. No captions or blocked transcript → Saved Links too.
 - **OG-tag preview** — pasted URLs are fetched once with `User-Agent: KomplBot/1.0` to grab title + description.
 
 **One-time, on first use:**
@@ -220,7 +226,7 @@ kompl backup --schedule                               # register a weekly backup
 
 **Known limitations:**
 - Single-tenant only — no user accounts or access control. Don't expose to the public internet without your own auth layer.
-- Two LLM providers selectable per session: Gemini 2.5 (default) and DeepSeek V4 Pro. Anthropic and OpenAI-compatible providers are planned.
+- Two LLM providers selectable per session: Gemini 2.5 (default) and DeepSeek V4 Pro.
 - **Gemini 2.5 + dense sources:** structured-output truncation on inputs above ~50K chars (commonly academic PDFs and surveys) causes `extract_llm_failed`. Workaround: switch the session to DeepSeek V4 Pro in Settings — it handles up to ~200K chars cleanly without this pathology. Kompl does **not** auto-chunk long sources; if you'd rather stay on Gemini, split the source into smaller files yourself before ingesting. Tracked in [issue #7](https://github.com/tuirk/Kompl/issues/7).
 - **Current connectors:** URLs (YouTube transcripts and GitHub READMEs included), file uploads (PDF, DOCX, PPTX, XLSX, TXT, MD, HTML), browser bookmarks, Twitter JSON export, Upnote, Apple Notes.
 - No mobile app. The web UI works on mobile browsers but isn't optimized for small screens.
@@ -228,13 +234,6 @@ kompl backup --schedule                               # register a weekly backup
 ## Security
 
 Kompl runs on a personal computer behind a loopback or LAN. The security posture is calibrated for that model.
-
-**Hardening shipped (4-commit security pass, April 2026):**
-- SSRF protection on `/metadata/peek` — DNS-resolved IP pinning via httpx `sni_hostname` extension, scheme allowlist, cloud-metadata blocklist, manual redirect revalidation.
-- Path-traversal hardening across nlp-service and Next.js — regex-validated IDs (`^[a-z0-9](?:[a-z0-9_-]{0,79})$`) + `Path.resolve().relative_to()` containment.
-- Centralized YAML frontmatter escaping with C0/C1/U+2028/U+2029/BOM stripping.
-- Log-forging protection on compile pipeline log lines.
-- nlp-service port bound to `127.0.0.1` so the LAN cannot bypass the Next.js front door.
 
 **Known security debt:**
 - Markdown HTML output is not yet sanitized — Firecrawl-scraped content can carry XSS payloads. Even on a single-user install, an ingested bookmark can deliver a payload; needs DOMPurify in the render pipeline.

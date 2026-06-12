@@ -10,6 +10,13 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`kompl update`** — now runs `git pull --ff-only`, rebuilds and relinks the
+  CLI, pulls registry images, and `docker compose up --build -d` so app and
+  nlp-service pick up source changes. README adds an **Updating** section
+  documenting the stale-Docker-image gotcha.
+
 ### Removed
 
 - **Weekly Telegram digest** — removed the digest API route, n8n workflow,

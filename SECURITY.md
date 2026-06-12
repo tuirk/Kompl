@@ -40,7 +40,7 @@ Kompl runs locally on your machine. The attack surface is:
 | Latest  | ✅        |
 | Older   | ❌        |
 
-We only patch the latest release. Update with `kompl update`.
+We only patch the latest release. Update with `kompl update` (pulls latest source, rebuilds locally-built Docker images, and restarts the stack).
 
 ## Disclaimer
 

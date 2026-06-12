@@ -29,6 +29,10 @@ export async function upAll(projectDir: string): Promise<void> {
   await compose.upAll({ ...composeOpts(projectDir), commandOptions: ['-d'] })
 }
 
+export async function upAllBuild(projectDir: string): Promise<void> {
+  await compose.upAll({ ...composeOpts(projectDir), commandOptions: ['-d', '--build'] })
+}
+
 export async function down(projectDir: string): Promise<void> {
   await compose.down(composeOpts(projectDir))
 }
