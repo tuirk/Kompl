@@ -2,23 +2,29 @@
  * Pipeline prelude step 0: health check.
  *
  * Runs as the FIRST step of any staging-based compile. Catches hard config
- * failures (NLP service down, Gemini key missing) up front rather than
+ * failures (NLP service down, selected-provider key missing) up front rather than
  * letting each downstream step fail in isolation with a misleading error.
  *
- * Phase 1 scope: minimal checks only. Firecrawl + Gemini canary calls are
+ * Phase 1 scope: minimal checks only. Firecrawl + selected-provider checks are
  * deferred to Slice 5 polish — a missing env var is the deterministic
  * "this will not work" signal; live reachability probes add latency +
  * flakiness for negligible catch rate over per-item failures in ingest_urls.
  */
 
-import { updateCompileStep } from '../../db';
+import {
+  getEffectiveCompileModel,
+  getProviderForModel,
+  updateCompileStep,
+} from '../../db';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
 export interface HealthReport {
   nlp_ok: boolean;
-  gemini_key_present: boolean;
+  selected_provider_key_present: boolean;
   firecrawl_key_present: boolean;
+  selected_compile_provider: 'gemini' | 'deepseek';
+  selected_compile_model: string;
   warnings: string[];
 }
 
@@ -66,14 +72,27 @@ export async function runHealthCheckStep(
     );
   }
 
-  // 2. Gemini key — required for every downstream step (extract, draft, commit).
-  const gemini_key_present =
-    typeof process.env.GEMINI_API_KEY === 'string' && process.env.GEMINI_API_KEY.length > 0;
-  if (!gemini_key_present) {
-    updateCompileStep(sessionId, 'health_check', 'failed', 'gemini_key_missing');
+  // 2. Selected compile provider key — required for every downstream LLM step.
+  const selected_compile_model = getEffectiveCompileModel(sessionId);
+  const selected_compile_provider = getProviderForModel(selected_compile_model);
+  const selected_provider_key_present =
+    selected_compile_provider === 'deepseek'
+      ?
+      typeof process.env.DEEPSEEK_API_KEY === 'string' &&
+        process.env.DEEPSEEK_API_KEY.length > 0
+      :
+      typeof process.env.GEMINI_API_KEY === 'string' &&
+        process.env.GEMINI_API_KEY.length > 0;
+
+  if (!selected_provider_key_present) {
+    const missingVar =
+      selected_compile_provider === 'deepseek'
+        ? 'DEEPSEEK_API_KEY'
+        : 'GEMINI_API_KEY';
+    updateCompileStep(sessionId, 'health_check', 'failed', 'selected_provider_key_missing');
     throw new HealthCheckFailedError(
-      'gemini_key_missing',
-      'GEMINI_API_KEY env var is not set. Compile cannot proceed without an LLM.'
+      'selected_provider_key_missing',
+      `${missingVar} env var is not set. Compile model ${selected_compile_model} requires a ${selected_compile_provider.toUpperCase()} key to run.`
     );
   }
 
@@ -96,7 +115,9 @@ export async function runHealthCheckStep(
 
   const report: HealthReport = {
     nlp_ok,
-    gemini_key_present,
+    selected_provider_key_present,
+    selected_compile_provider,
+    selected_compile_model,
     firecrawl_key_present,
     warnings,
   };
