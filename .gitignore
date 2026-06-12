@@ -70,7 +70,6 @@ docs/launch/
 
 # Agent instruction files (local only — not for public repo)
 CLAUDE.md
-AGENTS.md
 CURSOR.md
 docs/CURSOR.md
 .cursor/
