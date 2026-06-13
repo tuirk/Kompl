@@ -38,6 +38,7 @@ import WikiSidebar from '../../../components/WikiSidebar';
 import SavedLinksInteractive from './SavedLinksInteractive';
 import { PAGE_TYPE_VAR, PAGE_TYPE_LABELS, type PageType } from '../../../lib/page-type-palette';
 import { renderInlineWikilinks } from '../../../lib/wikilink-render';
+import { safeExternalUrl } from '../../../lib/safe-url';
 
 const SAVED_LINKS_PAGE_ID = 'saved-links';
 
@@ -389,11 +390,11 @@ export default async function WikiPageDetail({ params }: PageProps) {
             {provRows.map((r) => (
               <div key={r.source_id} style={{ marginBottom: '0.25rem' }}>
                 <Link href={`/source/${r.source_id}`}>{r.source_title}</Link>
-                {r.source_url && (
+                {safeExternalUrl(r.source_url) && (
                   <>
                     {' '}
                     &mdash;{' '}
-                    <a href={r.source_url} target="_blank" rel="noopener noreferrer">
+                    <a href={safeExternalUrl(r.source_url)!} target="_blank" rel="noopener noreferrer">
                       original
                     </a>
                   </>

@@ -5,14 +5,32 @@
  * renderer is overridden to inject `id` attributes using the same slug
  * logic as `extractHeadings()` in the wiki page, so TOC anchor links work.
  *
- * Sanitization: raw HTML in markdown input is not rendered — n8n / Firecrawl /
- * MarkItDown output is not guaranteed to be HTML-safe.
+ * Sanitization (output goes into dangerouslySetInnerHTML):
+ *   - Raw HTML tokens (block + inline) are HTML-escaped, never passed
+ *     through. marked 12 renders raw HTML verbatim by default, and page
+ *     content comes from scrapes, LLM output, and import zips — none of
+ *     which are HTML-safe. A literal `<script>` in a source now renders
+ *     as visible text instead of executing.
+ *   - Link/image targets go through the safe-url allowlist (http(s),
+ *     anchors, relative paths). `javascript:`/`data:` links render as
+ *     plain text.
  */
 
 import { marked, Renderer } from 'marked';
 
+import { safeMarkdownHref } from './safe-url';
+
 function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 const renderer = new Renderer();
@@ -22,6 +40,24 @@ renderer.heading = (text: string, level: number, raw: string) => {
   // produce garbled ids like `strongboldstrong-heading` and break TOC jumps.
   const id = slugify(raw);
   return `<h${level} id="${id}">${text}</h${level}>\n`;
+};
+// Raw HTML (block and inline tokens both land here in marked 12) — escape,
+// never pass through.
+renderer.html = (html: string) => escapeHtml(html);
+renderer.link = (href: string, title: string | null | undefined, text: string) => {
+  const safe = safeMarkdownHref(href);
+  // Unsafe target → keep the link text (already-rendered inline HTML),
+  // drop the anchor entirely.
+  if (!safe) return text;
+  const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+  return `<a href="${escapeHtml(safe)}"${titleAttr}>${text}</a>`;
+};
+renderer.image = (href: string, title: string | null | undefined, text: string) => {
+  const safe = safeMarkdownHref(href);
+  // Unsafe src → render the alt text only.
+  if (!safe) return escapeHtml(text);
+  const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+  return `<img src="${escapeHtml(safe)}" alt="${escapeHtml(text)}"${titleAttr}>`;
 };
 
 marked.setOptions({

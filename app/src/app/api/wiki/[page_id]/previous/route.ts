@@ -11,7 +11,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
-import { getPage } from '../../../../../lib/db';
+import { getPage, safePreviousContentPath } from '../../../../../lib/db';
 
 interface RouteContext {
   params: Promise<{ page_id: string }>;
@@ -29,12 +29,20 @@ export async function GET(_request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: 'no_previous_version' }, { status: 404 });
   }
 
-  if (!fs.existsSync(page.previous_content_path)) {
+  // Containment check: the DB value round-trips through import zips, so it
+  // must be re-validated before any fs read. Only /data/pages archives of
+  // THIS page_id are readable; anything else is treated as not found.
+  const safePath = safePreviousContentPath(page_id, page.previous_content_path);
+  if (!safePath) {
+    return NextResponse.json({ error: 'invalid_path' }, { status: 404 });
+  }
+
+  if (!fs.existsSync(safePath)) {
     return NextResponse.json({ error: 'file_missing' }, { status: 404 });
   }
 
   try {
-    const gzipped = fs.readFileSync(page.previous_content_path);
+    const gzipped = fs.readFileSync(safePath);
     const content = zlib.gunzipSync(gzipped).toString('utf-8');
     return NextResponse.json({ content });
   } catch {

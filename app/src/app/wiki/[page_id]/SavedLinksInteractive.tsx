@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SavedLinkRow } from '../../../lib/db';
 import { LocalDayMonth } from '../../../components/LocalDate';
+import { safeExternalUrl } from '../../../lib/safe-url';
 
 interface ParsedMetadata {
   title?: string | null;
@@ -315,18 +316,20 @@ export default function SavedLinksInteractive({
               </div>
 
               <div style={{ padding: '20px 0', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
-                <a
-                  href={link.source_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 10,
-                    letterSpacing: '1px', textTransform: 'uppercase',
-                    color: 'var(--accent)', textDecoration: 'none',
-                  }}
-                >
-                  View
-                </a>
+                {safeExternalUrl(link.source_url) && (
+                  <a
+                    href={safeExternalUrl(link.source_url)!}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 10,
+                      letterSpacing: '1px', textTransform: 'uppercase',
+                      color: 'var(--accent)', textDecoration: 'none',
+                    }}
+                  >
+                    View
+                  </a>
+                )}
                 {isLoading ? (
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', minWidth: 60, textAlign: 'right' }}>
                     …

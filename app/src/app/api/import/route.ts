@@ -6,7 +6,8 @@ import path from 'path';
 import zlib from 'zlib';
 import { NextResponse } from 'next/server';
 
-import { getDb, DATA_ROOT, logActivity } from '@/lib/db';
+import { getDb, DATA_ROOT, logActivity, safePreviousContentPath } from '@/lib/db';
+import { isSafeId } from '@/lib/safe-paths';
 
 // System-generated pages that don't count as "user data" for the import
 // emptiness check. The Saved Links overview page is rebuilt any time an
@@ -91,6 +92,25 @@ export async function POST(request: Request) {
   const settings    = JSON.parse((await zip.file('db/settings.json')?.async('string')) ?? '[]') as Record<string, string>[];
   const schemaContent = (await zip.file('schema.md')?.async('string')) ?? null;
 
+  // Validate ids before any write. page_id/source_id flow into file paths
+  // and routes (readPageMarkdown asserts and THROWS on bad ids — a row with
+  // page_id '../../evil' would 500 every /wiki visit), and a crafted zip
+  // could smuggle traversal segments. Reject the whole zip on any offender.
+  const badIds = [
+    ...sources.filter((s) => !isSafeId(s.source_id)).map((s) => `source:${String(s.source_id)}`),
+    ...pages.filter((p) => !isSafeId(p.page_id)).map((p) => `page:${String(p.page_id)}`),
+  ];
+  if (badIds.length > 0) {
+    return NextResponse.json(
+      {
+        error: 'invalid_ids',
+        message: 'Import zip contains source/page ids that are not valid Kompl ids.',
+        invalid: badIds.slice(0, 20),
+      },
+      { status: 422 }
+    );
+  }
+
   // Pre-read all .gz buffers into Maps (async, before the sync transaction)
   const rawBuffers  = new Map<string, Buffer>();
   const pageBuffers = new Map<string, Buffer>();
@@ -173,7 +193,10 @@ export async function POST(request: Request) {
         (p.category as string | null) ?? null,
         (p.summary as string | null) ?? null,
         p.content_path as string,
-        (p.previous_content_path as string | null) ?? null,
+        // Untrusted column from the zip: only /data/pages archives of this
+        // page_id survive; anything else (e.g. /data/db/kompl.db) is nulled
+        // so the previous-version route can never read outside PAGES_DIR.
+        safePreviousContentPath(p.page_id as string, (p.previous_content_path as string | null) ?? null),
         p.last_updated as string,
         (p.source_count as number | null) ?? 0,
         p.created_at as string

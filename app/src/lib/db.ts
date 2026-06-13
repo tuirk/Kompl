@@ -32,7 +32,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { COMPILE_STEP_KEYS, type CompileStepKey } from './compile-steps';
-import { assertSafeId } from './safe-paths';
+import { assertSafeId, isSafeId } from './safe-paths';
 import type { ActivityEventType } from './activity-events';
 
 const DB_PATH = process.env.DB_PATH ?? '/data/db/kompl.db';
@@ -2112,16 +2112,32 @@ export function incrementPageSourceCount(pageId: string, increment: number): voi
 }
 
 /**
- * Read the current gzipped page file and return its SHA-256 hex hash.
- * Returns '' if the file does not exist (first-write path — caller handles).
- * Synchronous so it can be called inside a db.transaction() callback.
+ * Validate a previous_content_path value against the only shape
+ * file_store.py ever writes: {PAGES_DIR}/{page_id}.{YYYYMMDD-HHMMSS}[-usec].md.gz
+ * for THIS page_id. The column round-trips through export/import zips, so
+ * it is untrusted — a crafted zip could point it at /data/db/kompl.db or
+ * any host file and the previous-version route would happily gunzip it.
+ * Returns the resolved path when valid, null otherwise.
+ */
+export function safePreviousContentPath(pageId: string, p: string | null): string | null {
+  if (!p || !isSafeId(pageId)) return null;
+  const resolved = path.resolve(p);
+  if (path.dirname(resolved) !== path.resolve(PAGES_DIR)) return null;
+  // pageId is a safe id ([a-z0-9_-]) — no regex metacharacters to escape.
+  const archiveRe = new RegExp(`^${pageId}\\.\\d{8}-\\d{6}(?:-\\d{6})?\\.md\\.gz$`);
+  return archiveRe.test(path.basename(resolved)) ? resolved : null;
+}
+
+/**
+ * SHA-256 of the page's decompressed markdown — same basis as commit/route.ts
+ * content_hash. Uses readPageMarkdown (file + pending_content fallback).
+ * Returns '' when no content exists (first-write / provenance-only path).
+ * Sync filesystem read; call outside db.transaction().
  */
 export function getCurrentPageHash(pageId: string): string {
-  assertSafeId(pageId, 'page');
-  const filePath = path.join(PAGES_DIR, `${pageId}.md.gz`);
-  if (!fs.existsSync(filePath)) return '';
-  const data = fs.readFileSync(filePath);
-  return createHash('sha256').update(data).digest('hex');
+  const markdown = readPageMarkdown(pageId);
+  if (!markdown) return '';
+  return createHash('sha256').update(markdown).digest('hex');
 }
 
 // ============================================================================

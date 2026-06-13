@@ -434,3 +434,98 @@ class TestDisambiguateConceptPromptRouting:
         assert len(captured) == 2
         kinds = sorted(c["pair_kind"] for c in captured)
         assert kinds == ["concept", "entity"]
+
+
+# ---------------------------------------------------------------------------
+# /resolve/disambiguate — DISAMBIGUATE_MAX_PAIRS cap (CLAUDE.md rule #7)
+# ---------------------------------------------------------------------------
+
+
+class TestDisambiguatePairCap:
+    """Hard bound on LLM pairs per request. Overflow pairs must come back as
+    decision='ambiguous' (entities kept separate — safe degradation) without
+    any LLM call being made for them.
+    """
+
+    @staticmethod
+    def _make_pairs(n: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "entity_a": {"name": f"Amb{i}A", "type": "ORG", "source_id": "s1", "context": ""},
+                "entity_b": {"name": f"Amb{i}B", "type": "ORG", "source_id": "s2", "context": ""},
+                "similarity": 0.8,
+            }
+            for i in range(n)
+        ]
+
+    def test_overflow_pairs_returned_ambiguous_without_llm_calls(
+        self, resolution_client, monkeypatch
+    ):
+        from routers.resolution import DISAMBIGUATE_MAX_PAIRS  # noqa: PLC0415
+        from services import llm_client as llm_client_mod  # noqa: PLC0415
+        from services.llm_client import (  # noqa: PLC0415
+            DisambiguationResponse,
+            DisambiguationResult,
+        )
+
+        llm_pair_count = 0
+
+        def fake_disambiguate(pairs, model, pair_kind="entity"):
+            nonlocal llm_pair_count
+            llm_pair_count += len(pairs)
+            return DisambiguationResponse(results=[
+                DisambiguationResult(
+                    entity_a=p["entity_a"]["name"],
+                    entity_b=p["entity_b"]["name"],
+                    decision="different",
+                    canonical=None,
+                    reason="mock",
+                )
+                for p in pairs
+            ])
+
+        monkeypatch.setattr(llm_client_mod, "disambiguate_entities", fake_disambiguate)
+
+        overflow = 15
+        total = DISAMBIGUATE_MAX_PAIRS + overflow
+        resp = resolution_client.post(
+            "/resolve/disambiguate", json={"pairs": self._make_pairs(total)}
+        )
+        assert resp.status_code == 200
+
+        # LLM saw exactly the cap.
+        assert llm_pair_count == DISAMBIGUATE_MAX_PAIRS
+
+        # One result per requested pair — overflow answered as ambiguous.
+        results = resp.json()["results"]
+        assert len(results) == total
+        capped = [r for r in results if r["decision"] == "different"]
+        overflowed = [r for r in results if r["decision"] == "ambiguous"]
+        assert len(capped) == DISAMBIGUATE_MAX_PAIRS
+        assert len(overflowed) == overflow
+        for r in overflowed:
+            assert "cap_exceeded" in r["reason"]
+            assert r["canonical"] is None
+
+    def test_at_cap_no_truncation(self, resolution_client, monkeypatch):
+        from routers.resolution import DISAMBIGUATE_MAX_PAIRS  # noqa: PLC0415
+        from services import llm_client as llm_client_mod  # noqa: PLC0415
+        from services.llm_client import DisambiguationResponse  # noqa: PLC0415
+
+        llm_pair_count = 0
+
+        def fake_disambiguate(pairs, model, pair_kind="entity"):
+            nonlocal llm_pair_count
+            llm_pair_count += len(pairs)
+            return DisambiguationResponse(results=[])
+
+        monkeypatch.setattr(llm_client_mod, "disambiguate_entities", fake_disambiguate)
+
+        resp = resolution_client.post(
+            "/resolve/disambiguate",
+            json={"pairs": self._make_pairs(DISAMBIGUATE_MAX_PAIRS)},
+        )
+        assert resp.status_code == 200
+        assert llm_pair_count == DISAMBIGUATE_MAX_PAIRS
+        # No cap_exceeded entries when exactly at the cap.
+        assert all("cap_exceeded" not in r["reason"] for r in resp.json()["results"])

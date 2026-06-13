@@ -36,5 +36,8 @@
     "ts-jest": "^29.4.11",
     "tsup": "^8.3.0",
     "typescript": "^6.0.0"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
   }
 }
