@@ -10,7 +10,7 @@ export async function initCommand(): Promise<void> {
   const { projectDir } = await prompts({
     type: 'text',
     name: 'projectDir',
-    message: 'Path to your KomplCore directory:',
+    message: 'Path to your Kompl install directory:',
     initial: process.cwd(),
     validate: (v: string) => {
       const composePath = path.join(v, 'docker-compose.yml')

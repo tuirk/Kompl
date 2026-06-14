@@ -18,7 +18,7 @@ program
 
 program
   .command('init')
-  .description('First-time setup — configure the path to your KomplCore directory')
+  .description('First-time setup — configure the path to your Kompl install directory')
   .action(() => initCommand().catch(die))
 
 program
@@ -54,7 +54,7 @@ program
 
 program
   .command('update')
-  .description('Pull latest images and restart the stack')
+  .description('Pull latest source, rebuild images, and restart the stack')
   .action(() => updateCommand().catch(die))
 
 program
