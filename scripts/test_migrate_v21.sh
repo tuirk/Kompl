@@ -31,6 +31,16 @@ detect_python() {
 }
 PY=$(detect_python)
 
+# Current schema version from migrate.py (avoid hardcoding stale v21).
+SCHEMA_VERSION=$("$PY" -c "
+import re
+text = open('scripts/migrate.py', encoding='utf-8').read()
+m = re.search(r'^SCHEMA_VERSION = (\d+)', text, re.M)
+if not m:
+    raise SystemExit('SCHEMA_VERSION not found in scripts/migrate.py')
+print(m.group(1))
+")
+
 # Workdir + cleanup
 WORKDIR=$(mktemp -d -t kompl-migrate-test-XXXXXX)
 trap "rm -rf $WORKDIR" EXIT
@@ -59,18 +69,24 @@ conn.close()
 PY
 }
 
-# ── Build a V20-shaped DB ──────────────────────────────────────────────────
+# ── Build a V20-labelled DB on the current schema ───────────────────────────
+# The old fixture only created `settings`, which breaks v23+ migrations that
+# ALTER real tables. Bootstrap to SCHEMA_VERSION first, then rewind the version
+# marker and re-insert deployment_mode so v21's purge is still exercised.
 "$PY" - <<PY
+import os
 import sqlite3
-conn = sqlite3.connect(r'''$DB_FILE_PY''')
-conn.executescript("""
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-INSERT INTO settings (key, value) VALUES ('schema_version', '20');
-INSERT INTO settings (key, value) VALUES ('deployment_mode', 'always-on');
-""")
+import subprocess
+import sys
+
+db_path = r'''$DB_FILE_PY'''
+repo_root = os.getcwd()
+env = {**os.environ, 'DB_PATH': db_path}
+subprocess.run([sys.executable, 'scripts/migrate.py'], env=env, check=True, cwd=repo_root)
+
+conn = sqlite3.connect(db_path)
+conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('deployment_mode', 'always-on')")
+conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '20')")
 conn.commit()
 conn.close()
 PY
@@ -97,22 +113,22 @@ POST_VER=$(sql "SELECT value FROM settings WHERE key='schema_version'")
   cat "$WORKDIR/migrate.log"
   exit 1
 }
-[[ "$POST_VER" == "21" ]] || {
-  echo "FAIL: schema_version is $POST_VER after migration, expected 21"
+[[ "$POST_VER" == "$SCHEMA_VERSION" ]] || {
+  echo "FAIL: schema_version is $POST_VER after migration, expected $SCHEMA_VERSION"
   cat "$WORKDIR/migrate.log"
   exit 1
 }
 
-# ── Idempotency: re-run on a V21 DB is a no-op ─────────────────────────────
+# ── Idempotency: re-run on a fully migrated DB is a no-op ───────────────────
 DB_PATH="$DB_FILE_PY" "$PY" scripts/migrate.py >"$WORKDIR/migrate2.log" 2>&1 || {
   echo "FAIL: second migrate.py run exited non-zero. Log:"
   cat "$WORKDIR/migrate2.log"
   exit 1
 }
-grep -qE "already at version 21" "$WORKDIR/migrate2.log" || {
+grep -qE "already at version ${SCHEMA_VERSION}" "$WORKDIR/migrate2.log" || {
   echo "FAIL: second migrate.py run did not print early-return message. Log:"
   cat "$WORKDIR/migrate2.log"
   exit 1
 }
 
-echo "PASS: migration v21 purges deployment_mode row, bumps schema_version to 21, idempotent on re-run"
+echo "PASS: migration v21 purges deployment_mode row, bumps schema_version to ${SCHEMA_VERSION}, idempotent on re-run"

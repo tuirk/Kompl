@@ -10,56 +10,17 @@
  * during build/dev; `getPendingFlushPages` opens SQLite which is Node-only.
  */
 
-const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
-
-type FlushResult = { ok: true; previousPath: string | null } | { ok: false };
-
-async function flushPendingPage(
-  pageId: string,
-  markdown: string
-): Promise<FlushResult> {
-  try {
-    const res = await fetch(`${NLP_SERVICE_URL}/storage/write-page`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ page_id: pageId, markdown }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) {
-      console.error(
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          event: 'reconciler_flush_http_error',
-          page_id: pageId,
-          status: res.status,
-        })
-      );
-      return { ok: false };
-    }
-    const body = (await res.json()) as { current_path: string; previous_path: string | null };
-    return { ok: true, previousPath: body.previous_path };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(
-      JSON.stringify({
-        ts: new Date().toISOString(),
-        event: 'reconciler_flush_error',
-        page_id: pageId,
-        error: msg,
-      })
-    );
-    return { ok: false };
-  }
-}
-
 async function reconcilePendingFlushes(): Promise<void> {
   // Guard here (in addition to register()) so Turbopack's edge-bundle static
   // analysis can dead-code-eliminate the dynamic import below and suppress the
   // node-module-in-edge-runtime warnings for node:crypto/fs/path/zlib in db.ts.
   if (process.env.NEXT_RUNTIME === 'edge') return;
 
-  // Dynamically import so the module only resolves in Node runtime.
+  // Dynamically import so the modules only resolve in Node runtime.
+  // flushPendingPage lives in src/lib/flush-pending.ts — shared with the
+  // commit route's post-loop durability pass.
   const { getPendingFlushPages, clearPendingContent } = await import('./src/lib/db');
+  const { flushPendingPage } = await import('./src/lib/flush-pending');
 
   const pending = getPendingFlushPages();
   if (pending.length === 0) return;

@@ -55,6 +55,9 @@ export async function startCommand(): Promise<void> {
   }
 
   console.log(pc.green(`✓ Kompl is running at ${pc.bold(`http://localhost:${config.port}`)}`))
+  if (health.status === 'degraded') {
+    console.log(pc.yellow('  Note: NLP still warming — compile may retry until models load.'))
+  }
   console.log(pc.dim(`  DB: schema v${health.schema_version}, ${health.page_count} pages`))
 
   // Fire-and-forget — does not block the prompt returning.

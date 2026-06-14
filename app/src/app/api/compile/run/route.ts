@@ -192,7 +192,7 @@ async function callCrossref(sessionId: string, planCount: number): Promise<{ wik
   return res.json() as Promise<{ wikilinks_added: number }>;
 }
 
-async function callCommit(sessionId: string, planCount: number): Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number }> {
+async function callCommit(sessionId: string, planCount: number): Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number; flush_failures: number }> {
   // Dynamic timeout sized to planCount × per-plan (DB tx + write-page +
   // vector-upsert) cost. See compile-timeouts.ts:computeCommitMs.
   const timeoutMs = computeCommitMs(planCount);
@@ -205,7 +205,7 @@ async function callCommit(sessionId: string, planCount: number): Promise<{ commi
     dispatcher: makeDispatcher(timeoutMs),
   });
   await throwOnError('commit', res, sessionId);
-  return res.json() as Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number }>;
+  return res.json() as Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number; flush_failures: number }>;
 }
 
 async function callSchema(sessionId: string): Promise<unknown> {
@@ -565,6 +565,24 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   // the route level once this step is 'running'. No mid-transaction abort.
   updateCompileStep(sessionId, 'commit', 'running');
   const commitResult = await timed(sessionId, 'commit', () => callCommit(sessionId, planCount));
+
+  // Durability gate (CLAUDE.md rule #5): never signal completion while page
+  // files are missing from disk. DB rows ARE committed (pages remain readable
+  // via pending_content + boot reconciler), but the session must end 'failed'
+  // so the UI/n8n don't treat it as fully durable. Retry recovers: commit
+  // re-runs, finds 0 crossreffed plans, and its reconcile pass re-flushes.
+  if (commitResult.flush_failures > 0) {
+    updateCompileStep(
+      sessionId,
+      'commit',
+      'failed',
+      `${commitResult.committed} pages committed to DB, but ${commitResult.flush_failures} page file(s) failed to flush to disk — retry to re-attempt`
+    );
+    throw new Error(
+      `commit failed: ${commitResult.flush_failures} page file(s) pending disk flush (DB rows are durable; retry re-flushes)`
+    );
+  }
+
   const thinMsg = commitResult.thin_drafts_skipped > 0 ? `, ${commitResult.thin_drafts_skipped} thin drafts skipped` : '';
   updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages, ${commitResult.sources_activated} sources committed${thinMsg}`);
 

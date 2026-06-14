@@ -52,6 +52,11 @@ if ! python3 --version 2>&1 | grep -q "Python 3"; then
     export -f python3
 fi
 
+# UUID helper — python3 is already required; avoid relying on node on PATH (WSL often lacks it).
+random_uuid() {
+    python3 -c "import uuid; print(uuid.uuid4())"
+}
+
 # Compose command: prefer v2 plugin (`docker compose`), fall back to v1 standalone (`docker-compose`)
 # In CI, COMPOSE_FILE is set by the workflow (docker-compose.yml:docker-compose.ci.yml) —
 # do NOT pass --file flags or they will override COMPOSE_FILE.
@@ -74,6 +79,49 @@ else
     exit 1
 fi
 unset _COMPOSE_FILES
+
+# Stage 11d needs ripgrep. ubuntu-latest CI ships rg; Git Bash on Windows often
+# does not, even when Cursor/VS Code bundle @vscode/ripgrep. Probe common install
+# paths once — still fail-closed if nothing is found (H8).
+bootstrap_rg_path() {
+  command -v rg >/dev/null 2>&1 && return 0
+  command -v rg.exe >/dev/null 2>&1 && return 0
+  local cand dir
+  for cand in \
+    "${LOCALAPPDATA:-}/Programs/Cursor/resources/app/node_modules/@vscode/ripgrep/bin/rg.exe" \
+    "/d/cursor/resources/app/node_modules/@vscode/ripgrep/bin/rg.exe" \
+    "/d/Cursor/resources/app/node_modules/@vscode/ripgrep/bin/rg.exe" \
+    "/mnt/d/cursor/resources/app/node_modules/@vscode/ripgrep/bin/rg.exe" \
+    "/mnt/d/Cursor/resources/app/node_modules/@vscode/ripgrep/bin/rg.exe" \
+    "${ProgramFiles:-}/Cursor/resources/app/node_modules/@vscode/ripgrep/bin/rg.exe" \
+    "${LOCALAPPDATA:-}/Programs/Microsoft VS Code/resources/app/node_modules/@vscode/ripgrep/bin/rg.exe" \
+    "${ProgramFiles:-}/Microsoft VS Code/resources/app/node_modules/@vscode/ripgrep/bin/rg.exe" \
+    "${USERPROFILE:-}/scoop/shims/rg.exe" \
+    "/c/ProgramData/chocolatey/bin/rg.exe"
+  do
+    [ -n "$cand" ] || continue
+    if [ -f "$cand" ]; then
+      dir=$(dirname "$cand")
+      export PATH="$dir:$PATH"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Return the ripgrep binary name on PATH after bootstrap (rg or rg.exe on WSL).
+resolve_rg_bin() {
+  bootstrap_rg_path || true
+  if command -v rg >/dev/null 2>&1; then
+    echo rg
+    return 0
+  fi
+  if command -v rg.exe >/dev/null 2>&1; then
+    echo rg.exe
+    return 0
+  fi
+  return 1
+}
 
 # Track which stages ran and their outcomes, printed as a summary at the end.
 STAGE_RESULTS=()
@@ -735,9 +783,16 @@ except Exception:
 # ──────────────────────────────────────────────────────────────────────────
 stage_11d_insertactivity_guard() {
   echo "=== Stage 11d: insertActivity writer discipline ==="
+  local rg_bin
+  rg_bin=$(resolve_rg_bin) || {
+    echo "FAIL: ripgrep (rg) is required for stage 11d but was not found on PATH."
+    echo "  Install: apt install ripgrep / brew install ripgrep / scoop install ripgrep"
+    record_stage 11d REAL FAIL
+    return 1
+  }
   local hits
   # -U --multiline-dotall: let . match newlines so we catch multi-line callsites.
-  hits=$(rg -U --multiline-dotall -n \
+  hits=$("$rg_bin" -U --multiline-dotall -n \
     'insertActivity\s*\(\s*\{[^}]*action_type\s*:' \
     app/src/ \
     --glob '!app/src/app/api/activity/**' \
@@ -1148,7 +1203,7 @@ stage_16_full_pipeline() {
     fi
 
     local SESSION_ID
-    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    SESSION_ID=$(random_uuid)
 
     local base_page_count
     base_page_count=$(curl -sf --max-time 10 http://localhost:3000/api/health | python3 -c "
@@ -1233,7 +1288,7 @@ stage_17_session_compile() {
     fi
 
     local SESSION_ID
-    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    SESSION_ID=$(random_uuid)
 
     echo "  staging 2 text sources..."
     curl -sf --max-time 15 -X POST http://localhost:3000/api/onboarding/stage \
@@ -1740,7 +1795,7 @@ stage_22_original_source_gate2() {
     fi
 
     local SESSION_ID
-    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    SESSION_ID=$(random_uuid)
 
     local base_orig_count
     base_orig_count=$(curl -sf --max-time 10 "http://localhost:3000/api/wiki/index" | python3 -c "
@@ -1885,7 +1940,7 @@ stage_24_staging_crud() {
     echo "--- stage 24: collect_staging CRUD ---"
 
     local SESSION_ID
-    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    SESSION_ID=$(random_uuid)
 
     # 1. Stage 2 URL rows
     local stage_response
@@ -2015,7 +2070,7 @@ stage_25_finalize_end_to_end() {
     fi
 
     local SESSION_ID
-    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    SESSION_ID=$(random_uuid)
 
     local TEST_MARKDOWN='# Stage 25 canary
 
@@ -2177,11 +2232,11 @@ stage_26_finalize_accepts_ingested() {
     echo "--- stage 26: /finalize accepts 'ingested' rows (legacy-lifted safety) ---"
 
     local SESSION_ID
-    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    SESSION_ID=$(random_uuid)
     local SOURCE_ID
-    SOURCE_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    SOURCE_ID=$(random_uuid)
     local STAGE_ID
-    STAGE_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    STAGE_ID=$(random_uuid)
 
     # The app container ships python3 (migrate.py runs on boot) but not the
     # sqlite3 CLI. Use python3 -c with the stdlib sqlite3 module to seed.
@@ -2274,7 +2329,7 @@ stage_27_patch_excludes_from_finalize() {
     echo "--- stage 27: PATCH included=false excludes from /finalize ---"
 
     local SESSION_ID
-    SESSION_ID=$(node -e "console.log(require('crypto').randomUUID())")
+    SESSION_ID=$(random_uuid)
 
     local stage_response
     stage_response=$(curl -sf --max-time 10 -X POST \

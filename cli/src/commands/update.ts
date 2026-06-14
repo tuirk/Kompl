@@ -42,4 +42,7 @@ export async function updateCommand(): Promise<void> {
   }
 
   console.log(pc.green(`✓ Kompl updated and running at ${pc.bold(`http://localhost:${config.port}`)}`))
+  if (health.status === 'degraded') {
+    console.log(pc.yellow('  Note: NLP still warming — compile may retry until models load.'))
+  }
 }

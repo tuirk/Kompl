@@ -27,11 +27,14 @@ This module NEVER opens kompl.db. rule #1 in CLAUDE.md.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
+import tempfile
+import threading
 import time
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -299,8 +302,18 @@ class Entity(BaseModel):
 # Daily spend tracker — file-based, survives restarts, resets at midnight UTC
 # ---------------------------------------------------------------------------
 
+logger = logging.getLogger(__name__)
+
 _CAP_FILE = Path(os.environ.get("DATA_ROOT", "/data")) / "llm-cap.json"
 _CONFIG_FILE = Path(os.environ.get("DATA_ROOT", "/data")) / "llm-config.json"
+
+# Serializes the read→check→increment→write critical section in
+# _check_and_record_cost. The service runs a single uvicorn worker by design
+# (Dockerfile --workers 1; single-writer SQLite), so every request thread
+# shares this interpreter and a threading.Lock fully closes the TOCTOU race —
+# no cross-process flock needed. Concurrent extract/disambiguate threads used
+# to read the same baseline and lose each other's spend increments.
+_cap_lock = threading.Lock()
 
 # Cache the daily cap for 30 s to avoid a filesystem read on every LLM call.
 # 30 s is short enough that a Settings UI change takes effect quickly without
@@ -356,24 +369,48 @@ def _read_daily_cap_usd() -> float:
     return cap
 
 
+def _utc_today() -> str:
+    """Day key for the spend file. UTC, matching the user-facing 'resets at
+    midnight UTC' message — date.today() was container-local and skewed the
+    reset boundary."""
+    return str(datetime.now(timezone.utc).date())
+
+
 def _read_cap() -> dict:
     """Read today's spend from disk. Reset automatically when the date changes."""
     try:
         data = json.loads(_CAP_FILE.read_text())
-        today = str(date.today())
+        today = _utc_today()
         if data.get("date") != today:
             return {"date": today, "total_usd": 0.0, "call_count": 0}
         return data
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        return {"date": str(date.today()), "total_usd": 0.0, "call_count": 0}
+        return {"date": _utc_today(), "total_usd": 0.0, "call_count": 0}
 
 
 def _write_cap(data: dict) -> None:
-    """Persist current spend to disk. Non-fatal on I/O failure."""
+    """Persist current spend to disk. Non-fatal on I/O failure.
+
+    Atomic tmp + os.replace so a crash mid-write can't leave a truncated
+    JSON file (which _read_cap would treat as 'no spend today' — silently
+    resetting the cap).
+    """
     try:
-        _CAP_FILE.write_text(json.dumps(data))
-    except OSError:
-        pass  # cap still enforced in-memory for this call
+        fd, tmp_path = tempfile.mkstemp(dir=str(_CAP_FILE.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(json.dumps(data))
+            os.replace(tmp_path, _CAP_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        # Cap still enforced in-memory for this call; next successful write
+        # catches up because spend is re-read before every increment.
+        logger.warning("llm-cap.json write failed (%s) — spend not persisted", e)
 
 
 def _check_and_record_cost(
@@ -406,17 +443,18 @@ def _check_and_record_cost(
     }
     cost_usd = provider.cost_usd(model, usage)
 
-    cap_data = _read_cap()
-    daily_cap = _read_daily_cap_usd()
-    if daily_cap > 0 and cap_data["total_usd"] + cost_usd > daily_cap:
-        raise CostCeilingError(
-            f"Daily LLM spend limit (${daily_cap:.2f}) reached. "
-            f"Today's spend: ${cap_data['total_usd']:.4f}. "
-            f"Resets at midnight UTC."
-        )
-    cap_data["total_usd"] = round(cap_data["total_usd"] + cost_usd, 6)
-    cap_data["call_count"] = cap_data.get("call_count", 0) + 1
-    _write_cap(cap_data)
+    with _cap_lock:
+        cap_data = _read_cap()
+        daily_cap = _read_daily_cap_usd()
+        if daily_cap > 0 and cap_data["total_usd"] + cost_usd > daily_cap:
+            raise CostCeilingError(
+                f"Daily LLM spend limit (${daily_cap:.2f}) reached. "
+                f"Today's spend: ${cap_data['total_usd']:.4f}. "
+                f"Resets at midnight UTC."
+            )
+        cap_data["total_usd"] = round(cap_data["total_usd"] + cost_usd, 6)
+        cap_data["call_count"] = cap_data.get("call_count", 0) + 1
+        _write_cap(cap_data)
 
 
 def _salvage_extraction(raw_text: str) -> "LLMExtractionResponse | None":

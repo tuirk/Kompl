@@ -52,6 +52,12 @@ const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000'
 // into real source_ids.
 const EXISTING_PAGE_SENTINEL = '__existing_page__';
 
+// Must match nlp-service/routers/resolution.py DISAMBIGUATE_MAX_PAIRS.
+// Hard bound on Layer-3 LLM pairs per resolve (CLAUDE.md rule #7); overflow
+// pairs are kept as separate singletons instead of being sent to the LLM.
+// (Not exported — Next.js route files may only export route handlers.)
+const MAX_DISAMBIGUATE_PAIRS = 120;
+
 // ── Type definitions (mirror nlp-service Pydantic models) ─────────────────────
 
 interface EntityInput {
@@ -263,13 +269,30 @@ export async function POST(request: Request) {
     const resolved3: ResolvedGroup[] = [];
     const ambiguousRemaining: EntityInput[] = [];
 
-    if (ambiguous2.length > 0) {
-      const disambResult = await callDisambiguate(ambiguous2, getEffectiveCompileModel(session_id));
+    // App-side mirror of the nlp-service DISAMBIGUATE_MAX_PAIRS cap
+    // (CLAUDE.md rule #7): never ask for more LLM pairs than the service
+    // will process. Overflow pairs take the same path as an 'ambiguous'
+    // LLM verdict — entities stay separate singletons, a safe degradation.
+    const cappedAmbiguous = ambiguous2.slice(0, MAX_DISAMBIGUATE_PAIRS);
+    const overflowAmbiguous = ambiguous2.slice(MAX_DISAMBIGUATE_PAIRS);
+    if (overflowAmbiguous.length > 0) {
+      console.warn(
+        `[resolve] ${ambiguous2.length} ambiguous pairs exceed cap ${MAX_DISAMBIGUATE_PAIRS}; ` +
+          `${overflowAmbiguous.length} pairs kept separate without LLM disambiguation`
+      );
+      for (const pair of overflowAmbiguous) {
+        if (pair.entity_a.source_id !== EXISTING_PAGE_SENTINEL) ambiguousRemaining.push(pair.entity_a);
+        if (pair.entity_b.source_id !== EXISTING_PAGE_SENTINEL) ambiguousRemaining.push(pair.entity_b);
+      }
+    }
+
+    if (cappedAmbiguous.length > 0) {
+      const disambResult = await callDisambiguate(cappedAmbiguous, getEffectiveCompileModel(session_id));
       const disambMap = new Map(
         disambResult.results.map((r) => [`${r.entity_a}|||${r.entity_b}`, r])
       );
 
-      for (const pair of ambiguous2) {
+      for (const pair of cappedAmbiguous) {
         const key = `${pair.entity_a.name}|||${pair.entity_b.name}`;
         const result = disambMap.get(key);
         // Cross-session ambiguous pairs have entity_b carrying the sentinel

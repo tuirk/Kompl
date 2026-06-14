@@ -6,12 +6,10 @@
  * renders it as HTML via the `marked` wrapper in lib/markdown.ts.
  *
  * Security note: we use dangerouslySetInnerHTML on markdown output.
- * `marked` is configured to not emit raw HTML from markdown input
- * (lib/markdown.ts, commit 3), so the most dangerous vectors are closed.
- * However, `marked` does not strip malicious URLs in links/images. For
- * commit 3 the trust model is "user chose to ingest this source, they
- * trust it." A proper sanitizer (DOMPurify or rehype-sanitize) can be
- * wired in when multi-user support lands.
+ * lib/markdown.ts escapes raw HTML tokens and allowlists link/image URL
+ * schemes (http(s)/anchor/relative), so script injection and
+ * javascript:/data: links from ingested content do not execute. Direct
+ * href renders of DB-sourced URLs go through safeExternalUrl().
  *
  * Server components in Next.js 16 receive `params` as a Promise that
  * must be awaited. Do NOT add "use client" to this file — it reads
@@ -23,6 +21,7 @@ import { notFound } from 'next/navigation';
 
 import { getSource, getSourceProvenanceMap, readRawMarkdown, type SourceRow } from '../../../lib/db';
 import { renderMarkdown } from '../../../lib/markdown';
+import { safeExternalUrl } from '../../../lib/safe-url';
 import SourceActions from './SourceActions';
 
 interface PageProps {
@@ -106,8 +105,8 @@ export default async function SourcePage({ params }: PageProps) {
             {source.source_type}
           </span>
           <span>{formatDate(source.date_ingested)}</span>
-          {source.source_url && (
-            <a href={source.source_url} target="_blank" rel="noopener noreferrer">
+          {safeExternalUrl(source.source_url) && (
+            <a href={safeExternalUrl(source.source_url)!} target="_blank" rel="noopener noreferrer">
               {source.source_url}
             </a>
           )}

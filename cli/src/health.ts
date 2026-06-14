@@ -19,6 +19,16 @@ export async function checkHealth(port: number): Promise<HealthResponse | null> 
   }
 }
 
+/** App is serving when ok, or degraded but DB/schema are ready (NLP warming). */
+export function isAppReady(health: HealthResponse): boolean {
+  if (health.status === 'ok') return true
+  return (
+    health.status === 'degraded' &&
+    health.db_writable &&
+    health.schema_version > 0
+  )
+}
+
 export async function pollHealth(
   port: number,
   timeoutMs = 60_000,
@@ -27,7 +37,7 @@ export async function pollHealth(
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const health = await checkHealth(port)
-    if (health?.status === 'ok') return health
+    if (health && isAppReady(health)) return health
     await new Promise(r => setTimeout(r, intervalMs))
   }
   return null

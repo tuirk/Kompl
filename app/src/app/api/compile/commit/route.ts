@@ -22,7 +22,12 @@
  *
  * Request:  { session_id: string }
  * Response: { session_id, committed, failed, thin_drafts_skipped,
- *             pages_created, pages_updated, sources_activated, wikilink_warnings }
+ *             pages_created, pages_updated, sources_activated,
+ *             wikilink_warnings, flush_failures }
+ *
+ * flush_failures counts pages whose DB rows committed but whose .md.gz file
+ * could not be written even after the post-loop reconcile pass. Non-zero →
+ * run/route.ts fails the session (never 'completed' with files missing).
  */
 
 import { createHash } from 'node:crypto';
@@ -47,13 +52,70 @@ import {
   incrementPageSourceCount,
   setPendingContent,
   clearPendingContent,
+  getPendingFlushPages,
   backfillAliasCanonicalPageId,
 } from '../../../../lib/db';
+import { flushPendingPage } from '../../../../lib/flush-pending';
 import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
 import { syncPageWikilinks } from '../../../../lib/wikilinks';
 import { extractFrontmatterField } from '../../../../lib/yaml-frontmatter';
 
-const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
+// Derive the page_id a plan commits to. Single source of truth for the
+// slug algorithm — used by the commit loop, the wikilink pass, and the
+// durability scoping below. 'update' plans reuse the existing page;
+// 'create' plans get a title slug + plan_id suffix.
+function derivePlanPageId(plan: {
+  plan_id: string;
+  title: string;
+  action: string;
+  existing_page_id: string | null;
+}): string {
+  if (plan.action === 'update' && plan.existing_page_id) return plan.existing_page_id;
+  const suffix = plan.plan_id.replace(/-/g, '').slice(0, 8);
+  const base = plan.title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 56)
+    .replace(/^-+|-+$/g, '');
+  return `${base || 'page'}-${suffix}`;
+}
+
+// Page ids this session's committed content plans wrote (current run AND
+// prior runs — plan rows keep draft_status='committed' across retries).
+// Provenance-only plans never write files, so they are excluded.
+function getSessionCommittedPageIds(session_id: string): Set<string> {
+  return new Set(
+    getPagePlansByStatus(session_id, 'committed')
+      .filter((p) => p.action !== 'provenance-only')
+      .map((p) => derivePlanPageId(p))
+  );
+}
+
+// Durability reconcile pass — re-attempt Phase 3a for every page still
+// holding pending_content (this session's flush failures AND any stranded
+// rows from other commit paths — flushing them is idempotent, so we sweep
+// globally as good citizenship). The returned count is SESSION-SCOPED:
+// only pages this session committed gate its success, so a stranded row
+// from another session/path can never false-fail this compile. The
+// orchestrator fails the session on a non-zero count so 'completed'
+// always means "all files durable" (CLAUDE.md rule #5). Runs on the
+// empty-plans path too: a retry after a flush failure finds all plans
+// already 'committed', so this pass is the only thing that recovers the
+// stranded files without a server restart.
+async function reconcileSessionFlushes(sessionPageIds: ReadonlySet<string>): Promise<number> {
+  let remaining = 0;
+  for (const row of getPendingFlushPages()) {
+    const result = await flushPendingPage(row.page_id, row.pending_content);
+    if (result.ok) {
+      clearPendingContent(row.page_id, result.previousPath);
+    } else if (sessionPageIds.has(row.page_id)) {
+      remaining++;
+    }
+  }
+  return remaining;
+}
 
 // Strip YAML frontmatter (--- ... ---) from the top of a markdown string.
 // Used to measure actual content length before the thin-draft gate check.
@@ -77,8 +139,11 @@ async function commitSession(session_id: string): Promise<Response> {
   const plans = getPagePlansByStatus(session_id, 'crossreffed');
 
   if (plans.length === 0) {
+    // Retry-after-flush-failure lands here (all plans already 'committed').
+    // The reconcile pass is what actually re-flushes the stranded files.
+    const flushFailures = await reconcileSessionFlushes(getSessionCommittedPageIds(session_id));
     return NextResponse.json(
-      { session_id, committed: 0, failed: 0, pages_created: 0, pages_updated: 0, sources_activated: 0 },
+      { session_id, committed: 0, failed: 0, pages_created: 0, pages_updated: 0, sources_activated: 0, flush_failures: flushFailures },
       { status: 200 }
     );
   }
@@ -213,22 +278,7 @@ async function commitSession(session_id: string): Promise<Response> {
       continue;
     }
 
-    let page_id: string;
-
-    if (plan.action === 'update' && plan.existing_page_id) {
-      page_id = plan.existing_page_id;
-    } else {
-      // Generate slug-based page_id from title + plan_id suffix
-      const suffix = plan.plan_id.replace(/-/g, '').slice(0, 8);
-      const base = plan.title
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, '')
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-')
-        .slice(0, 56)
-        .replace(/^-+|-+$/g, '');
-      page_id = `${base || 'page'}-${suffix}`;
-    }
+    const page_id = derivePlanPageId(plan);
 
     // Extract frontmatter fields (category, summary) from YAML envelope only.
     // Scoping to the `---\n...\n---` block prevents body content (which can
@@ -321,21 +371,15 @@ async function commitSession(session_id: string): Promise<Response> {
     // Phase 3a (awaited): flush pending_content to disk via nlp-service.
     // pending_content stays populated until this succeeds, so the boot reconciler
     // can re-attempt if Phase 3a crashes before clearPendingContent runs.
-    try {
-      const res = await fetch(`${NLP_SERVICE_URL}/storage/write-page`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ page_id, markdown }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) throw new Error(`write_page_failed: ${res.status}`);
-      const wr = await res.json() as { current_path: string; previous_path: string | null };
-      clearPendingContent(page_id, wr.previous_path);
-    } catch (flushErr) {
-      const flushMsg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-      console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'file_flush_failed', context: 'session_commit', plan_id: plan.plan_id, page_id, session_id, error: flushMsg }));
-      // Plan is already committed in DB. pending_content stays for reconciler.
-      // Do not mark as failed — the page row is durable; only the file is missing.
+    const flushResult = await flushPendingPage(page_id, markdown);
+    if (flushResult.ok) {
+      clearPendingContent(page_id, flushResult.previousPath);
+    } else {
+      console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'file_flush_failed', context: 'session_commit', plan_id: plan.plan_id, page_id, session_id }));
+      // Plan is already committed in DB. pending_content stays populated —
+      // the post-loop reconcileSessionFlushes() pass re-attempts it, and
+      // whatever still fails is surfaced as flush_failures so the
+      // orchestrator fails the session instead of marking it 'completed'.
     }
 
     // Phase 3b: backfill alias canonical_page_id for entity + concept pages
@@ -375,27 +419,15 @@ async function commitSession(session_id: string): Promise<Response> {
   // skips and failures — pages that were never inserted into `pages`).
   // Without this guard, a thin-draft plan with [[wikilinks]] causes an FK
   // violation that aborts the entire loop, leaving subsequent pages with no links.
-  const committedPlans = plans.filter((p) => {
-    if (!p.draft_content || p.action === 'provenance-only') return false;
-    const pid = p.action === 'update' && p.existing_page_id
-      ? p.existing_page_id
-      : (() => {
-          const suffix = p.plan_id.replace(/-/g, '').slice(0, 8);
-          const base = p.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '')
-            .replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 56).replace(/^-+|-+$/g, '');
-          return `${base || 'page'}-${suffix}`;
-        })();
-    return committedPageIds.has(pid);
-  });
+  const committedPlans = plans.filter(
+    (p) =>
+      p.draft_content !== null &&
+      p.action !== 'provenance-only' &&
+      committedPageIds.has(derivePlanPageId(p))
+  );
 
   for (const plan of committedPlans) {
-    const fromPageId = plan.action === 'update' && plan.existing_page_id
-      ? plan.existing_page_id
-      : (() => {
-          const suffix = plan.plan_id.replace(/-/g, '').slice(0, 8);
-          const base = plan.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 56).replace(/^-+|-+$/g, '');
-          return `${base || 'page'}-${suffix}`;
-        })();
+    const fromPageId = derivePlanPageId(plan);
 
     try {
       syncPageWikilinks(db, fromPageId, plan.draft_content!, titleMap);
@@ -423,6 +455,15 @@ async function commitSession(session_id: string): Promise<Response> {
     markSourcesActive(eligibleSourceIds);
   }
 
+  // ── Durability pass (CLAUDE.md rule #5) ─────────────────────────────────────
+  // Re-attempt any Phase 3a flush that failed during the loop above. Session
+  // pages still pending after this are reported as flush_failures — the
+  // orchestrator (run/route.ts) fails the session on a non-zero count so
+  // 'completed' is never signalled while .md.gz files are missing from disk.
+  // getSessionCommittedPageIds is read AFTER the loop so it includes plans
+  // committed in this run as well as prior runs of the same session.
+  const flushFailures = await reconcileSessionFlushes(getSessionCommittedPageIds(session_id));
+
   return NextResponse.json(
     {
       session_id,
@@ -435,6 +476,7 @@ async function commitSession(session_id: string): Promise<Response> {
       sources_activated: sourcesActivated,
       wikilink_warnings: wikilinkWarnings,
       auto_approve: autoApprove,
+      flush_failures: flushFailures,
     },
     { status: 200 }
   );

@@ -605,6 +605,16 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 # ---------------------------------------------------------------------------
 
 
+# LLM iteration cap (CLAUDE.md rule #7): hard bound on pairs per
+# /resolve/disambiguate request. At 10 pairs per LLM call this caps a single
+# request at 12 batched calls. Excess pairs come back decision='ambiguous'
+# (the app keeps ambiguous entities separate — safe degradation, never an
+# over-merge). Rule #7's default-off feature flag targets expansion loops;
+# disambiguation is a core resolve layer, so a hard cap bounds spend without
+# silently disabling every compile.
+DISAMBIGUATE_MAX_PAIRS = 120
+
+
 class DisambiguateRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     pairs: list[AmbiguousPair]
@@ -643,13 +653,24 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
     if not req.pairs:
         return DisambiguateResponse(results=[])
 
+    # Enforce the LLM call cap. Truncated pairs are answered without an LLM
+    # call as 'ambiguous' so callers always get one result per pair.
+    capped_pairs = req.pairs[:DISAMBIGUATE_MAX_PAIRS]
+    overflow_pairs = req.pairs[DISAMBIGUATE_MAX_PAIRS:]
+    if overflow_pairs:
+        logger.warning(
+            "disambiguate: %d pairs requested exceeds cap %d — "
+            "%d pairs returned as 'ambiguous' without LLM calls",
+            len(req.pairs), DISAMBIGUATE_MAX_PAIRS, len(overflow_pairs),
+        )
+
     # Partition pairs by kind: concept pairs (either side CONCEPT) get the
     # stricter concept-disambiguation prompt; the rest use the entity prompt.
     # Concepts have fuzzier boundaries — share vocabulary across distinct
     # ideas — so the concept prompt errs toward "different" in the gray band.
     concept_pairs: list[dict[str, Any]] = []
     entity_pairs: list[dict[str, Any]] = []
-    for p in req.pairs:
+    for p in capped_pairs:
         pair_dict = {
             "entity_a": {"name": p.entity_a.name, "type": p.entity_a.type, "context": p.entity_a.context},
             "entity_b": {"name": p.entity_b.name, "type": p.entity_b.type, "context": p.entity_b.context},
@@ -686,5 +707,15 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
         _call_in_batches(entity_pairs, "entity")
     if concept_pairs:
         _call_in_batches(concept_pairs, "concept")
+
+    for p in overflow_pairs:
+        all_results.append(DisambiguateResponseItem(
+            entity_a=p.entity_a.name,
+            entity_b=p.entity_b.name,
+            decision="ambiguous",
+            canonical=None,
+            reason=f"cap_exceeded: request had more than {DISAMBIGUATE_MAX_PAIRS} pairs; "
+                   "pair not sent to LLM, entities kept separate",
+        ))
 
     return DisambiguateResponse(results=all_results)

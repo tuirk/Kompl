@@ -628,8 +628,14 @@ def migrate():
         # expand-to-reveal progress UI (Phase C). Pre-v23 rows stay NULL — no
         # backfill possible (we have no way to recover the original session/step
         # for events written before this column existed).
-        conn.execute("ALTER TABLE activity_log ADD COLUMN session_id TEXT")
-        conn.execute("ALTER TABLE activity_log ADD COLUMN step_key TEXT")
+        activity_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(activity_log)").fetchall()
+        }
+        if "session_id" not in activity_cols:
+            conn.execute("ALTER TABLE activity_log ADD COLUMN session_id TEXT")
+        if "step_key" not in activity_cols:
+            conn.execute("ALTER TABLE activity_log ADD COLUMN step_key TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_session ON activity_log(session_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_session_step ON activity_log(session_id, step_key)")
 
@@ -642,7 +648,12 @@ def migrate():
         # 30+ min of debugging because the actual error was swallowed by the
         # pLimit worker pool in /api/compile/draft. Nullable; pre-v24 rows
         # stay NULL — no backfill possible.
-        conn.execute("ALTER TABLE page_plans ADD COLUMN draft_error TEXT")
+        plan_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(page_plans)").fetchall()
+        }
+        if "draft_error" not in plan_cols:
+            conn.execute("ALTER TABLE page_plans ADD COLUMN draft_error TEXT")
 
     if current < 25:
         print("  applying migration v25 (sources.title_source + title_rescued_at)...")
