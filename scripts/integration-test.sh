@@ -57,6 +57,54 @@ random_uuid() {
     python3 -c "import uuid; print(uuid.uuid4())"
 }
 
+# Cancel one compile session and wait for a terminal status.
+cancel_compile_session() {
+    local session_id="$1"
+    curl -sf -X POST \
+        -H "content-type: application/json" \
+        -d "{\"session_id\":\"$session_id\"}" \
+        "http://localhost:3000/api/compile/cancel" >/dev/null 2>&1 || true
+    local status=""
+    for _ in $(seq 1 30); do
+        status=$(curl -sf --max-time 5 \
+            "http://localhost:3000/api/compile/progress?session_id=$session_id" 2>/dev/null \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+        case "$status" in
+            cancelled|completed|failed|'') return 0 ;;
+        esac
+        sleep 2
+    done
+}
+
+# Full-key runs start multiple partial pipelines; release the global gate
+# before a stage calls /finalize (otherwise 409 session_in_progress).
+release_compile_gate() {
+    local also_id="${1:-}"
+    if [ -n "$also_id" ]; then
+        cancel_compile_session "$also_id"
+    fi
+    local running_id
+    while true; do
+        running_id=$(curl -sf --max-time 5 "http://localhost:3000/api/compile/sessions?limit=20" 2>/dev/null \
+            | python3 -c "
+import sys, json
+try:
+    for it in json.load(sys.stdin).get('items', []):
+        if it.get('status') in ('queued', 'running'):
+            print(it['session_id'])
+            raise SystemExit
+except Exception:
+    pass
+print('')
+" 2>/dev/null || echo "")
+        if [ -z "$running_id" ]; then
+            break
+        fi
+        echo "  releasing compile gate (cancelling $running_id)..."
+        cancel_compile_session "$running_id"
+    done
+}
+
 # Compose command: prefer v2 plugin (`docker compose`), fall back to v1 standalone (`docker-compose`)
 # In CI, COMPOSE_FILE is set by the workflow (docker-compose.yml:docker-compose.ci.yml) —
 # do NOT pass --file flags or they will override COMPOSE_FILE.
@@ -443,6 +491,34 @@ stage_11_onboarding_api() {
         return 0
     fi
 
+    # Stage 1 starts app-only (nlp_ok:false path); n8n is torn down with
+    # down -v and not recreated until a later stage needs it.
+    echo "  ensuring n8n is up for finalize webhook..."
+    if ! $COMPOSE up -d n8n; then
+        echo "  FAIL: docker compose up -d n8n returned non-zero"
+        record_stage 11 REAL FAIL
+        return 1
+    fi
+    if ! wait_for_http_200 "http://localhost:5678/healthz" 120; then
+        echo "  FAIL: n8n /healthz not ready within 120s"
+        record_stage 11 REAL FAIL
+        return 1
+    fi
+    echo "  waiting for n8n webhook registration..."
+    for i in $(seq 1 90); do
+        probe_body=$(curl -s --max-time 3 -X GET \
+            "http://localhost:5678/webhook/session-compile" 2>/dev/null || echo "")
+        case "$probe_body" in
+            *POST*)
+                echo "    webhook ready after ${i}s"
+                break
+                ;;
+            *)
+                sleep 1
+                ;;
+        esac
+    done
+
     local SESSION_ID
     SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
     echo "  session_id: $SESSION_ID"
@@ -508,6 +584,8 @@ stage_11_onboarding_api() {
         return 1
     fi
     echo "  compile_progress status=$status (entered pipeline) OK"
+
+    release_compile_gate "$SESSION_ID"
 
     echo "  PASS"
     record_stage 11 REAL PASS
@@ -1103,6 +1181,8 @@ except Exception:
     fi
     echo "  extract step status=done OK"
 
+    release_compile_gate "$SESSION_ID"
+
     echo "  PASS"
     record_stage 14 REAL PASS
     return 0
@@ -1127,6 +1207,8 @@ stage_15_resolution() {
         record_stage 15 REAL SKIPPED
         return 0
     fi
+
+    release_compile_gate
 
     local SESSION_ID
     SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || uuidgen)
@@ -1179,6 +1261,8 @@ except Exception:
     fi
     echo "  resolve step complete OK"
 
+    release_compile_gate "$SESSION_ID"
+
     echo "  PASS"
     record_stage 15 REAL PASS
     return 0
@@ -1201,6 +1285,8 @@ stage_16_full_pipeline() {
         record_stage 16 REAL SKIPPED
         return 0
     fi
+
+    release_compile_gate
 
     local SESSION_ID
     SESSION_ID=$(random_uuid)
@@ -1286,6 +1372,8 @@ stage_17_session_compile() {
         record_stage 17 REAL SKIPPED
         return 0
     fi
+
+    release_compile_gate
 
     local SESSION_ID
     SESSION_ID=$(random_uuid)
@@ -1410,6 +1498,8 @@ stage_18_wiki_aware_update() {
         return 0
     fi
     echo "  page_count before: $PAGE_COUNT_BEFORE"
+
+    release_compile_gate
 
     # Stage 1 text source that overlaps with existing wiki content
     SESSION_ID="stage18-returning-$(date +%s)"

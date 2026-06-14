@@ -32,14 +32,16 @@ You'll need three things on your machine:
 - **[Node.js](https://nodejs.org/) ≥ 24** — to install and run the `kompl` CLI.
 - **~5 GB free disk and 4 GB free RAM** — Kompl runs three containers (app, NLP service, n8n) plus pulls a ~90 MB embedding model on first compile.
 
-You'll also need API keys. Two are required, two are optional:
+You'll also need API keys. **Firecrawl** and **at least one compile LLM** (Gemini or DeepSeek) are required; **YouTube** is optional:
 
 | | Required? | Get key | Free tier | Notes |
 |---|---|---|---|---|
-| **Gemini** (wiki compilation) | Required | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day | Free works for the demo and your first few sources. **Paid Tier 1 is strongly recommended for real use** — Gemini's free per-minute throttle (~10 RPM) will rate-limit a normal ingest, even though daily quota is plenty. Default rate-limiter assumes Tier 1. Has a known truncation issue on dense inputs — see [issue #7](https://github.com/tuirk/Kompl/issues/7). |
 | **Firecrawl** (URL scraping) | Required | [firecrawl.dev](https://firecrawl.dev) | 500 scrapes/month | Free tier covers normal personal use. |
+| **Gemini** (wiki compilation) | One of two* | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | 1500 req/day | Default compile backend if both keys are set. Free works for the demo and your first few sources. **Paid Tier 1 is strongly recommended for real use** — Gemini's free per-minute throttle (~10 RPM) will rate-limit a normal ingest, even though daily quota is plenty. Default rate-limiter assumes Tier 1. Has a known truncation issue on dense inputs — see [issue #7](https://github.com/tuirk/Kompl/issues/7). |
+| **DeepSeek V4 Pro / Flash** (wiki compilation) | One of two* | [api-docs.deepseek.com](https://api-docs.deepseek.com) | Pay-as-you-go | Selectable in Settings alongside Gemini. Recommended for long/academic content — see [Known limitations](#known-limitations). Set `DEEPSEEK_API_KEY` in `.env` and pick a DeepSeek compile model to run without Gemini. |
 | **YouTube Data API v3** (YouTube ingestion) | Optional | [console.cloud.google.com](https://console.cloud.google.com/apis/library/youtube.googleapis.com) | 10,000 units/day (1 unit per video) | Needed for YouTube **metadata** at compile time (title, channel, duration). Captions use `youtube-transcript-api` (no key). Without this key, convert fails with `youtube_metadata_unavailable` and the URL lands on **Saved Links** — not a compiled source. Restrict the key to "YouTube Data API v3" only in the GCP console. Set `YOUTUBE_API_KEY` in `.env`. |
-| **DeepSeek V4 Pro** (alternative compile backend) | Optional | [api-docs.deepseek.com](https://api-docs.deepseek.com) | Pay-as-you-go | Selectable in Settings as an alternative to Gemini. Recommended for long/academic content — see [Known limitations](#known-limitations). Set `DEEPSEEK_API_KEY` in `.env`. |
+
+\*At least one of Gemini or DeepSeek is required for wiki compilation.
 
 ## Setup
 
@@ -69,7 +71,7 @@ cd kompl
 node setup.js
 ```
 
-Either path: the script handles everything — creates your config, asks for the two required API keys (and offers prompts for the two optional ones), installs the `kompl` CLI, and starts the stack. No other steps needed. Your system timezone is detected and written to `.env` as `KOMPL_TIMEZONE` automatically.
+Either path: the script handles everything — creates your config, asks for Firecrawl plus at least one compile API key (Gemini or DeepSeek), offers an optional YouTube prompt, installs the `kompl` CLI, and starts the stack. No other steps needed. Your system timezone is detected and written to `.env` as `KOMPL_TIMEZONE` automatically.
 
 > Your API keys land in `.env` at the repo root. That file is gitignored — never commit it.
 
