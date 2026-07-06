@@ -1,6 +1,6 @@
 # Scorecard Deferred Alerts
 
-Last audited: 2026-06-07.
+Last audited: 2026-07-06.
 
 This file tracks only Scorecard findings that are currently open or intentionally
 deferred. Historical false-positive ledgers were pruned; GitHub code scanning
@@ -11,11 +11,32 @@ keeps the dismissed alert records.
 | Alert | Rule | Status | Disposition |
 |---|---|---|---|
 | #27 | `BranchProtectionID` | Open | Tracked solo-dev gap |
+| #70 | `VulnerabilitiesID` | Open | Closes as Dependabot PRs merge; nltk ignored via `osv-scanner.toml` |
 | #74 | `PinnedDependenciesID` | Deferred | Dismiss as `won't fix` |
 | #75 | `PinnedDependenciesID` | Deferred | Dismiss as `won't fix` |
 
-Alert #70 (`VulnerabilitiesID`) is fixed as of 2026-06-07 by exact-pinning
-`transformers==5.9.0` with `torch==2.6.0` CPU.
+## #70 — Known Vulnerabilities (re-opened)
+
+Alert #70 was fixed on 2026-06-07 (transformers/torch pinning) but re-triggered
+as new advisories were published. As of 2026-07-06 it lists 16 vulnerability
+IDs, which map 1:1 onto the open Dependabot alerts plus one PyPI-side duplicate:
+
+| Dependency | IDs | Fix path |
+|---|---|---|
+| `undici` (app, prod) | 7 GHSAs | Dependabot PR bumping undici to 7.28.0 |
+| `hono` (mcp-server, transitive) | 5 GHSAs | Dependabot PR bumping hono to >= 4.12.25 |
+| `js-yaml` (cli, dev-only transitive) | GHSA-h67p-54hq-rp68 | Manual lockfile bump to 3.15.0 (no Dependabot PR for transitive npm deps) |
+| `@babel/core` (cli, dev-only transitive) | GHSA-4x5r-pxfx-6jf8 | Manual lockfile bump to >= 7.29.6 |
+| `nltk` (nlp-service, prod via rake-nltk) | GHSA-p4gq-832x-fm9v + PYSEC-2026-597 (same CVE-2026-12243) | **No fixed release exists** — ignored via `nlp-service/osv-scanner.toml` |
+
+nltk rationale: the vulnerability is a percent-encoded path traversal in
+`nltk.data.load()`/`find()` that requires an attacker-controlled resource name.
+Kompl only reaches nltk through rake-nltk's `Rake()` in
+`nlp-service/routers/extraction.py`, which loads the static `stopwords` and
+`punkt_tab` corpora baked into the Docker image at build time; user text is
+passed to `extract_keywords_from_text()`, never to `data.load()`. Dismiss the
+matching Dependabot alert (#47) as "vulnerable code is not actually used".
+Re-evaluate when nltk ships a release newer than 3.9.4.
 
 ## #74 / #75 — Pip Hash Pinning
 
