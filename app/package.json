@@ -11,22 +11,22 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^12.11.1",
     "jszip": "^3.10.1",
-    "lucide-react": "^1.17.0",
+    "lucide-react": "^1.21.0",
     "marked": "^12.0.0",
-    "next": "16.2.7",
+    "next": "16.2.9",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-force-graph-2d": "^1.23.15",
-    "undici": "^7.27.2"
+    "undici": "^7.28.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
-    "@types/node": "^24.13.1",
+    "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.0.0",
-    "@vitest/ui": "^4.1.8",
+    "@vitest/ui": "^4.1.9",
     "typescript": "^5.0.0",
     "vitest": "^4.1.4"
   },
