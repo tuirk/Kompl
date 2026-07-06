@@ -1,0 +1,12 @@
+# OSV / Scorecard vulnerability ignores for nlp-service.
+# Read by osv-scanner (and Scorecard's Vulnerabilities check) alongside
+# requirements.txt. Each entry needs a documented reason; see
+# docs/security/scorecard-deferred.md for the full disposition.
+
+[[IgnoredVulns]]
+id = "GHSA-p4gq-832x-fm9v"
+reason = "nltk path traversal in nltk.data.load()/find() requires an attacker-controlled resource name. Kompl only reaches nltk through rake-nltk's Rake() (routers/extraction.py), which loads the static 'stopwords' and 'punkt_tab' corpora baked into the Docker image; user text goes to extract_keywords_from_text(), never to data.load(). No fixed nltk release exists (3.9.4 is latest and vulnerable). Re-evaluate when nltk publishes a fix."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-597"
+reason = "Same underlying issue as GHSA-p4gq-832x-fm9v / CVE-2026-12243 (percent-encoded traversal bypass of _UNSAFE_NO_PROTOCOL_RE in nltk/data.py). Not reachable in Kompl: nltk resource names are static, never user-controlled."
