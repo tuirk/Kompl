@@ -10,18 +10,51 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-07-07
+
+Security and reliability release over 0.3.0: audit hardening, wiki lint drill-down,
+`kompl update` rebuild fix, weekly digest removal, and dependency roll-forward.
+
+### Added
+
+- **Wiki lint v1.1 (#137):** drill-down lint reporting — `WikiLintResults`
+  component, richer `/api/wiki/lint-pass`, and structured lint result model.
+- **`AGENTS.md` (#142):** operator guide for AI agents (wiki-safety rules,
+  update pitfalls, destructive-command guardrails).
+
 ### Fixed
 
-- **`kompl update`** — now runs `git pull --ff-only`, rebuilds and relinks the
-  CLI, pulls registry images, and `docker compose up --build -d` so app and
-  nlp-service pick up source changes. README adds an **Updating** section
-  documenting the stale-Docker-image gotcha.
+- **`kompl update` (#142):** now runs `git pull --ff-only`, rebuilds and
+  relinks the CLI, pulls registry images, and `docker compose up --build -d`
+  so app and nlp-service pick up source changes. README **Updating** section
+  documents the stale-Docker-image gotcha.
+- **Provider-aware health check (#138):** `/api/health` requires the selected
+  compile provider's API key, not just any provider key.
+- **Security audit (#143):** SSRF guard on URL conversion, loopback bind for
+  app port, compile flush durability (`flush_failures` / boot reconciler), XSS
+  hardening in markdown rendering, path traversal fixes on import/previous
+  routes, LLM disambiguate cap, cost-cap lock, provenance hash consistency,
+  migration v23/v24 guards, integration-test stage 11d fail-closed.
+- **Dev-dep advisories (#155):** js-yaml and @babel/core lockfile bumps; nltk
+  CVE disposition documented in `nlp-service/osv-scanner.toml`.
 
 ### Removed
 
-- **Weekly Telegram digest** — removed the digest API route, n8n workflow,
-  NLP digest-summary endpoint, and Settings UI. Activity feed and wiki lint
-  remain the supported ways to review wiki health.
+- **Weekly Telegram digest (#137):** digest API route, n8n workflow, NLP
+  digest-summary endpoint, and Settings UI. Activity feed and wiki lint remain
+  the supported ways to review wiki health.
+
+### Changed
+
+- **Dependency roll-forward (#152, #154, #159, #160):** app Next 16.2.10 and
+  vitest toolchain; MCP server `hono` 4.12.27; CI `actions/checkout` v7,
+  setup-python 6.3.0, setup-buildx-action 4.2.0, CodeQL upload-sarif 4.36.3;
+  `json-repair>=0.61.2` floor in nlp-service.
+
+### Known limitations at 0.3.1
+
+- Same deferred items as 0.3.0: branch-protection Scorecard #27, pip
+  hash-pinning, Chroma/numpy migration. See `docs/security/scorecard-deferred.md`.
 
 ## [0.3.0] — 2026-06-07
 
