@@ -6,7 +6,8 @@
  * Does everything:
  *   1. Checks Docker Desktop is running
  *   2. Creates .env from .env.example (if not already present)
- *   3. Prompts for Gemini + Firecrawl (required) and YouTube + DeepSeek (optional) API keys and writes them to .env
+ *   3. Prompts for Firecrawl (required) plus Gemini and/or DeepSeek (at least one
+ *      compile provider required) and YouTube (optional); writes them to .env
  *   4. Installs and globally links the kompl CLI (npm link)
  *   5. Writes ~/.kompl/config.json so `kompl` commands work immediately
  *   6. Runs `docker compose up --build -d` to start the full stack
@@ -75,29 +76,49 @@ async function main() {
   const alreadyHasFirecrawl  = /^FIRECRAWL_API_KEY=.+$/m.test(env)
   const alreadyHasYoutube    = /^YOUTUBE_API_KEY=.+$/m.test(env)
   const alreadyHasDeepSeek   = /^DEEPSEEK_API_KEY=.+$/m.test(env)
+  const hasCompileKey        = alreadyHasGemini || alreadyHasDeepSeek
 
-  if (alreadyHasGemini && alreadyHasFirecrawl && alreadyHasYoutube && alreadyHasDeepSeek) {
-    console.log('  API keys already set in .env — skipping prompts')
+  if (alreadyHasFirecrawl && hasCompileKey) {
+    console.log('  Required API keys already set in .env — skipping prompts')
   } else {
-    console.log('\n  Two required keys (both have free tiers):')
-    console.log(dim('    Gemini:    https://aistudio.google.com/apikey   (free works for the demo; paid Tier 1 strongly recommended for real use)'))
+    console.log('\n  Required:')
     console.log(dim('    Firecrawl: https://firecrawl.dev                (500 scrapes/month free)'))
-    console.log('\n  Two optional keys (press Enter to skip):')
-    console.log(dim('    YouTube:   https://console.cloud.google.com/apis/library/youtube.googleapis.com  (10K units/day free; required for YouTube URL ingestion)'))
-    console.log(dim('    DeepSeek:  https://api-docs.deepseek.com        (pay-as-you-go; alternative compile backend for long/dense sources)\n'))
+    console.log('\n  Wiki compilation — at least one (Enter to skip if using the other):')
+    console.log(dim('    Gemini:    https://aistudio.google.com/apikey   (free works for the demo; paid Tier 1 strongly recommended for real use)'))
+    console.log(dim('    DeepSeek:  https://api-docs.deepseek.com        (pay-as-you-go; pick a DeepSeek compile model in Settings)'))
+    console.log('\n  Optional (press Enter to skip):')
+    console.log(dim('    YouTube:   https://console.cloud.google.com/apis/library/youtube.googleapis.com  (10K units/day free; required for YouTube URL ingestion)\n'))
 
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-
-    if (!alreadyHasGemini) {
-      const key = (await ask(rl, '  Gemini API key: ')).trim()
-      if (!key) { console.error('  Error: Gemini API key is required.'); rl.close(); process.exit(1) }
-      env = env.replace(/^GEMINI_API_KEY=.*$/m, `GEMINI_API_KEY=${key}`)
-    }
 
     if (!alreadyHasFirecrawl) {
       const key = (await ask(rl, '  Firecrawl API key: ')).trim()
       if (!key) { console.error('  Error: Firecrawl API key is required.'); rl.close(); process.exit(1) }
       env = env.replace(/^FIRECRAWL_API_KEY=.*$/m, `FIRECRAWL_API_KEY=${key}`)
+    }
+
+    if (!alreadyHasGemini) {
+      const key = (await ask(rl, '  Gemini API key (Enter to skip if using DeepSeek only): ')).trim()
+      if (key) {
+        env = env.replace(/^GEMINI_API_KEY=.*$/m, `GEMINI_API_KEY=${key}`)
+      } else {
+        console.log(dim('    Skipped — set a DeepSeek compile model in Settings if DeepSeek is your only provider'))
+      }
+    }
+
+    if (!alreadyHasDeepSeek) {
+      const key = (await ask(rl, '  DeepSeek API key (Enter to skip if using Gemini only): ')).trim()
+      if (key) {
+        env = env.replace(/^DEEPSEEK_API_KEY=.*$/m, `DEEPSEEK_API_KEY=${key}`)
+      } else {
+        console.log(dim('    Skipped — Gemini remains the default compile backend when its key is set'))
+      }
+    }
+
+    if (!/^GEMINI_API_KEY=.+$/m.test(env) && !/^DEEPSEEK_API_KEY=.+$/m.test(env)) {
+      console.error('  Error: at least one compile provider key is required (Gemini or DeepSeek).')
+      rl.close()
+      process.exit(1)
     }
 
     if (!alreadyHasYoutube) {
@@ -106,15 +127,6 @@ async function main() {
         env = env.replace(/^YOUTUBE_API_KEY=.*$/m, `YOUTUBE_API_KEY=${key}`)
       } else {
         console.log(dim('    Skipped — YouTube URLs will route to Saved Links until you add a key to .env'))
-      }
-    }
-
-    if (!alreadyHasDeepSeek) {
-      const key = (await ask(rl, '  DeepSeek API key (optional, Enter to skip): ')).trim()
-      if (key) {
-        env = env.replace(/^DEEPSEEK_API_KEY=.*$/m, `DEEPSEEK_API_KEY=${key}`)
-      } else {
-        console.log(dim('    Skipped — only Gemini will be selectable as the compile backend'))
       }
     }
 
