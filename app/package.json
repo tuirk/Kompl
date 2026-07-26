@@ -13,7 +13,7 @@
   "dependencies": {
     "better-sqlite3": "^12.11.1",
     "jszip": "^3.10.1",
-    "lucide-react": "^1.23.0",
+    "lucide-react": "^1.24.0",
     "marked": "^12.0.0",
     "next": "16.2.10",
     "react": "^19.2.7",
@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
-    "@types/node": "^24.13.2",
+    "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.0.0",
     "@vitest/ui": "^4.1.10",
