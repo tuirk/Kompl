@@ -7,7 +7,7 @@
  */
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { PageRow } from '../../../lib/db';
 import WikiPageHeader from '../../../components/WikiPageHeader';
@@ -27,7 +27,23 @@ function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number)
   }) as T;
 }
 
+/** Default export wraps the searchParams-dependent body in Suspense for Next prerender. */
 export default function WikiSearchPage() {
+  return (
+    <Suspense
+      fallback={
+        <main style={{ maxWidth: 1040, margin: '0 auto', padding: '2.5rem 1.5rem' }}>
+          <WikiPageHeader title="Search" />
+          <p style={{ color: 'var(--fg-muted)', fontSize: 14 }}>Loading…</p>
+        </main>
+      }
+    >
+      <WikiSearchInner />
+    </Suspense>
+  );
+}
+
+function WikiSearchInner() {
   const searchParams = useSearchParams();
   const initialQ = (searchParams.get('q') ?? '').trim();
   const [query, setQuery] = useState(initialQ);
