@@ -4,7 +4,7 @@
 
 # Kompl
 
-Knowledge compiler — turns scattered links, files, and bookmarks into a living wiki that compounds with every new source.
+Compounding LLM-wiki — saves become interlinked wiki pages when they arrive.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/tuirk/Kompl/actions/workflows/integration-test.yml/badge.svg)](https://github.com/tuirk/Kompl/actions)
@@ -12,15 +12,54 @@ Knowledge compiler — turns scattered links, files, and bookmarks into a living
 [![LLM](https://img.shields.io/badge/LLM-Gemini_%2B_DeepSeek-8E75B2)]()
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tuirk/Kompl/badge)](https://scorecard.dev/viewer/?uri=github.com/tuirk/Kompl)
 
-## Why Kompl?
+## What is Kompl?
 
-Most tools save your stuff and forget about it. Kompl reads it, extracts the knowledge, and compiles it into an interlinked wiki, automatically.
+Kompl is a compounding LLM-wiki. It works best as a second brain for personal
+use, or pointed at a project drive and queried through its MCP server. Save
+anything (a link, a PDF, a thread, a YouTube video, a bookmark export) and Kompl
+reads it as it arrives, pulls out the people, ideas, and arguments inside, and
+writes them into wiki pages that link to each other. Save new sources on the same
+topic and the existing pages update. Save a tenth and Kompl already sees the
+pattern across all ten without you having to ask.
 
-- One new source can update 10+ wiki pages. Cross-references, contradictions, and synthesis are built at ingest time, not re-discovered on every query.
-- Entity pages, concept pages, comparisons, and source summaries are wikilinked together. The wiki gets richer with every source you add.
-- Runs locally via Docker. Outbound calls are limited to your own API keys (Gemini and/or DeepSeek for compilation, Firecrawl for scraping) and the URLs you choose to ingest.
+That reading is split between local work and LLM calls on purpose: an LLM
+shouldn't be paid to do a librarian's job. Local NLP goes first. spaCy handles
+named entities, and a router picks keyphrase methods based on how long and how
+entity-dense the text is, with TF–IDF overlap against your existing pages thrown
+in once you have a wiki to compare against. Those outputs feed the prompt as
+context, narrowing what the model has to figure out. Then a single LLM call
+returns the typed entities, concepts, claims, relationships, contradictions, and
+summary for that source. Deciding whether a new mention is something you already
+have runs as a cascade: alias and exact-title lookup, then fuzzy string matching,
+then local embeddings, with an LLM reserved for the genuinely ambiguous pairs.
+Which pages a source should touch is ranked by TF–IDF and confirmed by a small
+triage call, while the page plan itself (source summaries, entity pages, concept
+pages, comparison pages) stays deterministic. The LLM's other real job is the one
+worth paying for: drafting or rewriting each affected page with the new source's
+contribution and its citation woven in. Wikilinks are injected by deterministic
+regex. Commits go through an outbox, so a source is either fully written or left
+for the reconciler at boot, and the previous version of every page is archived so
+you can see what changed.
 
-Built with Next.js, Python NLP, n8n orchestration, and SQLite.
+All of that runs at one specific moment, which is the thing that separates Kompl
+from the rest of the category: when does the synthesis happen? Most tools store
+what you save and leave the connecting work to you, either later when you find
+the time or under deadline when you actually need the answer. Kompl does that
+work when the source arrives. Source #50 becomes page #51 and also rewrites
+several pages you already have. Entities and concepts that keep showing up get
+promoted into their own pages. When sources disagree, the disagreement surfaces
+on a comparison page with provenance. Claims cite where they came from. By the
+time you have a question, the answer is already a page.
+
+Kompl runs as a Docker stack on your own machine with your own API keys. You read
+the wiki the way you'd read any wiki: pages and wikilinks, an entity graph view,
+full-text search, history. It ships with a basic chat that retrieves over your
+pages and answers with citations, a thin reference implementation you're meant to
+replace with your own. The access pattern Kompl is built for is MCP: four
+read-only tools (`search_wiki`, `read_page`, `list_pages`, `wiki_stats`) so
+Cursor, Claude Code, Codex, or whatever agent you already run can answer from
+your actual reading. The agent answers. Kompl stores and serves the compiled
+pages.
 
 ![Kompl Wiki](docs/assets/kompl-demo.gif)
 
