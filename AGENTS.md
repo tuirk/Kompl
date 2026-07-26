@@ -4,9 +4,9 @@
 
 Use [README.md](README.md) as the source of truth for prerequisites, install, day-to-day commands, updating, backup, MCP setup, data handling, security, and known limitations. Install path: `projectDir` in `~/.kompl/config.json`.
 
-## What Kompl does
+## What is Kompl?
 
-Kompl is a **knowledge compiler** — it turns scattered links, files, and bookmarks into an interlinked wiki at ingest time (one source may update many pages). Synthesis and cross-linking happen when sources are **compiled**, not on every browse. It also ships a minimal chat interface with basic RAG over compiled pages; most users query via MCP or their own agent.
+Kompl is a compounding LLM-wiki: it turns saved links, files, and bookmarks into an interlinked wiki **when each source arrives**, not when you ask later. For the full product description, see [README § What is Kompl?](README.md#what-is-kompl).
 
 ---
 
