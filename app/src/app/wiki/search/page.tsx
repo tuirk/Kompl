@@ -3,10 +3,12 @@
 /**
  * /wiki/search — Full-text search against pages_fts (FTS5).
  * Client component: search-as-you-type via /api/pages/search.
+ * Seeds from `?q=` so TopNav / header "See all" does not force retyping.
  */
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import type { PageRow } from '../../../lib/db';
 import WikiPageHeader from '../../../components/WikiPageHeader';
 import { PAGE_TYPE_VAR } from '../../../lib/page-type-palette';
@@ -25,10 +27,28 @@ function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number)
   }) as T;
 }
 
+/** Default export wraps the searchParams-dependent body in Suspense for Next prerender. */
 export default function WikiSearchPage() {
-  const [query, setQuery] = useState('');
+  return (
+    <Suspense
+      fallback={
+        <main style={{ maxWidth: 1040, margin: '0 auto', padding: '2.5rem 1.5rem' }}>
+          <WikiPageHeader title="Search" />
+          <p style={{ color: 'var(--fg-muted)', fontSize: 14 }}>Loading…</p>
+        </main>
+      }
+    >
+      <WikiSearchInner />
+    </Suspense>
+  );
+}
+
+function WikiSearchInner() {
+  const searchParams = useSearchParams();
+  const initialQ = (searchParams.get('q') ?? '').trim();
+  const [query, setQuery] = useState(initialQ);
   const [results, setResults] = useState<PageRow[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(!!initialQ);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -55,9 +75,19 @@ export default function WikiSearchPage() {
     []
   );
 
+  // Seed from URL on mount and whenever `?q=` changes (TopNav push).
   useEffect(() => {
+    const q = (searchParams.get('q') ?? '').trim();
+    setQuery(q);
+    if (q) {
+      setLoading(true);
+      search(q);
+    } else {
+      setResults([]);
+      setLoading(false);
+    }
     inputRef.current?.focus();
-  }, []);
+  }, [searchParams, search]);
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const q = e.target.value;
