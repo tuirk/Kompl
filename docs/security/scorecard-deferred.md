@@ -1,6 +1,6 @@
 # Scorecard Deferred Alerts
 
-Last audited: 2026-07-06.
+Last audited: 2026-07-26.
 
 This file tracks only Scorecard findings that are currently open or intentionally
 deferred. Historical false-positive ledgers were pruned; GitHub code scanning
@@ -11,32 +11,45 @@ keeps the dismissed alert records.
 | Alert | Rule | Status | Disposition |
 |---|---|---|---|
 | #27 | `BranchProtectionID` | Open | Tracked solo-dev gap |
-| #70 | `VulnerabilitiesID` | Open | Closes as Dependabot PRs merge; nltk ignored via `osv-scanner.toml` |
+| #70 | `VulnerabilitiesID` | Dismissed (`false positive`) | GHSA range falsely flags patched brace-expansion 1.x/2.x |
 | #74 | `PinnedDependenciesID` | Deferred | Dismiss as `won't fix` |
 | #75 | `PinnedDependenciesID` | Deferred | Dismiss as `won't fix` |
+| #90 | `PinnedDependenciesID` | Deferred | Dismiss as `won't fix` (integration-test harness) |
+| #91 | `PinnedDependenciesID` | Deferred | Dismiss as `won't fix` (integration-test harness) |
 
-## #70 — Known Vulnerabilities (re-opened)
+## #70 — GHSA-mh99-v99m-4gvg (brace-expansion)
 
-Alert #70 was fixed on 2026-06-07 (transformers/torch pinning) but re-triggered
-as new advisories were published. As of 2026-07-06 it lists 16 vulnerability
-IDs, which map 1:1 onto the open Dependabot alerts plus one PyPI-side duplicate:
+Scorecard reported GHSA-mh99-v99m-4gvg (DoS via unbounded expansion length).
+The advisory lists a single range `<= 5.0.7` with `first_patched_version: 5.0.8`.
 
-| Dependency | IDs | Fix path |
-|---|---|---|
-| `undici` (app, prod) | 7 GHSAs | Dependabot PR bumping undici to 7.28.0 |
-| `hono` (mcp-server, transitive) | 5 GHSAs | Dependabot PR bumping hono to >= 4.12.25 |
-| `js-yaml` (cli, dev-only transitive) | GHSA-h67p-54hq-rp68 | Manual lockfile bump to 3.15.0 (no Dependabot PR for transitive npm deps) |
-| `@babel/core` (cli, dev-only transitive) | GHSA-4x5r-pxfx-6jf8 | Manual lockfile bump to >= 7.29.6 |
-| `nltk` (nlp-service, prod via rake-nltk) | GHSA-p4gq-832x-fm9v + PYSEC-2026-597 (same CVE-2026-12243) | **No fixed release exists** — ignored via `nlp-service/osv-scanner.toml` |
+As of 2026-07-26 the GitHub dependency SBOM and lockfiles contain **no**
+`brace-expansion` 5.x. Resolved versions are only:
 
-nltk rationale: the vulnerability is a percent-encoded path traversal in
-`nltk.data.load()`/`find()` that requires an attacker-controlled resource name.
-Kompl only reaches nltk through rake-nltk's `Rake()` in
-`nlp-service/routers/extraction.py`, which loads the static `stopwords` and
-`punkt_tab` corpora baked into the Docker image at build time; user text is
-passed to `extract_keywords_from_text()`, never to `data.load()`. Dismiss the
-matching Dependabot alert (#47) as "vulnerable code is not actually used".
-Re-evaluate when nltk ships a release newer than 3.9.4.
+- `1.1.16` (cli override `brace-expansion@1`)
+- `2.1.2` (cli override `brace-expansion@2`)
+
+Both `1.1.16` and `2.1.2` already ship `EXPANSION_MAX_LENGTH` (the same bound
+introduced on the 5.x line in `5.0.8`). `5.0.7` does not. Scorecard's matcher
+treats any version `<= 5.0.7` as vulnerable, so it falsely flags the already-
+patched 1.x/2.x lines. Dependabot open alerts for this GHSA: **0**.
+
+Defensive floor for a future 5.x pull: `cli/package.json` override
+`brace-expansion@5: 5.0.8`. Re-open if a real unpatched 5.x (or missing
+`EXPANSION_MAX_LENGTH` on 1.x/2.x) appears in the SBOM.
+
+## #90 / #91 — Integration-test `downloadThenRun`
+
+Scorecard flags `curl … | python3 -c …` patterns in
+`scripts/integration-test.sh` (localhost compile progress / session polling)
+as unpinned `downloadThenRun`.
+
+These are CI harness helpers talking to `localhost:3000`, not production
+supply-chain downloads. Pinning by hash is out of proportion; dismiss as
+**won't fix** with this comment:
+
+> Deferred: downloadThenRun in scripts/integration-test.sh is CI localhost
+> harness noise, not production supply-chain. Same class as prior
+> PinnedDependencies deferrals. See docs/security/scorecard-deferred.md.
 
 ## #74 / #75 — Pip Hash Pinning
 
