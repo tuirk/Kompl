@@ -56,7 +56,8 @@ the wiki the way you'd read any wiki: pages and wikilinks, an entity graph view,
 full-text search, history. It ships with a basic chat that retrieves over your
 pages and answers with citations, a thin reference implementation you're meant to
 replace with your own. The access pattern Kompl is built for is MCP: four
-read-only tools (`search_wiki`, `read_page`, `list_pages`, `wiki_stats`) so
+read-only tools for now (`search_wiki`, `read_page`, `list_pages`, `wiki_stats`),
+with more planned, so
 Cursor, Claude Code, Codex, or whatever agent you already run can answer from
 your actual reading. The agent answers. Kompl stores and serves the compiled
 pages.
@@ -210,7 +211,7 @@ Configure your MCP client to run `node mcp-server/dist/index.js` with `KOMPL_URL
 
 ### Tools
 
-The server exposes four: `search_wiki`, `read_page`, `list_pages`, `wiki_stats`.
+The server exposes four read-only tools for now: `search_wiki`, `read_page`, `list_pages`, `wiki_stats`. More are planned.
 
 ### Direct HTTP
 
