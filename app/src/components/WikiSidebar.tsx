@@ -30,15 +30,47 @@ function buildCategoryGroups(pages: PageRow[]): CategoryGroup[] {
     .map(([category, pages]) => ({ category, pages }));
 }
 
+const SIDEBAR_OPEN_KEY = 'kompl_wiki_sidebar_open';
+
+function readOpenCategories(fallback: string[]): Set<string> {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_OPEN_KEY);
+    if (raw === null) return new Set(fallback);
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set(fallback);
+    return new Set(parsed.filter((x): x is string => typeof x === 'string'));
+  } catch {
+    return new Set(fallback);
+  }
+}
+
+function writeOpenCategories(open: Set<string>) {
+  try {
+    localStorage.setItem(SIDEBAR_OPEN_KEY, JSON.stringify([...open]));
+  } catch {
+    // Non-fatal: private mode / quota — in-memory state still works this session.
+  }
+}
+
 export default function WikiSidebar({ initialGroups, activePageId, activeCategory }: WikiSidebarProps) {
   const [showArchived, setShowArchived] = useState(false);
   const [groups, setGroups] = useState(initialGroups);
-  const [openCategories, setOpenCategories] = useState<Set<string>>(() => {
-    // Open the first non-comparison category by default — mirrors the /wiki index
-    // behaviour so the sidebar shows at least one expanded category on first load.
-    const first = initialGroups.find((g) => g.pages.some((p) => p.page_type !== 'comparison'));
-    return first ? new Set([first.category]) : new Set();
-  });
+  // SSR / first paint: open all non-comparison categories. After mount, restore
+  // last toggled set from localStorage (or keep all-open if key is absent).
+  const allCategoryNames = () =>
+    initialGroups
+      .filter((g) => g.pages.some((p) => p.page_type !== 'comparison'))
+      .map((g) => g.category);
+  const [openCategories, setOpenCategories] = useState<Set<string>>(
+    () => new Set(allCategoryNames()),
+  );
+  const [sidebarHydrated, setSidebarHydrated] = useState(false);
+
+  useEffect(() => {
+    setOpenCategories(readOpenCategories(allCategoryNames()));
+    setSidebarHydrated(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seed once from initialGroups on mount
+  }, []);
 
   // Sync groups when server re-renders a new page (initialGroups changes via App Router).
   // Without this, useState persists stale groups across soft navigations in the shared layout.
@@ -51,6 +83,7 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
       const next = new Set(prev);
       if (next.has(category)) next.delete(category);
       else next.add(category);
+      if (sidebarHydrated) writeOpenCategories(next);
       return next;
     });
   }

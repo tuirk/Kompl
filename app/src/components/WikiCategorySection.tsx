@@ -24,7 +24,8 @@ export default function WikiCategorySection({
   const panelId = useId();
 
   // After hydration, restore the section's last-session state. Absent key =>
-  // first-ever visit; keep the SSR-seeded `defaultOpen` so the page isn't empty.
+  // first-ever / cache-cleared visit; keep SSR `defaultOpen` (callers pass true
+  // so all sections open until the user toggles).
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey);
