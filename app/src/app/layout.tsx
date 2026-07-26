@@ -71,15 +71,6 @@ export default function RootLayout({
               >
                 Tuirk
               </a>
-              {' & '}
-              <a
-                href="https://github.com/ahjinsolo"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: 'inherit', textDecoration: 'none' }}
-              >
-                Ahjinsolo
-              </a>
             </span>
           </span>
         </footer>
