@@ -10,6 +10,42 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-07-26
+
+UX and docs release over 0.3.1: chat drawer, wiki sidebar/search fixes,
+Gemini-or-DeepSeek setup clarity, and security dependency roll-forward.
+
+### Added
+
+- **Chat drawer (#177):** TopNav opens chat in a right drawer (`ChatDrawer` /
+  `ChatPanel`); dedicated `/chat` route remains available.
+- **README “What is Kompl?” (#182):** replaces “Why Kompl?”; notes MCP ships
+  four tools for now with more planned. `AGENTS.md` slimmed to a pointer.
+
+### Fixed
+
+- **Wiki sidebar (#176):** remembers open sections via
+  `kompl_wiki_sidebar_open`; defaults all open when uncached.
+- **Wiki search (#175):** `/wiki/search?q=` seeds the search input
+  (Suspense-wrapped for Next prerender).
+
+### Changed
+
+- **Compile providers (#178):** install/README/setup accept Gemini **or**
+  DeepSeek (or both).
+- **Credits (#180):** project credits and CODEOWNERS cleanup.
+- **Dependency roll-forward (#174, #179, #181 + Dependabot batch):** Next
+  16.2.11; sharp 0.35.3; postcss 8.5.18; brace-expansion 1.1.16 / 2.1.2 /
+  `@5` floor 5.0.8; `@hono/node-server` ≥2.0.5; MCP body-parser / fast-uri;
+  CI actions setup-node/setup-python/upload-sarif bumps; nlp minor/patch group.
+- **Scorecard ledger (#183):** #70 brace-expansion GHSA false-positive
+  disposition; #90/#91 integration-test `downloadThenRun` deferred.
+
+### Known limitations at 0.3.2
+
+- Same deferred items as 0.3.1: branch-protection Scorecard #27, pip
+  hash-pinning, Chroma/numpy migration. See `docs/security/scorecard-deferred.md`.
+
 ## [0.3.1] — 2026-07-07
 
 Security and reliability release over 0.3.0: audit hardening, wiki lint drill-down,
