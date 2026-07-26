@@ -3,6 +3,7 @@ import { Suspense } from 'react';
 import { Space_Grotesk, Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import TopNav from '@/components/TopNav';
+import { ChatDrawerProvider } from '@/components/ChatDrawer';
 
 // Obsidian Kinetic — font loading via next/font (zero layout shift, self-hosted)
 const spaceGrotesk = Space_Grotesk({
@@ -36,10 +37,12 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${spaceGrotesk.variable} ${inter.variable} ${jetbrainsMono.variable}`}>
       <body style={{ paddingTop: 65 }}>
-        <Suspense fallback={null}>
-          <TopNav />
-        </Suspense>
-        {children}
+        <ChatDrawerProvider>
+          <Suspense fallback={null}>
+            <TopNav />
+          </Suspense>
+          {children}
+        </ChatDrawerProvider>
         <footer style={{
           position: 'fixed',
           bottom: 0,
