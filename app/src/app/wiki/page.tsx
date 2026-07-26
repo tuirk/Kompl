@@ -89,8 +89,9 @@ export default function WikiIndexPage() {
                 category={group.category}
                 pageCount={group.pages.length}
                 lastUpdatedLabel={groupLabel}
-                defaultOpen={idx === 0}
+                defaultOpen
               >
+
                 {/* 4-column card grid — 1px gap shows through as separator.
                     minmax(0, 1fr) overrides the default `auto` min so nowrap children
                     (title/summary ellipsis) can truncate instead of blowing out the column. */}
