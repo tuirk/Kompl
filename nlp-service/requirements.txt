@@ -1,6 +1,6 @@
 # Kompl v2 nlp-service — commit 4. Pins per docs/research/2026-04-08-conversion-deps.md
 # and docs/research/2026-04-09-llm-compile.md.
-fastapi==0.139.0
+fastapi==0.140.0
 uvicorn[standard]==0.51.0
 pydantic==2.13.4
 httpx==0.28.1
@@ -15,7 +15,7 @@ markitdown[all]==0.1.6
 # after pip install (1.0.x breaks on current YouTube timedtext responses).
 youtube-transcript-api~=1.0.0
 # Commit 4: LLM compile. Use google-genai NOT google-generativeai (deprecated 2025-Q1).
-google-genai==2.11.0
+google-genai==2.14.0
 # Commit 4: async token-bucket rate limiter. Single uvicorn worker only —
 # InMemoryBucket is process-local; see research artifact section 3.
 pyrate-limiter==3.9.0
@@ -24,7 +24,7 @@ spacy==3.8.14
 rake-nltk==1.0.6
 yake==0.7.3
 keybert==0.9.0
-sentence-transformers==5.6.0
+sentence-transformers==5.6.1
 # Dockerfile pins torch==2.6.0 (CPU wheel). torch 2.5.1 breaks transformers
 # 5.x imports; torch >=2.7 breaks sentence-transformers meta-device init
 # (NotImplementedError on .to(device)).
