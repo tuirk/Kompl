@@ -13,19 +13,19 @@
   "dependencies": {
     "better-sqlite3": "^12.11.1",
     "jszip": "^3.10.1",
-    "lucide-react": "^1.24.0",
+    "lucide-react": "^1.28.0",
     "marked": "^12.0.0",
-    "next": "16.2.11",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "next": "16.2.12",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "react-force-graph-2d": "^1.23.15",
-    "undici": "^7.28.0"
+    "undici": "^7.29.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^24.13.3",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "@vitest/ui": "^4.1.10",
     "typescript": "^5.0.0",
     "vitest": "^4.1.4"
