@@ -10,6 +10,33 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+## [0.3.2.1] — 2026-09-01
+
+Security and docs patch over 0.3.2: nanoid CVE override, README intro
+restructure, Scorecard #27 dismissal, and a Dependabot minor/patch roll-forward.
+
+### Fixed
+
+- **nanoid (CVE-2026-67213):** `app/package.json` override to `^3.3.18`.
+
+### Changed
+
+- **README / AGENTS.md:** product-first intro (timing, pipeline, MCP);
+  operator guide follows the removed heading.
+- **Scorecard #27:** dismissed `won't fix` (solo-dev branch-protection
+  gaps). Ledger updated in `docs/security/scorecard-deferred.md`.
+- **Dependency roll-forward (#184, #185, #189, #208–#210, #212, #214–#218):**
+  Next 16.3.1; google-genai 2.19; MCP SDK 1.30; fastapi / uvicorn /
+  markitdown / spacy / nltk; CLI jest/ts-jest/open; Actions patches.
+
+### Known limitations at 0.3.2.1
+
+- `better-sqlite3` remains on 12.x (v13 major held back).
+- Chroma/numpy migration still deferred. Server-mode Chroma CVEs do not
+  apply to embedded PersistentClient.
+- Pip hash-pinning and integration-test `downloadThenRun` unchanged.
+  See `docs/security/scorecard-deferred.md`.
+
 ## [0.3.2] — 2026-07-26
 
 UX and docs release over 0.3.1: chat drawer, wiki sidebar/search fixes,
@@ -609,7 +636,9 @@ Initial public release.
 - **Auto-backup-on-start** is end-to-end wired but lacks regression tests
   on the start-time path.
 
-[Unreleased]: https://github.com/tuirk/Kompl/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/tuirk/Kompl/compare/v0.3.2.1...HEAD
+[0.3.2.1]: https://github.com/tuirk/Kompl/releases/tag/v0.3.2.1
+[0.3.2]: https://github.com/tuirk/Kompl/releases/tag/v0.3.2
 [0.2.2]: https://github.com/tuirk/Kompl/releases/tag/v0.2.2
 [0.2.1]: https://github.com/tuirk/Kompl/releases/tag/v0.2.1
 [0.2.0]: https://github.com/tuirk/Kompl/releases/tag/v0.2.0
