@@ -10,7 +10,7 @@ keeps the dismissed alert records.
 
 | Alert | Rule | Status | Disposition |
 |---|---|---|---|
-| #27 | `BranchProtectionID` | Open | Tracked solo-dev gap |
+| #27 | `BranchProtectionID` | Dismissed (`won't fix`) | Tracked solo-dev gap |
 | #70 | `VulnerabilitiesID` | Dismissed (`false positive`) | GHSA range falsely flags patched brace-expansion 1.x/2.x |
 | #74 | `PinnedDependenciesID` | Deferred | Dismiss as `won't fix` |
 | #75 | `PinnedDependenciesID` | Deferred | Dismiss as `won't fix` |
@@ -94,5 +94,11 @@ Scorecard wants:
 
 Required status checks are already configured on `main` (`unit-tests-app`,
 `unit-tests-cli`, `unit-tests-nlp`, `integration-test`) with up-to-date branches
-required. The remaining gaps are solo-maintainer constraints. Keep #27 open as
-the tracked repo-policy TODO until a second maintainer joins.
+required. The remaining gaps are solo-maintainer constraints. Dismissed as
+**won't fix** (2026-09-01) with this comment:
+
+> Deferred solo-dev branch-protection gaps (admins not bound, 1 reviewer, no
+> CODEOWNERS, no last-push approval). Required status checks already on main.
+> Re-open when a second maintainer joins. See docs/security/scorecard-deferred.md.
+
+Re-open the GitHub alert if a second maintainer joins.
