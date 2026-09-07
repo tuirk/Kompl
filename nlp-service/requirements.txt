@@ -24,7 +24,7 @@ spacy==3.8.15
 rake-nltk==1.0.6
 yake==0.7.3
 keybert==0.9.0
-sentence-transformers==5.6.0
+sentence-transformers==6.0.1
 # Dockerfile pins torch==2.6.0 (CPU wheel). torch 2.5.1 breaks transformers
 # 5.x imports; torch >=2.7 breaks sentence-transformers meta-device init
 # (NotImplementedError on .to(device)).
