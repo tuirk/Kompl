@@ -2,7 +2,7 @@
 # and docs/research/2026-04-09-llm-compile.md.
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
-pydantic==2.13.4
+pydantic==2.13.5
 httpx==0.28.1
 markitdown[all]==0.1.7
 # Promoted to a direct dep so routers/conversion.py can call
@@ -15,12 +15,12 @@ markitdown[all]==0.1.7
 # after pip install (1.0.x breaks on current YouTube timedtext responses).
 youtube-transcript-api~=1.0.0
 # Commit 4: LLM compile. Use google-genai NOT google-generativeai (deprecated 2025-Q1).
-google-genai==2.19.0
+google-genai==2.23.0
 # Commit 4: async token-bucket rate limiter. Single uvicorn worker only —
 # InMemoryBucket is process-local; see research artifact section 3.
 pyrate-limiter==3.9.0
 # Part 2a: multi-layer NLP extraction pipeline.
-spacy==3.8.15
+spacy==3.8.16
 rake-nltk==1.0.6
 yake==0.7.3
 keybert==0.9.0
@@ -33,7 +33,7 @@ sentence-transformers==5.6.0
 transformers==5.9.0
 # pytextrank: spaCy-native TextRank component (PyPI-available, no git dep).
 pytextrank==3.3.0
-scikit-learn==1.9.0
+scikit-learn==1.9.1
 # nltk: required by rake-nltk (stopwords + punkt tokenizer data).
 nltk==3.10.3
 # Part 2b: fast Levenshtein/Jaro-Winkler matching for entity resolution.
