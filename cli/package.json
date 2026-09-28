@@ -23,17 +23,17 @@
   },
   "dependencies": {
     "commander": "^14.0.3",
-    "docker-compose": "^1.4.2",
-    "open": "^11.0.1",
+    "docker-compose": "^1.5.0",
+    "open": "^11.0.4",
     "picocolors": "^1.1.1",
     "prompts": "^2.4.2"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
-    "@types/node": "^24.13.3",
+    "@types/node": "^24.13.6",
     "@types/prompts": "^2.4.9",
-    "jest": "^30.5.0",
-    "ts-jest": "^29.4.12",
+    "jest": "^30.5.2",
+    "ts-jest": "^29.4.13",
     "tsup": "^8.3.0",
     "typescript": "^6.0.0"
   },
