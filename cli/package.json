@@ -16,6 +16,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "test": "jest",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "engines": {
