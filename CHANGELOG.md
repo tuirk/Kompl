@@ -32,6 +32,12 @@ ship with a `migrate.py` step that runs at boot.
   `--fg-subtle` raised to pass WCAG AA (were 2.5:1 and 4.2:1), a table of
   contents that stays below the top bar and highlights the current section,
   per-page tab titles ("Bitcoin · Kompl") and a proper "not found" page.
+- **Boot hook actually runs:** `instrumentation.ts` moved to `app/src/`.
+  Next.js never loaded it from `app/`, so the outbox's pending-page
+  reconciler had not run in any build; it now runs at every start, and the
+  one-time wikilink resync runs on the first start.
+- **README rewritten** around what Kompl does and MCP, with new screenshots
+  of the dashboard, a compiled page, the graph and Settings.
 
 ### Added
 
