@@ -44,7 +44,7 @@ sys.modules.setdefault("pytextrank", pytextrank_stub)
 # routers/resolution.py lazy-loads sentence-transformers inside
 # _get_embed_model() — no module-level ML import — so real routers.* modules
 # are safe to import. Stubbing `routers` or `routers.resolution` up-front
-# breaks `from routers.chat import ...` in main.py because the stub lacks
+# breaks `from routers.<name> import ...` in main.py because the stub lacks
 # __path__ and Python refuses to resolve it as a package.
 
 # ---------------------------------------------------------------------------

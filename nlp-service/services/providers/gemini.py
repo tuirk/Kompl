@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import date, datetime, timezone
 from typing import Any, Callable, TypeVar
 
 import httpx
@@ -54,7 +55,7 @@ _GEMINI_RPM = int(os.environ.get("GEMINI_RPM", "800"))
 
 
 # ---------------------------------------------------------------------------
-# Pricing (Gemini 2.5-family, $/M tokens, 2026-04 public rates)
+# Pricing ($/M tokens; 2.5 rates read 2026-04, 3.x rates read 2026-10-09)
 # ---------------------------------------------------------------------------
 #
 # cost = (prompt_tokens - cached_tokens) * input_rate
@@ -74,13 +75,65 @@ _MODEL_PRICES: dict[str, dict[str, float]] = {
     # $2.50 / $15 / $0.25; we don't auto-detect that boundary here. If Pro is
     # routinely exercised with >200k prompts, override via env vars below.
     "gemini-2.5-pro":        {"input": 1.25, "output": 10.00, "cache": 0.125},
+    # 3.8 Flash is on an introductory rate through 2026-12-31;
+    # _SCHEDULED_PRICES moves it to the standard rate on 2027-01-01.
+    "gemini-3.8-flash":       {"input": 0.75, "output": 3.75, "cache": 0.075},
+    # No context-caching rate is listed for 3.5 Flash-Lite: bill cached
+    # tokens at the input rate, which never under-counts.
+    "gemini-3.5-flash-lite":  {"input": 0.30, "output": 2.50, "cache": 0.30},
+    # Preview; <=200k-token prompts (>200k: $4.00 / $18.00 / $0.40).
+    "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00, "cache": 0.20},
 }
+
+# Announced list-price changes, applied from their effective UTC date so the
+# daily cap never under-counts after a known increase.
+_SCHEDULED_PRICES: list[tuple[str, date, dict[str, float]]] = [
+    ("gemini-3.8-flash", date(2027, 1, 1), {"input": 1.50, "output": 7.50, "cache": 0.15}),
+]
 
 # Env overrides — last-resort escape hatch when Gemini changes pricing and
 # the code hasn't been updated yet. Apply to all models.
 _INPUT_PRICE_OVERRIDE  = os.environ.get("GEMINI_INPUT_PRICE_PER_M")
 _OUTPUT_PRICE_OVERRIDE = os.environ.get("GEMINI_OUTPUT_PRICE_PER_M")
 _CACHE_PRICE_OVERRIDE  = os.environ.get("GEMINI_CACHE_PRICE_PER_M")
+
+
+def _utc_today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+# Gemini 3.x replaces thinking_budget with thinking_level and rejects a
+# request that sends both. Supported levels differ per model
+# (ai.google.dev/gemini-api/docs/thinking, read 2026-10-09). Google also
+# advises keeping temperature at its 1.0 default on 3.x (lower values can
+# loop or degrade output), so 3.x requests omit it.
+_GEMINI3_THINKING_LEVELS: dict[str, tuple[str, ...]] = {
+    "gemini-3.8-flash":       ("low", "medium", "high"),
+    "gemini-3.5-flash-lite":  ("minimal", "low", "medium", "high"),
+    "gemini-3.1-pro-preview": ("low", "medium", "high"),
+}
+
+
+def _is_gemini3(model: str) -> bool:
+    return model.startswith("gemini-3")
+
+
+def _thinking_level_for(model: str, budget: int) -> str | None:
+    """Map Kompl's per-step thinking budget onto a Gemini 3 thinking_level.
+
+    0 -> the model's lowest level ('minimal' where offered, else 'low');
+    up to 1024 -> 'low'; up to 8192 -> 'medium'; above -> 'high'. A
+    negative ("dynamic") budget returns None: keep the model's default.
+    """
+    if budget < 0:
+        return None
+    if budget == 0:
+        return _GEMINI3_THINKING_LEVELS[model][0]
+    if budget <= 1024:
+        return "low"
+    if budget <= 8192:
+        return "medium"
+    return "high"
 
 
 def _get_model_prices(model: str) -> dict[str, float]:
@@ -90,6 +143,10 @@ def _get_model_prices(model: str) -> dict[str, float]:
     bump to a new model name doesn't silently crash pricing.
     """
     base = _MODEL_PRICES.get(model, _MODEL_PRICES["gemini-2.5-flash-lite"])
+    today = _utc_today()
+    for scheduled_model, effective, scheduled in _SCHEDULED_PRICES:
+        if scheduled_model == model and today >= effective:
+            base = scheduled
     return {
         "input":  float(_INPUT_PRICE_OVERRIDE)  if _INPUT_PRICE_OVERRIDE  else base["input"],
         "output": float(_OUTPUT_PRICE_OVERRIDE) if _OUTPUT_PRICE_OVERRIDE else base["output"],
@@ -266,12 +323,19 @@ class GeminiProvider:
         # Build genai config from the canonical LLMRequest fields. Today's
         # call sites always set thinking_config (even when budget=0) — match
         # that contract verbatim so behaviour is byte-for-byte preserved.
-        config_kwargs: dict[str, Any] = {
-            "max_output_tokens": req.max_output_tokens,
-            "thinking_config": types.ThinkingConfig(thinking_budget=req.thinking_budget),
-        }
-        if req.temperature is not None:
-            config_kwargs["temperature"] = req.temperature
+        config_kwargs: dict[str, Any] = {"max_output_tokens": req.max_output_tokens}
+        if _is_gemini3(req.model):
+            level = _thinking_level_for(req.model, req.thinking_budget)
+            if level is not None:
+                config_kwargs["thinking_config"] = types.ThinkingConfig(
+                    thinking_level=types.ThinkingLevel[level.upper()]
+                )
+        else:
+            # Gemini 2.5: unchanged — always a thinking_budget (even 0) and
+            # the call site's temperature.
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=req.thinking_budget)
+            if req.temperature is not None:
+                config_kwargs["temperature"] = req.temperature
         if req.response_model is not None:
             config_kwargs["response_mime_type"] = "application/json"
             config_kwargs["response_schema"] = req.response_model

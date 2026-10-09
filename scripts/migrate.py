@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -680,6 +680,26 @@ def migrate():
             conn.execute("ALTER TABLE sources ADD COLUMN title_source TEXT")
         if "title_rescued_at" not in existing_cols:
             conn.execute("ALTER TABLE sources ADD COLUMN title_rescued_at TIMESTAMP")
+
+    if current < 26:
+        print("  applying migration v26 (explicit compile_model row)...")
+        # The default compile model moves from gemini-2.5-flash to
+        # deepseek-flash (DeepSeek V4.1 Flash). Write the model each install
+        # runs on as an explicit settings row so the new default only reaches
+        # fresh installs:
+        #   - existing install (current > 0) without an explicit choice has
+        #     been compiling on gemini-2.5-flash, and Gemini may be its only
+        #     configured provider -> pin gemini-2.5-flash.
+        #   - fresh install (current == 0) -> seed the new default.
+        # INSERT OR IGNORE keeps any model the user already picked. With a row
+        # on every install, a later default change can't move anyone either.
+        # Keep the fresh-install value equal to DEFAULT_COMPILE_MODEL in
+        # app/src/lib/llm-models.ts.
+        seeded_model = "gemini-2.5-flash" if current > 0 else "deepseek-flash"
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('compile_model', ?)",
+            (seeded_model,),
+        )
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

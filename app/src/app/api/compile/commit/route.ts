@@ -178,8 +178,8 @@ async function commitSession(session_id: string): Promise<Response> {
   const minDraftChars = getMinDraftChars();
   // OFF mode: when auto_approve='0', queue every content plan for manual approval
   // via /drafts. Provenance-only plans still auto-commit (zero content to review).
-  // The approve route runs full Phase 2/3a/3b from scratch — same path used by
-  // chat-save-draft today — so no draft state is ever stranded.
+  // The approve route runs full Phase 2/3a/3b from scratch, so no draft state
+  // is ever stranded.
   const autoApprove = getAutoApprove();
 
   // Build source title map once before the loop — used to enrich page_compiled events.

@@ -5,10 +5,73 @@ All notable changes to Kompl are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The application surface (Next.js API, CLI, MCP server, settings) follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The SQLite schema
-uses a separate monotonic version (currently `v25`); breaking schema changes
+uses a separate monotonic version (currently `v26`); breaking schema changes
 ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
+
+### Added
+
+- **Current models.** Compile model choices are now DeepSeek V4.1 Flash
+  (`deepseek-flash`), DeepSeek V4 Pro, Gemini 3.8 Flash, Gemini 3.5
+  Flash-Lite and Gemini 3.1 Pro (preview). Gemini 3 requests use
+  `thinking_level` and the default temperature, as Google requires for 3.x;
+  Gemini 2.5 requests are unchanged.
+
+### Changed
+
+- **Default compile model for new installs: DeepSeek V4.1 Flash.** Schema
+  v25 → v26 writes an explicit `compile_model` row on every install:
+  existing installs that never picked a model are pinned to
+  `gemini-2.5-flash` (what they ran on), fresh installs get
+  `deepseek-flash`. Any model you already picked is kept.
+- **Gemini 2.5 and DeepSeek V4 Flash are now "legacy".** They stay valid and
+  selectable: Google only serves Gemini 2.5 to API projects that used it
+  before, and DeepSeek serves `deepseek-v4-flash` requests with V4.1 Flash
+  (Kompl now sends those as `deepseek-flash`).
+- **DeepSeek thinking is set explicitly on every call.** Steps with a zero
+  thinking budget (crossref, triage) now run with thinking disabled instead
+  of DeepSeek's default (on, high effort), which could use up triage's
+  512-token output limit.
+- **DeepSeek prices** updated to the current peak-hour list rates, so the
+  daily cap counts DeepSeek spend at what the invoice shows (2–4× more than
+  before). Off-peak hours cost half, so the cap now errs on the safe side.
+- **Settings page reorganised** into one page ordered by importance (AI model
+  & spend, Connect your AI, Review, Wiki health, Backup & restore, Advanced
+  tuning). The sidebar highlights the current section, every setting shows
+  its default, longer help moved behind "Details", and the five compile
+  tuning knobs are collapsed under Advanced. Removed the dead "Automation &
+  delivery" link.
+- **`setup.js`** asks for the DeepSeek key first and states Node ≥ 24.
+
+### Removed
+
+- **In-app chat.** The Chat button, chat drawer, `/chat` page, `/api/chat`,
+  `/api/chat/history`, `/api/chat/save-draft`, the nlp-service
+  `/chat/select-pages` and `/chat/synthesize` endpoints and the Settings
+  "Chat model" selector are gone. Query your wiki through the MCP server
+  instead (Settings → Connect your AI). `/chat` now redirects there.
+- **Global footer bar.** Layout offsets that reserved its 32px are gone too.
+
+### Kept for existing installs
+
+- Chat history stays in the `chat_messages` table and in exports; old
+  `.kompl.zip` backups (including their `db/chat_messages.json`) import
+  unchanged.
+- Chat drafts still awaiting approval keep their dashboard label, their
+  approve-all scoping and their cleanup when a cited page is deleted.
+- `GET /api/wiki/stats` stays as a read-only stats endpoint.
+
+### Fixed
+
+- **CLI on a fresh clone:** `cli/package.json` gains a `prepare` script, so
+  `npm install` (run by `setup.js` and `kompl update`) builds `dist/`.
+  Before this, `kompl` failed with `Cannot find module '../dist/index.js'`
+  on any machine without an old local build.
+- **Importing an older backup** no longer overwrites the database's
+  `schema_version` (which made `/api/health` report the DB as broken until
+  the next restart). Backups from before v26 that kept the default model
+  import pinned to `gemini-2.5-flash`.
 
 ## [0.3.2.1] — 2026-09-01
 

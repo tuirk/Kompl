@@ -20,10 +20,9 @@ and writes them into wiki pages that link to each other. Save new sources on the
 same topic and the existing pages update. Save a tenth and Kompl already sees the
 pattern across all ten without you having to ask.
 
-Read your content through the wiki interface, use the chat that comes with the
-app, or better yet, point it at a project drive and query it through its MCP
-server with whatever agent you use, for whatever you're working on that needs
-your compiled and compounded knowledge.
+Read your content through the wiki interface, or point the agent you already use
+at it and query it through Kompl's MCP server, for whatever you're working on
+that needs your compiled and compounded knowledge.
 
 ### Why the timing matters
 
@@ -68,9 +67,8 @@ shouldn't be paid to do a librarian's job.
 
 Kompl runs as a Docker stack on your own machine with your own API keys. You read
 the wiki the way you'd read any wiki: pages and wikilinks, an entity graph view,
-full-text search, history. It ships with a basic chat that retrieves over your
-pages and answers with citations, a thin reference implementation you're meant to
-replace with your own.
+full-text search, history. To ask questions of it, connect any MCP-capable agent
+(Claude Code, Claude Desktop, Cursor) to Kompl's MCP server.
 
 The access pattern Kompl is built for is MCP: four read-only tools for now
 (`search_wiki`, `read_page`, `list_pages`, `wiki_stats`), with more planned, so

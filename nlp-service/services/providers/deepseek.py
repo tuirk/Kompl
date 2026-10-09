@@ -8,8 +8,11 @@ DeepSeek API specifics (2026-05-05):
 - OpenAI-compatible POST /v1/chat/completions on https://api.deepseek.com.
 - json_object response_format requires the literal word "json" in the prompt
   (Phase 1 system-prompt trailers cover this for every schema-bound site).
-- Reasoning controlled via ``reasoning_effort`` enum (``disabled``, ``low``,
-  ``medium``, ``high``, ``max``); translated from the int thinking_budget in
+- Thinking is ON by default (effort ``high``) on every current model and
+  its tokens count against ``max_tokens``. Every request states it
+  explicitly: ``thinking: {type: disabled}`` for a zero budget, otherwise
+  ``enabled`` plus ``reasoning_effort`` (``low`` / ``high`` / ``max``),
+  translated from the int thinking_budget in
   ``providers.translate_thinking_budget``.
 - Usage fields differ from Gemini: ``prompt_tokens``, ``completion_tokens``,
   ``prompt_cache_hit_tokens``. The Gemini-shape ``thoughts_token_count`` is
@@ -49,14 +52,15 @@ _DEEPSEEK_RPM = int(os.environ.get("DEEPSEEK_RPM", "60"))
 
 
 # ---------------------------------------------------------------------------
-# Pricing (DeepSeek V4 family, $/M tokens)
+# Pricing (DeepSeek V4 / V4.1 family, $/M tokens)
 # ---------------------------------------------------------------------------
 #
-# List prices per api-docs.deepseek.com/quick_start/pricing (2026-05-22 read).
-# We deliberately do NOT model the promotional 75%-off discount window — when
-# DeepSeek runs a discount, our cap counter overestimates real spend, which is
-# the safe side to err on (cap fires earlier than necessary, never later than
-# the user budget). Constants drift over time; the surfaced "Daily LLM spend"
+# Peak-hour list prices per api-docs.deepseek.com/quick_start/pricing
+# (2026-10-09 read). Off-peak hours (outside 01:00-04:00 and 06:00-10:00 UTC
+# on weekdays) cost half, and we deliberately do NOT model that or any
+# promotional discount — our cap counter then overestimates real spend,
+# which is the safe side to err on (cap fires earlier than necessary, never
+# later than the user budget). Constants drift over time; the surfaced "Daily LLM spend"
 # in the UI is an estimate — reconcile with the provider's invoice for ground
 # truth, and treat any V5/V4-Lite/etc. switch as a reason to revisit this dict.
 # Operators can override per-rate via DEEPSEEK_INPUT_USD_PER_M /
@@ -66,9 +70,17 @@ _DEEPSEEK_RPM = int(os.environ.get("DEEPSEEK_RPM", "60"))
 # we ship a code update.
 
 _MODEL_PRICES: dict[str, dict[str, float]] = {
-    "deepseek-v4-pro":   {"input": 1.74, "output": 3.48, "cache": 0.0145},
-    "deepseek-v4-flash": {"input": 0.14, "output": 0.28, "cache": 0.0028},
+    "deepseek-flash":    {"input": 0.30, "output": 1.20, "cache": 0.006},
+    "deepseek-v4-pro":   {"input": 1.32, "output": 3.96, "cache": 0.044},
+    # Legacy ID: DeepSeek retired V4 Flash and serves these requests with
+    # V4.1 Flash at Flash rates.
+    "deepseek-v4-flash": {"input": 0.30, "output": 1.20, "cache": 0.006},
 }
+
+# Model IDs to send on the wire. DeepSeek accepts ``deepseek-v4-flash`` only
+# as a temporary alias for V4.1 Flash; sending the current ID keeps installs
+# that still have the old ID stored working after the alias is dropped.
+_API_MODEL_IDS: dict[str, str] = {"deepseek-v4-flash": "deepseek-flash"}
 
 
 def _get_model_prices(model: str) -> dict[str, float]:
@@ -76,7 +88,7 @@ def _get_model_prices(model: str) -> dict[str, float]:
 
     Unknown model names raise KeyError. By design — every model name reaching
     this function passed through the Settings dropdown allowlist
-    (app/src/lib/db.ts CHAT_MODELS) and the Pydantic Literal at the route
+    (app/src/lib/db.ts LLM_MODELS) and the Pydantic Literal at the route
     boundary. An unknown name here means a developer added a SKU to the
     Literals/dropdown but forgot to add its price; fail loud in tests.
     """
@@ -179,18 +191,23 @@ class DeepSeekProvider:
         from services.llm_client import LLMRateLimitedError
         from . import translate_thinking_budget
 
+        effort = translate_thinking_budget("deepseek", req.step, req.thinking_budget)
         body: dict[str, Any] = {
-            "model": req.model,
+            "model": _API_MODEL_IDS.get(req.model, req.model),
             "messages": req.messages,
             "max_tokens": req.max_output_tokens,
             "temperature": req.temperature if req.temperature is not None else 0.0,
         }
         if req.response_model is not None:
             body["response_format"] = {"type": "json_object"}
-        if req.thinking_budget > 0:
-            body["reasoning_effort"] = translate_thinking_budget(
-                "deepseek", req.step, req.thinking_budget
-            )
+        # Always explicit: the default (thinking on, effort high) would let
+        # zero-budget steps (crossref, triage) spend their small output
+        # allowance on reasoning before answering.
+        if effort == "none":
+            body["thinking"] = {"type": "disabled"}
+        else:
+            body["thinking"] = {"type": "enabled"}
+            body["reasoning_effort"] = effort
 
         client = get_client()
         limiter = _get_limiter()

@@ -6,7 +6,7 @@
  * Layout (Obsidian Kinetic, matches Stitch spec):
  *   Left  — KOMPL logo (links to /)
  *   Center — primary nav: Home · Wiki · Sources
- *   Right  — search archive input · Chat (accent CTA) · settings icon
+ *   Right  — search archive input · settings icon
  *
  * Search behaviour:
  *   - Typing ≥ 2 chars fetches /api/pages/search?q=...&limit=3 (250ms debounce)
@@ -22,7 +22,7 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { Search, Settings, MessageSquare } from 'lucide-react';
+import { Search, Settings } from 'lucide-react';
 import {
   useCallback,
   useEffect,
@@ -31,7 +31,6 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { PAGE_TYPE_VAR } from '../lib/page-type-palette';
-import { useChatDrawer } from './ChatDrawer';
 
 const NAV_ITEMS = [
   { href: '/',     label: 'Home', isActive: (p: string) => p === '/' },
@@ -59,7 +58,6 @@ export default function TopNav() {
   const router       = useRouter();
   const searchParams = useSearchParams();
   const isAddMode    = searchParams.get('mode') === 'add';
-  const { open: chatOpen, toggle: toggleChat } = useChatDrawer();
 
   const [query,     setQuery]     = useState('');
   const [results,   setResults]   = useState<SearchResult[]>([]);
@@ -366,38 +364,6 @@ export default function TopNav() {
             </div>
           )}
         </div>
-
-        <button
-          type="button"
-          onClick={toggleChat}
-          aria-label="Open chat"
-          aria-pressed={chatOpen}
-          title="Chat"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 8,
-            height: 36,
-            padding: '0 14px',
-            background: chatOpen ? 'var(--accent)' : 'rgba(var(--accent-rgb),0.18)',
-            border: '1px solid var(--accent)',
-            borderRadius: 6,
-            cursor: 'pointer',
-            color: chatOpen ? 'var(--accent-text)' : 'var(--accent)',
-            fontFamily: 'var(--font-heading)',
-            fontSize: 13,
-            fontWeight: 700,
-            letterSpacing: '0.06em',
-            textTransform: 'uppercase',
-            boxShadow: chatOpen
-              ? 'none'
-              : '0 0 0 1px rgba(var(--accent-rgb),0.25), 0 0 18px rgba(var(--accent-rgb),0.2)',
-            transition: 'background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast)',
-          }}
-        >
-          <MessageSquare size={15} strokeWidth={2.25} />
-          Chat
-        </button>
 
         {/* Settings */}
         <Link

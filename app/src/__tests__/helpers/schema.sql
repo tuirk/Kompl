@@ -1,4 +1,4 @@
--- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=25.
+-- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=26.
 -- If migrate.py changes, update this file. Tests will fail loudly on drift.
 
 CREATE TABLE sources (
@@ -226,4 +226,6 @@ CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id
 CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '25');
+INSERT INTO settings (key, value) VALUES ('schema_version', '26');
+-- v26: fresh installs get an explicit compile_model row (DEFAULT_COMPILE_MODEL).
+INSERT INTO settings (key, value) VALUES ('compile_model', 'deepseek-flash');

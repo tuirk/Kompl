@@ -13,7 +13,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Upload, BookOpen, MessageSquare, AlertTriangle } from 'lucide-react';
+import { Upload, BookOpen, Plug, AlertTriangle } from 'lucide-react';
 import { COMPILE_STEP_KEYS, COMPILE_STEP_LABELS } from '@/lib/compile-steps';
 import { toUserMessage } from '@/lib/service-errors';
 
@@ -782,7 +782,7 @@ export default function DashboardClient({ activeSession }: DashboardClientProps)
     : undefined;
 
   return (
-    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px calc(5rem + 32px)' }}>
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 5rem' }}>
 
       {/* Service health banner — red bar when nlp-service is down */}
       <ServiceStatusBanner />
@@ -953,9 +953,9 @@ export default function DashboardClient({ activeSession }: DashboardClientProps)
               <BookOpen size={18} style={{ color: 'var(--accent)', flexShrink: 0 }} />
             </Link>
 
-            {/* Secondary — Open Chat */}
+            {/* Secondary — Connect an AI agent over MCP (replaces the retired in-app chat) */}
             <Link
-              href="/chat"
+              href="/settings#integrations"
               style={{
                 display: 'flex',
                 flexDirection: 'row',
@@ -969,9 +969,9 @@ export default function DashboardClient({ activeSession }: DashboardClientProps)
               }}
             >
               <span style={{ fontFamily: 'var(--font-heading)', fontSize: 18, fontWeight: 400, color: 'var(--fg)' }}>
-                Open Chat
+                Connect your AI
               </span>
-              <MessageSquare size={21} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+              <Plug size={19} style={{ color: 'var(--accent)', flexShrink: 0 }} />
             </Link>
           </div>
         </div>

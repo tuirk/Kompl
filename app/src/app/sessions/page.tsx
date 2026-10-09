@@ -77,7 +77,7 @@ export default function SessionsPage() {
   }, []);
 
   return (
-    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '2rem 40px calc(5rem + 32px)' }}>
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '2rem 40px 5rem' }}>
 
       {/* Back link */}
       <a

@@ -196,7 +196,7 @@ export default function WikiGraphPage() {
     */}
     <style>{`html { zoom: 1; }`}</style>
     <main
-      style={{ height: 'calc(100dvh - 97px)', display: 'flex', flexDirection: 'column', background: '#0D0E10', overflow: 'hidden' }}
+      style={{ height: 'calc(100dvh - 65px)', display: 'flex', flexDirection: 'column', background: '#0D0E10', overflow: 'hidden' }}
     >
       {/* Floating header bar */}
       <header

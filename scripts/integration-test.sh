@@ -15,7 +15,7 @@
 #
 # Stage state at commit 8:
 #   Stage 0  — REAL (cold start)
-#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=25)
+#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=26)
 #   Stage 4  — REAL (text connector stage end-to-end, no API key needed)
 #   Stage 11 — REAL (onboarding API canary via /stage → /finalize → pipeline)
 #   Stage 11b — REAL (finalize surfaces n8n-down as 503)
@@ -27,7 +27,7 @@
 #   Stage 16 — REAL (full compilation pipeline, skipped without GEMINI_API_KEY)
 #   Stage 17 — REAL (session compile via n8n, skipped without GEMINI_API_KEY)
 #   Stage 18 — REAL (wiki-aware update, skipped without GEMINI_API_KEY)
-#   Stage 19 — REAL (chat canary, skipped without GEMINI_API_KEY or page_count<1)
+#   Stage 19 — removed (in-app chat retired; MCP is the query surface)
 #   Stage 20 — REAL (source management + settings + drafts endpoints)
 #   All other stages — TODO.
 #
@@ -298,8 +298,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":25'; then
-        echo "  FAIL: schema_version != 25"
+    if ! echo "$response" | grep -q '"schema_version":26'; then
+        echo "  FAIL: schema_version != 26"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -1601,7 +1601,6 @@ main() {
     stage_16_full_pipeline
     stage_17_session_compile
     stage_18_wiki_aware_update
-    stage_19_chat_canary
     stage_20_source_mgmt_canary
     stage_21_wiki_data_canary
     stage_22_original_source_gate2
@@ -1617,76 +1616,8 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 21 stages (0, 1, 4, 11–12b, 13–27) executed, all passed ==="
+    echo "=== All 23 stages (0, 1, 4, 11–12b, 13–18, 20–27) executed, all passed ==="
     exit 0
-}
-
-# ---------------------------------------------------------------------------
-# Stage 19: chat canary
-#   Skip if no GEMINI_API_KEY or page_count < 1.
-#   1. POST /api/chat with a generic question
-#   2. Assert answer non-empty + citations key present
-#   3. GET /api/chat/history — assert >= 2 messages
-# ---------------------------------------------------------------------------
-stage_19_chat_canary() {
-    echo "--- stage 19: chat canary ---"
-
-    if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-        echo "  SKIP: no GEMINI_API_KEY"
-        record_stage 19 REAL SKIPPED
-        return 0
-    fi
-
-    local HEALTH PAGE_COUNT CHAT_SESSION CHAT_RESP ANSWER CITATIONS_PRESENT
-    local HISTORY_RESP MSG_COUNT
-
-    HEALTH=$(curl -sf "http://localhost:3000/api/health" 2>/dev/null || echo "")
-    PAGE_COUNT=$(echo "$HEALTH" | grep -o '"page_count":[0-9]*' | grep -o '[0-9]*' || echo "0")
-    if [[ "$PAGE_COUNT" -lt 1 ]]; then
-        echo "  SKIP: page_count=$PAGE_COUNT (need at least 1 compiled page)"
-        record_stage 19 REAL SKIPPED
-        return 0
-    fi
-
-    CHAT_SESSION=$(python3 -c "import uuid; print(str(uuid.uuid4()))")
-
-    CHAT_RESP=$(curl -sf -X POST "http://localhost:3000/api/chat" \
-        -H "Content-Type: application/json" \
-        -d "{\"session_id\":\"$CHAT_SESSION\",\"question\":\"What topics does my knowledge base cover?\"}" \
-        2>/dev/null || echo "")
-
-    if [[ -z "$CHAT_RESP" ]]; then
-        echo "  FAIL: POST /api/chat returned empty"
-        record_stage 19 REAL FAIL
-        return 1
-    fi
-
-    ANSWER=$(echo "$CHAT_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('answer',''))" 2>/dev/null || echo "")
-    if [[ -z "$ANSWER" ]]; then
-        echo "  FAIL: answer field missing or empty. response: $CHAT_RESP"
-        record_stage 19 REAL FAIL
-        return 1
-    fi
-
-    CITATIONS_PRESENT=$(echo "$CHAT_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if 'citations' in d else 'no')" 2>/dev/null || echo "no")
-    if [[ "$CITATIONS_PRESENT" != "yes" ]]; then
-        echo "  FAIL: citations key missing from response"
-        record_stage 19 REAL FAIL
-        return 1
-    fi
-
-    HISTORY_RESP=$(curl -sf "http://localhost:3000/api/chat/history?session_id=$CHAT_SESSION" 2>/dev/null || echo "")
-    MSG_COUNT=$(echo "$HISTORY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('messages',[])))" 2>/dev/null || echo "0")
-    if [[ "$MSG_COUNT" -lt 2 ]]; then
-        echo "  FAIL: expected >= 2 messages in history, got $MSG_COUNT"
-        record_stage 19 REAL FAIL
-        return 1
-    fi
-
-    echo "  answer length: ${#ANSWER} chars, messages in history: $MSG_COUNT"
-    echo "  stage 19 PASS — chat answered with citations, history persisted"
-    record_stage 19 REAL PASS
-    return 0
 }
 
 # ---------------------------------------------------------------------------

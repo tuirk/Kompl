@@ -20,13 +20,11 @@ Part 2b additions (entity resolution):
   - POST /resolve/embedding     — sentence-transformers cosine similarity (>0.9/0.7-0.9/<0.7)
   - POST /resolve/disambiguate  — Gemini LLM disambiguation for 0.7–0.9 ambiguous band
 
-Commit 7 additions (vector store + chat agent):
+Commit 7 additions (vector store):
   - POST /vectors/upsert        — embed a wiki page and store in Chroma
   - POST /vectors/search        — semantic search over page embeddings
   - POST /vectors/backfill      — upsert all pages not yet in Chroma (idempotent)
   - POST /storage/read-page     — read a compiled wiki page by page_id
-  - POST /chat/select-pages     — index-first LLM page selection
-  - POST /chat/synthesize       — wiki-grounded answer synthesis
 
   GET /llm/usage               — today's Gemini spend vs daily cap (from /data/llm-cap.json)
 
@@ -50,7 +48,6 @@ import os
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
-from routers.chat import router as chat_router
 from routers.conversion import router as conversion_router
 from routers.extraction import router as extraction_router
 from routers.llm import router as llm_router
@@ -89,7 +86,6 @@ app.include_router(pipeline_router)
 app.include_router(resolution_router)
 app.include_router(storage_router)
 app.include_router(vectors_router)
-app.include_router(chat_router)
 
 
 @app.on_event("startup")
@@ -107,7 +103,7 @@ def startup_check() -> None:
         logger.warning(
             "Neither GEMINI_API_KEY nor DEEPSEEK_API_KEY is set. "
             "LLM endpoints (/pipeline/extract-llm, /pipeline/draft, "
-            "/pipeline/lint-scan, /resolve/disambiguate, /chat/synthesize) "
+            "/pipeline/lint-scan, /resolve/disambiguate) "
             "will fail with 500 for any session. "
             "Set at least one in docker-compose.yml / .env."
         )

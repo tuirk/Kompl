@@ -82,15 +82,11 @@ from services.llm_client import (
     LLMExtractionResponse,
     DisambiguationResponse,
     CrossrefResponse,
-    SelectPagesResponse,
-    SynthesizeResponse,
     _LINT_SYSTEM_PROMPT,
     _EXTRACTION_SYSTEM_PROMPT,
     _DISAMBIGUATION_SYSTEM_PROMPT,
     _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT,
     _CROSSREF_SYSTEM_PROMPT,
-    _SELECT_PAGES_SYSTEM_PROMPT,
-    _SYNTHESIZE_SYSTEM_PROMPT,
 )
 
 
@@ -222,50 +218,3 @@ def test_crossref_rejects_bare_list():
 def test_crossref_prompt_anchors_keys():
     assert "updated_pages" in _CROSSREF_SYSTEM_PROMPT
     assert "contradictions_found" in _CROSSREF_SYSTEM_PROMPT
-
-
-# ── SelectPagesResponse — wrapper key = "page_ids" ────────────────────────────
-
-def test_select_pages_canonical():
-    p = SelectPagesResponse.model_validate({"page_ids": ["abc", "def"]})
-    assert p.page_ids == ["abc", "def"]
-
-
-def test_select_pages_rejects_results_wrapper():
-    with pytest.raises(ValidationError):
-        SelectPagesResponse.model_validate({"results": ["abc"]})
-
-
-def test_select_pages_rejects_bare_list():
-    with pytest.raises(ValidationError):
-        SelectPagesResponse.model_validate(["abc"])
-
-
-def test_select_pages_prompt_anchors_page_ids():
-    assert "page_ids" in _SELECT_PAGES_SYSTEM_PROMPT
-
-
-# ── SynthesizeResponse — wrapper keys = "answer", "citations" ─────────────────
-
-def test_synthesize_canonical():
-    p = SynthesizeResponse.model_validate({
-        "answer": "The transformer architecture was introduced in 2017.",
-        "citations": [{"page_id": "p1", "page_title": "Transformer"}],
-    })
-    assert p.answer.startswith("The transformer")
-    assert p.citations[0].page_id == "p1"
-
-
-def test_synthesize_rejects_response_wrapper():
-    with pytest.raises(ValidationError):
-        SynthesizeResponse.model_validate({"response": {"answer": "x", "citations": []}})
-
-
-def test_synthesize_rejects_bare_list():
-    with pytest.raises(ValidationError):
-        SynthesizeResponse.model_validate([])
-
-
-def test_synthesize_prompt_anchors_keys():
-    assert "answer" in _SYNTHESIZE_SYSTEM_PROMPT
-    assert "citations" in _SYNTHESIZE_SYSTEM_PROMPT

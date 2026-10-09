@@ -18,8 +18,6 @@ This router NEVER opens kompl.db. rule #1 in CLAUDE.md.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
@@ -38,29 +36,22 @@ from services.llm_client import (
     lint_scan,
     triage_page_update,
 )
+from services.llm_models import LLMModel
 
 router = APIRouter(tags=["pipeline"])
 
 
-# Compile-steps share this Literal with chat.py's ChatModel. Kept local to
-# each router rather than extracting to a shared module since each router
-# has a small, independent scope. Default is Flash — historical hardcode
-# that every llm_client call site used before compile_model became a
-# setting.
-GeminiModel = Literal[
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "deepseek-v4-pro",
-    "deepseek-v4-flash",
-]
+# Allowlist shared with resolution.py (services/llm_models.py). The
+# "gemini-2.5-flash" field defaults below are the historical hardcode every
+# llm_client call site used before compile_model became a setting; Next.js
+# always sends compile_model, so they only matter for direct API calls.
 
 
 class LintScanRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     pages: list[str]  # list of "[page_id] title: summary" strings
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 class ExtractLLMRequest(BaseModel):
@@ -71,7 +62,7 @@ class ExtractLLMRequest(BaseModel):
     ner_output: dict   # type: ignore[type-arg]  # JSON from /extract/ner
     keyphrase_output: dict | None = None   # type: ignore[type-arg]
     tfidf_output: dict | None = None       # type: ignore[type-arg]
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 @router.post("/pipeline/extract-llm", response_model=LLMExtractionResponse)
@@ -154,7 +145,7 @@ class DraftPageRequest(BaseModel):
     existing_page_titles: list[str] = []
     extraction_dossier: str = ""
     existing_categories: list[str] = []
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 class DraftPageResponse(BaseModel):
@@ -205,7 +196,7 @@ class CrossrefRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     pages: list[CrossrefPageInput]
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 @router.post("/pipeline/crossref", response_model=CrossrefResponse)
@@ -239,7 +230,7 @@ class GenerateSchemaRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     pages: list[PageSummaryInput]
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 class GenerateSchemaResponse(BaseModel):
@@ -259,7 +250,7 @@ class TriageRequest(BaseModel):
     source_claims: str
     existing_page_summary: str
     page_title: str
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 class TriageResponse(BaseModel):

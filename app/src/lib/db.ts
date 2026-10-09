@@ -34,6 +34,14 @@ import zlib from 'node:zlib';
 import { COMPILE_STEP_KEYS, type CompileStepKey } from './compile-steps';
 import { assertSafeId, isSafeId } from './safe-paths';
 import type { ActivityEventType } from './activity-events';
+import { DEFAULT_COMPILE_MODEL, isLlmModel, type LlmModel } from './llm-models';
+
+// Model registry lives in llm-models.ts (client-safe, no DB imports);
+// re-exported here so server code keeps importing it from '@/lib/db'.
+export {
+  LLM_MODELS, DEFAULT_COMPILE_MODEL, isLlmModel, getProviderForModel,
+  type LlmModel,
+} from './llm-models';
 
 const DB_PATH = process.env.DB_PATH ?? '/data/db/kompl.db';
 export const DATA_ROOT = path.dirname(path.dirname(DB_PATH)); // /data
@@ -1390,7 +1398,7 @@ export function insertPagePlan(plan: {
  * 'crossreffed', and 'failed' rows from a prior failed run are cleared so
  * the draft step only sees plans from the current run.
  * Preserves 'committed' (already written to pages table),
- * 'pending_approval' (query-generated chat plans, separate lifecycle),
+ * 'pending_approval' (awaiting user review, separate lifecycle),
  * and 'rejected' (audit trail).
  */
 export function clearStagedPagePlans(sessionId: string): void {
@@ -1610,9 +1618,8 @@ export function createCompileProgress(
  * createCompileProgress. Callers should fall back to getCompileModel() on
  * null so legacy sessions keep working.
  *
- * This mirrors the chat_model lock pattern (chat_messages.chat_model,
- * getSessionChatModel) — read the stamp if present, fall back to the
- * current Settings value otherwise.
+ * Read the stamp if present, fall back to the current Settings value
+ * otherwise.
  */
 export function getSessionCompileModel(sessionId: string): string | null {
   const row = openDb()
@@ -1633,10 +1640,10 @@ export function getSessionCompileModel(sessionId: string): string | null {
  */
 export function getEffectiveCompileModel(
   sessionId: string | null | undefined,
-): ChatModel {
+): LlmModel {
   if (!sessionId) return getCompileModel();
   const locked = getSessionCompileModel(sessionId);
-  return isChatModel(locked) ? locked : getCompileModel();
+  return isLlmModel(locked) ? locked : getCompileModel();
 }
 
 /**
@@ -2141,117 +2148,6 @@ export function getCurrentPageHash(pageId: string): string {
 }
 
 // ============================================================================
-// Chat messages (commit 7)
-// ============================================================================
-
-export interface ChatMessageRow {
-  id: number;
-  session_id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  citations: string | null;   // JSON: Array<{page_id, page_title}>
-  pages_used: string | null;  // JSON: string[]
-  chat_model: string | null;  // stamped only on the first row of each session
-  created_at: string;
-}
-
-export function insertChatMessage(data: {
-  session_id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  citations?: Array<{ page_id: string; page_title: string }>;
-  pages_used?: string[];
-  chat_model?: string;
-}): void {
-  openDb()
-    .prepare(
-      `INSERT INTO chat_messages (session_id, role, content, citations, pages_used, chat_model)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      data.session_id,
-      data.role,
-      data.content,
-      data.citations ? JSON.stringify(data.citations) : null,
-      data.pages_used ? JSON.stringify(data.pages_used) : null,
-      data.chat_model ?? null,
-    );
-}
-
-export function getSessionChatModel(sessionId: string): string | null {
-  const row = openDb()
-    .prepare(
-      `SELECT chat_model FROM chat_messages
-       WHERE session_id = ?
-       ORDER BY id ASC
-       LIMIT 1`
-    )
-    .get(sessionId) as { chat_model: string | null } | undefined;
-  return row?.chat_model ?? null;
-}
-
-export function getChatHistory(sessionId: string, limit = 20): ChatMessageRow[] {
-  return openDb()
-    .prepare(
-      `SELECT * FROM chat_messages
-       WHERE session_id = ?
-       ORDER BY created_at ASC
-       LIMIT ?`
-    )
-    .all(sessionId, limit) as ChatMessageRow[];
-}
-
-/**
- * Return all pages as a lightweight index for chat retrieval.
- * Sorted by source_count DESC so most-sourced pages appear first.
- * Excludes page_type='archived' and all-archived-sources pages by default.
- */
-export function getPageIndex(): Array<{
-  page_id: string;
-  title: string;
-  page_type: string;
-  summary: string | null;
-  category: string | null;
-  source_count: number;
-}> {
-  type Row = { page_id: string; title: string; page_type: string; summary: string | null; category: string | null; source_count: number };
-  const rows = openDb()
-    .prepare(
-      `SELECT page_id, title, page_type, summary, category, source_count
-       FROM pages
-       WHERE page_type != 'archived'
-       ORDER BY source_count DESC`
-    )
-    .all() as Row[];
-  const archivedIds = getAllArchivedPageIds();
-  if (archivedIds.size === 0) return rows;
-  return rows.filter((r) => !archivedIds.has(r.page_id));
-}
-
-/**
- * Insert a chat-compounding draft directly into page_plans.
- * Used when a chat answer synthesises 3+ pages — creates a
- * pending_approval draft for the user to review.
- */
-export function insertChatDraft(data: {
-  plan_id: string;
-  session_id: string;
-  title: string;
-  draft_content: string;
-  pages_used?: string[]; // page_ids that contributed to the answer
-}): void {
-  openDb()
-    .prepare(
-      `INSERT INTO page_plans
-         (plan_id, session_id, title, page_type, action,
-          source_ids, existing_page_id, related_plan_ids,
-          draft_content, draft_status)
-       VALUES (?, ?, ?, 'query-generated', 'create', ?, NULL, '[]', ?, 'pending_approval')`
-    )
-    .run(data.plan_id, data.session_id, data.title, JSON.stringify(data.pages_used ?? []), data.draft_content);
-}
-
-// ============================================================================
 // Source management helpers (commit 8)
 // ============================================================================
 
@@ -2475,6 +2371,11 @@ export function removeProvenanceForSource(sourceId: string): void {
 }
 
 /**
+ * Legacy data hygiene: the in-app chat (since retired) could save answers as
+ * pending_approval drafts, and installs may still hold some. Nothing creates
+ * new ones, but this cleanup stays so those drafts can never be approved into
+ * pages with broken [[wikilinks]].
+ *
  * Strip a deleted page_id from every chat-save-draft's source_ids array
  * (chat drafts store cited page_ids in source_ids — known semantic quirk),
  * then drop any chat draft whose source_ids becomes empty. Run inside the
@@ -2666,9 +2567,10 @@ export function deletePage(pageId: string): { chatDraftsRewritten: number; chatD
  * Zero-provenance pages are NOT included (HAVING COUNT(*) > 0 guard prevents
  * the degenerate 0=0 case from hiding pages with no provenance at all).
  *
- * Result is cached for 30s — this query runs on every chat message in hybrid
- * mode and is expensive (GROUP BY JOIN on provenance). Cache is invalidated by
- * setSourceStatus (archive/unarchive) and deleteSource (source removal).
+ * Result is cached for 30s — wiki listing, category and graph reads all call
+ * this and the query is expensive (GROUP BY JOIN on provenance). Cache is
+ * invalidated by setSourceStatus (archive/unarchive) and deleteSource
+ * (source removal).
  */
 let _archivedIdsCache: { ids: Set<string>; ts: number } | null = null;
 const ARCHIVED_IDS_TTL = 30_000;
@@ -2829,57 +2731,21 @@ export function setDossierMinScore(value: number): void {
   setSetting('dossier_min_score', String(clamped));
 }
 
-export const CHAT_MODELS = [
-  'gemini-2.5-flash-lite',
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'deepseek-v4-pro',
-  'deepseek-v4-flash',
-] as const;
-export type ChatModel = typeof CHAT_MODELS[number];
-export const DEFAULT_CHAT_MODEL: ChatModel = 'gemini-2.5-flash-lite';
+// The 'chat_model' settings row may still exist on installs that used the
+// retired in-app chat. Nothing reads it; it is left in place (and in exports)
+// rather than deleted so old backups round-trip unchanged.
 
-export function isChatModel(v: unknown): v is ChatModel {
-  return typeof v === 'string' && (CHAT_MODELS as readonly string[]).includes(v);
-}
-
-// Phase 4 multi-provider: prefix dispatch matches the nlp-service factory at
-// nlp-service/services/providers/__init__.py. Settings UI uses this to drive
-// per-provider <optgroup> placement in the dropdowns.
-export function getProviderForModel(m: string): 'gemini' | 'deepseek' {
-  if (m.startsWith('deepseek-')) return 'deepseek';
-  return 'gemini';
-}
-
-export function getChatModel(): ChatModel {
-  const v = getSetting('chat_model');
-  return isChatModel(v) ? v : DEFAULT_CHAT_MODEL;
-}
-
-export function setChatModel(value: string): void {
-  if (!isChatModel(value)) {
-    throw new Error(`invalid chat_model: ${value}`);
-  }
-  setSetting('chat_model', value);
-}
-
-// Compile steps use a separate model setting from chat. Chat-favoured model
-// (usually Flash-Lite for speed, optionally Pro for quality) can differ from
-// the compile workload (usually Flash for balance, optionally Pro for large
-// extractions). Same allowlist as CHAT_MODELS — Kompl only supports the 2.5
-// family on Gemini Developer API.
-//
-// Default matches the historical hardcoded value in llm_client.py so upgrading
-// to the setting-driven code is a no-op for existing deployments.
-export const DEFAULT_COMPILE_MODEL: ChatModel = 'gemini-2.5-flash';
-
-export function getCompileModel(): ChatModel {
+// Model used by every compile-pipeline LLM step (extract, resolve, draft,
+// crossref, schema) plus lint and recompile. Validated against LLM_MODELS
+// (lib/llm-models.ts). Migration v26 gives every install an explicit
+// compile_model row, so DEFAULT_COMPILE_MODEL is only a last resort.
+export function getCompileModel(): LlmModel {
   const v = getSetting('compile_model');
-  return isChatModel(v) ? v : DEFAULT_COMPILE_MODEL;
+  return isLlmModel(v) ? v : DEFAULT_COMPILE_MODEL;
 }
 
 export function setCompileModel(value: string): void {
-  if (!isChatModel(value)) {
+  if (!isLlmModel(value)) {
     throw new Error(`invalid compile_model: ${value}`);
   }
   setSetting('compile_model', value);
@@ -3221,7 +3087,7 @@ export function getLastLintResult(): Record<string, unknown> | null {
 }
 
 // ============================================================================
-// Wiki stats (commit 8 — meta query support in chat)
+// Wiki stats (commit 8) — served by GET /api/wiki/stats
 // ============================================================================
 
 export interface WikiStats {
@@ -3234,8 +3100,8 @@ export interface WikiStats {
 }
 
 /**
- * Quick stats snapshot for answering meta queries in chat ("how many sources?").
- * All reads are cheap index scans — no full table scans.
+ * Quick stats snapshot (source/page/entity/concept counts, last ingest and
+ * compile times). All reads are cheap index scans — no full table scans.
  */
 export function getWikiStats(): WikiStats {
   const db = openDb();
@@ -3261,21 +3127,6 @@ export function getWikiStats(): WikiStats {
     last_ingested: lastIngestedRow?.date_ingested ?? null,
     last_compiled: lastCompiledRow?.last_updated ?? null,
   };
-}
-
-/**
- * Return a summary of what topics/categories are in the wiki.
- * Used by detectMetaQuery for "what topics does my wiki cover" questions.
- */
-export function getPageCategories(): Array<{ category: string; page_type: string; count: number }> {
-  return openDb()
-    .prepare(
-      `SELECT COALESCE(category, 'General') AS category, page_type, COUNT(*) AS count
-         FROM pages
-        GROUP BY category, page_type
-        ORDER BY count DESC`
-    )
-    .all() as Array<{ category: string; page_type: string; count: number }>;
 }
 
 // ============================================================================
@@ -3740,6 +3591,9 @@ export function getAllCompileProgress(): CompileProgressExportRow[] {
     .all() as CompileProgressExportRow[];
 }
 
+// chat_messages is legacy: the in-app chat was retired in favour of MCP, but
+// the table and its rows are kept so existing history survives export →
+// import round-trips (old backups carry db/chat_messages.json).
 export interface ChatMessageExportRow {
   session_id: string;
   role: string;

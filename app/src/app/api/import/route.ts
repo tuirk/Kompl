@@ -41,9 +41,9 @@ export async function POST(request: Request) {
   if (!manifestRaw) {
     return NextResponse.json({ error: 'invalid_format: no manifest' }, { status: 422 });
   }
-  let manifest: { format: string; version: number };
+  let manifest: { format: string; version: number; schema_version?: number };
   try {
-    manifest = JSON.parse(manifestRaw) as { format: string; version: number };
+    manifest = JSON.parse(manifestRaw) as { format: string; version: number; schema_version?: number };
   } catch {
     return NextResponse.json({ error: 'invalid_manifest' }, { status: 422 });
   }
@@ -383,7 +383,20 @@ export async function POST(request: Request) {
     }
 
     for (const s of settings) {
+      // schema_version belongs to this database (migrate.py owns it), not to
+      // the backup. Restoring an older value would make /api/health report
+      // the DB as broken until the next restart re-ran migrations.
+      if (s.key === 'schema_version') continue;
       db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`).run(s.key, s.value);
+    }
+
+    // Backups taken before schema v26 carry no compile_model row when the
+    // user kept the default, and that wiki compiled on gemini-2.5-flash.
+    // Pin it so the restored wiki keeps the model (and provider key) it was
+    // built with instead of the newer default. Mirrors migrate.py v26.
+    const bundleSchemaVersion = typeof manifest.schema_version === 'number' ? manifest.schema_version : 0;
+    if (bundleSchemaVersion < 26 && !settings.some((s) => s.key === 'compile_model')) {
+      db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('compile_model', 'gemini-2.5-flash')`).run();
     }
 
     db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('onboarding_completed', '1')`).run();

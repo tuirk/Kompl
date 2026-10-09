@@ -289,6 +289,9 @@ def _ensure_clean_deepseek_singleton(monkeypatch):
     from services import providers as P
     from services.providers import deepseek as D
     P._REGISTRY.clear()
+    # The module reads DEEPSEEK_API_KEY once at import; if any earlier test
+    # imported it without the env var, setenv alone is too late.
+    monkeypatch.setattr(D, "_DEEPSEEK_API_KEY", "test-key")
     # Reset any module-level caches the previous test may have populated.
     D._client = None
     D._limiter = None
@@ -363,15 +366,17 @@ def test_deepseek_complete_attaches_reasoning_effort_when_thinking_enabled(monke
         model="deepseek-v4-pro",
         messages=[{"role": "user", "content": "go"}],
         response_model=None,
-        thinking_budget=2048,  # -> "medium" per translate_thinking_budget
+        thinking_budget=2048,  # -> "high" per translate_thinking_budget
         max_output_tokens=512,
         step="extract",
     )
     p.complete(req)
-    assert captured[0]["reasoning_effort"] == "medium"
+    assert captured[0]["thinking"] == {"type": "enabled"}
+    assert captured[0]["reasoning_effort"] == "high"
 
 
-def test_deepseek_complete_omits_reasoning_when_budget_zero(monkeypatch):
+def test_deepseek_complete_disables_thinking_when_budget_zero(monkeypatch):
+    """DeepSeek thinks by default; a zero budget must switch it off explicitly."""
     _ensure_clean_deepseek_singleton(monkeypatch)
     from services.providers import get_provider
     from services.providers.base import LLMRequest
@@ -386,7 +391,27 @@ def test_deepseek_complete_omits_reasoning_when_budget_zero(monkeypatch):
         max_output_tokens=512,
         step="lint",
     ))
+    assert captured[0]["thinking"] == {"type": "disabled"}
     assert "reasoning_effort" not in captured[0]
+
+
+def test_deepseek_sends_current_id_for_legacy_v4_flash(monkeypatch):
+    """deepseek-v4-flash is a temporary alias on DeepSeek's side; stored
+    settings that still hold it must keep working once the alias is gone."""
+    _ensure_clean_deepseek_singleton(monkeypatch)
+    from services.providers import get_provider
+    from services.providers.base import LLMRequest
+
+    captured = _stub_deepseek_post(monkeypatch, [200])
+    get_provider("deepseek-v4-flash").complete(LLMRequest(
+        model="deepseek-v4-flash",
+        messages=[{"role": "user", "content": "go"}],
+        response_model=None,
+        thinking_budget=0,
+        max_output_tokens=512,
+        step="t",
+    ))
+    assert captured[0]["model"] == "deepseek-flash"
 
 
 def test_deepseek_retries_on_429_then_succeeds(monkeypatch):
@@ -465,20 +490,22 @@ def test_deepseek_pro_prices_default_to_list(monkeypatch):
 
 
 def test_deepseek_flash_prices_match_list_rates(monkeypatch):
-    """V4-Flash list prices (2026-05-22): $0.14 / $0.28 / $0.0028 per M tokens."""
+    """V4.1 Flash peak list prices (2026-10-09): $0.30 / $1.20 / $0.006 per M
+    tokens. The legacy deepseek-v4-flash ID is billed the same."""
     from services.providers import deepseek as D
     monkeypatch.delenv("DEEPSEEK_INPUT_USD_PER_M", raising=False)
     monkeypatch.delenv("DEEPSEEK_OUTPUT_USD_PER_M", raising=False)
     monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
 
-    prices = D._get_model_prices("deepseek-v4-flash")
-    assert prices["input"] == 0.14
-    assert prices["output"] == 0.28
-    assert prices["cache"] == 0.0028
+    prices = D._get_model_prices("deepseek-flash")
+    assert prices["input"] == 0.30
+    assert prices["output"] == 1.20
+    assert prices["cache"] == 0.006
+    assert D._get_model_prices("deepseek-v4-flash") == prices
 
 
 def test_deepseek_pro_and_flash_prices_differ(monkeypatch):
-    """Regression guard: Pro is ~12x more expensive than Flash on input.
+    """Regression guard: Pro is ~4x more expensive than Flash on input.
 
     If this assertion fires, _MODEL_PRICES probably got accidentally
     overwritten or the two model entries got their values swapped.
@@ -489,9 +516,9 @@ def test_deepseek_pro_and_flash_prices_differ(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
 
     pro = D._get_model_prices("deepseek-v4-pro")
-    flash = D._get_model_prices("deepseek-v4-flash")
-    assert pro["input"] >= 10 * flash["input"]
-    assert pro["output"] >= 10 * flash["output"]
+    flash = D._get_model_prices("deepseek-flash")
+    assert pro["input"] >= 4 * flash["input"]
+    assert pro["output"] >= 3 * flash["output"]
 
 
 def test_deepseek_unknown_model_raises_keyerror():
@@ -545,7 +572,7 @@ def test_deepseek_pro_cost_usd_formula(monkeypatch):
 
 
 def test_deepseek_flash_cost_usd_formula(monkeypatch):
-    """Cost arithmetic at V4-Flash list rates ($0.14 / $0.28 / $0.0028)."""
+    """Cost arithmetic at V4.1 Flash list rates ($0.30 / $1.20 / $0.006)."""
     monkeypatch.delenv("DEEPSEEK_INPUT_USD_PER_M", raising=False)
     monkeypatch.delenv("DEEPSEEK_OUTPUT_USD_PER_M", raising=False)
     monkeypatch.delenv("DEEPSEEK_CACHE_USD_PER_M", raising=False)
@@ -554,19 +581,19 @@ def test_deepseek_flash_cost_usd_formula(monkeypatch):
     P._REGISTRY.clear()
     from services.providers import get_provider
 
-    p = get_provider("deepseek-v4-flash")
+    p = get_provider("deepseek-flash")
     # 1M prompt tokens, 100K cached, 500K output (Gemini-shape keys).
-    cost = p.cost_usd("deepseek-v4-flash", {
+    cost = p.cost_usd("deepseek-flash", {
         "prompt_token_count":         1_000_000,
         "cached_content_token_count": 100_000,
         "candidates_token_count":     500_000,
         "thoughts_token_count":       0,
     })
-    # fresh = 900_000 -> $0.126 (0.14 * 0.9); cached = 100_000 -> $0.00028
-    # (0.0028 * 0.1); output = 500_000 -> $0.14 (0.28 * 0.5)
-    expected = (900_000 / 1_000_000) * 0.14 \
-             + (100_000 / 1_000_000) * 0.0028 \
-             + (500_000 / 1_000_000) * 0.28
+    # fresh = 900_000 -> $0.27 (0.30 * 0.9); cached = 100_000 -> $0.0006
+    # (0.006 * 0.1); output = 500_000 -> $0.60 (1.20 * 0.5)
+    expected = (900_000 / 1_000_000) * 0.30 \
+             + (100_000 / 1_000_000) * 0.006 \
+             + (500_000 / 1_000_000) * 1.20
     assert abs(cost - expected) < 1e-9
     P._REGISTRY.clear()
 
@@ -606,11 +633,12 @@ def test_translate_thinking_budget_gemini_passthrough():
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        (0, "disabled"),
+        (0, "none"),
+        (-1, "high"),
         (1, "low"),
         (1024, "low"),
-        (1025, "medium"),
-        (2048, "medium"),
+        (1025, "high"),
+        (2048, "high"),
         (2049, "high"),
         (8192, "high"),
         (8193, "max"),

@@ -22,18 +22,12 @@ Implementation notes:
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
-GeminiModel = Literal[
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "deepseek-v4-pro",
-    "deepseek-v4-flash",
-]
+from services.llm_models import LLMModel
 
 logger = logging.getLogger(__name__)
 
@@ -618,7 +612,7 @@ DISAMBIGUATE_MAX_PAIRS = 120
 class DisambiguateRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     pairs: list[AmbiguousPair]
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 class DisambiguateResponseItem(BaseModel):

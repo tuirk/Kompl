@@ -19,6 +19,15 @@ const nextConfig = {
   // better-sqlite3 is a native Node addon; Next.js must not bundle it.
   // Moved from experimental.serverComponentsExternalPackages in Next.js 15+.
   serverExternalPackages: ['better-sqlite3'],
+
+  // The in-app chat page was retired in favour of MCP. Old bookmarks land on
+  // the MCP setup instructions instead of a 404. Temporary (307) so the
+  // route stays free to reuse.
+  async redirects() {
+    return [
+      { source: '/chat', destination: '/settings#integrations', permanent: false },
+    ];
+  },
 };
 
 module.exports = nextConfig;

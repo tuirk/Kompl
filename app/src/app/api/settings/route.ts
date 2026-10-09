@@ -19,8 +19,7 @@ import {
   getDossierMaxSources, setDossierMaxSources,
   getDossierMinScore, setDossierMinScore,
   getDailyCapUsd, setDailyCapUsd,
-  getChatModel, setChatModel, isChatModel,
-  getCompileModel, setCompileModel,
+  getCompileModel, setCompileModel, isLlmModel, LLM_MODELS,
 } from '../../../lib/db';
 
 function buildResponse() {
@@ -38,7 +37,6 @@ function buildResponse() {
     dossier_max_sources: getDossierMaxSources(),
     dossier_min_score: getDossierMinScore(),
     daily_cap_usd: getDailyCapUsd(),
-    chat_model: getChatModel(),
     compile_model: getCompileModel(),
   };
 }
@@ -59,7 +57,6 @@ export async function POST(request: Request) {
     dossier_max_sources?: number;
     dossier_min_score?: number;
     daily_cap_usd?: number;
-    chat_model?: string;
     compile_model?: string;
   };
 
@@ -71,7 +68,6 @@ export async function POST(request: Request) {
     'entity_promotion_threshold',
     'dossier_max_sources', 'dossier_min_score',
     'daily_cap_usd',
-    'chat_model',
     'compile_model',
   ];
   if (!knownFields.some((f) => f in body)) {
@@ -172,20 +168,10 @@ export async function POST(request: Request) {
     setDailyCapUsd(body.daily_cap_usd);
   }
 
-  if (body.chat_model !== undefined) {
-    if (!isChatModel(body.chat_model)) {
-      return NextResponse.json(
-        { error: 'chat_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro, deepseek-v4-pro, deepseek-v4-flash' },
-        { status: 422 },
-      );
-    }
-    setChatModel(body.chat_model);
-  }
-
   if (body.compile_model !== undefined) {
-    if (!isChatModel(body.compile_model)) {
+    if (!isLlmModel(body.compile_model)) {
       return NextResponse.json(
-        { error: 'compile_model must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro, deepseek-v4-pro, deepseek-v4-flash' },
+        { error: `compile_model must be one of: ${LLM_MODELS.join(', ')}` },
         { status: 422 },
       );
     }

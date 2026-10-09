@@ -1,9 +1,10 @@
 /**
  * GET /api/wiki/stats
  *
- * Returns the same WikiStats shape used internally by detectMetaQuery.
- * Exposed for the chat header stat bar and any lightweight client UI
- * that wants a single-shot snapshot of the knowledge base.
+ * Single-shot snapshot of the knowledge base (WikiStats: source/page/entity/
+ * concept counts, last ingest and compile times) for scripts and lightweight
+ * client UI. Kept as a stable read-only endpoint after the in-app chat (its
+ * original consumer) was retired.
  */
 
 import { NextResponse } from 'next/server';

@@ -1,10 +1,12 @@
 'use client';
 
 /**
- * /settings — App settings page.
+ * /settings — one scrollable page, grouped so the decisions that matter most
+ * come first: AI model & spend, Connect your AI (MCP), Review, Wiki health,
+ * Backup & restore, then Advanced tuning (collapsed).
  *
- * Settings:
- *   - auto_approve              — commit wiki changes immediately vs. queue as drafts
+ * Other pages link to #compile-model, #integrations and #import — keep
+ * those ids. Layout building blocks live in ./_ui.tsx.
  */
 
 import { useEffect, useState } from 'react';
@@ -14,6 +16,23 @@ import { useToast } from '../../components/Toast';
 import WikiLintResults from '../../components/WikiLintResults';
 import { normalizeLintResult, type LintResult } from '@/lib/lint-result';
 import { toUserMessage } from '@/lib/service-errors';
+import {
+  Card, NumberField, SavedBar, SettingCard, SettingRow, SettingsGroup, SettingsNav, TogglePill,
+  codeStyle, preStyle,
+} from './_ui';
+import {
+  DEFAULT_COMPILE_MODEL, LLM_MODELS, LLM_MODEL_INFO, getProviderForModel, isLlmModel,
+  type LlmModel, type LlmProvider,
+} from '@/lib/llm-models';
+
+const SETTINGS_NAV = [
+  { id: 'model', label: 'AI model & spend' },
+  { id: 'integrations', label: 'Connect your AI' },
+  { id: 'review', label: 'Review' },
+  { id: 'wiki-health', label: 'Wiki health' },
+  { id: 'data', label: 'Backup & restore' },
+  { id: 'advanced', label: 'Advanced tuning' },
+] as const;
 
 async function saveSettingToApi(body: Record<string, unknown>): Promise<boolean> {
   try {
@@ -75,10 +94,6 @@ export default function SettingsPage() {
   const [dailyCapSaving, setDailyCapSaving] = useState(false);
   const [dailyCapSaved, setDailyCapSaved] = useState(false);
 
-  const [chatModel, setChatModelState] = useState<string | null>(null);
-  const [chatModelSaving, setChatModelSaving] = useState(false);
-  const [chatModelSaved, setChatModelSaved] = useState(false);
-
   const [compileModel, setCompileModelState] = useState<string | null>(null);
   const [compileModelSaving, setCompileModelSaving] = useState(false);
   const [compileModelSaved, setCompileModelSaved] = useState(false);
@@ -116,7 +131,6 @@ export default function SettingsPage() {
         dossier_max_sources: number;
         dossier_min_score: number;
         daily_cap_usd: number;
-        chat_model: string;
         compile_model: string;
       }) => {
         setAutoApprove(data.auto_approve);
@@ -131,7 +145,6 @@ export default function SettingsPage() {
         setDossierMaxSources(data.dossier_max_sources);
         setDossierMinScore(data.dossier_min_score);
         setDailyCapUsd(data.daily_cap_usd);
-        setChatModelState(data.chat_model);
         setCompileModelState(data.compile_model);
       });
   }, []);
@@ -334,17 +347,6 @@ export default function SettingsPage() {
     setTimeout(() => setDailyCapSaved(false), 2000);
   }
 
-  async function saveChatModel(next: string) {
-    setChatModelSaving(true);
-    setChatModelSaved(false);
-    const _ok = await saveSettingToApi({ chat_model: next });
-    if (!_ok) { setChatModelSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
-    setChatModelState(next);
-    setChatModelSaving(false);
-    setChatModelSaved(true);
-    setTimeout(() => setChatModelSaved(false), 2000);
-  }
-
   async function saveCompileModel(next: string) {
     setCompileModelSaving(true);
     setCompileModelSaved(false);
@@ -367,1273 +369,684 @@ export default function SettingsPage() {
   }
 }`;
 
-  const toc: { href: string; label: string }[] = [
-    { href: '#compilation', label: 'Compilation' },
-    { href: '#data', label: 'Data' },
-    { href: '#wiki-health', label: 'Wiki health' },
-    { href: '#automation', label: 'Automation & delivery' },
-    { href: '#integrations', label: 'Integrations' },
+  const selectedModelInfo =
+    compileModel !== null && isLlmModel(compileModel) ? LLM_MODEL_INFO[compileModel] : null;
+  const selectedProvider: LlmProvider | null =
+    compileModel !== null ? getProviderForModel(compileModel) : null;
+
+  function providerKeyPresent(provider: LlmProvider): boolean {
+    // Still loading (or /api/health unreachable): leave every option enabled.
+    // The POST validator at /api/settings is the back-stop.
+    if (providerKeys === null) return true;
+    return provider === 'deepseek' ? providerKeys.deepseek_present : providerKeys.gemini_present;
+  }
+
+  const modelGroups: Array<{ label: string; ids: LlmModel[] }> = [
+    { label: 'DeepSeek', ids: LLM_MODELS.filter((m) => !LLM_MODEL_INFO[m].legacy && getProviderForModel(m) === 'deepseek') },
+    { label: 'Gemini', ids: LLM_MODELS.filter((m) => !LLM_MODEL_INFO[m].legacy && getProviderForModel(m) === 'gemini') },
+    { label: 'Legacy (kept for existing installs)', ids: LLM_MODELS.filter((m) => LLM_MODEL_INFO[m].legacy) },
   ];
 
-  const groupHeadingStyle: React.CSSProperties = {
-    fontFamily: 'var(--font-mono)',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: '1.5px',
-    color: 'var(--fg-dim)',
-    margin: '0 0 1rem',
-    fontWeight: 600,
-    scrollMarginTop: '1rem',
-  };
-
-  const groupHeadingStyleWithTop: React.CSSProperties = {
-    ...groupHeadingStyle,
-    marginTop: '2.5rem',
-  };
+  const advancedSaved =
+    minSourceCharsSaved || minDraftCharsSaved || entityThresholdSaved || dossierMaxSourcesSaved || dossierMinScoreSaved;
 
   return (
     <>
       {toast}
       <main
-      style={{
-        maxWidth: 1260,
-        margin: '0 auto',
-        padding: '3rem 1.5rem calc(5rem + 32px)',
-        display: 'flex',
-        gap: '2.5rem',
-        alignItems: 'flex-start',
-      }}
-    >
-      <aside
         style={{
-          position: 'sticky',
-          top: '2rem',
-          width: 180,
-          flexShrink: 0,
+          maxWidth: 1260,
+          margin: '0 auto',
+          padding: '3rem 1.5rem 5rem',
           display: 'flex',
-          flexDirection: 'column',
+          gap: '2.5rem',
+          alignItems: 'flex-start',
         }}
       >
-        <div
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: 10,
-            textTransform: 'uppercase',
-            letterSpacing: '1px',
-            color: 'var(--fg-dim)',
-            marginBottom: 8,
-          }}
-        >
-          On this page
-        </div>
-        {toc.map((item) => (
-          <a
-            key={item.href}
-            href={item.href}
-            style={{
-              fontSize: '0.85rem',
-              color: 'var(--fg-secondary)',
-              textDecoration: 'none',
-              padding: '0.4rem 0 0.4rem 0.75rem',
-              borderLeft: '2px solid var(--border)',
-            }}
-          >
-            {item.label}
-          </a>
-        ))}
-      </aside>
+        <SettingsNav items={SETTINGS_NAV} />
 
-      <div style={{ flex: 1, minWidth: 0, maxWidth: 1040 }}>
-        <div style={{ marginBottom: '2rem' }}>
-          <Link
-            href="/"
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-              fontFamily: 'var(--font-mono)', fontSize: 10,
-              textTransform: 'uppercase', letterSpacing: '1px',
-              color: 'var(--fg-dim)', textDecoration: 'none',
-              marginBottom: 12,
-            }}
-          >
-            ← Dashboard
-          </Link>
-          <h1 style={{ margin: '0.5rem 0 0', fontSize: '1.6rem' }}>Settings</h1>
-        </div>
-
-        {/* ========== Compilation ========== */}
-        <h2 id="compilation" style={groupHeadingStyle}>Compilation</h2>
-
-        {/* Auto-approve */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            style={{
-              padding: '1.25rem 1.5rem',
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: '1.5rem',
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-                Auto-approve wiki changes
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                When enabled, compiled pages are committed immediately to the wiki.
-                When disabled, changes appear as drafts on your dashboard for review before publishing.
-              </div>
-            </div>
-            <button
-              className={autoApprove ? undefined : 'btn-outline'}
-              onClick={() => void toggle()}
-              disabled={autoApprove === null || saving}
+        <div style={{ flex: 1, minWidth: 0, maxWidth: 1040 }}>
+          <div style={{ marginBottom: '2rem' }}>
+            <Link
+              href="/"
               style={{
-                flexShrink: 0,
-                padding: '0.45rem 1rem',
-                borderRadius: 20,
-                fontSize: '0.85rem',
-                opacity: autoApprove === null ? 0.5 : 1,
-                minWidth: 80,
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                fontFamily: 'var(--font-mono)', fontSize: 10,
+                textTransform: 'uppercase', letterSpacing: '1px',
+                color: 'var(--fg-dim)', textDecoration: 'none',
+                marginBottom: 12,
               }}
             >
-              {autoApprove === null ? '…' : autoApprove ? 'ON' : 'OFF'}
-            </button>
+              ← Dashboard
+            </Link>
+            <h1 style={{ margin: '0.5rem 0 0', fontSize: '1.6rem' }}>Settings</h1>
           </div>
-          {saved && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved.
-            </div>
-          )}
-        </section>
 
-        {/* Compilation Quality */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-            marginTop: '1rem',
-          }}
-        >
-          <div style={{ padding: '1.25rem 1.5rem' }}>
-            <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.85rem' }}>
-              Compilation quality
-            </div>
-
-            {/* Min source chars */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                justifyContent: 'space-between',
-                gap: '1.5rem',
-                paddingBottom: '1rem',
-                borderBottom: '1px solid var(--border)',
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
-                  Minimum source length for wiki page
-                </div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                  Sources shorter than this get extracted but won&apos;t have their own summary page.
-                  Tweets, error pages, and short scrapes are filtered here. Set to <strong>0</strong> to disable.
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-                <input
-                  type="number"
-                  min={0}
-                  step={50}
-                  value={minSourceChars ?? ''}
-                  onChange={(e) => setMinSourceChars(Math.max(0, parseInt(e.target.value || '0', 10)))}
-                  onBlur={() => void saveMinSourceChars()}
-                  disabled={minSourceChars === null || minSourceCharsSaving}
+          {/* ========== AI model & spend ========== */}
+          <SettingsGroup id="model" title="AI model & spend" first>
+            <SettingCard
+              id="compile-model"
+              title="Compile model"
+              summary={
+                <>
+                  Which model the <strong>compile pipeline</strong> uses for every LLM step
+                  (extract, resolve, draft, crossref, schema). Compile is where nearly all LLM
+                  spend happens, because the pipeline drafts many pages per session.
+                </>
+              }
+              details={
+                <>
+                  <strong>Long / academic content:</strong> Gemini 2.5 Flash has a documented
+                  structured-output truncation pathology on dense inputs above ~50K chars (academic
+                  PDFs, surveys, long-form reports). When it triggers, the extract step returns{' '}
+                  <code>extract_llm_failed</code> and the source is left without an extraction row.{' '}
+                  <strong>DeepSeek V4 Pro handles up to ~200K chars cleanly</strong> — recommended
+                  whenever you&apos;re ingesting heavy material. Track this in{' '}
+                  <a
+                    href="https://github.com/tuirk/Kompl/issues/7"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: 'var(--accent)', textDecoration: 'underline' }}
+                  >
+                    issue #7
+                  </a>.
+                  <br /><br />
+                  You can change this any time, but switching mid-session doesn&apos;t retro-apply:
+                  in-flight pipelines keep the model they started with until they finish or fail.
+                  Cancel + restart to switch.
+                </>
+              }
+              control={
+                <select
+                  aria-label="Compile model"
+                  value={compileModel ?? ''}
+                  onChange={(e) => void saveCompileModel(e.target.value)}
+                  disabled={compileModel === null || compileModelSaving}
                   style={{
-                    width: 80,
                     padding: '0.45rem 0.6rem',
                     borderRadius: 6,
                     border: '1px solid var(--border)',
                     background: 'var(--bg-card)',
                     color: 'var(--fg)',
                     fontSize: '0.9rem',
-                    textAlign: 'right',
-                    opacity: minSourceChars === null ? 0.5 : 1,
+                    opacity: compileModel === null ? 0.5 : 1,
                   }}
-                />
-                <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>chars</span>
-              </div>
-            </div>
+                >
+                  {modelGroups.map((group) => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.ids.map((id) => {
+                        const provider = getProviderForModel(id);
+                        const keyOk = providerKeyPresent(provider);
+                        return (
+                          <option
+                            key={id}
+                            value={id}
+                            disabled={!keyOk}
+                            title={keyOk ? undefined : `Set ${provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'GEMINI_API_KEY'} in your environment to enable`}
+                          >
+                            {LLM_MODEL_INFO[id].label}{id === DEFAULT_COMPILE_MODEL ? ' (default)' : ''}
+                          </option>
+                        );
+                      })}
+                    </optgroup>
+                  ))}
+                </select>
+              }
+              footer={
+                <>
+                  {selectedModelInfo && (
+                    <div style={{ fontSize: '0.83rem', color: 'var(--fg-secondary)', lineHeight: 1.5, marginBottom: '0.75rem' }}>
+                      {selectedModelInfo.note}
+                    </div>
+                  )}
+                  {selectedProvider !== null && !providerKeyPresent(selectedProvider) && (
+                    <div
+                      role="alert"
+                      style={{
+                        fontSize: '0.83rem',
+                        lineHeight: 1.5,
+                        color: 'var(--warning)',
+                        background: 'rgba(var(--warning-rgb), 0.08)',
+                        border: '1px solid rgba(var(--warning-rgb), 0.25)',
+                        borderRadius: 6,
+                        padding: '0.55rem 0.8rem',
+                        marginBottom: '0.75rem',
+                      }}
+                    >
+                      <code style={codeStyle}>{selectedProvider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'GEMINI_API_KEY'}</code>{' '}
+                      is not set, so compiles with this model stop at the health check. Add the key to{' '}
+                      <code style={codeStyle}>.env</code> and restart Kompl, or pick a model from the other provider.
+                    </div>
+                  )}
+                  <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.4rem' }}>
+                    Not every Gemini API key has access to every model. To list what your key can use, run:
+                  </div>
+                  <pre style={preStyle}>{`curl -s -H "x-goog-api-key: $GEMINI_API_KEY" https://generativelanguage.googleapis.com/v1beta/models | jq '.models[].name'`}</pre>
+                </>
+              }
+              saved={compileModelSaved ? 'Saved — applies to new compile sessions.' : null}
+            />
 
-            {/* Min draft chars */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                justifyContent: 'space-between',
-                gap: '1.5rem',
-                paddingTop: '1rem',
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
-                  Minimum draft length to commit
-                </div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                  If the AI produces a draft shorter than this, it won&apos;t be committed.
-                  The draft is logged so you can review it. Set to <strong>0</strong> to disable.
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-                <input
-                  type="number"
+            <SettingCard
+              title="Daily LLM spend cap"
+              badge="Beta"
+              summary={
+                <>
+                  Hard USD ceiling on combined LLM API spend per UTC day across all providers
+                  (one shared counter). Resets at midnight UTC. Set to <strong>0</strong> for
+                  unlimited (no cap).
+                </>
+              }
+              details={
+                <>
+                  When exceeded, LLM calls raise a cost-ceiling error and the pipeline marks
+                  affected work as retryable.
+                  {' '}The tracked number is a Kompl-side estimate from each call&apos;s usage
+                  metadata (input + cached + output tokens × the model&apos;s per-million-token
+                  price). It&apos;s independent of any provider&apos;s prepaid balance — your
+                  DeepSeek/Gemini account ledger is separate.
+                  {' '}<strong>Prices may be stale.</strong> Per-million-token rates are hard-coded
+                  constants and providers update them periodically; we deliberately ignore
+                  promotional discounts (overestimating is the safer side — the cap fires sooner
+                  than necessary, never later). Reconcile with the provider&apos;s invoice for
+                  ground truth.
+                </>
+              }
+              control={
+                <NumberField
+                  label="Daily LLM spend cap in US dollars"
+                  value={dailyCapUsd}
+                  onChange={(raw) => setDailyCapUsd(Math.max(0, parseFloat(raw || '0')))}
+                  onBlur={() => void saveDailyCapUsd()}
+                  disabled={dailyCapSaving}
                   min={0}
-                  step={50}
-                  value={minDraftChars ?? ''}
-                  onChange={(e) => setMinDraftChars(Math.max(0, parseInt(e.target.value || '0', 10)))}
-                  onBlur={() => void saveMinDraftChars()}
-                  disabled={minDraftChars === null || minDraftCharsSaving}
-                  style={{
-                    width: 80,
-                    padding: '0.45rem 0.6rem',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-card)',
-                    color: 'var(--fg)',
-                    fontSize: '0.9rem',
-                    textAlign: 'right',
-                    opacity: minDraftChars === null ? 0.5 : 1,
-                  }}
+                  step={0.5}
+                  prefix="$"
+                  unit="/ day"
+                  width={88}
+                  defaultHint="$5.00"
                 />
-                <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>chars</span>
-              </div>
-            </div>
+              }
+              saved={dailyCapSaved ? 'Saved — takes effect within 30 seconds.' : null}
+            />
+          </SettingsGroup>
 
-            {/* Entity promotion threshold */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                justifyContent: 'space-between',
-                gap: '1.5rem',
-                paddingTop: '1rem',
-              }}
+          {/* ========== Connect your AI ========== */}
+          <SettingsGroup
+            id="integrations"
+            title="Connect your AI"
+            intro="Ask questions of your wiki from the AI agent you already use: it searches and reads your pages through Kompl's MCP server."
+          >
+            <SettingCard
+              title="Connect AI agents (MCP)"
+              summary={
+                <>
+                  Expose your wiki to Claude Code, Claude Desktop, Cursor, or any MCP-capable AI agent as a live knowledge source.
+                  The server provides four tools:{' '}
+                  <code style={codeStyle}>search_wiki</code>,{' '}
+                  <code style={codeStyle}>read_page</code>,{' '}
+                  <code style={codeStyle}>list_pages</code>,{' '}
+                  <code style={codeStyle}>wiki_stats</code>.
+                  Kompl must be running for the tools to respond.
+                </>
+              }
+              footer={
+                <>
+                  <StepLabel first>Step 1 — Build the server (once)</StepLabel>
+                  <pre style={preStyle}>cd mcp-server &amp;&amp; npm install &amp;&amp; npm run build</pre>
+
+                  <StepLabel>Step 2 — Register with your AI client</StepLabel>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.65rem' }}>
+                    <strong style={{ color: 'var(--fg)' }}>Claude Code:</strong> auto-registered via{' '}
+                    <code style={codeStyle}>.mcp.json</code>{' '}
+                    in the Kompl folder — just restart Claude Code after building.
+                  </div>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.5rem' }}>
+                    <strong style={{ color: 'var(--fg)' }}>Claude Desktop, Cursor, other clients:</strong> paste the block
+                    below into the client&apos;s MCP config file. Typical paths:
+                  </div>
+                  <ul
+                    style={{
+                      fontSize: '0.8rem',
+                      color: 'var(--fg-muted)',
+                      lineHeight: 1.7,
+                      margin: '0 0 0.85rem',
+                      paddingLeft: '1.2rem',
+                    }}
+                  >
+                    <li>
+                      macOS:{' '}
+                      <code style={codeStyle}>~/Library/Application Support/Claude/claude_desktop_config.json</code>
+                    </li>
+                    <li>
+                      Windows:{' '}
+                      <code style={codeStyle}>%APPDATA%\Claude\claude_desktop_config.json</code>
+                    </li>
+                    <li>
+                      Linux:{' '}
+                      <code style={codeStyle}>~/.config/Claude/claude_desktop_config.json</code>
+                    </li>
+                  </ul>
+
+                  <div style={{ position: 'relative' }}>
+                    <pre style={{ ...preStyle, paddingRight: '4.5rem', fontSize: '0.82rem' }}>{MCP_CONFIG_JSON}</pre>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(MCP_CONFIG_JSON).then(() => {
+                          setMcpCopied(true);
+                          setTimeout(() => setMcpCopied(false), 2000);
+                        });
+                      }}
+                      className="btn-outline"
+                      style={{
+                        position: 'absolute',
+                        top: 8,
+                        right: 8,
+                        padding: '0.25rem 0.6rem',
+                        fontSize: '0.75rem',
+                      }}
+                    >
+                      {mcpCopied ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+
+                  <div style={{ fontSize: '0.78rem', color: 'var(--fg-dim)', marginTop: '0.65rem', lineHeight: 1.5 }}>
+                    Replace{' '}
+                    <code style={codeStyle}>{'<KOMPL_INSTALL_PATH>'}</code>{' '}
+                    with the absolute path to your Kompl folder (e.g.{' '}
+                    <code style={codeStyle}>C:/Users/you/kompl</code>
+                    ).
+                  </div>
+                </>
+              }
+            />
+          </SettingsGroup>
+
+          {/* ========== Review ========== */}
+          <SettingsGroup id="review" title="Review">
+            <SettingCard
+              title="Auto-approve wiki changes"
+              summary={
+                <>
+                  When enabled, compiled pages are committed immediately to the wiki.
+                  When disabled, changes appear as drafts on your dashboard for review before publishing.
+                </>
+              }
+              control={
+                <TogglePill
+                  label="Auto-approve wiki changes"
+                  value={autoApprove}
+                  onClick={() => void toggle()}
+                  disabled={saving}
+                  defaultHint="ON"
+                />
+              }
+              saved={saved ? 'Saved.' : null}
+            />
+          </SettingsGroup>
+
+          {/* ========== Wiki health ========== */}
+          <SettingsGroup id="wiki-health" title="Wiki health">
+            <SettingCard
+              title="Wiki health checks"
+              badge="Beta"
+              summary={
+                <>
+                  Scans for orphan pages, stale summaries, dead provenance links,
+                  entity names with no wiki page (3+ sources mention them), and
+                  contradictions between pages. Runs when you click Run Now, or
+                  automatically at startup if lint hasn&apos;t run in the last 36 hours
+                  (when lint is enabled).
+                </>
+              }
+              control={
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                  <button
+                    type="button"
+                    onClick={() => void runLintNow()}
+                    disabled={lintRunning}
+                    className="btn-outline"
+                    style={{ padding: '0.45rem 1rem', borderRadius: 20, fontSize: '0.85rem' }}
+                  >
+                    {lintRunning ? 'Running…' : 'Run Now'}
+                  </button>
+                  <TogglePill
+                    label="Scheduled wiki health checks"
+                    value={lintEnabled}
+                    onClick={() => void toggleLint()}
+                    disabled={lintSaving}
+                    defaultHint="ON"
+                  />
+                </div>
+              }
+              saved={lintSaved ? 'Saved.' : null}
             >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
-                  Entity promotion threshold
+              {(lintLastResult || lintRunning) && (
+                <div style={{ padding: '0 1.5rem 1.25rem', borderTop: '1px solid var(--border)' }}>
+                  <WikiLintResults result={lintLastResult} raw={lintLastResultRaw} running={lintRunning} />
                 </div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                  Minimum distinct sources that must mention an entity (or concept)
-                  before it gets its own page. Counted across the whole wiki — every
-                  new source can tip older mentions over the line. Default <strong>2</strong>.
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-                <input
-                  type="number"
-                  min={1}
+              )}
+            </SettingCard>
+
+            <SettingCard
+              title="Stale source alerts"
+              summary={
+                <>
+                  Show a reminder on the dashboard when sources haven&apos;t been updated in a while.
+                  Set to <strong>0</strong> to disable.
+                </>
+              }
+              control={
+                <NumberField
+                  label="Stale source alert threshold in days"
+                  value={staleThreshold}
+                  onChange={(raw) => setStaleThreshold(Math.max(0, parseInt(raw || '0', 10)))}
+                  onBlur={() => void saveStaleThreshold()}
+                  disabled={staleSaving}
+                  min={0}
                   step={1}
-                  value={entityThreshold ?? ''}
-                  onChange={(e) => setEntityThreshold(Math.max(1, parseInt(e.target.value || '1', 10)))}
-                  onBlur={() => void saveEntityThreshold()}
-                  disabled={entityThreshold === null || entityThresholdSaving}
-                  style={{
-                    width: 80,
-                    padding: '0.45rem 0.6rem',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-card)',
-                    color: 'var(--fg)',
-                    fontSize: '0.9rem',
-                    textAlign: 'right',
-                    opacity: entityThreshold === null ? 0.5 : 1,
-                  }}
+                  unit="days"
+                  width={72}
+                  defaultHint="90 days"
                 />
-                <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>sources</span>
-              </div>
-            </div>
+              }
+              saved={staleSaved ? 'Saved.' : null}
+            />
 
-            {/* Max sources per page (dossier cap) */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                justifyContent: 'space-between',
-                gap: '1.5rem',
-                paddingTop: '1rem',
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
-                  Max sources per page
-                </div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                  When a page has many contributing sources, the drafter only sees
-                  the top N by TF-IDF relevance to the page title. Higher = more
-                  context, slower drafts, higher cost. Default <strong>12</strong>.
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-                <input
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={dossierMaxSources ?? ''}
-                  onChange={(e) => setDossierMaxSources(Math.max(1, parseInt(e.target.value || '1', 10)))}
-                  onBlur={() => void saveDossierMaxSources()}
-                  disabled={dossierMaxSources === null || dossierMaxSourcesSaving}
-                  style={{
-                    width: 80,
-                    padding: '0.45rem 0.6rem',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-card)',
-                    color: 'var(--fg)',
-                    fontSize: '0.9rem',
-                    textAlign: 'right',
-                    opacity: dossierMaxSources === null ? 0.5 : 1,
-                  }}
-                />
-                <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>sources</span>
-              </div>
-            </div>
-
-            {/* Minimum relevance score (dossier floor) */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                justifyContent: 'space-between',
-                gap: '1.5rem',
-                paddingTop: '1rem',
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.9rem', fontWeight: 500, marginBottom: '0.3rem' }}>
-                  Minimum relevance score
-                </div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                  Sources scoring below this TF-IDF cosine similarity against the
-                  page title are dropped from the per-page draft context.
-                  <strong> 0</strong> = include anything that mentions the topic;
-                  <strong> 0.1</strong> = exclude trivially-matched sources. Tune
-                  after observing real drafts. Default <strong>0.05</strong>.
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-                <input
-                  type="number"
+            <SettingCard
+              title="Related pages threshold"
+              summary={
+                <>
+                  Show a &quot;You might also read&quot; panel on wiki pages once at least this many sources
+                  have been ingested. Uses embedding similarity — zero LLM cost.
+                  Set to <strong>0</strong> to always show.
+                </>
+              }
+              control={
+                <NumberField
+                  label="Related pages threshold in sources"
+                  value={relatedMinSources}
+                  onChange={(raw) => setRelatedMinSources(Math.max(0, parseInt(raw || '0', 10)))}
+                  onBlur={() => void saveRelatedMinSources()}
+                  disabled={relatedSaving}
                   min={0}
-                  step={0.01}
-                  value={dossierMinScore ?? ''}
-                  onChange={(e) => {
-                    const n = parseFloat(e.target.value || '0');
-                    setDossierMinScore(Number.isFinite(n) && n >= 0 ? n : 0);
-                  }}
-                  onBlur={() => void saveDossierMinScore()}
-                  disabled={dossierMinScore === null || dossierMinScoreSaving}
-                  style={{
-                    width: 80,
-                    padding: '0.45rem 0.6rem',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-card)',
-                    color: 'var(--fg)',
-                    fontSize: '0.9rem',
-                    textAlign: 'right',
-                    opacity: dossierMinScore === null ? 0.5 : 1,
-                  }}
+                  step={1}
+                  unit="sources"
+                  width={72}
+                  defaultHint="10 sources"
                 />
-                <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>score</span>
-              </div>
-            </div>
-          </div>
-          {(minSourceCharsSaved || minDraftCharsSaved || entityThresholdSaved || dossierMaxSourcesSaved || dossierMinScoreSaved) && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved.
-            </div>
-          )}
-        </section>
+              }
+              saved={relatedSaved ? 'Saved.' : null}
+            />
+          </SettingsGroup>
 
-        {/* Daily Gemini spend cap */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-            marginTop: '1rem',
-          }}
-        >
-          <div
-            style={{
-              padding: '1.25rem 1.5rem',
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: '1.5rem',
-            }}
+          {/* ========== Backup & restore ========== */}
+          <SettingsGroup id="data" title="Backup & restore">
+            <SettingCard
+              title="Wiki export"
+              summary={
+                <>
+                  Download your entire wiki for backup or use in other tools.{' '}
+                  <strong>Kompl Backup</strong> (.kompl.zip) is the format Import can restore.
+                </>
+              }
+              footer={
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  {(['markdown', 'obsidian', 'json', 'kompl'] as const).map((fmt) => (
+                    <button
+                      type="button"
+                      key={fmt}
+                      onClick={() => void handleExport(fmt)}
+                      disabled={exportLoading !== null}
+                      style={{
+                        padding: '0.45rem 1rem',
+                        fontSize: '0.85rem',
+                        opacity: exportLoading !== null ? 0.6 : 1,
+                      }}
+                    >
+                      {exportLoading === fmt
+                        ? 'Exporting…'
+                        : fmt === 'markdown'
+                        ? '↓ Markdown (.zip)'
+                        : fmt === 'obsidian'
+                        ? '↓ Obsidian (.zip)'
+                        : fmt === 'kompl'
+                        ? '↓ Kompl Backup'
+                        : '↓ JSON'}
+                    </button>
+                  ))}
+                </div>
+              }
+            />
+
+            <SettingCard
+              id="import"
+              title="Import wiki"
+              summary={
+                <>
+                  Restore from a .kompl.zip backup. <strong>Only works on an empty wiki</strong> — importing
+                  into a wiki that already has data will fail.
+                </>
+              }
+              details={
+                <>
+                  Merge import (skip existing pages, dedup by URL/content hash) is not yet implemented.
+                  To migrate sources from another instance, re-ingest them through onboarding — compilation
+                  is deterministic per source so you get the same result.
+                </>
+              }
+              footer={
+                <>
+                  <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      type="file"
+                      accept=".zip"
+                      aria-label="Backup file to import"
+                      onChange={(e) => { setImportFile(e.target.files?.[0] ?? null); }}
+                      style={{ fontSize: '0.85rem', color: 'var(--fg)' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { void handleImport(); }}
+                      disabled={!importFile || importLoading}
+                      style={{
+                        padding: '0.45rem 1rem',
+                        fontSize: '0.85rem',
+                        opacity: !importFile || importLoading ? 0.6 : 1,
+                      }}
+                    >
+                      {importLoading ? 'Importing…' : 'Import'}
+                    </button>
+                  </div>
+                  {importError && (
+                    <div style={{ color: 'var(--danger)', marginTop: '0.75rem', fontSize: '0.85rem' }}>
+                      {importError}
+                    </div>
+                  )}
+                  {importSuccess && (
+                    <div
+                      style={{
+                        marginTop: '0.75rem',
+                        padding: '0.6rem 0.9rem',
+                        background: 'var(--success-bg)',
+                        border: '1px solid var(--success-border)',
+                        borderRadius: 6,
+                        color: 'var(--success)',
+                        fontSize: '0.85rem',
+                      }}
+                    >
+                      Imported — redirecting…
+                    </div>
+                  )}
+                </>
+              }
+            />
+          </SettingsGroup>
+
+          {/* ========== Advanced tuning ========== */}
+          <SettingsGroup
+            id="advanced"
+            title="Advanced tuning"
+            intro="Defaults work for most wikis. Change these only when drafts look thin or noisy, or a compile costs more than you expect."
           >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-                Daily LLM spend cap
-                <span
+            <Card>
+              <details>
+                <summary
                   style={{
-                    padding: '1px 6px',
-                    fontSize: '0.65rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.08em',
-                    textTransform: 'uppercase',
-                    background: 'rgba(var(--warning-rgb), 0.1)',
-                    border: '1px solid rgba(var(--warning-rgb), 0.25)',
-                    color: 'var(--warning)',
-                    borderRadius: 4,
+                    cursor: 'pointer',
+                    padding: '1rem 1.5rem',
+                    fontWeight: 600,
+                    fontSize: '0.95rem',
                   }}
                 >
-                  Beta
-                </span>
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Hard USD ceiling on combined LLM API spend per UTC day across all providers
-                (one shared counter). When exceeded, LLM calls raise a cost-ceiling error and
-                the pipeline marks affected work as retryable. Resets at midnight UTC.
-                Set to <strong>0</strong> for unlimited (no cap).
-                {' '}The tracked number is a Kompl-side estimate from each call&apos;s usage
-                metadata (input + cached + output tokens × the model&apos;s per-million-token
-                price). It&apos;s independent of any provider&apos;s prepaid balance — your
-                DeepSeek/Gemini account ledger is separate.
-                {' '}<strong>Prices may be stale.</strong> Per-million-token rates are hard-coded
-                constants and providers update them periodically; we deliberately ignore
-                promotional discounts (overestimating is the safer side — the cap fires sooner
-                than necessary, never later). Reconcile with the provider&apos;s invoice for
-                ground truth.
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-              <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>$</span>
-              <input
-                type="number"
-                min={0}
-                step={0.5}
-                value={dailyCapUsd ?? ''}
-                onChange={(e) => setDailyCapUsd(Math.max(0, parseFloat(e.target.value || '0')))}
-                onBlur={() => void saveDailyCapUsd()}
-                disabled={dailyCapUsd === null || dailyCapSaving}
-                style={{
-                  width: 88,
-                  padding: '0.45rem 0.6rem',
-                  borderRadius: 6,
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg-card)',
-                  color: 'var(--fg)',
-                  fontSize: '0.9rem',
-                  textAlign: 'right',
-                  opacity: dailyCapUsd === null ? 0.5 : 1,
-                }}
-              />
-              <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>/ day</span>
-            </div>
-          </div>
-          {dailyCapSaved && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved — takes effect within 30 seconds.
-            </div>
-          )}
-        </section>
-
-        {/* Compile model */}
-        <section
-          id="compile-model"
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-            marginTop: '1rem',
-            scrollMarginTop: '80px',
-          }}
-        >
-          <div
-            style={{
-              padding: '1.25rem 1.5rem',
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: '1.5rem',
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-                Compile model
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Which model the <strong>compile pipeline</strong> uses for every LLM step
-                (extract, resolve, draft, crossref, schema). Flash (default) balances cost and
-                quality; Flash Lite is cheapest; Pro is most capable but most expensive.
-                Compile spend is typically <strong>10-100× higher than chat</strong> because the
-                pipeline drafts many pages per session.
-                <br /><br />
-                <strong>Long / academic content:</strong> Gemini 2.5 Flash has a documented
-                structured-output truncation pathology on dense inputs above ~50K chars (academic
-                PDFs, surveys, long-form reports). When it triggers, the extract step returns{' '}
-                <code>extract_llm_failed</code> and the source is left without an extraction row.{' '}
-                <strong>DeepSeek V4 Pro handles up to ~200K chars cleanly</strong> — recommended
-                whenever you're ingesting heavy material. Track this in{' '}
-                <a
-                  href="https://github.com/tuirk/Kompl/issues/7"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: 'var(--accent)', textDecoration: 'underline' }}
-                >
-                  issue #7
-                </a>.
-                <br /><br />
-                You can change this any time, but switching mid-session doesn't retro-apply:
-                in-flight pipelines keep the model they started with until they finish or fail.
-                Cancel + restart to switch.
-              </div>
-            </div>
-            <div style={{ flexShrink: 0 }}>
-              <select
-                value={compileModel ?? ''}
-                onChange={(e) => void saveCompileModel(e.target.value)}
-                disabled={compileModel === null || compileModelSaving}
-                style={{
-                  padding: '0.45rem 0.6rem',
-                  borderRadius: 6,
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg-card)',
-                  color: 'var(--fg)',
-                  fontSize: '0.9rem',
-                  opacity: compileModel === null ? 0.5 : 1,
-                }}
-              >
-                <optgroup label="Gemini">
-                  <option
-                    value="gemini-2.5-flash-lite"
-                    disabled={providerKeys ? !providerKeys.gemini_present : false}
-                    title={providerKeys && !providerKeys.gemini_present
-                      ? 'Set GEMINI_API_KEY in your environment to enable'
-                      : undefined}
-                  >Flash Lite</option>
-                  <option
-                    value="gemini-2.5-flash"
-                    disabled={providerKeys ? !providerKeys.gemini_present : false}
-                    title={providerKeys && !providerKeys.gemini_present
-                      ? 'Set GEMINI_API_KEY in your environment to enable'
-                      : undefined}
-                  >Flash (default)</option>
-                  <option
-                    value="gemini-2.5-pro"
-                    disabled={providerKeys ? !providerKeys.gemini_present : false}
-                    title={providerKeys && !providerKeys.gemini_present
-                      ? 'Set GEMINI_API_KEY in your environment to enable'
-                      : undefined}
-                  >Pro</option>
-                </optgroup>
-                <optgroup label="DeepSeek">
-                  <option
-                    value="deepseek-v4-pro"
-                    disabled={providerKeys ? !providerKeys.deepseek_present : false}
-                    title={providerKeys && !providerKeys.deepseek_present
-                      ? 'Set DEEPSEEK_API_KEY in your environment to enable'
-                      : undefined}
-                  >V4 Pro</option>
-                  <option
-                    value="deepseek-v4-flash"
-                    disabled={providerKeys ? !providerKeys.deepseek_present : false}
-                    title={providerKeys && !providerKeys.deepseek_present
-                      ? 'Set DEEPSEEK_API_KEY in your environment to enable'
-                      : undefined}
-                  >V4 Flash</option>
-                </optgroup>
-              </select>
-            </div>
-          </div>
-          {compileModelSaved && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved — applies to new compile sessions.
-            </div>
-          )}
-        </section>
-
-        {/* Chat model */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-            marginTop: '1rem',
-          }}
-        >
-          <div
-            style={{
-              padding: '1.25rem 1.5rem',
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: '1.5rem',
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-                Chat model
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Which model the <strong>Chat</strong> page uses to synthesise answers.
-                Flash Lite is cheapest and a good default; Pro is the most capable but the most
-                expensive. Changes apply to <strong>new chats only</strong> — conversations
-                already in progress keep the model they started with.
-              </div>
-            </div>
-            <div style={{ flexShrink: 0 }}>
-              <select
-                value={chatModel ?? ''}
-                onChange={(e) => void saveChatModel(e.target.value)}
-                disabled={chatModel === null || chatModelSaving}
-                style={{
-                  padding: '0.45rem 0.6rem',
-                  borderRadius: 6,
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg-card)',
-                  color: 'var(--fg)',
-                  fontSize: '0.9rem',
-                  opacity: chatModel === null ? 0.5 : 1,
-                }}
-              >
-                <optgroup label="Gemini">
-                  <option
-                    value="gemini-2.5-flash-lite"
-                    disabled={providerKeys ? !providerKeys.gemini_present : false}
-                    title={providerKeys && !providerKeys.gemini_present
-                      ? 'Set GEMINI_API_KEY in your environment to enable'
-                      : undefined}
-                  >Flash Lite (default)</option>
-                  <option
-                    value="gemini-2.5-flash"
-                    disabled={providerKeys ? !providerKeys.gemini_present : false}
-                    title={providerKeys && !providerKeys.gemini_present
-                      ? 'Set GEMINI_API_KEY in your environment to enable'
-                      : undefined}
-                  >Flash</option>
-                  <option
-                    value="gemini-2.5-pro"
-                    disabled={providerKeys ? !providerKeys.gemini_present : false}
-                    title={providerKeys && !providerKeys.gemini_present
-                      ? 'Set GEMINI_API_KEY in your environment to enable'
-                      : undefined}
-                  >Pro</option>
-                </optgroup>
-                <optgroup label="DeepSeek">
-                  <option
-                    value="deepseek-v4-pro"
-                    disabled={providerKeys ? !providerKeys.deepseek_present : false}
-                    title={providerKeys && !providerKeys.deepseek_present
-                      ? 'Set DEEPSEEK_API_KEY in your environment to enable'
-                      : undefined}
-                  >V4 Pro</option>
-                  <option
-                    value="deepseek-v4-flash"
-                    disabled={providerKeys ? !providerKeys.deepseek_present : false}
-                    title={providerKeys && !providerKeys.deepseek_present
-                      ? 'Set DEEPSEEK_API_KEY in your environment to enable'
-                      : undefined}
-                  >V4 Flash</option>
-                </optgroup>
-              </select>
-            </div>
-          </div>
-          <div
-            style={{
-              padding: '0 1.5rem 1.25rem',
-              fontSize: '0.82rem',
-              color: 'var(--fg-muted)',
-              lineHeight: 1.5,
-            }}
-          >
-            <div style={{ marginBottom: '0.4rem' }}>
-              Not every Gemini API key has access to every model. To list what your key can use, run:
-            </div>
-            <pre
-              style={{
-                margin: 0,
-                padding: '0.6rem 0.8rem',
-                background: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                color: 'var(--fg)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '0.8rem',
-                overflowX: 'auto',
-                whiteSpace: 'pre',
-              }}
-            >{`curl -s -H "x-goog-api-key: $GEMINI_API_KEY" https://generativelanguage.googleapis.com/v1beta/models | jq '.models[].name'`}</pre>
-          </div>
-          {chatModelSaved && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved — applies to new chats.
-            </div>
-          )}
-        </section>
-
-        {/* ========== Data ========== */}
-        <h2 id="data" style={groupHeadingStyleWithTop}>Data</h2>
-
-        {/* Wiki Export */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-          }}
-        >
-          <div style={{ padding: '1.25rem 1.5rem' }}>
-            <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-              Wiki export
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '1.25rem' }}>
-              Download your entire wiki for backup or use in other tools.
-            </div>
-            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-              {(['markdown', 'obsidian', 'json', 'kompl'] as const).map((fmt) => (
-                <button
-                  key={fmt}
-                  onClick={() => void handleExport(fmt)}
-                  disabled={exportLoading !== null}
-                  style={{
-                    padding: '0.45rem 1rem',
-                    fontSize: '0.85rem',
-                    opacity: exportLoading !== null ? 0.6 : 1,
-                  }}
-                >
-                  {exportLoading === fmt
-                    ? 'Exporting…'
-                    : fmt === 'markdown'
-                    ? '↓ Markdown (.zip)'
-                    : fmt === 'obsidian'
-                    ? '↓ Obsidian (.zip)'
-                    : fmt === 'kompl'
-                    ? '↓ Kompl Backup'
-                    : '↓ JSON'}
-                </button>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* Import Wiki */}
-        <section
-          id="import"
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-            marginTop: '1rem',
-          }}
-        >
-          <div style={{ padding: '1.25rem 1.5rem' }}>
-            <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-              Import wiki
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.75rem' }}>
-              Restore from a .kompl.zip backup. <strong>Only works on an empty wiki</strong> — importing into a wiki that already has data will fail.
-            </div>
-            <div style={{
-              fontSize: '0.8rem',
-              color: 'var(--fg-dim)',
-              lineHeight: 1.5,
-              marginBottom: '1.25rem',
-              paddingLeft: '0.75rem',
-              borderLeft: '2px solid var(--border)',
-            }}>
-              Merge import (skip existing pages, dedup by URL/content hash) is not yet implemented.
-              To migrate sources from another instance, re-ingest them through onboarding — compilation is deterministic per source so you get the same result.
-            </div>
-            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-              <input
-                type="file"
-                accept=".zip"
-                onChange={(e) => { setImportFile(e.target.files?.[0] ?? null); }}
-                style={{ fontSize: '0.85rem', color: 'var(--fg)' }}
-              />
-              <button
-                onClick={() => { void handleImport(); }}
-                disabled={!importFile || importLoading}
-                style={{
-                  padding: '0.45rem 1rem',
-                  fontSize: '0.85rem',
-                  opacity: !importFile || importLoading ? 0.6 : 1,
-                }}
-              >
-                {importLoading ? 'Importing…' : 'Import'}
-              </button>
-            </div>
-            {importError && (
-              <div style={{ color: 'var(--danger)', marginTop: '0.75rem', fontSize: '0.85rem' }}>
-                {importError}
-              </div>
-            )}
-            {importSuccess && (
-              <div
-                style={{
-                  marginTop: '0.75rem',
-                  padding: '0.6rem 0.9rem',
-                  background: 'var(--success-bg)',
-                  border: '1px solid var(--success-border)',
-                  borderRadius: 6,
-                  color: 'var(--success)',
-                  fontSize: '0.85rem',
-                }}
-              >
-                Imported — redirecting…
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* ========== Wiki health ========== */}
-        <h2 id="wiki-health" style={groupHeadingStyleWithTop}>Wiki health</h2>
-
-        {/* Related pages threshold */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            style={{
-              padding: '1.25rem 1.5rem',
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: '1.5rem',
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-                Related pages threshold
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Show a &quot;You might also read&quot; panel on wiki pages once at least this many sources
-                have been ingested. Uses embedding similarity — zero LLM cost.
-                Set to <strong>0</strong> to always show.
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-              <input
-                type="number"
-                min={0}
-                step={1}
-                value={relatedMinSources ?? ''}
-                onChange={(e) => setRelatedMinSources(Math.max(0, parseInt(e.target.value || '0', 10)))}
-                onBlur={() => void saveRelatedMinSources()}
-                disabled={relatedMinSources === null || relatedSaving}
-                style={{
-                  width: 72,
-                  padding: '0.45rem 0.6rem',
-                  borderRadius: 6,
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg-card)',
-                  color: 'var(--fg)',
-                  fontSize: '0.9rem',
-                  textAlign: 'right',
-                  opacity: relatedMinSources === null ? 0.5 : 1,
-                }}
-              />
-              <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>sources</span>
-            </div>
-          </div>
-          {relatedSaved && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved.
-            </div>
-          )}
-        </section>
-
-        {/* Stale Source Alerts */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-            marginTop: '1rem',
-          }}
-        >
-          <div
-            style={{
-              padding: '1.25rem 1.5rem',
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: '1.5rem',
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-                Stale source alerts
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Show a reminder on the dashboard when sources haven&apos;t been updated in a while.
-                Set to <strong>0</strong> to disable.
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-              <input
-                type="number"
-                min={0}
-                step={1}
-                value={staleThreshold ?? ''}
-                onChange={(e) => setStaleThreshold(Math.max(0, parseInt(e.target.value || '0', 10)))}
-                onBlur={() => void saveStaleThreshold()}
-                disabled={staleThreshold === null || staleSaving}
-                style={{
-                  width: 72,
-                  padding: '0.45rem 0.6rem',
-                  borderRadius: 6,
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg-card)',
-                  color: 'var(--fg)',
-                  fontSize: '0.9rem',
-                  textAlign: 'right',
-                  opacity: staleThreshold === null ? 0.5 : 1,
-                }}
-              />
-              <span style={{ fontSize: '0.85rem', color: 'var(--fg-dim)' }}>days</span>
-            </div>
-          </div>
-          {staleSaved && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved.
-            </div>
-          )}
-        </section>
-
-        {/* Wiki Lint */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-            marginTop: '1rem',
-          }}
-        >
-          {/* Header row */}
-          <div
-            style={{
-              padding: '1.25rem 1.5rem',
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: '1.5rem',
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-                Wiki health checks
-                <span
-                  style={{
-                    padding: '1px 6px',
-                    fontSize: '0.65rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.08em',
-                    textTransform: 'uppercase',
-                    background: 'rgba(var(--warning-rgb), 0.1)',
-                    border: '1px solid rgba(var(--warning-rgb), 0.25)',
-                    color: 'var(--warning)',
-                    borderRadius: 4,
-                  }}
-                >
-                  Beta
-                </span>
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                Scans for orphan pages, stale summaries, dead provenance links,
-                entity names with no wiki page (3+ sources mention them), and
-                contradictions between pages. Runs when you click Run Now, or
-                automatically at startup if lint hasn&apos;t run in the last 36 hours
-                (when lint is enabled).
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0, alignItems: 'center' }}>
-              <button
-                onClick={() => void runLintNow()}
-                disabled={lintRunning}
-                className="btn-outline"
-                style={{ padding: '0.45rem 1rem', borderRadius: 20, fontSize: '0.85rem' }}
-              >
-                {lintRunning ? 'Running…' : 'Run Now'}
-              </button>
-              <button
-                className={lintEnabled ? undefined : 'btn-outline'}
-                onClick={() => void toggleLint()}
-                disabled={lintEnabled === null || lintSaving}
-                style={{
-                  flexShrink: 0,
-                  padding: '0.45rem 1rem',
-                  borderRadius: 20,
-                  fontSize: '0.85rem',
-                  opacity: lintEnabled === null ? 0.5 : 1,
-                  minWidth: 80,
-                }}
-              >
-                {lintEnabled === null ? '…' : lintEnabled ? 'ON' : 'OFF'}
-              </button>
-            </div>
-          </div>
-
-          {lintSaved && (
-            <div
-              style={{
-                padding: '0.6rem 1.5rem',
-                background: 'var(--success-bg, #ecfdf5)',
-                borderTop: '1px solid var(--success-border, #a7f3d0)',
-                color: 'var(--success, #059669)',
-                fontSize: 13,
-              }}
-            >
-              Saved.
-            </div>
-          )}
-
-          {(lintLastResult || lintRunning) && (
-            <div
-              style={{
-                padding: '0 1.5rem 1.25rem',
-                borderTop: '1px solid var(--border)',
-              }}
-            >
-              <WikiLintResults
-                result={lintLastResult}
-                raw={lintLastResultRaw}
-                running={lintRunning}
-              />
-            </div>
-          )}
-        </section>
-
-        {/* ========== Integrations ========== */}
-        <h2 id="integrations" style={groupHeadingStyleWithTop}>Integrations</h2>
-
-        {/* MCP server */}
-        <section
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            overflow: 'hidden',
-          }}
-        >
-          <div style={{ padding: '1.25rem 1.5rem' }}>
-            <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem' }}>
-              Connect AI agents (MCP)
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '1rem' }}>
-              Expose your wiki to Claude Code, Claude Desktop, Cursor, or any MCP-capable AI agent as a live knowledge source.
-              The server provides four tools:{' '}
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--fg-secondary)' }}>search_wiki</code>,{' '}
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--fg-secondary)' }}>read_page</code>,{' '}
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--fg-secondary)' }}>list_pages</code>,{' '}
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--fg-secondary)' }}>wiki_stats</code>.
-              Kompl must be running for the tools to respond.
-            </div>
-
-            {/* Step 1 — build */}
-            <div
-              style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: 10,
-                textTransform: 'uppercase',
-                letterSpacing: '0.8px',
-                color: 'var(--fg-dim)',
-                marginBottom: '0.4rem',
-                marginTop: '1rem',
-              }}
-            >
-              Step 1 — Build the server (once)
-            </div>
-            <pre
-              style={{
-                background: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                padding: '0.6rem 0.85rem',
-                fontSize: '0.82rem',
-                fontFamily: 'var(--font-mono)',
-                color: 'var(--fg)',
-                margin: 0,
-                overflow: 'auto',
-              }}
-            >
-              cd mcp-server &amp;&amp; npm install &amp;&amp; npm run build
-            </pre>
-
-            {/* Step 2 — register */}
-            <div
-              style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: 10,
-                textTransform: 'uppercase',
-                letterSpacing: '0.8px',
-                color: 'var(--fg-dim)',
-                marginBottom: '0.4rem',
-                marginTop: '1.1rem',
-              }}
-            >
-              Step 2 — Register with your AI client
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.65rem' }}>
-              <strong style={{ color: 'var(--fg)' }}>Claude Code:</strong> auto-registered via{' '}
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--fg-secondary)' }}>.mcp.json</code>{' '}
-              in the Kompl folder — just restart Claude Code after building.
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.5rem' }}>
-              <strong style={{ color: 'var(--fg)' }}>Claude Desktop, Cursor, other clients:</strong> paste the block
-              below into the client&apos;s MCP config file. Typical paths:
-            </div>
-            <ul
-              style={{
-                fontSize: '0.8rem',
-                color: 'var(--fg-muted)',
-                lineHeight: 1.7,
-                margin: '0 0 0.85rem',
-                paddingLeft: '1.2rem',
-              }}
-            >
-              <li>
-                macOS:{' '}
-                <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--fg-secondary)' }}>
-                  ~/Library/Application Support/Claude/claude_desktop_config.json
-                </code>
-              </li>
-              <li>
-                Windows:{' '}
-                <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--fg-secondary)' }}>
-                  %APPDATA%\Claude\claude_desktop_config.json
-                </code>
-              </li>
-              <li>
-                Linux:{' '}
-                <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--fg-secondary)' }}>
-                  ~/.config/Claude/claude_desktop_config.json
-                </code>
-              </li>
-            </ul>
-
-            <div style={{ position: 'relative' }}>
-              <pre
-                style={{
-                  background: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  padding: '0.6rem 0.85rem',
-                  paddingRight: '4.5rem',
-                  fontSize: '0.82rem',
-                  fontFamily: 'var(--font-mono)',
-                  color: 'var(--fg)',
-                  margin: 0,
-                  overflow: 'auto',
-                  whiteSpace: 'pre',
-                }}
-              >
-                {MCP_CONFIG_JSON}
-              </pre>
-              <button
-                onClick={() => {
-                  void navigator.clipboard.writeText(MCP_CONFIG_JSON).then(() => {
-                    setMcpCopied(true);
-                    setTimeout(() => setMcpCopied(false), 2000);
-                  });
-                }}
-                className="btn-outline"
-                style={{
-                  position: 'absolute',
-                  top: 8,
-                  right: 8,
-                  padding: '0.25rem 0.6rem',
-                  fontSize: '0.75rem',
-                }}
-              >
-                {mcpCopied ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-
-            <div style={{ fontSize: '0.78rem', color: 'var(--fg-dim)', marginTop: '0.65rem', lineHeight: 1.5 }}>
-              Replace{' '}
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--fg-secondary)' }}>
-                {'<KOMPL_INSTALL_PATH>'}
-              </code>{' '}
-              with the absolute path to your Kompl folder (e.g.{' '}
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--fg-secondary)' }}>
-                C:/Users/you/kompl
-              </code>
-              ).
-            </div>
-          </div>
-        </section>
-      </div>
-    </main>
+                  Compilation quality <span style={{ fontWeight: 400, color: 'var(--fg-dim)', fontSize: '0.85rem' }}>· 5 settings</span>
+                </summary>
+                <div style={{ padding: '0.25rem 1.5rem 1.25rem' }}>
+                  <SettingRow
+                    first
+                    title="Minimum source length for wiki page"
+                    summary={
+                      <>
+                        Sources shorter than this get extracted but won&apos;t have their own summary page.
+                        Tweets, error pages, and short scrapes are filtered here. Set to <strong>0</strong> to disable.
+                      </>
+                    }
+                    control={
+                      <NumberField
+                        label="Minimum source length in characters"
+                        value={minSourceChars}
+                        onChange={(raw) => setMinSourceChars(Math.max(0, parseInt(raw || '0', 10)))}
+                        onBlur={() => void saveMinSourceChars()}
+                        disabled={minSourceCharsSaving}
+                        min={0}
+                        step={50}
+                        unit="chars"
+                        defaultHint="500"
+                      />
+                    }
+                  />
+                  <SettingRow
+                    title="Minimum draft length to commit"
+                    summary={
+                      <>
+                        If the AI produces a draft shorter than this, it won&apos;t be committed.
+                        The draft is logged so you can review it. Set to <strong>0</strong> to disable.
+                      </>
+                    }
+                    control={
+                      <NumberField
+                        label="Minimum draft length in characters"
+                        value={minDraftChars}
+                        onChange={(raw) => setMinDraftChars(Math.max(0, parseInt(raw || '0', 10)))}
+                        onBlur={() => void saveMinDraftChars()}
+                        disabled={minDraftCharsSaving}
+                        min={0}
+                        step={50}
+                        unit="chars"
+                        defaultHint="800"
+                      />
+                    }
+                  />
+                  <SettingRow
+                    title="Entity promotion threshold"
+                    summary={
+                      <>
+                        Minimum distinct sources that must mention an entity (or concept)
+                        before it gets its own page. Counted across the whole wiki — every
+                        new source can tip older mentions over the line. Default <strong>2</strong>.
+                      </>
+                    }
+                    control={
+                      <NumberField
+                        label="Entity promotion threshold in sources"
+                        value={entityThreshold}
+                        onChange={(raw) => setEntityThreshold(Math.max(1, parseInt(raw || '1', 10)))}
+                        onBlur={() => void saveEntityThreshold()}
+                        disabled={entityThresholdSaving}
+                        min={1}
+                        step={1}
+                        unit="sources"
+                        defaultHint="2"
+                      />
+                    }
+                  />
+                  <SettingRow
+                    title="Max sources per page"
+                    summary={
+                      <>
+                        When a page has many contributing sources, the drafter only sees
+                        the top N by TF-IDF relevance to the page title. Higher = more
+                        context, slower drafts, higher cost. Default <strong>12</strong>.
+                      </>
+                    }
+                    control={
+                      <NumberField
+                        label="Maximum sources per page"
+                        value={dossierMaxSources}
+                        onChange={(raw) => setDossierMaxSources(Math.max(1, parseInt(raw || '1', 10)))}
+                        onBlur={() => void saveDossierMaxSources()}
+                        disabled={dossierMaxSourcesSaving}
+                        min={1}
+                        step={1}
+                        unit="sources"
+                        defaultHint="12"
+                      />
+                    }
+                  />
+                  <SettingRow
+                    title="Minimum relevance score"
+                    summary={
+                      <>
+                        Sources scoring below this TF-IDF cosine similarity against the
+                        page title are dropped from the per-page draft context.
+                        <strong> 0</strong> = include anything that mentions the topic;
+                        <strong> 0.1</strong> = exclude trivially-matched sources. Tune
+                        after observing real drafts. Default <strong>0.05</strong>.
+                      </>
+                    }
+                    control={
+                      <NumberField
+                        label="Minimum relevance score"
+                        value={dossierMinScore}
+                        onChange={(raw) => {
+                          const n = parseFloat(raw || '0');
+                          setDossierMinScore(Number.isFinite(n) && n >= 0 ? n : 0);
+                        }}
+                        onBlur={() => void saveDossierMinScore()}
+                        disabled={dossierMinScoreSaving}
+                        min={0}
+                        step={0.01}
+                        unit="score"
+                        defaultHint="0.05"
+                      />
+                    }
+                  />
+                </div>
+              </details>
+              {advancedSaved && <SavedBar>Saved.</SavedBar>}
+            </Card>
+          </SettingsGroup>
+        </div>
+      </main>
     </>
+  );
+}
+
+function StepLabel({ children, first = false }: { children: React.ReactNode; first?: boolean }) {
+  return (
+    <div
+      style={{
+        fontFamily: 'var(--font-mono)',
+        fontSize: 10,
+        textTransform: 'uppercase',
+        letterSpacing: '0.8px',
+        color: 'var(--fg-dim)',
+        marginBottom: '0.4rem',
+        marginTop: first ? 0 : '1.1rem',
+      }}
+    >
+      {children}
+    </div>
   );
 }

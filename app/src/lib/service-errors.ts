@@ -86,11 +86,6 @@ export const SERVICE_ERROR_MESSAGES = {
     body: 'Page commit failed at the database or storage layer. Outbox phase 1 succeeded but phase 3a (write-page) errored.',
     fix: 'Retry the action. If it persists, check `docker compose logs app`.',
   },
-  chat_synthesis_failed: {
-    title: 'Chat could not generate an answer. Try again.',
-    body: 'The LLM call inside the chat synthesis step failed — provider error, rate limit, or token cap.',
-    fix: 'Retry. If repeated, check the Settings → Daily-cap section and the provider dashboard for rate-limit status.',
-  },
   file_upload_failed: {
     title: 'File upload failed. Try again.',
     body: 'The browser-to-server upload errored before the file reached staging.',

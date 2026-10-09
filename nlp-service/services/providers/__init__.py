@@ -56,20 +56,22 @@ def get_provider(model: str) -> LLMProvider:
 def translate_thinking_budget(provider: str, call_site: str, raw: int) -> object:
     """Translate the int thinking-budget knob into per-provider shape.
 
-    Gemini takes the int as-is (passthrough). DeepSeek's reasoning_effort is an
-    enum {disabled, low, medium, high, max}; the boundaries below mirror the
-    five Gemini thinking-budget tiers used in our settings UI (0, 1024, 2048,
-    8192, anything higher).
+    Gemini takes the int as-is (passthrough); gemini.py maps it onto a
+    thinking_level for Gemini 3 models. DeepSeek's ``reasoning_effort``
+    accepts ``none`` / ``low`` / ``high`` / ``max`` (api-docs.deepseek.com,
+    read 2026-10-09). DeepSeek folds ``medium`` into ``high`` server-side, so
+    budgets 1025-8192 land on ``high`` either way. ``none`` means thinking
+    off; a negative ("dynamic") budget keeps DeepSeek's default effort.
     """
     if provider == "gemini":
         return raw
     if provider == "deepseek":
         if raw == 0:
-            return "disabled"
+            return "none"
+        if raw < 0:
+            return "high"
         if raw <= 1024:
             return "low"
-        if raw <= 2048:
-            return "medium"
         if raw <= 8192:
             return "high"
         return "max"

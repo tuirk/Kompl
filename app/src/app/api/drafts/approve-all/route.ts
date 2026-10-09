@@ -3,8 +3,9 @@
  *
  * Bulk-approve every draft currently in 'pending_approval'. Optional
  * { session_id } body filters to a single compile session — recommended
- * default for OFF-mode usage so chat-save-draft drafts from older sessions
- * are not swept up accidentally.
+ * default for OFF-mode usage so drafts from older sessions (including legacy
+ * chat-save-draft drafts from before chat was retired) are not swept up
+ * accidentally.
  *
  * Each plan is committed via commitSinglePlan (same path as /approve).
  * Per-plan failures are isolated; the bulk loop continues. Returns aggregate

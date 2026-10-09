@@ -33,7 +33,7 @@ sys.modules.setdefault("sentence_transformers", st_stub)
 # inside a function body — no module-level routers dependency. sentence_transformers
 # is stubbed above, so even if the lazy import fires it won't load real models.
 # Stubbing `routers` here would break the pipeline tests (main.py imports
-# routers.chat etc.) because the stub lacks __path__.
+# routers.pipeline etc.) because the stub lacks __path__.
 from services import vector_store  # noqa: E402
 
 
