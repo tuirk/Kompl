@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SavedLinkRow } from '../../../lib/db';
 import { LocalDayMonth } from '../../../components/LocalDate';
 import { safeExternalUrl } from '../../../lib/safe-url';
+import { ingestFailureReason } from '../../../lib/ingest-error-copy';
 
 interface ParsedMetadata {
   title?: string | null;
@@ -256,7 +257,7 @@ export default function SavedLinksInteractive({
           const metaParts = [
             author,
             hostnameOf(link.source_url),
-            link.error,
+            link.error ? ingestFailureReason(link.error) : null,
           ].filter((p): p is string => !!p);
 
           return (
@@ -293,7 +294,10 @@ export default function SavedLinksInteractive({
                 }}>
                   {displayTitle}
                 </div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', marginTop: 2 }}>
+                <div
+                  title={link.error ?? undefined}
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', marginTop: 2 }}
+                >
                   {metaParts.join(' · ')}
                 </div>
                 {meta.description && (

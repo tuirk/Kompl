@@ -28,16 +28,12 @@ import {
   setLastBackupAt,
 } from '@/lib/db';
 import { yamlDoubleQuote } from '@/lib/yaml-escape';
+import { exportPageBody } from '@/lib/page-export';
+import { getSourceTitleSet } from '@/lib/page-sources';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function stripFrontmatter(md: string): string {
-  if (!md.startsWith('---')) return md;
-  const end = md.indexOf('\n---', 3);
-  return end !== -1 ? md.slice(end + 4).trimStart() : md;
-}
 
 function slugifyFilename(title: string): string {
   return (
@@ -57,6 +53,8 @@ function slugifyFilename(title: string): string {
 async function buildMarkdownZip(): Promise<Buffer> {
   const zip = new JSZip();
   const pages = getAllPages();
+  const sourceTitles = getSourceTitleSet();
+  const isKnownTitle = (t: string) => sourceTitles.has(t.toLowerCase());
 
   for (const page of pages) {
     const raw = readPageMarkdown(page.page_id);
@@ -64,7 +62,7 @@ async function buildMarkdownZip(): Promise<Buffer> {
       console.warn(`[export] missing content for page ${page.page_id}, skipping`);
       continue;
     }
-    const body = stripFrontmatter(raw);
+    const { body } = exportPageBody(page.page_id, raw, isKnownTitle);
     const folder = page.page_type || 'other';
     const filename = `${slugifyFilename(page.title)}.md`;
     zip.file(`${folder}/${filename}`, body);
@@ -76,20 +74,8 @@ async function buildMarkdownZip(): Promise<Buffer> {
 async function buildObsidianZip(): Promise<Buffer> {
   const zip = new JSZip();
   const pages = getAllPages();
-  const provenance = getAllProvenance();
-  const sources = getAllSources();
-
-  // Build source_id → title map
-  const sourceTitle = new Map<string, string>(sources.map((s) => [s.source_id, s.title]));
-
-  // Build page_id → [source titles] map
-  const pageSourceTitles = new Map<string, string[]>();
-  for (const prov of provenance) {
-    const title = sourceTitle.get(prov.source_id);
-    if (!title) continue;
-    if (!pageSourceTitles.has(prov.page_id)) pageSourceTitles.set(prov.page_id, []);
-    pageSourceTitles.get(prov.page_id)!.push(title);
-  }
+  const knownSourceTitles = getSourceTitleSet();
+  const isKnownTitle = (t: string) => knownSourceTitles.has(t.toLowerCase());
 
   // Index table rows
   const indexRows: string[] = ['| Title | Type | Category | Updated |', '|-------|------|----------|---------|'];
@@ -100,7 +86,8 @@ async function buildObsidianZip(): Promise<Buffer> {
       console.warn(`[export] missing content for page ${page.page_id}, skipping`);
       continue;
     }
-    const body = stripFrontmatter(raw);
+    // Numbered footnotes with definitions; sources listed once each, cited first.
+    const { body, sourceTitles: pageSources } = exportPageBody(page.page_id, raw, isKnownTitle);
 
     // Build tags array
     const tags: string[] = [page.page_type];
@@ -108,14 +95,13 @@ async function buildObsidianZip(): Promise<Buffer> {
       tags.push(page.category.toLowerCase().replace(/\s+/g, '-'));
     }
 
-    // Build sources list
-    const pageSources = pageSourceTitles.get(page.page_id) ?? [];
     const sourcesYaml =
       pageSources.length > 0
         ? `[${pageSources.map((t) => yamlDoubleQuote(t)).join(', ')}]`
         : '[]';
 
-    const dateUpdated = page.last_updated ? page.last_updated.split('T')[0] : '';
+    // SQLite timestamps are "YYYY-MM-DD HH:MM:SS"; ISO strings use "T".
+    const dateUpdated = page.last_updated ? page.last_updated.split(/[T ]/)[0] : '';
 
     const frontmatter =
       `---\n` +

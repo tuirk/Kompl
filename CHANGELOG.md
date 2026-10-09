@@ -59,6 +59,19 @@ ship with a `migrate.py` step that runs at boot.
 - Existing pages are not rewritten: the changes apply to pages drafted or
   updated after the upgrade. A wiki's `schema.md` is not rewritten either;
   where it conflicts with these rules, the rules win.
+- **Existing pages read cleaner right after the upgrade**, on display only
+  (stored pages are unchanged): each page is linked once in the body
+  (Related lists and tables keep their own links), links in headings and
+  code show as text, and "Contradictions" sections that only say there are
+  none are hidden.
+- **Obsidian and Markdown exports** turn citations into numbered footnotes
+  with definitions (`[^1]: Source title`), numbered like the page view, and
+  heal legacy page wrappers the way the page view does. Obsidian `sources:`
+  lists each source once (Bitcoin network: 5, was 12) and `date_updated` is
+  a date again. JSON and `.kompl` backups are unchanged.
+- **Saved Links** shows a readable reason for each failed link ("Reserved
+  test domain (.test) — not a real website", "Firecrawl credits used up")
+  instead of the raw error JSON; the raw error stays available on hover.
 
 ### Added
 

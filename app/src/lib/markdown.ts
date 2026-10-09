@@ -176,3 +176,13 @@ export function stripSourcesSection(md: string): string {
 export function stripLeadingContentHeading(md: string): string {
   return md.replace(/^\s*##\s+Content\s*\n/, '');
 }
+
+/**
+ * Page body as the wiki shows it: frontmatter removed and legacy draft
+ * wrappers healed (body-only code fence, duplicate `## Sources`, leading
+ * `## Content`). Shared by the page view and file exports so citation
+ * numbers match.
+ */
+export function healedPageBody(raw: string): string {
+  return stripLeadingContentHeading(stripSourcesSection(stripWrappingFence(stripFrontmatter(raw))));
+}

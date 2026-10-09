@@ -174,6 +174,23 @@ export function citationsToText(
   return { markdown: text, order: scan.order };
 }
 
+/**
+ * Markdown footnote references ("…2009.[^1][^2]") for file exports. Numbers
+ * follow the same order as the page view; the caller writes the definitions.
+ */
+export function citationsToFootnotes(
+  markdown: string,
+  isKnownTitle: (title: string) => boolean = () => false,
+): CitationScan {
+  const scan = scanCitations(markdown, isKnownTitle);
+  const text = scan.markdown.replace(
+    new RegExp(`${OPEN}([\\d,]+)${CLOSE}`, 'g'),
+    // Merged neighbouring markers can repeat a number ("1,1").
+    (_m, nums: string) => [...new Set(nums.split(','))].map((n) => `[^${n}]`).join(''),
+  );
+  return { markdown: text, order: scan.order };
+}
+
 // ── Drafting ────────────────────────────────────────────────────────────────
 
 /** "S1", "S2", … in the order given. */

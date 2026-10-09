@@ -20,7 +20,7 @@ import {
   clearPendingContent,
   type SavedLinkRow,
 } from './db';
-import { friendlyIngestError } from './ingest-error-copy';
+import { ingestFailureReason } from './ingest-error-copy';
 
 const PAGE_ID = 'saved-links';
 const PAGE_TITLE = 'Saved Links';
@@ -70,20 +70,10 @@ function buildMarkdown(links: SavedLinkRow[]): string {
     const titleSource = link.title ?? meta.title ?? link.source_url;
     const title = titleSource.replace(/[[\]]/g, '');
     const dateStr = link.date_saved ?? link.date_attempted.slice(0, 10);
-    // Prefer the friendly copy for known FastAPI `detail` codes — keeps the
-    // page readable when the raw error is a wrapped JSON envelope like
-    // `nlp_convert_failed: 422 {"detail":"youtube_transcript_blocked"}`.
-    // Falls back to the prefix-strip + truncate path for everything else.
-    const reason =
-      friendlyIngestError(link.error) ??
-      link.error
-        .replace(
-          /^(nlp_unreachable|nlp_convert_failed|nlp_convert_timeout):\s*(\d+\s*)?/i,
-          ''
-        )
-        .replace(/^convert_url_failed:\s*\d+\s*/i, '')
-        .replace(/^ingest_failed:\s*/i, '')
-        .slice(0, 80);
+    // Short readable reason, never the raw JSON envelope (nested Firecrawl
+    // errors used to show as `{"detail":{"detail":"firecrawl_error",…`).
+    // Asterisks are escaped so the reason can't break the italics.
+    const reason = ingestFailureReason(link.error).replace(/\*/g, '\\*');
     lines.push(`- [${title}](${link.source_url}) — ${dateStr} · *${reason}*`);
     if (meta.description) {
       lines.push(`  > ${truncate(meta.description, 160)}`);
