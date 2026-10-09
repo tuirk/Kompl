@@ -5,7 +5,9 @@
  * committed but the .md.gz file was never successfully written (crash in
  * Phase 3a, or server restarted mid-flush). We re-attempt the write here.
  *
- * Lives at app/instrumentation.ts (Next.js 14+ project root, not src/).
+ * Lives at app/src/instrumentation.ts: Next.js only loads the hook from the
+ * project root when there is no src/ folder. It sat at app/instrumentation.ts
+ * from April to October 2026 and never ran in any build.
  * Edge runtime guard is mandatory — this file is evaluated in both runtimes
  * during build/dev; `getPendingFlushPages` opens SQLite which is Node-only.
  */
@@ -19,8 +21,8 @@ async function reconcilePendingFlushes(): Promise<void> {
   // Dynamically import so the modules only resolve in Node runtime.
   // flushPendingPage lives in src/lib/flush-pending.ts — shared with the
   // commit route's post-loop durability pass.
-  const { getPendingFlushPages, clearPendingContent } = await import('./src/lib/db');
-  const { flushPendingPage } = await import('./src/lib/flush-pending');
+  const { getPendingFlushPages, clearPendingContent } = await import('./lib/db');
+  const { flushPendingPage } = await import('./lib/flush-pending');
 
   const pending = getPendingFlushPages();
   if (pending.length === 0) return;
@@ -68,10 +70,10 @@ const WIKILINKS_RESYNC_VERSION = '1';
 async function resyncWikilinksOnce(): Promise<void> {
   if (process.env.NEXT_RUNTIME === 'edge') return;
 
-  const { getDb, getSetting, setSetting } = await import('./src/lib/db');
+  const { getDb, getSetting, setSetting } = await import('./lib/db');
   if (getSetting('wikilinks_resync_version') === WIKILINKS_RESYNC_VERSION) return;
 
-  const { resyncAllWikilinks } = await import('./src/lib/wikilinks');
+  const { resyncAllWikilinks } = await import('./lib/wikilinks');
   const result = resyncAllWikilinks(getDb());
   setSetting('wikilinks_resync_version', WIKILINKS_RESYNC_VERSION);
   console.log(
