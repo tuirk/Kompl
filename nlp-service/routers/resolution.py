@@ -3,8 +3,8 @@
 Three-layer cascading matcher that resolves entity duplicates across sources
 in a session:
 
-  POST /resolve/fuzzy         — Layer 1: Levenshtein, Jaro-Winkler, substring,
-                                  acronym, exact, existing-alias matching
+  POST /resolve/fuzzy         — Layer 1: Levenshtein, Jaro-Winkler, acronym,
+                                  exact, existing-alias matching
   POST /resolve/embedding     — Layer 2: sentence-transformers cosine similarity
   POST /resolve/disambiguate  — Layer 3: Gemini LLM for 0.7–0.9 ambiguous band
 
@@ -12,8 +12,11 @@ Each layer receives only the entities that the previous layer left unresolved.
 The orchestrator (POST /api/compile/resolve in Next.js) drives the cascade.
 
 Implementation notes:
-  - Union-Find groups entities that match on ANY of the fuzzy criteria.
-  - Canonical name = longest name in the group (tie-break: alphabetically first).
+  - Union-Find groups entities that match on ANY of the fuzzy criteria, but
+    names whose numbers differ (Python 2 / Python 3) never merge, and names
+    where one only adds words to the other (Ethereum / Ethereum Foundation)
+    are left to Layers 2/3 unless both are people.
+  - Canonical name = the name most sources use; for people, the fullest name.
   - Embedding model is a lazy singleton — loaded once on first /resolve/embedding call.
   - Compatible types for cross-type matching: {ORG, PRODUCT} and {CONCEPT, OTHER}.
     PERSON entities only match other PERSON entities.
@@ -22,6 +25,9 @@ Implementation notes:
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
+from collections import Counter
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -160,19 +166,132 @@ def _is_acronym(short: str, long: str) -> bool:
     return short.upper() == initials
 
 
-def _fuzzy_method(a: str, b: str) -> str | None:
+# ---------------------------------------------------------------------------
+# Name guard: numbers and token extensions
+#
+# Edit-distance and substring signals can't tell a thing from its version or
+# its parent: "Python 3"/"Python 2" are one character apart, "Ethereum" sits
+# inside "Ethereum Foundation". The 2026-10-09 e2e run stored exactly those
+# merges. Mirrored in app/src/lib/name-guard.ts (stored aliases are filtered
+# with the same rule); tests/fixtures/name_guard_cases.json keeps them equal.
+# ---------------------------------------------------------------------------
+
+_ROMAN = re.compile(r"(?<![A-Za-z0-9])[IVX]{2,}(?![A-Za-z0-9])")
+_ROMAN_VALID = re.compile(r"X{0,3}(?:IX|IV|V?I{0,3})")
+_ROMAN_VALUES = {"I": 1, "V": 5, "X": 10}
+
+
+def _roman_to_int(numeral: str) -> int:
+    total = 0
+    for i, ch in enumerate(numeral):
+        value = _ROMAN_VALUES[ch]
+        if i + 1 < len(numeral) and _ROMAN_VALUES[numeral[i + 1]] > value:
+            total -= value
+        else:
+            total += value
+    return total
+
+
+def _name_tokens(name: str) -> list[str]:
+    """Lower-case word tokens; "GPT4" splits to gpt + 4, "A100" stays whole."""
+    s = unicodedata.normalize("NFKC", name).lower().replace("’", "'")
+    s = re.sub(r"'s(?![^\W_])", "", s)                       # possessive
+    s = re.sub(r"(?<=[0-9]),(?=[0-9]{3}(?![0-9]))", "", s)    # 1,000 → 1000
+    s = re.sub(r"(?<=[^\W\d_]{2})(?=[0-9])", " ", s)          # gpt4 → gpt 4
+    return re.findall(r"[^\W_]+(?:\.[0-9]+)*", s)
+
+
+def _numeric_signature(name: str) -> Counter[str]:
+    """The numbers in a name: versions ("3.10", "v2" → "2"), model codes
+    ("4o", "a100") and Roman numerals II–XXXIX ("World War II" → "2")."""
+    sig: Counter[str] = Counter()
+    for tok in _name_tokens(name):
+        if not re.search(r"[0-9]", tok):
+            continue
+        tok = re.sub(r"^v(?=[0-9])", "", tok)
+        if re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", tok):
+            parts = [int(p) for p in tok.split(".")]
+            while len(parts) > 1 and parts[-1] == 0:   # 3.0 == 3, 3.10 != 3.1
+                parts.pop()
+            sig[".".join(str(p) for p in parts)] += 1
+        else:
+            sig[tok] += 1
+    for m in _ROMAN.finditer(unicodedata.normalize("NFKC", name)):
+        if _ROMAN_VALID.fullmatch(m.group(0)):
+            sig[str(_roman_to_int(m.group(0)))] += 1
+    return sig
+
+
+def _numeric_conflict(a: str, b: str) -> str | None:
+    """None when both names carry the same numbers; "hard" when both carry
+    numbers that differ (Python 2 / Python 3); "soft" when only one does
+    (Python / Python 2)."""
+    sa, sb = _numeric_signature(a), _numeric_signature(b)
+    if sa == sb:
+        return None
+    return "hard" if sa and sb else "soft"
+
+
+def _is_token_extension(a: str, b: str) -> bool:
+    """One name is the other plus extra words: "Ethereum" / "Ethereum
+    Foundation", "Karpathy" / "Andrej Karpathy"."""
+    ta, tb = Counter(_name_tokens(a)), Counter(_name_tokens(b))
+    if not ta or not tb or ta == tb:
+        return False
+    return not (ta - tb) or not (tb - ta)
+
+
+def _person_initials(a: str, b: str) -> bool:
+    """Same surname and the other names equal or initials: "A. Karpathy" /
+    "Andrej Karpathy"."""
+    ta, tb = _name_tokens(a), _name_tokens(b)
+    if len(ta) != len(tb) or len(ta) < 2 or ta[-1] != tb[-1]:
+        return False
+    return all(
+        x == y or (len(x) == 1 and y.startswith(x)) or (len(y) == 1 and x.startswith(y))
+        for x, y in zip(ta[:-1], tb[:-1])
+    )
+
+
+def _person_names_clash(a: str, b: str) -> bool:
+    """Two full names with the same surname but different first names
+    ("Bob Karpathy" / "Andrej Karpathy")."""
+    ta, tb = _name_tokens(a), _name_tokens(b)
+    if len(ta) < 2 or len(tb) < 2 or ta[-1] != tb[-1]:
+        return False
+    fa, fb = ta[0], tb[0]
+    if fa == fb or (len(fa) == 1 and fb.startswith(fa)) or (len(fb) == 1 and fa.startswith(fb)):
+        return False
+    from rapidfuzz.distance import Levenshtein
+    return Levenshtein.distance(fa, fb) > 1
+
+
+def _fuzzy_method(a: str, b: str, *, person_pair: bool = False) -> str | None:
     """Return the best matching method name if a and b should be merged, else None.
 
-    Used for SAME-SESSION pairwise grouping where the inputs are sibling
-    extractions from the same source pool — substring/acronym signals are
-    soft-priors there ("Karpathy" + "A. Karpathy" in one article pool are
-    almost certainly the same person).
+    Used for SAME-SESSION pairwise grouping. Names whose numbers differ never
+    merge here, and neither do names where one only adds words to the other
+    — except two PERSON names ("Karpathy" + "Andrej Karpathy"). Those pairs
+    go on to Layer 2/3, which judge meaning rather than spelling.
     """
     al, bl = a.lower(), b.lower()
 
     # Exact
     if al == bl:
         return "exact"
+
+    if _numeric_conflict(a, b):
+        return None
+
+    if _is_token_extension(a, b):
+        if person_pair:
+            shorter = min(_name_tokens(a), _name_tokens(b), key=len)
+            if all(len(t) >= 2 for t in shorter):
+                return "person_subset"
+        return None
+
+    if person_pair and _person_initials(a, b):
+        return "person_initials"
 
     # Levenshtein ≤ 2 (only if both long enough to avoid false positives)
     if len(a) >= 4 and len(b) >= 4:
@@ -185,11 +304,6 @@ def _fuzzy_method(a: str, b: str) -> str | None:
     if JaroWinkler.similarity(al, bl) >= 0.92:
         return "jaro_winkler"
 
-    # Substring (only if length diff is reasonable — avoid "AI" matching "AI research lab")
-    if abs(len(a) - len(b)) <= 15:
-        if al in bl or bl in al:
-            return "substring"
-
     # Acronym
     if _is_acronym(a, b) or _is_acronym(b, a):
         return "acronym"
@@ -201,13 +315,13 @@ def _cross_session_method(a: str, b: str) -> str | None:
     """Stricter variant of _fuzzy_method for cross-session anchoring against
     existing wiki page titles.
 
-    Drops the substring branch. Substring matching is a fine soft-prior for
-    same-session pairs but over-merges when one side is an authoritative,
-    permanent wiki page title — e.g. extracting "Vilnius" from a new source
-    must NOT bind to an existing "Vilnius Cathedral" page just because one
-    is a character-level substring of the other. The same shape hits cities
-    vs landmarks (London ↔ London Eye), parents vs subsidiaries, brands vs
-    product lines.
+    No substring or token-extension matches: one side is an authoritative,
+    permanent wiki page title, and extracting "Vilnius" from a new source
+    must NOT bind to an existing "Vilnius Cathedral" page. The same shape
+    hits cities vs landmarks (London ↔ London Eye, which Jaro-Winkler alone
+    scores at exactly 0.92), parents vs subsidiaries, brands vs product
+    lines. Names whose numbers differ never bind either (Python 3 must not
+    anchor to an existing Python 2 page).
 
     Layer 2 embedding similarity handles the legitimate cross-session cases
     (e.g. "Andrej Karpathy" ↔ existing "Karpathy" page) semantically,
@@ -217,6 +331,9 @@ def _cross_session_method(a: str, b: str) -> str | None:
 
     if al == bl:
         return "exact"
+
+    if _numeric_conflict(a, b) or _is_token_extension(a, b):
+        return None
 
     if len(a) >= 4 and len(b) >= 4:
         from rapidfuzz.distance import Levenshtein
@@ -233,9 +350,87 @@ def _cross_session_method(a: str, b: str) -> str | None:
     return None
 
 
-def _canonical_name(names: list[str]) -> str:
-    """Pick the canonical name: longest, tie-break alphabetically first."""
-    return sorted(names, key=lambda n: (-len(n), n))[0]
+def _canonical_name(
+    names: list[str],
+    source_counts: dict[str, int] | None = None,
+    person: bool = False,
+) -> str:
+    """Pick the canonical name of a merged group.
+
+    People: the fullest name ("Andrej Karpathy" over "Karpathy"). Everything
+    else: the name the most sources use, so one source's narrower phrase
+    ("Bitcoin network") doesn't rename a topic most sources call "Bitcoin".
+    Ties: longest, then capitalised, then alphabetical — a group of names
+    used once each gets the longest, as before.
+    """
+    counts = source_counts or {}
+
+    def key(name: str) -> tuple[int, int, int, str]:
+        uses = counts.get(name, 0)
+        lowercase_first = 0 if name[:1].isupper() else 1
+        if person:
+            return (-len(name), -uses, lowercase_first, name)
+        return (-uses, -len(name), lowercase_first, name)
+
+    return sorted(dict.fromkeys(names), key=key)[0]
+
+
+def _source_counts(entities: list[EntityInput], members: list[int]) -> dict[str, int]:
+    """Distinct sources per name within a group."""
+    seen: dict[str, set[str]] = {}
+    for i in members:
+        seen.setdefault(entities[i].name, set()).add(entities[i].source_id)
+    return {name: len(ids) for name, ids in seen.items()}
+
+
+def _all_person(entities: list[EntityInput], members: list[int]) -> bool:
+    return all(entities[i].type == "PERSON" for i in members)
+
+
+class _GuardedUnion:
+    """Union-Find that refuses merges a pairwise check can't see: chains that
+    would put "Python 2" and "Python 3" in one group, two groups anchored to
+    different pages, or two different people who share a surname."""
+
+    def __init__(self, entities: list[EntityInput], anchors: dict[int, str] | None = None) -> None:
+        self.entities = entities
+        self.uf = _UnionFind(len(entities))
+        self.members: dict[int, list[int]] = {i: [i] for i in range(len(entities))}
+        self.anchor: dict[int, str | None] = {i: (anchors or {}).get(i) for i in range(len(entities))}
+        self.methods: dict[int, set[str]] = {i: set() for i in range(len(entities))}
+
+    def find(self, i: int) -> int:
+        return self.uf.find(i)
+
+    def try_union(self, i: int, j: int, method: str) -> bool:
+        ri, rj = self.find(i), self.find(j)
+        if ri == rj:
+            self.methods[ri].add(method)
+            return True
+        ai, aj = self.anchor[ri], self.anchor[rj]
+        if ai is not None and aj is not None:
+            # Both already resolve to an existing page: same page → same group.
+            if ai != aj:
+                return False
+        else:
+            names_i = [self.entities[k].name for k in self.members[ri]]
+            names_j = [self.entities[k].name for k in self.members[rj]]
+            if any(_numeric_conflict(x, y) for x in names_i for y in names_j):
+                return False
+            if _all_person(self.entities, self.members[ri]) and _all_person(self.entities, self.members[rj]):
+                if any(_person_names_clash(x, y) for x in names_i for y in names_j):
+                    return False
+        self.uf.union(ri, rj)
+        root = self.find(ri)
+        other = rj if root == ri else ri
+        self.members[root] = self.members[ri] + self.members[rj] if root == ri else self.members[rj] + self.members[ri]
+        self.anchor[root] = ai if ai is not None else aj
+        self.methods[root] = self.methods[ri] | self.methods[rj] | {method}
+        del self.members[other], self.anchor[other], self.methods[other]
+        return True
+
+    def groups(self) -> dict[int, list[int]]:
+        return {root: sorted(members) for root, members in self.members.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -267,15 +462,15 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
     """Layer 1 fuzzy resolution.
 
     Checks existing aliases first (instant resolution for returning sessions),
-    then applies 5 fuzzy criteria via Union-Find grouping.
+    then existing page titles, then pairwise fuzzy criteria (exact, Levenshtein,
+    Jaro-Winkler, acronym, and for people surname/initial matches) grouped by
+    a union that refuses to chain different versions, pages or people.
     """
     entities = req.entities
     if not entities:
         return FuzzyResolveResponse(resolved=[], unresolved=[])
 
     n = len(entities)
-    uf = _UnionFind(n)
-    merge_method: dict[tuple[int, int], str] = {}  # (root, child) → method
 
     # Build existing alias lookup: alias_lower → canonical
     alias_lookup: dict[str, str] = {
@@ -320,38 +515,36 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
                 alias_method[i] = "existing_page_title"
                 break
 
+    guard = _GuardedUnion(entities, alias_canonical)
+    for i, method in alias_method.items():
+        guard.methods[i].add(method)
+
     # Group entities that share the same existing canonical
     canon_to_indices: dict[str, list[int]] = {}
     for i, canon in alias_canonical.items():
         canon_to_indices.setdefault(canon, []).append(i)
     for canon, indices in canon_to_indices.items():
-        for j in range(1, len(indices)):
-            uf.union(indices[0], indices[j])
-            merge_method[(uf.find(indices[0]), j)] = alias_method.get(indices[0], "existing_alias")
+        for j in indices[1:]:
+            guard.try_union(indices[0], j, alias_method.get(indices[0], "existing_alias"))
 
-    # Pairwise fuzzy matching (O(n²) — acceptable for session-level entity counts)
+    # Pairwise fuzzy matching (O(n²) — acceptable for session-level entity counts).
+    # The guard refuses merges that would chain different versions, different
+    # existing pages or different people into one group.
     for i in range(n):
         for j in range(i + 1, n):
-            if uf.find(i) == uf.find(j):
+            if guard.find(i) == guard.find(j):
                 continue  # already same group
             if not _types_compatible(entities[i].type, entities[j].type):
                 continue
-            method = _fuzzy_method(entities[i].name, entities[j].name)
+            person_pair = entities[i].type == "PERSON" and entities[j].type == "PERSON"
+            method = _fuzzy_method(entities[i].name, entities[j].name, person_pair=person_pair)
             if method:
-                root = uf.find(i)
-                uf.union(i, j)
-                new_root = uf.find(i)
-                merge_method[(new_root, j)] = method
-
-    # Build groups from Union-Find
-    groups: dict[int, list[int]] = {}
-    for i in range(n):
-        groups.setdefault(uf.find(i), []).append(i)
+                guard.try_union(i, j, method)
 
     resolved: list[ResolvedGroup] = []
     unresolved: list[EntityInput] = []
 
-    for root, members in groups.items():
+    for root, members in sorted(guard.groups().items(), key=lambda kv: kv[1][0]):
         if len(members) == 1:
             # Check if this single entity was matched via existing alias or page title
             idx = members[0]
@@ -371,19 +564,25 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
         names = [entities[i].name for i in members]
         source_ids = list(dict.fromkeys(entities[i].source_id for i in members))  # deduplicated, ordered
 
-        # Determine canonical: prefer existing alias/page-title canonical if available, else longest name
+        # Determine canonical: prefer existing alias/page-title canonical if
+        # available, else the name most sources use (people: the fullest name)
         canon_from_alias = next(
             (alias_canonical[i] for i in members if i in alias_canonical), None
         )
-        canon = canon_from_alias or _canonical_name(names)
+        canon = canon_from_alias or _canonical_name(
+            names, _source_counts(entities, members), _all_person(entities, members)
+        )
 
         aliases = [n for n in names if n != canon]
 
-        # Best method = most specific one in the group. Page-title binding
-        # takes precedence over same-session fuzzy signals because it's
-        # authoritative (the target already exists in the wiki).
-        method_priority = ["existing_page_title", "existing_alias", "exact", "levenshtein", "jaro_winkler", "substring", "acronym"]
-        used_methods = set(merge_method.values())
+        # Best method = most specific one used in THIS group. Page-title
+        # binding takes precedence over same-session fuzzy signals because
+        # it's authoritative (the target already exists in the wiki).
+        method_priority = [
+            "existing_page_title", "existing_alias", "exact", "levenshtein", "jaro_winkler",
+            "person_subset", "person_initials", "acronym",
+        ]
+        used_methods = guard.methods[root]
         best_method = next((m for m in method_priority if m in used_methods), "fuzzy")
 
         resolved.append(ResolvedGroup(
@@ -464,7 +663,7 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     embeddings = model.encode(texts, convert_to_numpy=True)
 
     n = len(entities)
-    uf = _UnionFind(n)
+    guard = _GuardedUnion(entities)
     ambiguous_pairs: list[AmbiguousPair] = []
     seen_ambiguous: set[tuple[int, int]] = set()
 
@@ -484,6 +683,9 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
             for j, pt in enumerate(req.existing_page_titles):
                 if not _entity_matches_page_type(entities[i].type, pt.page_type):
                     continue
+                # A page for a different version is never the same topic.
+                if _numeric_conflict(entities[i].name, pt.title) == "hard":
+                    continue
                 sim = float(pt_similarities[i][j])
                 if sim > best_sim:
                     best_sim = sim
@@ -492,11 +694,17 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
             if best_pt_idx < 0:
                 continue
             best_pt = req.existing_page_titles[best_pt_idx]
+            # One name adds a number or words to the other: never anchor on
+            # similarity alone; Layer 3 decides.
+            guarded = (
+                _numeric_conflict(entities[i].name, best_pt.title) is not None
+                or _is_token_extension(entities[i].name, best_pt.title)
+            )
 
-            if best_sim > 0.9:
+            if best_sim > 0.9 and not guarded:
                 # Anchor: emit as resolved group directly, skip session-internal UF.
                 anchored[i] = (best_pt.title, best_sim)
-            elif 0.7 <= best_sim <= 0.9:
+            elif best_sim >= 0.7:
                 # Ambiguous cross-session pair — Layer 3 decides.
                 synthetic = EntityInput(
                     name=best_pt.title,
@@ -522,10 +730,14 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
                 continue
             if not _types_compatible(entities[i].type, entities[j].type):
                 continue
+            conflict = _numeric_conflict(entities[i].name, entities[j].name)
+            if conflict == "hard":
+                continue  # different versions ("GPT-4" / "GPT-4o" scores 0.90)
             sim = float(similarities[i][j])
-            if sim > 0.9:
-                uf.union(i, j)
-            elif 0.7 <= sim <= 0.9:
+            guarded = conflict is not None or _is_token_extension(entities[i].name, entities[j].name)
+            if sim > 0.9 and not guarded:
+                guard.try_union(i, j, "embedding")
+            elif sim >= 0.7:
                 pair_key = (min(i, j), max(i, j))
                 if pair_key not in seen_ambiguous:
                     seen_ambiguous.add(pair_key)
@@ -535,12 +747,13 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
                         similarity=round(sim, 4),
                     ))
 
-    # Build resolved groups and unresolved singletons
-    groups: dict[int, list[int]] = {}
-    for i in range(n):
-        if i in anchored:
-            continue  # handled separately below
-        groups.setdefault(uf.find(i), []).append(i)
+    # Build resolved groups and unresolved singletons. Anchored entities are
+    # never unioned, so they are singleton groups here; they're emitted below.
+    groups: dict[int, list[int]] = {
+        root: members
+        for root, members in sorted(guard.groups().items(), key=lambda kv: kv[1][0])
+        if not (len(members) == 1 and members[0] in anchored)
+    }
 
     resolved: list[ResolvedGroup] = []
     unresolved_entities: list[EntityInput] = []
@@ -577,7 +790,7 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 
         names = [entities[i].name for i in members]
         source_ids = list(dict.fromkeys(entities[i].source_id for i in members))
-        canon = _canonical_name(names)
+        canon = _canonical_name(names, _source_counts(entities, members), _all_person(entities, members))
         aliases = [n for n in names if n != canon]
         resolved.append(ResolvedGroup(
             canonical=canon,
@@ -647,15 +860,20 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
     if not req.pairs:
         return DisambiguateResponse(results=[])
 
+    # Names whose numbers differ are different versions, never the same
+    # entity: answered without an LLM call, before the cap is applied.
+    version_pairs = [p for p in req.pairs if _numeric_conflict(p.entity_a.name, p.entity_b.name) == "hard"]
+    llm_pairs = [p for p in req.pairs if _numeric_conflict(p.entity_a.name, p.entity_b.name) != "hard"]
+
     # Enforce the LLM call cap. Truncated pairs are answered without an LLM
     # call as 'ambiguous' so callers always get one result per pair.
-    capped_pairs = req.pairs[:DISAMBIGUATE_MAX_PAIRS]
-    overflow_pairs = req.pairs[DISAMBIGUATE_MAX_PAIRS:]
+    capped_pairs = llm_pairs[:DISAMBIGUATE_MAX_PAIRS]
+    overflow_pairs = llm_pairs[DISAMBIGUATE_MAX_PAIRS:]
     if overflow_pairs:
         logger.warning(
             "disambiguate: %d pairs requested exceeds cap %d — "
             "%d pairs returned as 'ambiguous' without LLM calls",
-            len(req.pairs), DISAMBIGUATE_MAX_PAIRS, len(overflow_pairs),
+            len(llm_pairs), DISAMBIGUATE_MAX_PAIRS, len(overflow_pairs),
         )
 
     # Partition pairs by kind: concept pairs (either side CONCEPT) get the
@@ -674,7 +892,16 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
         else:
             entity_pairs.append(pair_dict)
 
-    all_results: list[DisambiguateResponseItem] = []
+    all_results: list[DisambiguateResponseItem] = [
+        DisambiguateResponseItem(
+            entity_a=p.entity_a.name,
+            entity_b=p.entity_b.name,
+            decision="different",
+            canonical=None,
+            reason="numeric_conflict: the names carry different numbers (versions are separate entities)",
+        )
+        for p in version_pairs
+    ]
 
     def _call_in_batches(pairs: list[dict[str, Any]], pair_kind: str) -> None:
         for batch_start in range(0, len(pairs), 10):

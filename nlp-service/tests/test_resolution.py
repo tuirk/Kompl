@@ -449,10 +449,19 @@ class TestDisambiguatePairCap:
 
     @staticmethod
     def _make_pairs(n: int) -> list[dict[str, Any]]:
+        # Letters only: names that differ by a number ("Amb0A" / "Amb0B") are
+        # answered 'different' without an LLM call, before the cap applies.
+        def letters(i: int) -> str:
+            out, i = "", i + 1
+            while i:
+                i, r = divmod(i - 1, 26)
+                out = chr(65 + r) + out
+            return out
+
         return [
             {
-                "entity_a": {"name": f"Amb{i}A", "type": "ORG", "source_id": "s1", "context": ""},
-                "entity_b": {"name": f"Amb{i}B", "type": "ORG", "source_id": "s2", "context": ""},
+                "entity_a": {"name": f"Amb{letters(i)}A", "type": "ORG", "source_id": "s1", "context": ""},
+                "entity_b": {"name": f"Amb{letters(i)}B", "type": "ORG", "source_id": "s2", "context": ""},
                 "similarity": 0.8,
             }
             for i in range(n)

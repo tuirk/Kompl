@@ -72,6 +72,18 @@ ship with a `migrate.py` step that runs at boot.
 - **Saved Links** shows a readable reason for each failed link ("Reserved
   test domain (.test) — not a real website", "Firecrawl credits used up")
   instead of the raw error JSON; the raw error stays available on hover.
+- **Entity merging no longer joins different things.** Names whose numbers
+  differ never merge (Python 2 / Python 3, GPT-4 / GPT-4o, Windows 10 / 11),
+  in any resolution layer; version pairs are answered "different" without an
+  LLM call. A name that only adds words to another (Ethereum / Ethereum
+  Foundation, Bitcoin / Bitcoin network) is left to the embedding and LLM
+  layers instead of being merged on spelling, except people's names
+  (Karpathy / A. Karpathy / Andrej Karpathy). A merged group is named after
+  the name most sources use; for people, the fullest name.
+- **Existing wikis:** saved aliases that merged different versions
+  ("Python 3" → "Python 2", "Python" → "Python 2") are ignored from now on,
+  so new sources about Python 3 get their own page; the alias rows are
+  kept. Other saved merges keep routing as before.
 
 ### Added
 

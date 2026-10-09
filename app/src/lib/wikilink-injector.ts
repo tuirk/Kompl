@@ -40,19 +40,20 @@ function escapeRegex(s: string): string {
 }
 
 function buildSurfaceMap(targets: WikilinkTarget[]): Map<string, string> {
-  // surfaceForm(lowercase) -> canonical title. First writer wins so a surface
-  // that happens to equal someone else's alias points to whichever target
-  // registered it first — caller controls ordering.
+  // surfaceForm(lowercase) -> canonical title. First writer wins. Every page
+  // title registers before any alias, so an alias can never shadow another
+  // page's own title (a stored "Python" → "Python 2" alias must not hijack a
+  // "Python" page); among aliases the caller controls ordering.
   const map = new Map<string, string>();
+  const register = (surface: string | undefined, title: string) => {
+    if (!surface || surface.length < MIN_SURFACE_LEN) return;
+    const key = surface.toLowerCase();
+    if (!map.has(key)) map.set(key, title);
+  };
+  for (const t of targets) if (t.title) register(t.title, t.title);
   for (const t of targets) {
     if (!t.title) continue;
-    const registerSurface = (s: string | undefined) => {
-      if (!s || s.length < MIN_SURFACE_LEN) return;
-      const key = s.toLowerCase();
-      if (!map.has(key)) map.set(key, t.title);
-    };
-    registerSurface(t.title);
-    for (const a of t.aliases ?? []) registerSurface(a);
+    for (const a of t.aliases ?? []) register(a, t.title);
   }
   return map;
 }

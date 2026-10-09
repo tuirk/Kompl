@@ -36,6 +36,7 @@ import { assertSafeId, isSafeId } from './safe-paths';
 import type { ActivityEventType } from './activity-events';
 import { DEFAULT_COMPILE_MODEL, isLlmModel, type LlmModel } from './llm-models';
 import { buildFtsQuery } from './fts-query';
+import { numericConflict } from './name-guard';
 
 // Model registry lives in llm-models.ts (client-safe, no DB imports);
 // re-exported here so server code keeps importing it from '@/lib/db'.
@@ -1138,17 +1139,20 @@ export function resetSourceForRecompile(sourceId: string): void {
 /**
  * Batch-insert alias → canonical_name mappings in a single transaction.
  * The aliases table has no UNIQUE constraint on alias, so we load existing
- * aliases into a Set first and skip duplicates rather than relying on
- * INSERT OR IGNORE.
+ * pairs into a Set first and skip duplicates rather than relying on
+ * INSERT OR IGNORE. Duplicates are judged on the (alias, canonical) pair:
+ * an alias whose old row getAliases() ignores (see name-guard.ts) can get a
+ * new mapping; the old row is kept, never updated or deleted.
  */
 export function bulkInsertAliases(
   aliases: Array<{ alias: string; canonical: string }>
 ): void {
   if (aliases.length === 0) return;
   const db = openDb();
+  const pairKey = (alias: string, canonical: string) => `${alias.toLowerCase()}\u0000${canonical.toLowerCase()}`;
   const existing = new Set(
-    (db.prepare('SELECT alias FROM aliases').all() as { alias: string }[]).map(
-      (r) => r.alias.toLowerCase()
+    (db.prepare('SELECT alias, canonical_name FROM aliases').all() as { alias: string; canonical_name: string | null }[]).map(
+      (r) => pairKey(r.alias, r.canonical_name ?? '')
     )
   );
   const insert = db.prepare(
@@ -1156,24 +1160,32 @@ export function bulkInsertAliases(
   );
   db.transaction((rows: typeof aliases) => {
     for (const { alias, canonical } of rows) {
-      if (!existing.has(alias.toLowerCase())) {
+      const key = pairKey(alias, canonical);
+      if (!existing.has(key)) {
         insert.run(alias, canonical);
-        existing.add(alias.toLowerCase());
+        existing.add(key);
       }
     }
   })(aliases);
 }
 
 /**
- * Return all known alias → canonical_name pairs (for passing to Layer 1
- * fuzzy resolution as existing_aliases).
+ * Return the alias → canonical_name pairs the compile steps may use (Layer 1
+ * fuzzy resolution, mention pinning, dossiers, crossref link targets).
+ *
+ * Rows whose two names carry different numbers ("Python 3" → "Python 2",
+ * "Python" → "Python 2") are left out: resolution created those before it
+ * could tell versions apart, and they would keep sending new sources to the
+ * wrong page. The rows stay in the table (getAllAliases, backups). Oldest
+ * first, so a newer mapping for the same alias wins where callers build a map.
  */
 export function getAliases(): Array<{ alias: string; canonical_name: string }> {
-  return openDb()
+  const rows = openDb()
     .prepare(
-      'SELECT alias, canonical_name FROM aliases WHERE canonical_name IS NOT NULL'
+      'SELECT alias, canonical_name FROM aliases WHERE canonical_name IS NOT NULL ORDER BY id'
     )
     .all() as Array<{ alias: string; canonical_name: string }>;
+  return rows.filter((r) => numericConflict(r.alias, r.canonical_name) === null);
 }
 
 /** All alias rows including canonical_page_id — used for kompl backup export. */
