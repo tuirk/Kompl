@@ -44,8 +44,11 @@ import {
   citationsToLabels,
   labelsToStoredCitations,
   relabelDossier,
+  rewordLabelSubjects,
 } from '../../../../lib/citations';
 import { getSourceTitleSet } from '../../../../lib/page-sources';
+import { normalizeFrontmatter, SOURCE_PAGE_TYPES, sourceOnlyTitles } from '../../../../lib/draft-cleanup';
+import { removeEmptyContradictionSections } from '../../../../lib/page-sections';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 // 10 concurrent draft calls. Tier-1 RPM is 1000/min and we use <1% of it,
@@ -592,7 +595,12 @@ export async function POST(request: Request) {
     .sort((a, b) => (b.source_count ?? 0) - (a.source_count ?? 0))
     .map((p) => p.title)
     .filter((t) => !sessionTitleSet.has(t));
-  const allKnownTitles = [...sessionTitles, ...sortedExistingTitles].slice(0, 200);
+  // Source pages are cited, never linked: leave their titles out of the list
+  // the model may link to.
+  const sourceTitlesOnly = sourceOnlyTitles([...existingPages, ...plans]);
+  const allKnownTitles = [...sessionTitles, ...sortedExistingTitles]
+    .filter((t) => !sourceTitlesOnly.has(t.toLowerCase()))
+    .slice(0, 200);
 
   // Existing wiki categories — passed to Gemini so it reuses them instead of inventing new ones.
   // Exclude 'Uncategorized' (the null-category fallback) AND 'General' (a universal-matching sink
@@ -693,6 +701,8 @@ export async function POST(request: Request) {
       // Related pages: for overview/comparison, use already-drafted pages
       const relatedPlanIds: string[] = plan.related_plan_ids ? JSON.parse(plan.related_plan_ids) : [];
       const relatedPages: RelatedPage[] = draftedContext.filter((dp) => {
+        // Source pages are cited through labels, not offered as related pages.
+        if (SOURCE_PAGE_TYPES.has(dp.type)) return false;
         // Include if it's a related plan or just generally relevant drafted content
         return relatedPlanIds.length === 0
           ? draftedContext.length <= 10  // include all if few
@@ -746,8 +756,10 @@ export async function POST(request: Request) {
         return row?.title ?? 'Untitled source';
       };
       const labelledDossier = dossier ? relabelDossier(dossier, labels, titleOf) : '';
+      // Old frontmatter can carry invented keys (sources: S1…, last_updated)
+      // that would clash with this draft's labels; the model never sees them.
       const labelledExisting = existingContent
-        ? citationsToLabels(existingContent, labels, (t) => sourceTitles.has(t.toLowerCase()))
+        ? citationsToLabels(normalizeFrontmatter(existingContent), labels, (t) => sourceTitles.has(t.toLowerCase()))
         : null;
       const earlierSources: EarlierSource[] = (labelledExisting?.added ?? []).map((id) => ({
         citation_label: labels.get(id) ?? '',
@@ -767,7 +779,16 @@ export async function POST(request: Request) {
         getEffectiveCompileModel(session_id),
         earlierSources,
       );
-      const markdown = labelsToStoredCitations(drafted, labels);
+      // Safety nets for what the prompt asks but models don't always do:
+      // labels used as words, invented frontmatter, empty Contradictions.
+      const reworded = rewordLabelSubjects(drafted);
+      if (reworded.count > 0) {
+        console.log(JSON.stringify({ event: 'draft_label_subjects_reworded', plan_id: plan.plan_id, count: reworded.count }));
+      }
+      let markdown = normalizeFrontmatter(labelsToStoredCitations(reworded.markdown, labels));
+      if (plan.page_type !== 'source-summary') {
+        markdown = removeEmptyContradictionSections(markdown).markdown;
+      }
 
       updatePlanDraft(plan.plan_id, markdown);
       return { pageType: plan.page_type, markdown };

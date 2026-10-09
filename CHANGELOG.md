@@ -39,6 +39,27 @@ ship with a `migrate.py` step that runs at boot.
 - **README rewritten** around what Kompl does and MCP, with new screenshots
   of the dashboard, a compiled page, the graph and Settings.
 
+### Page quality
+
+- **Drafts stay within their sources.** The entity, concept, comparison and
+  overview prompts now say to state only what the sources say (no added
+  origins, causes, rankings or "firsts"), define a contradiction as two
+  claims that cannot both be true (designed vs first released is not one),
+  cap "Related Concepts" at 5 and ask for four frontmatter keys only.
+  Citation labels are footnote markers, never words: "[S2] states that…"
+  used to render as "² states that…".
+- **Safety nets on every new draft**, whatever the model writes: a citation
+  label used as a word is reworded ("One source² states…"); invented
+  frontmatter (`sources: S1…`, `last_updated`, `status`, `contested`) is
+  dropped; empty "Contradictions: None" sections are removed; source notes
+  are never offered or kept as link targets; each page is linked once; and
+  Related lists keep at most 5 entries that the page or its sources mention
+  (entries a page already had are kept). The link injector no longer adds a
+  second link to a page the draft already links.
+- Existing pages are not rewritten: the changes apply to pages drafted or
+  updated after the upgrade. A wiki's `schema.md` is not rewritten either;
+  where it conflicts with these rules, the rules win.
+
 ### Added
 
 - **Current models.** Compile model choices are now DeepSeek V4.1 Flash

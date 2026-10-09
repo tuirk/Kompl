@@ -258,6 +258,76 @@ export function labelsToStoredCitations(markdown: string, labels: Map<string, st
   return lines.join('\n');
 }
 
+// A label group as the model writes it: [S1], [S1][S2], [S1, S2].
+const LABEL_GROUP = String.raw`(?:\[\s*S\d+(?:\s*[,;]\s*S\d+)*\s*\])+`;
+const SUBJECT_VERBS =
+  'states|claims|notes|says|reports|argues|describes|mentions|adds|gives|lists|records|suggests|indicates|' +
+  'asserts|contends|attributes|credits|dates|places|puts|cites|explains|writes|observes|confirms|specifies';
+const LABEL_AS_SUBJECT = new RegExp(
+  String.raw`(${LABEL_GROUP})(\s+)((?:also|instead|further|similarly)\s+)?(${SUBJECT_VERBS})\b`,
+  'gi',
+);
+const LABEL_AFTER_PREPOSITION = new RegExp(String.raw`\b(according\s+to|per|in|from)(\s+)(${LABEL_GROUP})`, 'gi');
+
+/**
+ * A citation label is a footnote marker, not a word, but models sometimes
+ * write "[S2] states that…" or "according to [S1]". Once labels become
+ * superscripts that reads "² states that…". Give such sentences a subject
+ * ("One source [S2] states…", "while a source [S1] claims…") so the label
+ * goes back to being a marker. Frontmatter and fenced code are left alone.
+ */
+export function rewordLabelSubjects(markdown: string): { markdown: string; count: number } {
+  let count = 0;
+  const lines = markdown.split('\n');
+  let inFence = false;
+  let inFrontmatter = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (i === 0 && line.trim() === '---') {
+      inFrontmatter = true;
+      continue;
+    }
+    if (inFrontmatter) {
+      if (line.trim() === '---') inFrontmatter = false;
+      continue;
+    }
+    if (line.trimStart().startsWith('```')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || !/\[\s*S\d/i.test(line)) continue;
+
+    const subjects = new Set<string>();
+    let next = line.replace(
+      LABEL_AS_SUBJECT,
+      (match: string, group: string, gap: string, adverb: string | undefined, verb: string, offset: number, whole: string) => {
+        const before = whole.slice(0, offset);
+        if (/\bsources?\s*$/i.test(before)) return match;
+        count++;
+        const key = group.replace(/\s+/g, '').toUpperCase();
+        const multi = (group.match(/S\d+/gi) ?? []).length > 1;
+        const sentenceStart =
+          /^\s*(?:(?:[-*+]|\d+\.)\s+)?$/.test(before) || /[.!?]["')\]]*\s*$/.test(before);
+        let lead: string;
+        if (subjects.has(key)) lead = multi ? 'the same sources' : 'the same source';
+        else lead = multi ? 'sources' : sentenceStart ? 'one source' : 'a source';
+        subjects.add(key);
+        if (sentenceStart) lead = lead[0].toUpperCase() + lead.slice(1);
+        const space = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
+        const agreedVerb = multi ? verb.replace(/s$/i, '') : verb;
+        return `${space}${lead} ${group}${gap}${adverb ?? ''}${agreedVerb}`;
+      },
+    );
+    next = next.replace(LABEL_AFTER_PREPOSITION, (_match: string, preposition: string, gap: string, group: string) => {
+      count++;
+      const multi = (group.match(/S\d+/gi) ?? []).length > 1;
+      return `${preposition}${gap}${multi ? 'sources' : 'one source'} ${group}`;
+    });
+    lines[i] = next;
+  }
+  return { markdown: lines.join('\n'), count };
+}
+
 /**
  * Rewrite the dossier's "From source <id>:" block headers (emitted by
  * buildDossier and relied on by capDossierByRelevance) into the draft's

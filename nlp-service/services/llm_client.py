@@ -1017,6 +1017,7 @@ def disambiguate_entities(
 _FRONTMATTER_RULES = """\
 OUTPUT FORMAT RULES (strict):
 - Begin the response with YAML frontmatter delimited by a line containing exactly `---`, then the YAML keys, then a closing line containing exactly `---`, then a blank line, then the body.
+- The frontmatter has exactly four keys: title, page_type, category, summary. Add no other keys (no sources, dates, status or aliases); the wiki records those itself.
 - Do NOT wrap the body in a fenced code block (no ``` markers around the body). Output raw markdown.
 - Do NOT add a `## Sources` section — the wiki renders provenance separately in a footer.
 
@@ -1026,12 +1027,23 @@ title: <page title>
 page_type: <type>
 category: <category>
 summary: <1-2 sentences>
-sources:
-  - source_id: <id>
-    title: <source title>
-last_updated: <YYYY-MM-DD>
 ---
 """
+
+# Appended to every page type that synthesizes several sources. Models fill
+# thin sources with general knowledge and turn "different milestones" into
+# disputes unless told otherwise.
+_GROUNDING_RULES = """\
+SOURCES ONLY:
+- State only what the material in this prompt says: the source documents, the pre-extracted data and, for an overview, the listed wiki pages. Add nothing from your own knowledge.
+- Do not join facts into a claim no source makes: no new origins, causes, effects, rankings, "firsts" or comparisons.
+- Keep each source's strength of wording: "primarily a store of value" must not become "digital gold".
+- One exception: the opening paragraph may define a general term in one plain sentence without a citation. That sentence names no person, organization, product, date, number or ranking.
+- Thin sources make a short page. Do not pad it.
+
+CONTRADICTIONS:
+- Two claims contradict only if both cannot be true. Different milestones (designed vs first released, proposed vs founded), dates of different events, or one source giving more detail are not contradictions: state each fact with its own citation.
+- Write about a contradiction only when one exists, citing both sources. Never add a Contradictions or Disputed section that says there are none."""
 
 _DRAFT_PAGE_PROMPTS: dict[str, str] = {
     "source-summary": f"""\
@@ -1046,7 +1058,7 @@ The page body should begin directly with the reproduced source content (no `## C
 
 The reproduced source content is the most important part — it must contain the actual source text, not a rewrite of it. Do not add information not in the source.
 Use [[wikilinks]] for any entities, people, tools, or concepts that have their own wiki pages.
-Frontmatter keys required: title, page_type: source-summary, category, summary (1-2 sentences describing what this source is about), sources (list with source_id and title), last_updated.
+Frontmatter keys: title, page_type: source-summary, category, summary (1-2 sentences describing what this source is about).
 When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
 
     "entity": f"""\
@@ -1058,10 +1070,11 @@ The page body should include:
 - Thematic sections (what this entity does, key facts, relationships to other entities)
 
 Synthesize across all sources. If sources provide complementary information, merge coherently.
-If sources contradict each other, note the contradiction with citations to both sources.
 Use [[wikilinks]] when referencing related entities or concepts that have wiki pages.
-Frontmatter keys required: title, page_type: entity, category, summary (1-2 sentences), sources (list with source_id and title), last_updated.
-When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
+Frontmatter keys: title, page_type: entity, category, summary (1-2 sentences).
+When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.
+
+{_GROUNDING_RULES}""",
 
     "concept": f"""\
 Write a concept wiki page synthesizing information from multiple sources.
@@ -1070,13 +1083,15 @@ Write a concept wiki page synthesizing information from multiple sources.
 The page body should include:
 - A definition/description paragraph
 - ## Key Claims (from sources, each with its citation)
-- ## Contradictions section (only if sources disagree — cite both)
-- ## Related Concepts (use [[wikilinks]] for concepts that have wiki pages)
+- ## Contradictions (only if two sources make claims that cannot both be true; otherwise leave it out)
+- ## Related Concepts (at most 5 pages from the wikilink list that the sources directly connect to this topic; leave it out if there are none)
 
 Synthesize across sources. Attribute specific claims to their source.
 Use [[wikilinks]] when referencing related concepts or entities that have wiki pages.
-Frontmatter keys required: title, page_type: concept, category, summary (1-2 sentences), sources (list with source_id and title), last_updated.
-When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
+Frontmatter keys: title, page_type: concept, category, summary (1-2 sentences).
+When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.
+
+{_GROUNDING_RULES}""",
 
     "comparison": f"""\
 Write a comparison wiki page comparing two entities or concepts.
@@ -1085,12 +1100,14 @@ Write a comparison wiki page comparing two entities or concepts.
 The page body should include:
 - A brief intro paragraph explaining what is being compared and why
 - A structured comparison (use a table or parallel sections)
-- ## Summary: which is better suited for different use cases (if applicable)
+- ## Summary: what the sources say each is suited for (only if they say so)
 
 Be objective and factual.
 Use [[wikilinks]] when naming the entities being compared and any related concepts that have wiki pages.
-Frontmatter keys required: title, page_type: comparison, category, summary (1-2 sentences describing what is being compared), sources (list), last_updated.
-When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
+Frontmatter keys: title, page_type: comparison, category, summary (1-2 sentences describing what is being compared).
+When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.
+
+{_GROUNDING_RULES}""",
 
     "overview": f"""\
 Write an overview wiki page summarizing all pages in a category.
@@ -1102,8 +1119,10 @@ The page body should include:
 - ## Common Themes
 - ## Open Questions (gaps in coverage, if any)
 
-Frontmatter keys required: title, page_type: overview, category, summary (1-2 sentences describing this category), sources (list), last_updated.
-When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
+Frontmatter keys: title, page_type: overview, category, summary (1-2 sentences describing this category).
+When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.
+
+{_GROUNDING_RULES}""",
 }
 
 
@@ -1113,9 +1132,26 @@ _CITATION_RULES = """\
 CITATIONS:
 - Each source below (and each block of pre-extracted data) has a label such as [S1].
 - Put the label of the source that supports a claim right after the claim, e.g. "Bitcoin launched in 2009 [S1]." Cite several sources as [S1][S2].
+- A label is a footnote marker, never a word in the sentence. Wrong: "[S2] states that…", "according to [S1]", "while [S3] claims…". Right: "One source gives 2013 [S1]; another gives 2015 [S2]."
 - Use only the labels given in this prompt. Do not cite in the YAML frontmatter.
 - Never write source ids, UUIDs, or phrases like "From source" or "Pre-extracted data" in the page.
 - Keep the citation labels that already appear in the existing page content when you keep their claims."""
+
+
+def _final_check(cited: bool) -> str:
+    """Short checklist appended after the source documents."""
+    lines = ["", "FINAL CHECK before answering:"]
+    if cited:
+        lines += [
+            "- Every fact comes from the material above; facts from a source document carry its label. "
+            "Nothing is added from memory.",
+            "- Labels follow claims and are never words in a sentence.",
+        ]
+    lines.append("- Each wiki page is linked at most once; source documents are never linked.")
+    if cited:
+        lines.append("- No Contradictions section unless two sources truly conflict; at most 5 Related Concepts.")
+    lines.append("- Frontmatter keys: title, page_type, category, summary.")
+    return "\n".join(lines) + "\n"
 
 
 def draft_page(
@@ -1160,14 +1196,32 @@ def draft_page(
     parts: list[str] = [f"Title: {title}", f"Page type: {page_type}", ""]
 
     if schema:
-        parts += ["Wiki schema (follow these conventions):", schema, ""]
+        # schema.md is written once per wiki and may predate these rules (it
+        # can demand "Disputed" sections or extra frontmatter fields).
+        parts += [
+            "Wiki schema (house conventions; where it conflicts with the system instructions on "
+            "frontmatter keys, links, citations, contradictions or related lists, follow the "
+            "system instructions):",
+            schema,
+            "",
+        ]
 
     if existing_content:
         parts += ["Existing page content (update this, don't rewrite from scratch):",
                   existing_content, ""]
+        parts += [
+            "UPDATING: The existing claims come from earlier sources, some not shown here. Keep them "
+            "and their labels even though you cannot check them. Add what the new sources say; if a "
+            "new source conflicts with an existing claim, keep both and cite each. Do not attach a new "
+            "label to an existing claim unless that source states it.",
+            "",
+        ]
 
     if related_pages:
-        parts += ["Related pages in the wiki (for cross-reference context):"]
+        if page_type == "overview":
+            parts += ["Related pages in the wiki (for cross-reference context):"]
+        else:
+            parts += ["Related pages in the wiki (for linking only; their summaries are not sources):"]
         for rp in related_pages:
             parts.append(f"  - {rp.get('title', '')} ({rp.get('type', '')}): {rp.get('summary', '')}")
         parts.append("")
@@ -1176,10 +1230,10 @@ def draft_page(
         titles_str = ", ".join(existing_page_titles)
         parts.append(
             f"Existing wiki pages (for [[wikilinks]]): {titles_str}\n\n"
-            "When your text mentions any of these topics, wrap the FIRST occurrence "
-            "in [[double brackets]] to create a wikilink. Do NOT link subsequent "
-            "occurrences of the same topic. Only link topics that appear in the list "
-            "above — do NOT invent links to pages not listed."
+            "LINKS: Link a page from this list where the body first mentions it, as [[Title]] or "
+            "[[Title|your wording]]. Link each page once per page. Link only titles in this list, "
+            "and only where the sentence is about that page's topic. Never link the title of a "
+            "source document."
         )
         parts.append("")
 
@@ -1195,8 +1249,9 @@ def draft_page(
             "",
             "IMPORTANT: Prefer the pre-extracted data above for key facts, types, "
             "relationships, and claims. If the source documents contain additional "
-            "information not in the dossier, include it. If the source documents "
-            "contradict the dossier, present both with a contradiction note.",
+            "information not in the dossier, include it. The data was extracted "
+            "automatically from those documents; where they differ, follow the document. "
+            "That is an extraction slip, not a contradiction between sources.",
             "",
         ]
 
@@ -1255,6 +1310,9 @@ def draft_page(
     if len(prompt) > _GEMINI_INPUT_TOKEN_CAP:
         prompt = prompt[:_GEMINI_INPUT_TOKEN_CAP]
 
+    # Restated after the sources (which can be long) so the rules sit close
+    # to the answer; the category instruction stays last.
+    prompt += _final_check(cite)
     prompt += cat_suffix
 
     provider = get_provider(model)
@@ -1430,9 +1488,9 @@ generate a schema document that defines how this wiki should be maintained.
 The schema should cover:
 1. Page types and when each should be created (source-summary, entity, concept, comparison, overview)
 2. Naming conventions for page titles
-3. YAML frontmatter format (required fields per page type)
-4. Cross-referencing rules (when to add [[wikilinks]])
-5. How to handle contradictions between sources
+3. YAML frontmatter: exactly title, page_type, category and summary (Kompl tracks sources, dates and status itself; define no other fields)
+4. Cross-referencing rules (link an existing page at its first mention, once per page; never link source documents)
+5. How to handle contradictions between sources (only claims that cannot both be true; different milestones are not contradictions)
 6. Category structure based on the content seen so far
 7. When to create a new page vs update an existing one
 8. Content quality standards (factual accuracy, attribution, no hallucination)

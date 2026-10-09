@@ -13,6 +13,7 @@ import {
   labelsToStoredCitations,
   relabelDossier,
   renderCitationMarkers,
+  rewordLabelSubjects,
   scanCitations,
   stripCitationPlaceholders,
 } from '../lib/citations';
@@ -123,5 +124,51 @@ describe('drafting round trip', () => {
       (id) => (id === A ? 'Bitcoin "Basics"' : 'Ethereum Overview'),
     );
     expect(out).toBe(`From [S1] "Bitcoin 'Basics'":\n  Claim: x\nFrom [S2] "Ethereum Overview":\n  Claim: y`);
+  });
+});
+
+describe('rewordLabelSubjects', () => {
+  const cases: Array<[string, string]> = [
+    // The e2e Smart contracts sentence that rendered "² states that…".
+    [
+      'Sources disagree on the year.[S2] states that Ethereum was founded in 2013, while [S1] claims it was founded in 2015;[S1] also notes that the whitepaper came in 2013.',
+      'Sources disagree on the year. One source [S2] states that Ethereum was founded in 2013, while a source [S1] claims it was founded in 2015; the same source [S1] also notes that the whitepaper came in 2013.',
+    ],
+    ['[S1] says Bitcoin launched in 2009.', 'One source [S1] says Bitcoin launched in 2009.'],
+    ['- [S1][S2] states that both launched.', '- Sources [S1][S2] state that both launched.'],
+    ['According to [S1], Ethereum moved in 2022.', 'According to one source [S1], Ethereum moved in 2022.'],
+    ['Data from [S1, S2] shows growth.', 'Data from sources [S1, S2] shows growth.'],
+  ];
+  it.each(cases)('rewords %s', (input, expected) => {
+    expect(rewordLabelSubjects(input).markdown).toBe(expected);
+  });
+
+  it('leaves labels that follow a claim alone', () => {
+    for (const ok of [
+      'Bitcoin launched in 2009 [S1].',
+      'Bitcoin launched in 2009.[S1] Ethereum followed.',
+      '[S1] Bitcoin is a currency.',
+      'Galaxy (S3) states nothing.',
+      'One source [S1] states that it launched.',
+    ]) {
+      const out = rewordLabelSubjects(ok);
+      expect(out.markdown).toBe(ok);
+      expect(out.count).toBe(0);
+    }
+  });
+
+  it('skips frontmatter and fenced code, and counts rewrites', () => {
+    const md = ['---', 'summary: [S1] states x', '---', '', '```', '[S1] states x', '```', '[S1] states x.'].join('\n');
+    const out = rewordLabelSubjects(md);
+    expect(out.count).toBe(1);
+    expect(out.markdown).toBe(
+      ['---', 'summary: [S1] states x', '---', '', '```', '[S1] states x', '```', 'One source [S1] states x.'].join('\n'),
+    );
+  });
+
+  it('round-trips into a readable stored sentence', () => {
+    const labels = assignCitationLabels([A]);
+    const stored = labelsToStoredCitations(rewordLabelSubjects('[S1] states that it launched.').markdown, labels);
+    expect(stored).toBe(`One source[^${A}] states that it launched.`);
   });
 });

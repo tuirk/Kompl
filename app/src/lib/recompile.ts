@@ -29,10 +29,14 @@ import {
   getCategoryGroups,
   getCompileModel,
   getPageTitleMap,
+  getAllPages,
+  readPageMarkdown,
 } from './db';
 import { syncPageWikilinks } from './wikilinks';
 import { LONG_HTTP_AGENT } from './long-http-agent';
-import { assignCitationLabels, labelsToStoredCitations } from './citations';
+import { assignCitationLabels, labelsToStoredCitations, rewordLabelSubjects } from './citations';
+import { normalizeFrontmatter, relatedLinkTargets, sourceOnlyTitles, tidyDraftLinks } from './draft-cleanup';
+import { removeEmptyContradictionSections } from './page-sections';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -171,7 +175,17 @@ export async function recompilePage(
     existingCategories,
     getCompileModel(),
   );
-  const newMarkdown = labelsToStoredCitations(drafted, labels);
+  // Same safety nets as the compile draft and crossref steps.
+  let newMarkdown = normalizeFrontmatter(labelsToStoredCitations(rewordLabelSubjects(drafted).markdown, labels));
+  if (page.page_type !== 'source-summary') {
+    newMarkdown = removeEmptyContradictionSections(newMarkdown).markdown;
+  }
+  newMarkdown = tidyDraftLinks(newMarkdown, {
+    blocked: new Set([...sourceOnlyTitles(getAllPages()), page.title.toLowerCase()]),
+    sourceText: sourceContents.map((sc) => sc.markdown).join('\n'),
+    keepRelated: relatedLinkTargets(readPageMarkdown(pageId) ?? ''),
+    trimRelated: page.page_type !== 'source-summary',
+  }).markdown;
 
   // ── Phase 2: sync transaction — update pages + setPendingContent + FTS5 ──
   // File is NOT written yet. pending_content stores markdown so the boot

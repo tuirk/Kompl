@@ -19,6 +19,8 @@
  * wikilink target is always the canonical title as passed in.
  */
 
+import { findWikilinks } from './wikilink-syntax';
+
 const MIN_SURFACE_LEN = 4;
 
 export interface WikilinkTarget {
@@ -133,8 +135,9 @@ function injectIntoLine(
       // Self-link guard — pages should not link to themselves. Callers can
       // pre-filter the surfaceMap to exclude the current page's own surfaces
       // if stricter guarantees are needed.
-      if (used.has(canonical)) return match;
-      used.add(canonical);
+      const usedKey = canonical.toLowerCase();
+      if (used.has(usedKey)) return match;
+      used.add(usedKey);
       added++;
       // If surface matches canonical exactly (case-insensitive), keep the
       // surface's original casing as the display text inside a single-part
@@ -163,8 +166,9 @@ export function injectWikilinks(
   let inFence = false;
   let linksAdded = 0;
   // Link each canonical title at most once per page so long pages don't get
-  // wikilink-flooded. First occurrence wins.
-  const usedCanonicals = new Set<string>();
+  // wikilink-flooded. First occurrence wins. Pages the draft already links
+  // count as used, so the injector never adds a second link to them.
+  const usedCanonicals = new Set<string>(findWikilinks(markdown).map((l) => l.target.toLowerCase()));
 
   for (let idx = 0; idx < lines.length; idx++) {
     const line = lines[idx];
