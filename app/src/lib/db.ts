@@ -35,6 +35,7 @@ import { COMPILE_STEP_KEYS, type CompileStepKey } from './compile-steps';
 import { assertSafeId, isSafeId } from './safe-paths';
 import type { ActivityEventType } from './activity-events';
 import { DEFAULT_COMPILE_MODEL, isLlmModel, type LlmModel } from './llm-models';
+import { buildFtsQuery } from './fts-query';
 
 // Model registry lives in llm-models.ts (client-safe, no DB imports);
 // re-exported here so server code keeps importing it from '@/lib/db'.
@@ -619,23 +620,17 @@ export function getCategoryGroups(includeArchived = false): CategoryGroup[] {
 
 /** FTS5 full-text search against pages_fts (title + content).
  *
- * Each word in the query gets a trailing * for prefix matching so that
- * partial input like "cryp" matches "cryptocurrency". Uses parameterized
- * binding (no string interpolation) to eliminate SQL injection risk.
+ * The query is tokenized like the index (see buildFtsQuery), each term
+ * prefix-matched, so "sha-256", "proof-of-work" and "cryp" all find pages.
+ * Uses parameterized binding (no string interpolation) to eliminate SQL
+ * injection risk.
  *
  * Pass excludePageIds (e.g. getAllArchivedPageIds()) to post-filter results.
  * Post-filtering keeps FTS5 rank ordering intact — no subquery in the SQL.
  */
 export function searchPages(query: string, limit = 20, excludePageIds?: Set<string>): PageRow[] {
-  const words = query.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return [];
-  // Strip FTS5 special characters per word, then append * for prefix match.
-  const ftsQuery = words
-    .map((w) => w.replace(/['"*^():.,-]/g, '').trim())
-    .filter(Boolean)
-    .map((w) => `${w}*`)
-    .join(' ');
-  if (!ftsQuery.trim()) return [];
+  const ftsQuery = buildFtsQuery(query);
+  if (ftsQuery === null) return [];
   const rows = openDb()
     .prepare(
       `SELECT p.page_id, p.title, p.page_type, p.category, p.summary,

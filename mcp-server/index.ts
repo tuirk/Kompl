@@ -68,9 +68,13 @@ server.tool(
       return { content: [{ type: "text", text: `Failed to load page: ${res.status}` }] };
     }
     const data = (await res.json()) as PageData;
+    // Newer apps number the sources to match the [n] citation markers in
+    // the content; older ones send an unnumbered list.
     const sourceList =
       data.sources.length
-        ? data.sources.map((s) => `  - ${s.title} (${s.contribution_type})`).join("\n")
+        ? data.sources
+            .map((s) => (s.n ? `  [${s.n}] ${s.title}` : `  - ${s.title} (${s.contribution_type})`))
+            .join("\n")
         : "  (none)";
     const text = [
       `# ${data.title}`,
@@ -80,7 +84,7 @@ server.tool(
       data.content || "(no content)",
       ``,
       `---`,
-      `**Provenance sources:**`,
+      `**Sources** (the [n] markers above refer to these):`,
       sourceList,
     ].join("\n");
     return { content: [{ type: "text", text }] };
@@ -196,7 +200,7 @@ interface PageMeta {
 
 interface PageData extends PageMeta {
   content: string;
-  sources: Array<{ source_id: string; title: string; contribution_type: string }>;
+  sources: Array<{ n?: number; source_id: string; title: string; contribution_type: string }>;
 }
 
 interface HealthData {

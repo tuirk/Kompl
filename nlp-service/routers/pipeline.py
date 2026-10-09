@@ -123,6 +123,17 @@ class SourceContent(BaseModel):
     source_id: str
     title: str
     markdown: str
+    # Short label such as "S1" the page should cite this source with. The
+    # app converts labels back to stored source ids after drafting.
+    citation_label: str | None = None
+
+
+class EarlierSource(BaseModel):
+    """A source cited in the existing page content but not re-sent."""
+    model_config = ConfigDict(extra='forbid')
+
+    citation_label: str
+    title: str
 
 
 class RelatedPage(BaseModel):
@@ -145,6 +156,7 @@ class DraftPageRequest(BaseModel):
     existing_page_titles: list[str] = []
     extraction_dossier: str = ""
     existing_categories: list[str] = []
+    earlier_sources: list[EarlierSource] = []
     compile_model: LLMModel = "gemini-2.5-flash"
 
 
@@ -172,6 +184,7 @@ def pipeline_draft_page(req: DraftPageRequest) -> DraftPageResponse:
             existing_page_titles=req.existing_page_titles if req.existing_page_titles else None,
             extraction_dossier=req.extraction_dossier,
             existing_categories=req.existing_categories,
+            earlier_sources=[es.model_dump() for es in req.earlier_sources],
             model=req.compile_model,
         )
         return DraftPageResponse(markdown=markdown)

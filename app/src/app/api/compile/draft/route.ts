@@ -39,6 +39,13 @@ import {
 } from '../../../../lib/db';
 import { yamlDoubleQuote } from '../../../../lib/yaml-escape';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
+import {
+  assignCitationLabels,
+  citationsToLabels,
+  labelsToStoredCitations,
+  relabelDossier,
+} from '../../../../lib/citations';
+import { getSourceTitleSet } from '../../../../lib/page-sources';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 // 10 concurrent draft calls. Tier-1 RPM is 1000/min and we use <1% of it,
@@ -68,6 +75,13 @@ interface SourceContent {
   source_id: string;
   title: string;
   markdown: string;
+  /** "S1"-style label the page cites this source with (lib/citations.ts). */
+  citation_label?: string;
+}
+
+interface EarlierSource {
+  citation_label: string;
+  title: string;
 }
 
 interface RelatedPage {
@@ -87,6 +101,7 @@ async function callDraftPage(
   extractionDossier?: string,
   existingCategories?: string[],
   compileModel?: string,
+  earlierSources?: EarlierSource[],
 ): Promise<string> {
   const res = await fetch(`${NLP_SERVICE_URL}/pipeline/draft-page`, {
     method: 'POST',
@@ -101,6 +116,7 @@ async function callDraftPage(
       existing_page_titles: existingPageTitles ?? [],
       extraction_dossier: extractionDossier ?? '',
       existing_categories: existingCategories ?? [],
+      earlier_sources: earlierSources ?? [],
       ...(compileModel ? { compile_model: compileModel } : {}),
     }),
     signal: AbortSignal.timeout(600_000), // 10 min — DeepSeek draft can match extract latency on dense sources. Gemini thinking adds margin on top. Same 600s budget as extract/resolve/schema for symmetry.
@@ -629,6 +645,10 @@ export async function POST(request: Request) {
     for (const p of plans) planTitleById.set(p.plan_id, p.title);
     for (const dp of draftedPlans) planTitleById.set(dp.plan_id, dp.title);
 
+    // Lets the citation scanner recognise legacy "(uuid, Source Title)" groups
+    // in existing page content.
+    const sourceTitles = getSourceTitleSet();
+
     const tasks = layerPlans.map((plan) => async () => {
       const sourceIds: string[] = JSON.parse(plan.source_ids);
       const sourceContents: SourceContent[] = sourceIds
@@ -710,18 +730,44 @@ export async function POST(request: Request) {
         extractionsBySource,
       );
 
-      const markdown = await callDraftPage(
+      // Citations: the model cites short [S1]-style labels (named next to each
+      // source and dossier block); labelsToStoredCitations turns them into
+      // stored [^source_id] references, so pages never hold raw ids and a
+      // citation keeps its source across later updates. Existing content goes
+      // to the model with its citations converted to the same labels.
+      const labels = assignCitationLabels(sourceContents.map((sc) => sc.source_id));
+      const titleById = new Map(sourceContents.map((sc) => [sc.source_id.toLowerCase(), sc.title]));
+      const titleOf = (id: string): string => {
+        const known = titleById.get(id);
+        if (known) return known;
+        const row = db
+          .prepare('SELECT title FROM sources WHERE lower(source_id) = ?')
+          .get(id) as { title: string | null } | undefined;
+        return row?.title ?? 'Untitled source';
+      };
+      const labelledDossier = dossier ? relabelDossier(dossier, labels, titleOf) : '';
+      const labelledExisting = existingContent
+        ? citationsToLabels(existingContent, labels, (t) => sourceTitles.has(t.toLowerCase()))
+        : null;
+      const earlierSources: EarlierSource[] = (labelledExisting?.added ?? []).map((id) => ({
+        citation_label: labels.get(id) ?? '',
+        title: titleOf(id),
+      }));
+
+      const drafted = await callDraftPage(
         plan.page_type,
         plan.title,
-        sourceContents,
+        sourceContents.map((sc) => ({ ...sc, citation_label: labels.get(sc.source_id.toLowerCase()) })),
         relatedPages.length > 0 ? relatedPages : undefined,
-        existingContent,
+        labelledExisting?.markdown,
         schema,
         allKnownTitles,
-        dossier || undefined,
+        labelledDossier || undefined,
         Array.from(sessionCategorySet),
         getEffectiveCompileModel(session_id),
+        earlierSources,
       );
+      const markdown = labelsToStoredCitations(drafted, labels);
 
       updatePlanDraft(plan.plan_id, markdown);
       return { pageType: plan.page_type, markdown };

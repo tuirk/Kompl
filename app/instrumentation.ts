@@ -56,6 +56,34 @@ async function reconcilePendingFlushes(): Promise<void> {
   );
 }
 
+/**
+ * Re-derive every page's wikilink rows once per link-parser version. Before
+ * version 1 the parser read [[Target|label]] as a link to a page titled
+ * "Target|label", so those links were missing from page_links (backlinks,
+ * graph). Page text is not touched. Bump WIKILINKS_RESYNC_VERSION whenever
+ * the parser in src/lib/wikilink-syntax.ts changes what it resolves.
+ */
+const WIKILINKS_RESYNC_VERSION = '1';
+
+async function resyncWikilinksOnce(): Promise<void> {
+  if (process.env.NEXT_RUNTIME === 'edge') return;
+
+  const { getDb, getSetting, setSetting } = await import('./src/lib/db');
+  if (getSetting('wikilinks_resync_version') === WIKILINKS_RESYNC_VERSION) return;
+
+  const { resyncAllWikilinks } = await import('./src/lib/wikilinks');
+  const result = resyncAllWikilinks(getDb());
+  setSetting('wikilinks_resync_version', WIKILINKS_RESYNC_VERSION);
+  console.log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      event: 'wikilinks_resync_done',
+      version: WIKILINKS_RESYNC_VERSION,
+      ...result,
+    })
+  );
+}
+
 export async function register(): Promise<void> {
   // Skip in Edge runtime — SQLite is Node-only.
   if (process.env.NEXT_RUNTIME === 'edge') return;
@@ -69,6 +97,22 @@ export async function register(): Promise<void> {
       JSON.stringify({
         ts: new Date().toISOString(),
         event: 'reconciler_fatal',
+        error: msg,
+      })
+    );
+  }
+
+  try {
+    // After the reconciler, so pages flushed from pending_content are read
+    // from their final files.
+    await resyncWikilinksOnce();
+  } catch (err) {
+    // Non-fatal: links keep their previous rows; the next boot retries.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: 'wikilinks_resync_failed',
         error: msg,
       })
     );

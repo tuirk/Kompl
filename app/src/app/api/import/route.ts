@@ -8,6 +8,7 @@ import { NextResponse } from 'next/server';
 
 import { getDb, DATA_ROOT, logActivity, safePreviousContentPath } from '@/lib/db';
 import { isSafeId } from '@/lib/safe-paths';
+import { resyncAllWikilinks } from '@/lib/wikilinks';
 
 // System-generated pages that don't count as "user data" for the import
 // emptiness check. The Saved Links overview page is rebuilt any time an
@@ -401,6 +402,12 @@ export async function POST(request: Request) {
 
     db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('onboarding_completed', '1')`).run();
   })();
+
+  // Re-derive wikilink rows from the restored page text with the current
+  // parser. A backup's page_links can predate parser fixes (e.g. piped
+  // [[Target|label]] links were once dropped); import only runs on an empty
+  // wiki, so this touches exactly the restored pages.
+  resyncAllWikilinks(db);
 
   // -------------------------------------------------------------------------
   // Phase 3: Vector restore or backfill + activity log

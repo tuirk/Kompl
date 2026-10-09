@@ -1069,7 +1069,7 @@ Write a concept wiki page synthesizing information from multiple sources.
 {_FRONTMATTER_RULES}
 The page body should include:
 - A definition/description paragraph
-- ## Key Claims (from sources, attributed with source title)
+- ## Key Claims (from sources, each with its citation)
 - ## Contradictions section (only if sources disagree — cite both)
 - ## Related Concepts (use [[wikilinks]] for concepts that have wiki pages)
 
@@ -1107,6 +1107,17 @@ When selecting the category field, you MUST use one of the exact category string
 }
 
 
+_CITED_PAGE_TYPES = ("entity", "concept", "comparison", "overview")
+
+_CITATION_RULES = """\
+CITATIONS:
+- Each source below (and each block of pre-extracted data) has a label such as [S1].
+- Put the label of the source that supports a claim right after the claim, e.g. "Bitcoin launched in 2009 [S1]." Cite several sources as [S1][S2].
+- Use only the labels given in this prompt. Do not cite in the YAML frontmatter.
+- Never write source ids, UUIDs, or phrases like "From source" or "Pre-extracted data" in the page.
+- Keep the citation labels that already appear in the existing page content when you keep their claims."""
+
+
 def draft_page(
     page_type: str,
     title: str,
@@ -1118,6 +1129,7 @@ def draft_page(
     extraction_dossier: str = "",
     existing_categories: list[str] | None = None,
     model: str = _DEFAULT_MODEL,
+    earlier_sources: list[dict[str, Any]] | None = None,
 ) -> str:
     """Draft a wiki page using Gemini 2.5 Flash.
 
@@ -1132,6 +1144,8 @@ def draft_page(
         related_pages:    Optional list of {title, type, summary} for context
         existing_content: Existing page markdown (for updates — None for first compile)
         schema:           wiki schema.md content (None for first compile)
+        earlier_sources:  {citation_label, title} of sources the existing content
+                          cites that are not in source_contents
 
     Raises:
         LLMRateLimitedError  — bucket exhausted
@@ -1186,14 +1200,30 @@ def draft_page(
             "",
         ]
 
+    # Citation labels: when the caller labels its sources (the app does for
+    # every draft), multi-source pages cite claims with those labels. The app
+    # turns them into stored source references after the draft returns, so
+    # the page never contains raw ids.
+    cite = page_type in _CITED_PAGE_TYPES and any(sc.get("citation_label") for sc in source_contents)
+    if cite:
+        parts += [_CITATION_RULES, ""]
+        if earlier_sources:
+            listed = "; ".join(
+                f"[{es['citation_label']}] {es['title']}" for es in earlier_sources
+            )
+            parts += [
+                "Earlier sources cited in the existing page content (not included below; "
+                f"keep their labels where you keep their claims): {listed}",
+                "",
+            ]
+
     parts.append("Source documents:")
     for sc in source_contents:
         md = sc.get("markdown", "")
-        parts += [
-            f"--- Source: {sc.get('title', sc.get('source_id', ''))} ---",
-            md,
-            "",
-        ]
+        label = sc.get("citation_label")
+        name = sc.get('title', sc.get('source_id', ''))
+        header = f"--- Source [{label}]: {name} ---" if cite and label else f"--- Source: {name} ---"
+        parts += [header, md, ""]
 
     # Build category suffix separately so the truncation below never removes it.
     # It must survive at the very end of the final prompt for Gemini recency attention.

@@ -12,13 +12,13 @@ export const dynamic = 'force-dynamic';
  * YAML frontmatter in the markdown file is stripped before rendering.
  */
 
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import WikiPageHeader from '../../../components/WikiPageHeader';
 import { LocalDate } from '../../../components/LocalDate';
 import {
-  getDb,
   getCategoryGroups,
   getBacklinks,
   getPage,
@@ -38,7 +38,15 @@ import WikiSidebar from '../../../components/WikiSidebar';
 import SavedLinksInteractive from './SavedLinksInteractive';
 import { PAGE_TYPE_VAR, PAGE_TYPE_LABELS, type PageType } from '../../../lib/page-type-palette';
 import { renderInlineWikilinks } from '../../../lib/wikilink-render';
+import { replaceWikilinks, stripWikilinks } from '../../../lib/wikilink-syntax';
+import {
+  renderCitationMarkers,
+  scanCitations,
+  stripCitationPlaceholders,
+} from '../../../lib/citations';
 import { safeExternalUrl } from '../../../lib/safe-url';
+import WikiToc, { type TocHeading } from '../../../components/WikiToc';
+import { getNumberedSources, getSourceTitleSet } from '../../../lib/page-sources';
 
 const SAVED_LINKS_PAGE_ID = 'saved-links';
 
@@ -52,28 +60,54 @@ function pageTypeBadge(t: string): { label: string; color: string } | undefined 
   return { label: PAGE_TYPE_LABELS[key], color: PAGE_TYPE_VAR[key] };
 }
 
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { page_id } = await params;
+  const page = getPage(page_id);
+  if (!page) return { title: 'Page not found' };
+  return { title: page.title, description: page.summary ?? undefined };
+}
+
 /**
- * Expand [[Page Title]] wikilinks to markdown links.
- * Unknown titles render as plain text (no broken link).
+ * Expand [[Page Title]] / [[Page Title|label]] wikilinks to markdown links
+ * showing the label. Unknown titles and links to the page itself render as
+ * plain text (no broken or circular link).
  */
-function expandWikilinks(md: string, titleMap: Map<string, string>): string {
-  return md.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {
-    const pageId = titleMap.get(title.toLowerCase());
-    if (pageId) return `[${title}](/wiki/${pageId})`;
-    return title;
+function expandWikilinks(md: string, titleMap: Map<string, string>, currentPageId: string): string {
+  return replaceWikilinks(md, ({ target, label }) => {
+    const pageId = titleMap.get(target.toLowerCase());
+    if (pageId && pageId !== currentPageId) return `[${label}](/wiki/${pageId})`;
+    return label;
   });
 }
 
-/** Extract headings for TOC: returns [{level, text, anchor}] */
-function extractHeadings(md: string): { level: number; text: string; anchor: string }[] {
-  const headings: { level: number; text: string; anchor: string }[] = [];
+/** Same slug rule as the heading renderer in lib/markdown.ts. */
+function slugify(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
+}
+
+/**
+ * Extract ## and ### headings for the TOC. Skips fenced code blocks (a "# "
+ * line in code is not a heading) and strips link syntax, emphasis and
+ * citation markers from the displayed text. The anchor is slugged from the
+ * raw heading source, exactly like the renderer, so the links land.
+ */
+function extractHeadings(md: string): TocHeading[] {
+  const headings: TocHeading[] = [];
+  let inFence = false;
   for (const line of md.split('\n')) {
-    const m = line.match(/^(#{2,3})\s+(.+)$/);
-    if (m) {
-      const text = m[2].trim();
-      const anchor = text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
-      headings.push({ level: m[1].length, text, anchor });
+    if (line.trimStart().startsWith('```')) {
+      inFence = !inFence;
+      continue;
     }
+    if (inFence) continue;
+    const m = line.match(/^(#{2,3})\s+(.+?)(?:\s+#+)?\s*$/);
+    if (!m) continue;
+    const raw = m[2];
+    const text = stripCitationPlaceholders(raw)
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/[*_`]/g, '')
+      .trim();
+    if (text) headings.push({ level: m[1].length, text, anchor: slugify(raw) });
   }
   return headings;
 }
@@ -104,7 +138,13 @@ async function PreviousVersionPanel({ pageId, lastUpdated }: { pageId: string; l
   }
 
   const data = (await res.json()) as { content: string };
-  const prevHtml = renderMarkdown(stripFrontmatter(data.content));
+  // Citation numbers belong to the current version's source list, so the old
+  // version shows its text without them; wikilinks become plain labels.
+  const sourceTitles = getSourceTitleSet();
+  const prevMarkdown = stripCitationPlaceholders(
+    scanCitations(stripFrontmatter(data.content), (t) => sourceTitles.has(t.toLowerCase())).markdown,
+  );
+  const prevHtml = renderMarkdown(stripWikilinks(prevMarkdown));
 
   return (
     <div
@@ -254,37 +294,32 @@ export default async function WikiPageDetail({ params }: PageProps) {
   const entities = rawMarkdown ? parseFrontmatterEntities(rawMarkdown) : [];
   const strippedMarkdown = rawMarkdown ? stripFrontmatter(rawMarkdown) : null;
   const titleMap = getPageTitleMap();
+  const sourceTitles = getSourceTitleSet();
+
   // Heal legacy drafts: unwrap body-only code fences, drop duplicate `## Sources`
-  // section (provenance footer below owns it), then expand wikilinks.
-  const cleanMarkdown = strippedMarkdown
-    ? expandWikilinks(
-        stripLeadingContentHeading(
-          stripSourcesSection(stripWrappingFence(strippedMarkdown)),
-        ),
-        titleMap,
+  // section (the numbered source list below owns it), turn citations into
+  // numbered placeholders, then expand wikilinks. Citations go first: legacy
+  // citation groups can contain [[wikilinks]].
+  const scan = strippedMarkdown
+    ? scanCitations(
+        stripLeadingContentHeading(stripSourcesSection(stripWrappingFence(strippedMarkdown))),
+        (t) => sourceTitles.has(t.toLowerCase()),
       )
     : null;
+  const cleanMarkdown = scan ? expandWikilinks(scan.markdown, titleMap, page_id) : null;
   const headings = cleanMarkdown ? extractHeadings(cleanMarkdown) : [];
-  const html = cleanMarkdown ? renderMarkdown(cleanMarkdown) : null;
 
   const groups = getCategoryGroups();
   const backlinks = getBacklinks(page_id);
 
-  const db = getDb();
-  const provRows = db
-    .prepare(
-      `SELECT p.source_id, s.title AS source_title, s.source_url, p.date_compiled
-         FROM provenance p
-         JOIN sources s ON s.source_id = p.source_id
-         WHERE p.page_id = ?
-         ORDER BY p.date_compiled DESC`
-    )
-    .all(page_id) as Array<{
-    source_id: string;
-    source_title: string;
-    source_url: string | null;
-    date_compiled: string;
-  }>;
+  // Cited sources first (numbers match the markers), then the other sources.
+  const sourceList = getNumberedSources(page_id, scan?.order ?? []);
+  const html = cleanMarkdown
+    ? renderCitationMarkers(
+        renderMarkdown(cleanMarkdown),
+        (n) => sourceList[n - 1]?.title ?? 'Source no longer in the wiki',
+      )
+    : null;
 
   const badge = pageTypeBadge(page.page_type);
 
@@ -328,7 +363,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
               </span>
             </div>
             {page.summary && (
-              <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-muted)', lineHeight: 1.7, fontSize: 16, maxWidth: '91ch' }}>
+              <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-secondary)', lineHeight: 1.7, fontSize: 18, maxWidth: '70ch' }}>
                 {renderInlineWikilinks(page.summary, titleMap)}
               </p>
             )}
@@ -356,7 +391,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
                 CONTENT
               </span>
             </div>
-            <article dangerouslySetInnerHTML={{ __html: html }} style={{ fontSize: 16 }} />
+            <article dangerouslySetInnerHTML={{ __html: html }} style={{ fontSize: 18 }} />
           </section>
         ) : (
           <div
@@ -373,37 +408,66 @@ export default async function WikiPageDetail({ params }: PageProps) {
           </div>
         )}
 
-        {/* Provenance footer */}
-        {provRows.length > 0 && (
+        {/* Numbered sources — citation markers in the text link here (#src-N). */}
+        {(sourceList.length > 0 || page.previous_content_path) && (
           <footer
             style={{
               marginTop: '3rem',
               paddingTop: '1.5rem',
               borderTop: '1px solid var(--border)',
               color: 'var(--fg-muted)',
-              fontSize: 12,
+              fontSize: 14,
             }}
           >
-            <div className="meta" style={{ fontWeight: 600, marginBottom: '0.4rem' }}>
-              BUILT FROM {provRows.length} SOURCE{provRows.length !== 1 ? 'S' : ''}
-            </div>
-            {provRows.map((r) => (
-              <div key={r.source_id} style={{ marginBottom: '0.25rem' }}>
-                <Link href={`/source/${r.source_id}`}>{r.source_title}</Link>
-                {safeExternalUrl(r.source_url) && (
-                  <>
-                    {' '}
-                    &mdash;{' '}
-                    <a href={safeExternalUrl(r.source_url)!} target="_blank" rel="noopener noreferrer">
-                      original
-                    </a>
-                  </>
-                )}
-                <span className="meta" style={{ marginLeft: '0.5rem' }}>
-                  <LocalDate iso={r.date_compiled} />
-                </span>
-              </div>
-            ))}
+            {sourceList.length > 0 && (
+              <>
+                <h2 className="meta" style={{ fontWeight: 600, marginBottom: '0.6rem' }}>
+                  Sources ({sourceList.length})
+                </h2>
+                <ol style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                  {sourceList.map((r) => (
+                    <li
+                      key={r.source_id}
+                      id={`src-${r.n}`}
+                      className="source-row"
+                      style={{ display: 'flex', gap: '0.6rem', padding: '0.3rem 0.4rem', scrollMarginTop: 80 }}
+                    >
+                      <span
+                        className="mono"
+                        style={{
+                          minWidth: '1.6em',
+                          textAlign: 'right',
+                          color: r.cited ? 'var(--accent)' : 'var(--fg-dim)',
+                        }}
+                      >
+                        {r.n}
+                      </span>
+                      <span>
+                        {r.title ? (
+                          <Link href={`/source/${r.source_id}`}>{r.title}</Link>
+                        ) : (
+                          <span style={{ color: 'var(--fg-dim)' }}>Source no longer in the wiki</span>
+                        )}
+                        {safeExternalUrl(r.source_url) && (
+                          <>
+                            {' '}
+                            &mdash;{' '}
+                            <a href={safeExternalUrl(r.source_url)!} target="_blank" rel="noopener noreferrer">
+                              original
+                            </a>
+                          </>
+                        )}
+                        {r.date && (
+                          <span className="meta" style={{ marginLeft: '0.5rem' }}>
+                            <LocalDate iso={r.date} />
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </>
+            )}
             {page.previous_content_path && (
               <details style={{ marginTop: '1rem' }}>
                 <summary
@@ -427,40 +491,19 @@ export default async function WikiPageDetail({ params }: PageProps) {
           borderLeft: '1px solid var(--border)',
           fontSize: 13,
           position: 'sticky',
-          top: 0,
-          maxHeight: 'calc(100dvh / 0.9)',
+          // Below the fixed 65px TopNav (same zoomed coordinate space).
+          top: 65,
+          maxHeight: 'calc(100dvh / 0.9 - 65px)',
           overflowY: 'auto',
           alignSelf: 'flex-start',
         }}
       >
-        {headings.length > 0 && (
-          <section style={{ marginBottom: '2rem' }}>
-            <div className="meta" style={{ marginBottom: '0.5rem' }}>
-              Contents
-            </div>
-            {headings.map((h) => (
-              <a
-                key={h.anchor}
-                href={`#${h.anchor}`}
-                style={{
-                  display: 'block',
-                  paddingLeft: h.level === 3 ? '1em' : 0,
-                  color: 'var(--fg-muted)',
-                  fontSize: 12,
-                  padding: `0.2em 0 0.2em ${h.level === 3 ? '0.8em' : '0'}`,
-                  lineHeight: 1.4,
-                }}
-              >
-                {h.text}
-              </a>
-            ))}
-          </section>
-        )}
+        <WikiToc headings={headings} />
 
         <section>
-          <div className="meta" style={{ marginBottom: '0.5rem' }}>
+          <h2 className="meta" style={{ marginBottom: '0.5rem' }}>
             Linked from ({backlinks.length})
-          </div>
+          </h2>
           {backlinks.length === 0 ? (
             <p style={{ color: 'var(--fg-dim)', fontSize: 12, margin: 0 }}>No inbound links yet.</p>
           ) : (
@@ -482,10 +525,10 @@ export default async function WikiPageDetail({ params }: PageProps) {
           )}
         </section>
 
-        {page.page_type === 'source-summary' && provRows[0] && (
+        {page.page_type === 'source-summary' && sourceList[0] && (
           <section style={{ marginTop: '2rem' }}>
             <Link
-              href={`/source/${provRows[0].source_id}`}
+              href={`/source/${sourceList[0].source_id}`}
               style={{
                 display: 'block',
                 fontSize: 17,

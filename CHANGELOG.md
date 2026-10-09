@@ -10,6 +10,29 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+### Wiki readability
+
+- **Numbered citations.** Pages cite sources as superscript numbers that
+  jump to a numbered source list (cited sources first). Pages drafted
+  earlier, which printed raw source UUIDs in assorted shapes, render the same
+  way without a redraft. New drafts cite with `[S1]`-style labels that are
+  stored as `[^source_id]` references, so a page never contains raw ids.
+- **MCP `read_page`** returns the page body without frontmatter, with
+  citations as `[n]` and a matching numbered, de-duplicated source list.
+- **Piped wikilinks** (`[[Target|label]]`) render as links showing the label
+  instead of literal text, and count as links for backlinks and the graph.
+  Links from a page to itself render as plain text.
+- **Source lists no longer double-count:** provenance gains a row per
+  compile, so the page footer and the page-data API now show one row per
+  source (Bitcoin: 6, was 15). Recompiles send each source once.
+- **Search** finds hyphenated and possessive terms ("sha-256",
+  "proof-of-work", "bitcoin's"), in the app and through MCP `search_wiki`.
+- **Reading layout:** ~70-character lines (was ~100), larger body text,
+  always-underlined links, full-contrast summary, `--fg-dim` and
+  `--fg-subtle` raised to pass WCAG AA (were 2.5:1 and 4.2:1), a table of
+  contents that stays below the top bar and highlights the current section,
+  per-page tab titles ("Bitcoin · Kompl") and a proper "not found" page.
+
 ### Added
 
 - **Current models.** Compile model choices are now DeepSeek V4.1 Flash

@@ -24,7 +24,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Kompl',
+  // Pages set their own name ("Bitcoin" → "Bitcoin · Kompl") so browser tabs
+  // and history are tellable apart.
+  title: { default: 'Kompl', template: '%s · Kompl' },
   description: 'Stop saving. Start compiling.',
 };
 

@@ -14,7 +14,9 @@
      --fg           High-contrast primary text                (#ececf0)
      --fg-secondary Primary body text (slightly softer)       (#d4d4d8)
      --fg-muted     Labels, metadata, secondary icons         (#a1a1aa)
-     --fg-dim       Timestamps, breadcrumbs, inactive nav     (#52525b)
+     --fg-dim       Timestamps, breadcrumbs, inactive nav     (#83838c)
+     Every text token clears WCAG AA (4.5:1) on --bg and --bg-card; --fg-dim
+     was #52525b (2.5:1) until the wiki readability pass.
      Note: --fg deliberately *not* pure white — pure #fff on dark bg
      causes glare / visual distortion for dyslexic readers (BDA + W3C).
 
@@ -66,7 +68,7 @@
   --fg:            #ececf0;
   --fg-secondary:  #d4d4d8;
   --fg-muted:      #a1a1aa;
-  --fg-dim:        #52525b;
+  --fg-dim:        #83838c;
 
   /* --- Borders --- */
   --border:        #1e2022;
@@ -80,7 +82,7 @@
   --accent-text:   #00291D;   /* dark text for use ON the accent background */
 
   /* --- Foreground (extended) --- */
-  --fg-subtle:      #757578;   /* mid-gray metadata — between --fg-dim and --fg-muted */
+  --fg-subtle:      #94949c;   /* mid-gray metadata — between --fg-dim and --fg-muted */
   --fg-muted-rgb:   161, 161, 170; /* RGB of --fg-muted for rgba() usage */
 
   /* --- Borders / separators --- */
@@ -367,7 +369,7 @@ article h2 {
   margin: 2em 0 0.6em;
   padding-bottom: 0.3em;
   border-bottom: 1px solid var(--border);
-  color: var(--fg-secondary);
+  color: var(--fg);
   scroll-margin-top: 80px;
 }
 article h3 {
@@ -375,7 +377,7 @@ article h3 {
   font-weight: 600;
   line-height: 1.3;
   margin: 1.6em 0 0.4em;
-  color: var(--fg-secondary);
+  color: var(--fg);
   scroll-margin-top: 80px;
 }
 article h4 {
@@ -383,18 +385,51 @@ article h4 {
   font-weight: 600;
   line-height: 1.35;
   margin: 1.4em 0 0.3em;
-  color: var(--fg-secondary);
+  color: var(--fg);
   scroll-margin-top: 80px;
 }
+/* ~70 characters per line: long enough to read fast, short enough to keep
+   your place (Butterick 45–90, WCAG AAA ≤ 80). Was 91ch. */
 article p {
-  line-height: 1.8;
-  max-width: 91ch;
+  line-height: 1.7;
+  max-width: 70ch;
   margin-top: 0;
   margin-bottom: 1.1em;
 }
 article li {
-  line-height: 1.8;
-  max-width: 91ch;
+  line-height: 1.7;
+  max-width: 70ch;
+}
+/* Links in running text need more than colour to stand out from it (WCAG
+   1.4.1): a quiet, always-on underline that firms up on hover. */
+article a {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+  text-decoration-color: rgba(var(--accent-rgb), 0.45);
+}
+article a:hover {
+  text-decoration-color: currentColor;
+}
+/* Numbered source citations (lib/citations.ts). */
+article sup.cite {
+  font-size: 0.7em;
+  line-height: 0;
+  margin-left: 0.1em;
+  white-space: nowrap;
+}
+article sup.cite a {
+  font-family: var(--font-mono, monospace);
+  text-decoration: none;
+  padding: 0 0.12em;
+}
+article sup.cite a:hover {
+  text-decoration: underline;
+}
+/* The source row a citation points at, after a click. */
+.source-row:target {
+  background: rgba(var(--accent-rgb), 0.08);
+  border-radius: 4px;
 }
 article code {
   font-family: var(--font-mono, ui-monospace, Consolas, monospace);

@@ -1,5 +1,6 @@
 // Disable static prerendering — reads from SQLite which only exists at runtime.
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Wiki' };
 
 /**
  * /wiki — Wiki index page. SERVER component.

@@ -32,6 +32,7 @@ import {
 } from './db';
 import { syncPageWikilinks } from './wikilinks';
 import { LONG_HTTP_AGENT } from './long-http-agent';
+import { assignCitationLabels, labelsToStoredCitations } from './citations';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -39,6 +40,8 @@ interface SourceContent {
   source_id: string;
   title: string;
   markdown: string;
+  /** "S1"-style label the page cites this source with (lib/citations.ts). */
+  citation_label?: string;
 }
 
 interface WritePageResult {
@@ -135,9 +138,13 @@ export async function recompilePage(
   }
 
   // ── Build source contents for re-drafting ─────────────────────────────────
+  // Provenance gains a row on every compile; send each source once.
   const sourceContents: SourceContent[] = [];
+  const seenSources = new Set<string>();
   for (const prov of remainingProvenance) {
     if (prov.source_id === removedSourceId) continue; // belt-and-suspenders
+    if (seenSources.has(prov.source_id)) continue;
+    seenSources.add(prov.source_id);
     const src = getSource(prov.source_id);
     if (!src) continue;
     const markdown = readRawMarkdown(prov.source_id);
@@ -154,7 +161,17 @@ export async function recompilePage(
   const existingCategories = getCategoryGroups()
     .map((g) => g.category)
     .filter((c): c is string => c !== null && c !== 'Uncategorized' && c !== 'General');
-  const newMarkdown = await callDraftPage(page.page_type, page.title, sourceContents, existingCategories, getCompileModel());
+  // The model cites [S1]-style labels; they become stored [^source_id]
+  // references (lib/citations.ts), as in the compile draft route.
+  const labels = assignCitationLabels(sourceContents.map((sc) => sc.source_id));
+  const drafted = await callDraftPage(
+    page.page_type,
+    page.title,
+    sourceContents.map((sc) => ({ ...sc, citation_label: labels.get(sc.source_id.toLowerCase()) })),
+    existingCategories,
+    getCompileModel(),
+  );
+  const newMarkdown = labelsToStoredCitations(drafted, labels);
 
   // ── Phase 2: sync transaction — update pages + setPendingContent + FTS5 ──
   // File is NOT written yet. pending_content stores markdown so the boot
