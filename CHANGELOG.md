@@ -35,6 +35,13 @@ ship with a `migrate.py` step that runs at boot.
   filtered by category and page type, and page with `offset`. While the NLP
   service is down or still loading its model, keyword matches come back with
   a note saying so. The app's search box keeps its keyword search.
+- **Search by meaning works right after a restart.** The embedding model
+  (all-MiniLM-L6-v2, about 90 MB) now ships inside the NLP service image and
+  loads in the background at startup. Before, every new container (so every
+  `kompl update`) downloaded it from Hugging Face on first use, which needed
+  internet and took about 30 seconds; searches in that window came back
+  keyword-only, and the first compile's entity matching waited for the same
+  download. The NLP service no longer contacts Hugging Face at all.
 - **New `add_source`** lets an agent save links (up to 5 per call) or a note
   to the wiki when the user asks. It is off until turned on in Settings →
   Connect your AI, because each addition starts a compile that uses the AI

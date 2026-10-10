@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import unicodedata
 from collections import Counter
 from typing import Any
@@ -44,15 +45,20 @@ router = APIRouter(tags=["resolution"])
 # ---------------------------------------------------------------------------
 
 _embed_model: Any = None
+# The startup warm-up (main.py) loads the model in a background thread; a
+# request arriving meanwhile waits for that load instead of starting another.
+_embed_model_lock = threading.Lock()
 
 
 def _get_embed_model() -> Any:
     global _embed_model
     if _embed_model is None:
-        from sentence_transformers import SentenceTransformer
-        logger.info("Loading SentenceTransformer all-MiniLM-L6-v2 for entity resolution...")
-        _embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-        logger.info("Embedding model loaded.")
+        with _embed_model_lock:
+            if _embed_model is None:
+                from sentence_transformers import SentenceTransformer
+                logger.info("Loading SentenceTransformer all-MiniLM-L6-v2 for entity resolution...")
+                _embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+                logger.info("Embedding model loaded.")
     return _embed_model
 
 

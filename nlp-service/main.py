@@ -46,6 +46,7 @@ migration script, briefly, at boot).
 
 import logging
 import os
+import threading
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
@@ -58,6 +59,7 @@ from routers.pipeline import router as pipeline_router
 from routers.resolution import router as resolution_router
 from routers.storage import router as storage_router
 from routers.vectors import router as vectors_router
+from services.vector_store import warm_up
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +111,13 @@ def startup_check() -> None:
             "will fail with 500 for any session. "
             "Set at least one in docker-compose.yml / .env."
         )
+
+
+@app.on_event("startup")
+def warm_embeddings() -> None:
+    """Load the embedding model in the background so the service answers
+    /health at once and the first search after a restart is not keyword-only."""
+    threading.Thread(target=warm_up, name="embedding-warm-up", daemon=True).start()
 
 
 @app.get("/health", response_model=HealthResponse)
