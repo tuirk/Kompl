@@ -4,8 +4,8 @@ name: Tests
 # commit 2 onward. TODO stages are fine; REAL stages must stay green.
 # See scripts/integration-test.sh for the 11-stage harness.
 #
-# Two jobs run in parallel:
-#   - unit-tests: vitest (app, cli) + pytest (nlp-service). Fast (<5 min).
+# Jobs run in parallel:
+#   - unit-tests: vitest (app, mcp-server), jest (cli) + pytest (nlp-service). Fast (<5 min).
 #   - integration-test: full docker compose end-to-end (10-15 min).
 
 on:
@@ -47,6 +47,24 @@ jobs:
         working-directory: cli
       - run: npm test
         working-directory: cli
+
+  unit-tests-mcp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: mcp-server/package-lock.json
+      - run: npm ci
+        working-directory: mcp-server
+      # tsc type-checks and emits dist/index.js, the path MCP clients launch.
+      - run: npm run build
+        working-directory: mcp-server
+      - run: npm test
+        working-directory: mcp-server
 
   unit-tests-nlp:
     runs-on: ubuntu-latest

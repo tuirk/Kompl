@@ -10,6 +10,24 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+### MCP server
+
+- **Stays built.** Setup and `kompl update` now build the MCP server, and
+  `kompl start` rebuilds it once when its build is older than its source, so
+  AI agents run the code that matches the installed Kompl. Before, it was
+  built by hand once at install and never again. Restart your AI agent after
+  an update to load the new version.
+- **`wiki_stats` no longer writes.** It read `/api/health`, which also repairs
+  stuck compile sessions; it now reads `/api/wiki/stats` and shows active
+  sources, entity and concept counts and the last ingest and compile times
+  (instead of schema version and table count).
+- **Failed calls are marked as errors** (`isError`) with a next step ("Start
+  it with `kompl start`", "Use search_wiki to find page ids"), and every tool
+  has a title and read-only annotations.
+- **MCP SDK 1.32.1** (fixes an advisory affecting 1.12–1.30) with refreshed
+  dependencies; `npm audit` reports none. The server has its own tests and CI
+  job.
+
 ### Wiki readability
 
 - **Numbered citations.** Pages cite sources as superscript numbers that

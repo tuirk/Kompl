@@ -9,6 +9,7 @@
  *   3. Prompts for Firecrawl (required) plus DeepSeek and/or Gemini (at least one
  *      compile provider required) and YouTube (optional); writes them to .env
  *   4. Installs and globally links the kompl CLI (npm link)
+ *   4b. Builds the MCP server (mcp-server/dist) that AI agents launch
  *   5. Writes ~/.kompl/config.json so `kompl` commands work immediately
  *   6. Runs `docker compose up --build -d` to start the full stack
  *
@@ -165,6 +166,21 @@ async function main() {
     console.log(yellow('  kompl CLI installed but not in PATH.'))
     console.log(dim('  You may need to open a new terminal, or add the npm global bin to your PATH.'))
     console.log(dim('  Run: npm config get prefix  → then add <prefix>/bin to PATH.\n'))
+  }
+
+  // ── 4b. Build the MCP server ───────────────────────────────────────────────
+  // AI agents launch mcp-server/dist/index.js, which isn't in git. Optional:
+  // a failed build only costs agent access, so warn and keep going.
+  // `kompl update` repeats this step (cli/src/mcp-build.ts).
+  console.log('\n  Building the MCP server for AI agents...')
+  try {
+    const mcpDir = path.join(ROOT, 'mcp-server')
+    run('npm ci --no-audit --no-fund', mcpDir)
+    run('npm run build', mcpDir)
+    console.log(green('  MCP server built'))
+  } catch {
+    console.log(yellow('  MCP server build failed — Kompl works without it, but AI agents can\'t connect until it builds.'))
+    console.log(dim('  Retry later with: cd mcp-server && npm ci && npm run build\n'))
   }
 
   // ── 5. Write ~/.kompl/config.json ──────────────────────────────────────────

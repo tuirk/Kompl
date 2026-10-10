@@ -2,7 +2,7 @@ import path from 'path'
 import { execSync } from 'child_process'
 
 function run(cmd: string, cwd: string): void {
-  execSync(cmd, { cwd, stdio: 'inherit', shell: true })
+  execSync(cmd, { cwd, stdio: 'inherit' })
 }
 
 /**
