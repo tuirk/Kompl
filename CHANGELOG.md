@@ -147,6 +147,12 @@ ship with a `migrate.py` step that runs at boot.
   `schema_version` (which made `/api/health` report the DB as broken until
   the next restart). Backups from before v26 that kept the default model
   import pinned to `gemini-2.5-flash`.
+- **Restoring a new backup on an older release** (up to v0.3.2.1) no longer
+  leaves that install "degraded": backups keep the schema version in
+  `manifest.json` only, so an older import can't copy it over its own.
+  Checked against the May–October 2026 backups: every one imports into this
+  release, upgrades from v0.3.2.1 keep every row, and a backup made here
+  restores into v0.3.2.1 with all pages.
 
 ## [0.3.2.1] — 2026-09-01
 

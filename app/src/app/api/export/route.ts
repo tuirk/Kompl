@@ -273,7 +273,13 @@ export async function GET(request: Request) {
     dbFolder.file('compile_progress.json', JSON.stringify(getAllCompileProgress(), null, 2));
     dbFolder.file('chat_messages.json', JSON.stringify(getAllChatMessages(), null, 2));
     dbFolder.file('page_plans.json', JSON.stringify(getAllPagePlans(), null, 2));
-    dbFolder.file('settings.json', JSON.stringify(getExportableSettings(), null, 2));
+    // The schema version travels in manifest.json. Older Kompl releases copy
+    // every settings row on import, so a schema_version row here would
+    // overwrite an older install's own version and leave it "degraded".
+    dbFolder.file(
+      'settings.json',
+      JSON.stringify(getExportableSettings().filter((s) => s.key !== 'schema_version'), null, 2),
+    );
 
     const rawFolder = zip.folder('raw')!;
     for (const s of sources) {
