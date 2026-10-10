@@ -199,6 +199,10 @@ ship with a `migrate.py` step that runs at boot.
 
 ### Fixed
 
+- **Page summaries no longer show citation labels:** a draft that cited
+  inside its summary ("…dining and parks [S1][S2].") kept the raw labels
+  wherever the summary appears. The frontmatter clean-up every draft,
+  recompile and page update passes through now removes them.
 - **Related pages ("You might also read"):** archived pages are no longer
   suggested, matches below 0.25 similarity no longer fill the list (it can
   show fewer than five pages), the panel gives up after 3 seconds so a slow

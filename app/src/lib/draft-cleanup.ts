@@ -44,8 +44,17 @@ export function sourceOnlyTitles(rows: ReadonlyArray<{ title: string | null; pag
 const FRONTMATTER_KEYS = new Set(['title', 'page_type', 'category', 'summary', 'entities']);
 
 /**
+ * Citation labels ("[S1]", "[S1, S2]") and stored citation tokens ("[^id]"),
+ * with the space before them. Citations belong in the body; the label
+ * converter skips frontmatter, so one left in the summary would show raw
+ * wherever the summary is shown.
+ */
+const SUMMARY_CITATION = /\s*\[\s*(?:S\d+(?:\s*[,;]\s*S\d+)*|\^[^\]\s]+)\s*\]/gi;
+
+/**
  * Drop every frontmatter key the app doesn't read: sources, last_updated,
- * status, contested and the like. Models can only invent those values.
+ * status, contested and the like. Models can only invent those values. The
+ * summary also loses any citation labels the model put in it.
  * Idempotent; markdown without a frontmatter block is returned unchanged.
  */
 export function normalizeFrontmatter(markdown: string): string {
@@ -56,11 +65,15 @@ export function normalizeFrontmatter(markdown: string): string {
   if (end === -1) return markdown;
   const kept: string[] = [];
   let keeping = false;
+  let inSummary = false;
   for (const line of lines.slice(1, end)) {
     const key = line.match(/^([A-Za-z_][\w-]*)\s*:/);
     // A top-level key starts at column 0; indented and "- " lines continue it.
-    if (key) keeping = FRONTMATTER_KEYS.has(key[1].toLowerCase());
-    if (keeping) kept.push(line);
+    if (key) {
+      keeping = FRONTMATTER_KEYS.has(key[1].toLowerCase());
+      inSummary = key[1].toLowerCase() === 'summary';
+    }
+    if (keeping) kept.push(inSummary ? line.replace(SUMMARY_CITATION, '') : line);
   }
   return [lines[0], ...kept, ...lines.slice(end)].join('\n');
 }

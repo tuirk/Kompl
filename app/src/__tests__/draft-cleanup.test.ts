@@ -63,6 +63,31 @@ describe('normalizeFrontmatter', () => {
     expect(normalizeFrontmatter(once)).toBe(once);
   });
 
+  it('drops citation labels from the summary, folded lines included, and nowhere else', () => {
+    const md = [
+      '---',
+      'title: Gediminas Avenue',
+      'summary: A street known for its cafes [S1][S2] and parks [S1, S3] [^a1b2c3d4-0000-4000-8000-000000000001].',
+      'category: Travel [S1]',
+      '---',
+      '',
+      'Body text [S1].',
+    ].join('\n');
+    expect(normalizeFrontmatter(md)).toBe(
+      [
+        '---',
+        'title: Gediminas Avenue',
+        'summary: A street known for its cafes and parks.',
+        'category: Travel [S1]',
+        '---',
+        '',
+        'Body text [S1].',
+      ].join('\n'),
+    );
+    const folded = '---\ntitle: X\nsummary: >\n  The primary metric [S1]\n  in production [S2].\n---\n\nBody';
+    expect(normalizeFrontmatter(folded)).toBe('---\ntitle: X\nsummary: >\n  The primary metric\n  in production.\n---\n\nBody');
+  });
+
   it('leaves markdown without a closed frontmatter block alone', () => {
     expect(normalizeFrontmatter('# Heading\n\nlast_updated: 2020')).toBe('# Heading\n\nlast_updated: 2020');
     expect(normalizeFrontmatter('---\ntitle: X\nno closing fence')).toBe('---\ntitle: X\nno closing fence');
