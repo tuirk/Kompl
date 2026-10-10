@@ -137,6 +137,8 @@ ship with a `migrate.py` step that runs at boot.
 
 ### Changed
 
+- **Settings:** **Auto-approve wiki changes** moved into Advanced tuning, and
+  the Review section, which only held that switch, is gone.
 - **Page history keeps the last 2 versions.** Each time a page is saved,
   its current text is archived as before, and archives beyond the newest
   2 are deleted. "View previous version" and "Restore this version" use

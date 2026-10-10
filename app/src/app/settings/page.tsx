@@ -2,8 +2,9 @@
 
 /**
  * /settings — one scrollable page, grouped so the decisions that matter most
- * come first: AI model & spend, Connect your AI (MCP), Review, Wiki health,
- * Backup & restore, then Advanced tuning (collapsed).
+ * come first: AI model & spend, Connect your AI (MCP), Wiki health,
+ * Backup & restore, then Advanced tuning (auto-approve, then the compile
+ * quality settings, collapsed).
  *
  * Other pages link to #compile-model, #integrations, #import and
  * #page-upgrade — keep those ids. Layout building blocks live in ./_ui.tsx.
@@ -29,7 +30,6 @@ import {
 const SETTINGS_NAV = [
   { id: 'model', label: 'AI model & spend' },
   { id: 'integrations', label: 'Connect your AI' },
-  { id: 'review', label: 'Review' },
   { id: 'wiki-health', label: 'Wiki health' },
   { id: 'data', label: 'Backup & restore' },
   { id: 'advanced', label: 'Advanced tuning' },
@@ -664,29 +664,6 @@ export default function SettingsPage() {
             />
           </SettingsGroup>
 
-          {/* ========== Review ========== */}
-          <SettingsGroup id="review" title="Review">
-            <SettingCard
-              title="Auto-approve wiki changes"
-              summary={
-                <>
-                  When enabled, compiled pages are committed immediately to the wiki.
-                  When disabled, changes appear as drafts on your dashboard for review before publishing.
-                </>
-              }
-              control={
-                <TogglePill
-                  label="Auto-approve wiki changes"
-                  value={autoApprove}
-                  onClick={() => void toggle()}
-                  disabled={saving}
-                  defaultHint="ON"
-                />
-              }
-              saved={saved ? 'Saved.' : null}
-            />
-          </SettingsGroup>
-
           {/* ========== Wiki health ========== */}
           <SettingsGroup id="wiki-health" title="Wiki health">
             <PageUpgradeCard />
@@ -891,8 +868,29 @@ export default function SettingsPage() {
           <SettingsGroup
             id="advanced"
             title="Advanced tuning"
-            intro="Defaults work for most wikis. Change these only when drafts look thin or noisy, or a compile costs more than you expect."
+            intro="Defaults work for most wikis. Change these only when you want to review changes before they reach the wiki, when drafts look thin or noisy, or when a compile costs more than you expect."
           >
+            <SettingCard
+              id="auto-approve"
+              title="Auto-approve wiki changes"
+              summary={
+                <>
+                  When enabled, compiled pages are committed immediately to the wiki.
+                  When disabled, changes appear as drafts on your dashboard for review before publishing.
+                </>
+              }
+              control={
+                <TogglePill
+                  label="Auto-approve wiki changes"
+                  value={autoApprove}
+                  onClick={() => void toggle()}
+                  disabled={saving}
+                  defaultHint="ON"
+                />
+              }
+              saved={saved ? 'Saved.' : null}
+            />
+
             <Card>
               <details>
                 <summary
