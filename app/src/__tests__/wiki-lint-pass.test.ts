@@ -148,4 +148,30 @@ describe('POST /api/wiki/lint-pass', () => {
     const refs = body.missing_cross_refs as Array<{ entity_text: string; mention_count: number }>;
     expect(refs.some((r) => r.entity_text === entity && r.mention_count >= 3)).toBe(true);
   });
+
+  it('does not report names that any page or alias already covers, whatever the case, or dates and ordinals', async () => {
+    seedPage(handle.db, { page_id: 'btc', title: 'Bitcoin', page_type: 'concept' });
+    seedPage(handle.db, { page_id: 'eth', title: 'Ethereum', page_type: 'entity' });
+    handle.db
+      .prepare(`INSERT INTO aliases (alias, canonical_name, canonical_page_id) VALUES ('ETH', 'Ethereum', 'eth')`)
+      .run();
+    for (let i = 0; i < 3; i++) {
+      const source_id = seedSource(handle.db, { source_id: `src-covered-${i}` });
+      seedExtraction(handle.db, {
+        source_id,
+        ner_output: {
+          entities: [
+            { text: 'bitcoin', label: 'ORG' },
+            { text: 'eth', label: 'ORG' },
+            { text: 'second', label: 'ORDINAL' },
+            { text: '2009', label: 'DATE' },
+            { text: 'Satoshi Nakamoto', label: 'PERSON' },
+          ],
+        },
+      });
+    }
+    const { body } = await postLint();
+    const refs = (body.missing_cross_refs as Array<{ entity_text: string }>).map((r) => r.entity_text);
+    expect(refs).toEqual(['Satoshi Nakamoto']);
+  });
 });

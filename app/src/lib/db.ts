@@ -3179,6 +3179,15 @@ export function getWikiStats(): WikiStats {
 // Draft approval helpers (commit 8)
 // ============================================================================
 
+/** Number of drafts waiting for approval, without loading their text. */
+export function countPendingDrafts(): number {
+  return (
+    openDb().prepare(`SELECT COUNT(*) AS n FROM page_plans WHERE draft_status = 'pending_approval'`).get() as {
+      n: number;
+    }
+  ).n;
+}
+
 /**
  * Fetch all page_plans with draft_status = 'pending_approval'.
  * Used by GET /api/drafts/pending and the dashboard draft section.

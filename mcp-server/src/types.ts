@@ -86,3 +86,94 @@ export interface WikiStats {
   last_ingested: string | null;
   last_compiled: string | null;
 }
+
+/** A finding: how many, and the first few. */
+export interface Summary<T> {
+  count: number;
+  top: T[];
+}
+
+export interface WikiStatus {
+  stats: WikiStats;
+  compile_running: { session_id: string; started_at: string | null; source_count: number } | null;
+  pending_drafts: number;
+  failed_links: Summary<{ url: string; title: string | null; error: string; date_attempted: string }>;
+  vector_backlog: number;
+  stale_sources: Summary<{ source_id: string; title: string; date_ingested: string }> & { threshold_days: number };
+  gaps: {
+    missing_pages: Summary<{ name: string; mentions: number }> & { capped?: boolean };
+    thin_pages: Summary<{ page_id: string; title: string; page_type: string; backlinks: number }>;
+    orphan_pages: Summary<{ page_id: string; title: string }>;
+    dead_provenance: { count: number };
+  };
+  last_health_check: {
+    at: string | null;
+    contradictions: Summary<{ page_a: string; page_b: string; claim: string }>;
+  } | null;
+}
+
+/** A list cut at the caller's limit, with the full count. */
+export interface Listed<T> {
+  items: T[];
+  total: number;
+}
+
+export interface ChangedPage {
+  page_id: string;
+  title: string;
+  page_type: string;
+  change: 'created' | 'updated';
+  at: string;
+  /** The first few sources behind the change, out of source_total. */
+  sources: Array<{ source_id: string; title: string | null }>;
+  source_total: number;
+}
+
+export interface AddedSource {
+  source_id: string;
+  title: string;
+  source_type: string;
+  source_url: string | null;
+  date_ingested: string;
+  page_count: number;
+  onboarding_session_id: string | null;
+}
+
+export interface WikiEvent {
+  at: string;
+  kind: string;
+  page_id: string | null;
+  page_title: string | null;
+  source_title: string | null;
+  detail: string | null;
+}
+
+export type Changes =
+  | {
+      mode: 'since';
+      since: string;
+      sources_added: Listed<AddedSource>;
+      pages: Listed<ChangedPage>;
+      disputes: Listed<WikiEvent>;
+      failures: Listed<WikiEvent>;
+    }
+  | {
+      mode: 'session';
+      session_id: string;
+      status: string | null;
+      current_step: string | null;
+      error: string | null;
+      started_at: string | null;
+      completed_at: string | null;
+      staged: Listed<{ item: string; status: string; error: string | null }>;
+      sources_added: Listed<AddedSource>;
+      pages: Listed<ChangedPage>;
+      failures: Listed<WikiEvent>;
+    }
+  | {
+      mode: 'page';
+      page: { page_id: string; title: string; page_type: string; created_at: string; last_updated: string };
+      compiles: Listed<{ source_id: string; source_title: string | null; contribution_type: string; at: string }>;
+      events: Listed<{ at: string; kind: string; detail: string | null }>;
+      previous_version: { sections_added: string[]; sections_removed: string[]; sections_changed: string[] } | null;
+    };

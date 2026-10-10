@@ -20,7 +20,14 @@ describe('tool catalogue', () => {
   it('lists every tool with a title and read-only annotations', async () => {
     const client = await connect(fakeKompl({}).fetchImpl);
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['list_sources', 'read_page', 'read_source', 'search_wiki', 'wiki_stats']);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      'list_sources',
+      'read_page',
+      'read_source',
+      'recent_changes',
+      'search_wiki',
+      'wiki_status',
+    ]);
     for (const tool of tools) {
       expect(tool.title).toBeTruthy();
       expect(tool.annotations?.readOnlyHint).toBe(true);
@@ -251,49 +258,5 @@ describe('read_page', () => {
   it('flags an unknown page as an error with a next step', async () => {
     const res = await call(await connect(fakeKompl({}).fetchImpl), 'read_page', { page_id: 'nope' });
     expect(res).toEqual({ text: 'Page not found: nope. Use search_wiki to find page ids.', isError: true });
-  });
-});
-
-describe('wiki_stats', () => {
-  const STATS = {
-    source_count: 13,
-    page_count: 23,
-    entity_count: 7,
-    concept_count: 7,
-    last_ingested: '2026-10-09 18:00:00',
-    last_compiled: null,
-  };
-
-  it('reads the stats routes and never the side-effecting health check', async () => {
-    const kompl = fakeKompl({
-      '/api/wiki/stats': STATS,
-      '/api/wiki/index': { total_pages: 23, categories: { A: [], B: [] }, pages: [] },
-      '/api/health': () => json({ error: 'must not be called' }, 500),
-    });
-    const res = await call(await connect(kompl.fetchImpl), 'wiki_stats');
-    expect(res).toEqual({
-      text: [
-        '**Kompl Wiki Stats**',
-        '• Sources: 13 active',
-        '• Pages: 23 (7 entities, 7 concepts)',
-        '• Categories: 2',
-        '• Last source added: 2026-10-09 18:00:00',
-        '• Last compile: never',
-      ].join('\n'),
-      isError: false,
-    });
-    expect(kompl.requested.map((u) => u.pathname)).not.toContain('/api/health');
-  });
-
-  it('still answers when only the category count is unavailable', async () => {
-    const kompl = fakeKompl({ '/api/wiki/stats': STATS });
-    const res = await call(await connect(kompl.fetchImpl), 'wiki_stats');
-    expect(res.isError).toBe(false);
-    expect(res.text).toContain('• Categories: unknown');
-  });
-
-  it('flags missing stats as an error', async () => {
-    const res = await call(await connect(fakeKompl({}).fetchImpl), 'wiki_stats');
-    expect(res.isError).toBe(true);
   });
 });

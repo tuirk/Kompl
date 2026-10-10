@@ -6,8 +6,9 @@
  * Checks performed:
  *   1. Orphan pages — no inbound or outbound page_links
  *   2. Stale source-summaries — source_count==1 AND last_updated > 30 days ago
- *   3. Missing cross-refs — entity names in extractions.ner_output mentioned across
- *      3+ sources but with no entity page in pages and no alias in aliases
+ *   3. Missing cross-refs — names in extractions.ner_output mentioned across 3+
+ *      sources that no page title or alias covers (case-insensitive; dates,
+ *      amounts and ordinals are not names)
  *   4. Dead provenance — provenance rows referencing deleted sources
  *   5. Contradiction detection (LLM-assisted, best-effort) via nlp-service
  *
@@ -25,14 +26,8 @@
 import { NextResponse } from 'next/server';
 import { getCompileModel, getDb, logActivity, setLastLintAt } from '../../../../lib/db';
 import { regenerateSavedLinksPage } from '../../../../lib/saved-links';
-import type {
-  LintContradiction,
-  LintDeadProvenance,
-  LintMissingCrossRef,
-  LintOrphanPage,
-  LintResult,
-  LintStalePage,
-} from '../../../../lib/lint-result';
+import type { LintContradiction, LintResult } from '../../../../lib/lint-result';
+import { runHealthChecks } from '../../../../lib/wiki-health';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -87,57 +82,8 @@ export async function POST(request: Request) {
   const start = Date.now();
   const db = getDb();
 
-  const orphan_pages = db
-    .prepare(
-      `SELECT p.page_id, p.title
-         FROM pages p
-        WHERE p.page_id NOT IN (SELECT target_page_id FROM page_links)
-          AND p.page_id NOT IN (SELECT source_page_id FROM page_links)
-        ORDER BY p.title COLLATE NOCASE`,
-    )
-    .all() as LintOrphanPage[];
-
-  const stale_pages = db
-    .prepare(
-      `SELECT page_id, title, last_updated
-         FROM pages
-        WHERE page_type = 'source-summary'
-          AND source_count = 1
-          AND datetime(last_updated) < datetime('now', '-30 days')
-        ORDER BY last_updated ASC`,
-    )
-    .all() as LintStalePage[];
-
-  const missing_cross_refs = db
-    .prepare(
-      `SELECT json_extract(value, '$.text') AS entity_text,
-              COUNT(DISTINCT e.source_id) AS mention_count
-         FROM extractions e, json_each(json_extract(e.ner_output, '$.entities'))
-        WHERE json_extract(value, '$.text') NOT IN (
-                SELECT title FROM pages WHERE page_type = 'entity'
-              )
-          AND json_extract(value, '$.text') NOT IN (
-                SELECT alias FROM aliases WHERE canonical_page_id IS NOT NULL
-              )
-        GROUP BY entity_text
-       HAVING COUNT(DISTINCT e.source_id) >= 3
-        ORDER BY mention_count DESC
-        LIMIT 50`,
-    )
-    .all() as LintMissingCrossRef[];
-
-  const dead_provenance = db
-    .prepare(
-      `SELECT pr.id AS provenance_id,
-              pr.source_id,
-              pr.page_id,
-              COALESCE(pg.title, pr.page_id) AS page_title
-         FROM provenance pr
-         LEFT JOIN pages pg ON pg.page_id = pr.page_id
-        WHERE pr.source_id NOT IN (SELECT source_id FROM sources)
-        ORDER BY page_title COLLATE NOCASE, pr.source_id`,
-    )
-    .all() as LintDeadProvenance[];
+  // Checks 1-4 are plain reads, shared with GET /api/wiki/status.
+  const { orphan_pages, stale_pages, missing_cross_refs, dead_provenance } = runHealthChecks(db);
 
   let contradictions: LintContradiction[] = [];
   try {

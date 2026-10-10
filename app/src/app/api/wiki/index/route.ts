@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getAllPages } from '@/lib/db';
 
 /** GET /api/wiki/index — machine-readable page catalog. Consumed by the MCP
- *  server (search_wiki without a query, wiki_stats) and the wiki sidebar. Returns every page
+ *  server (search_wiki without a query) and the wiki sidebar. Returns every page
  *  with metadata (no body content) so an agent can pick relevant page_ids
  *  before fetching full content.
  *  ?include_archived=true — include pages where all sources are archived

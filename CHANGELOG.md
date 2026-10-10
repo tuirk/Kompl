@@ -32,9 +32,24 @@ ship with a `migrate.py` step that runs at boot.
   how many pages each one feeds, so "did this link make it in?" has an
   answer. Search matches titles and addresses; the Sources page search in
   the app now matches addresses too.
+- **New `wiki_status`, replacing `wiki_stats`:** size, any running compile,
+  what waits for the user (drafts to review, failed imports) and gaps worth
+  filling: names mentioned in 3+ sources with no page, pages resting on one
+  source, unlinked pages, sources older than the stale threshold, and the
+  contradictions from the last health check. It reports and changes nothing
+  (`GET /api/wiki/status`: no LLM, no writes).
+- **New `recent_changes`:** what changed over the last N days or since a
+  time (sources added, pages created or updated with every source behind
+  each change, disputes, failures), one compile session item by item, or
+  one page's history: its compiles, events, and the sections that differ
+  from its previous version (`GET /api/wiki/changes`).
+- **Fewer false "missing pages" in the health check.** A name counts as
+  covered by any page title or alias, whatever the case (a "Bitcoin"
+  concept page covers "bitcoin"), and dates, amounts and ordinals ("second",
+  "2009") are no longer listed. Settings → Wiki health shows the same.
 - **`list_pages` is now part of `search_wiki`:** call it without a query to
   list pages newest first, with the same filters and paging. Permission rules
-  saved for `list_pages` can be removed.
+  saved for `list_pages` and `wiki_stats` can be removed.
 - **Stays built.** Setup and `kompl update` now build the MCP server, and
   `kompl start` rebuilds it once when its build is older than its source, so
   AI agents run the code that matches the installed Kompl. Before, it was
