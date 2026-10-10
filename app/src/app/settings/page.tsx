@@ -709,9 +709,10 @@ export default function SettingsPage() {
               title="Related pages threshold"
               summary={
                 <>
-                  Show a &quot;You might also read&quot; panel on wiki pages once at least this many sources
-                  have been ingested. Uses embedding similarity — zero LLM cost.
-                  Set to <strong>0</strong> to always show.
+                  Show a &quot;You might also read&quot; panel on wiki pages once the wiki has at least this
+                  many sources (archived sources don&apos;t count). It lists up to five pages with similar
+                  content, found with local embeddings, so it makes no LLM calls. Set to <strong>0</strong> to
+                  show it whenever similar pages exist.
                 </>
               }
               control={

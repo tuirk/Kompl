@@ -270,11 +270,14 @@ async function ContradictingSourcesPanel({ pageId }: { pageId: string }) {
   );
 }
 
-/** Related pages panel — embedding similarity, zero LLM cost. */
+/**
+ * Related pages panel — embedding similarity, zero LLM cost. Gives up after
+ * 3 seconds so a slow NLP service never holds up the page (the route logs it).
+ */
 async function RelatedPagesPanel({ pageId }: { pageId: string }) {
   const res = await fetch(
     `${process.env.APP_URL ?? 'http://app:3000'}/api/wiki/${pageId}/related`,
-    { cache: 'no-store' }
+    { cache: 'no-store', signal: AbortSignal.timeout(3_000) }
   ).catch(() => null);
 
   if (!res || !res.ok) return null;

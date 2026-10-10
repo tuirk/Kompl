@@ -199,6 +199,12 @@ ship with a `migrate.py` step that runs at boot.
 
 ### Fixed
 
+- **Related pages ("You might also read"):** archived pages are no longer
+  suggested, matches below 0.25 similarity no longer fill the list (it can
+  show fewer than five pages), the panel gives up after 3 seconds so a slow
+  NLP service can't hold up a wiki page, and failed searches are logged.
+  The Settings text now says what it counts: sources that aren't archived;
+  0 shows the panel whenever similar pages exist.
 - **CLI tests no longer overwrite your backup:** the `kompl start` tests ran
   against the real home folder and could replace
   `~/.kompl/backups/kompl-backup.kompl.zip` with an empty file. They now use a
