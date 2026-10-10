@@ -65,27 +65,66 @@ def test_overwrite_archives_existing_file_to_timestamped_path(isolated_pages_dir
     assert name.startswith("bitcoin.") and name.endswith(".md.gz")
 
 
-def test_multiple_overwrites_preserve_each_historical_version(isolated_pages_dir):
+def test_overwrites_keep_only_the_newest_archives(isolated_pages_dir):
+    """Each page keeps MAX_ARCHIVED_VERSIONS previous versions (owner decision
+    2026-10-10); older archives are deleted when the page is written again."""
+    assert file_store.MAX_ARCHIVED_VERSIONS == 2
     current, _ = file_store.write_page("ethereum", "v1")
     archives: list[str] = []
+    base = os.path.getmtime(current) - 100
 
     for v, label in enumerate(["v2", "v3", "v4"], start=1):
-        # Backdate by an offset unique to each iteration so archive names differ.
-        # (Without this, three writes within one second would all stat-down to the
-        # same mtime → same archive name → os.replace would clobber prior archives.)
-        backdate = os.path.getmtime(current) - (v * 5)
-        os.utime(current, (backdate, backdate))
+        # Give each version a distinct, increasing write time, as real writes have.
+        os.utime(current, (base + v * 10, base + v * 10))
         _, previous = file_store.write_page("ethereum", label)
         assert previous is not None
         archives.append(previous)
 
-    # Three distinct archive paths means each historical version was preserved.
     assert len(set(archives)) == 3
-    for arch in archives:
-        assert os.path.exists(arch)
-
-    # Latest current holds the most recent write.
+    # v1's archive was trimmed; v2 and v3 remain, newest last.
+    assert not os.path.exists(archives[0])
+    assert _read_gz(archives[1]) == "v2"
+    assert _read_gz(archives[2]) == "v3"
     assert _read_gz(current) == "v4"
+    remaining = sorted(p.name for p in isolated_pages_dir.glob("ethereum.*.md.gz"))
+    assert remaining == sorted(os.path.basename(a) for a in archives[1:])
+
+
+def test_trimming_never_touches_other_pages(isolated_pages_dir):
+    for name in ("eth.20200101-000000-000001.md.gz", "eth.20200101-000000-000002.md.gz",
+                 "ethereum.20200101-000000-000001.md.gz", "ethereum.20200101-000000-000002.md.gz",
+                 "ethereum.20200101-000000-000003.md.gz"):
+        (isolated_pages_dir / name).write_bytes(b"x")
+    removed = file_store.prune_archives("ethereum")
+    assert removed == ["ethereum.20200101-000000-000001.md.gz"]
+    assert (isolated_pages_dir / "eth.20200101-000000-000001.md.gz").exists()
+    assert (isolated_pages_dir / "eth.20200101-000000-000002.md.gz").exists()
+
+
+def test_trimming_handles_old_second_resolution_names(isolated_pages_dir):
+    for name in ("doge.20200101-000000.md.gz", "doge.20200102-000000.md.gz", "doge.20200103-000000-000001.md.gz"):
+        (isolated_pages_dir / name).write_bytes(b"x")
+    assert file_store.prune_archives("doge") == ["doge.20200101-000000.md.gz"]
+
+
+def test_failed_write_trims_nothing(isolated_pages_dir, monkeypatch):
+    current, _ = file_store.write_page("solana", "v1")
+    base = os.path.getmtime(current) - 100
+    for v in (1, 2):
+        os.utime(current, (base + v * 10,) * 2)
+        file_store.write_page("solana", f"v{v + 1}")
+    before = sorted(p.name for p in isolated_pages_dir.glob("solana.*.md.gz"))
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(file_store.tempfile, "mkstemp", boom)
+    os.utime(current, (base + 30,) * 2)
+    with pytest.raises(OSError):
+        file_store.write_page("solana", "v4")
+    after = sorted(p.name for p in isolated_pages_dir.glob("solana.*.md.gz"))
+    # The current file was archived before the failed write, as before; nothing was deleted.
+    assert set(before) <= set(after)
 
 
 def test_three_writes_within_same_second_preserve_two_distinct_archives(isolated_pages_dir):

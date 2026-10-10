@@ -9,6 +9,9 @@ write_page(page_id, markdown) contract:
     /data/pages/{page_id}.{timestamp}.md.gz before writing the new content.
   - Write new gzip-compressed content to /data/pages/{page_id}.md.gz atomically
     (write to .tmp.gz in same directory, then os.replace onto final path).
+  - After the new version is in place, keep only the newest
+    MAX_ARCHIVED_VERSIONS archives of that page; older ones are deleted.
+    Pages that are never rewritten keep whatever archives they have.
   - Returns (current_path, previous_path | None).
 
 Atomic write guarantee: the tmp file lives in _PAGES_DIR (same filesystem as
@@ -22,7 +25,9 @@ the Next.js process exclusively.
 from __future__ import annotations
 
 import gzip
+import logging
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -31,6 +36,13 @@ from services._safe_paths import safe_join, validate_page_id
 
 _DATA_ROOT = "/data"
 _PAGES_DIR = os.path.join(_DATA_ROOT, "pages")
+
+# Previous versions kept per page (owner decision, 2026-10-10): the latest one
+# backs "View previous version" / "Restore this version", and one more allows a
+# second undo. Older archives are deleted when the page is next written.
+MAX_ARCHIVED_VERSIONS = 2
+
+logger = logging.getLogger(__name__)
 
 
 def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
@@ -94,7 +106,37 @@ def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
             pass
         raise
 
+    # Only after the new version is safely written: trim old archives. A
+    # failed trim never fails the write.
+    try:
+        prune_archives(page_id)
+    except OSError as exc:
+        logger.warning("could not trim archives of %s: %s", page_id, exc)
+
     return current_path, previous_path
+
+
+def prune_archives(page_id: str, keep: int = MAX_ARCHIVED_VERSIONS) -> list[str]:
+    """Delete all but the newest `keep` archived versions of one page.
+
+    Archive names are {page_id}.{YYYYMMDD-HHMMSS}[-{usec}].md.gz; page ids are
+    slugs without dots, so the pattern can't match another page's files.
+    Returns the deleted file names.
+    """
+    validate_page_id(page_id)
+    if keep < 1 or not os.path.isdir(_PAGES_DIR):
+        return []
+    pattern = re.compile(rf"^{re.escape(page_id)}\.(\d{{8}}-\d{{6}}(?:-\d{{6}})?)\.md\.gz$")
+    archives = sorted(
+        (match.group(1), entry.name)
+        for entry in os.scandir(_PAGES_DIR)
+        if entry.is_file() and (match := pattern.match(entry.name))
+    )
+    removed: list[str] = []
+    for _stamp, name in archives[:-keep]:
+        os.unlink(str(safe_join(_PAGES_DIR, name)))
+        removed.append(name)
+    return removed
 
 
 def read_page(page_id: str) -> str | None:
