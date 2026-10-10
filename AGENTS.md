@@ -57,17 +57,17 @@ These do **not** remove `kompl-data`: `kompl update`, `kompl start`, `kompl stop
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | New UI missing after `git pull` | Stale Docker image | `kompl update` — see [Updating](README.md#updating) |
-| YouTube URL on Saved Links | Missing `YOUTUBE_API_KEY`, no captions, or transcript blocked | [README prerequisites](README.md#before-you-start) |
+| YouTube URL on Saved Links | Missing `YOUTUBE_API_KEY`, no captions, or transcript blocked | [README § API keys](README.md#api-keys) |
 | `extract_llm_failed` on long PDFs (Gemini) | Known truncation — [issue #7](https://github.com/tuirk/Kompl/issues/7) | Switch to DeepSeek in Settings or split the source |
 | Wiki gone | `down -v`, integration tests, or volume delete | Restore from `.kompl.zip`; you should not have run destructive commands without explicit confirmation + `kompl backup` |
 
-For everything else: `kompl logs`, `kompl status`, and [README troubleshooting cues](README.md#after-setup).
+For everything else: `kompl logs`, `kompl status`, and [README § Everyday use](README.md#everyday-use).
 
 ---
 
 ## Querying the wiki (MCP)
 
-Once Kompl is **running**, query the compiled wiki via the MCP server. Setup and tools: [README § Use with AI agents (MCP)](README.md#use-with-ai-agents-mcp).
+Once Kompl is **running**, query the compiled wiki via the MCP server. Setup and tools: [README § Ask your wiki from your AI (MCP)](README.md#ask-your-wiki-from-your-ai-mcp).
 
 ---
 
