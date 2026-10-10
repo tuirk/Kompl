@@ -211,6 +211,12 @@ ship with a `migrate.py` step that runs at boot.
 
 ### Fixed
 
+- **Extracted contradictions and concept definitions reach the draft:** the
+  draft step read field names the extractor never writes, so every "this
+  source disputes X" note and every concept definition was dropped before
+  the drafting model saw them. Each contradiction line now says which side
+  the source takes, so the model can't cite a source for the view it
+  rejects.
 - **Page summaries no longer show citation labels:** a draft that cited
   inside its summary ("…dining and parks [S1][S2].") kept the raw labels
   wherever the summary appears. The frontmatter clean-up every draft,

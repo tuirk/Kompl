@@ -374,11 +374,22 @@ export function buildDossier(
         lines.push(`  Claim: ${claim.claim}`);
       }
 
+      // Pydantic ExtractionContradiction emits { claim, against }: what this
+      // source says, and the view it disputes ("" when the source doesn't
+      // name one). The drafter treats the dossier as its primary reference,
+      // so each line says which side is the source's own.
       const contras = ((ext.contradictions as Array<Record<string, unknown>>) ?? []).filter(
-        (c) => matchesSubstring(c.description)
+        (c) => matchesSubstring(c.claim) || matchesSubstring(c.against)
       );
       for (const contra of contras) {
-        lines.push(`  ⚠️ Contradiction: ${contra.description}`);
+        const claim = typeof contra.claim === 'string' ? contra.claim.trim() : '';
+        const against = typeof contra.against === 'string' ? contra.against.trim() : '';
+        if (!claim) continue;
+        lines.push(
+          against
+            ? `  This source disputes "${against}" and says instead "${claim}"`
+            : `  This source contradicts other accounts by saying "${claim}"`
+        );
       }
 
       if (lines.length > 0) parts.push(lines.join('\n'));
@@ -396,7 +407,10 @@ export function buildDossier(
       );
       if (conceptData) {
         lines.push(`From source ${sid}:`);
-        if (conceptData.definition) lines.push(`  Definition: ${conceptData.definition}`);
+        // Pydantic ExtractionConcept emits { name, description }; `definition`
+        // is still read for older extraction rows.
+        const definition = conceptData.description ?? conceptData.definition;
+        if (definition) lines.push(`  Definition: ${definition}`);
         if (conceptData.context) lines.push(`  Context: ${conceptData.context}`);
       }
 
@@ -692,7 +706,9 @@ export async function POST(request: Request) {
         );
         const category = topEntity?.type ? entityTypeToCategory(topEntity.type) : 'Uncategorized';
         const firstClaim = (ext?.claims as Array<{ claim?: string }> | undefined)?.[0]?.claim;
-        const firstConcept = (ext?.concepts as Array<{ definition?: string }> | undefined)?.[0]?.definition;
+        // Concepts carry `description` (`definition` in older extraction rows).
+        const concept = (ext?.concepts as Array<{ description?: string; definition?: string }> | undefined)?.[0];
+        const firstConcept = concept?.description ?? concept?.definition;
         const summaryText = (firstClaim ?? firstConcept ?? src.markdown.slice(0, 120).replace(/\n/g, ' ')).trim();
         const rawDraft = `---\ntitle: ${yamlDoubleQuote(plan.title)}\ncategory: ${category}\nsummary: ${yamlDoubleQuote(summaryText)}\n---\n\n${src.markdown}`;
         // The user's own text: no writing rules apply (lib/draft-rules.ts).
