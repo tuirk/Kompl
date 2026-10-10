@@ -6,8 +6,8 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { buildFtsQuery, buildFtsQueryAll, buildFtsQueryAny } from '../lib/fts-query';
-import { searchPages } from '../lib/db';
+import { buildFtsQuery, buildFtsQueryAll, buildFtsQueryAny, buildFtsQueryPairs } from '../lib/fts-query';
+import { searchPages, searchPagesFts } from '../lib/db';
 import { setupTestDb, seedPage, type TestDbHandle } from './helpers/test-db';
 
 describe('buildFtsQuery', () => {
@@ -88,5 +88,47 @@ describe('searchPages', () => {
     seed('Rock and Roll', 'Music.');
     expect(() => searchPages('rock AND (roll')).not.toThrow();
     expect(searchPages('NEAR')).toEqual([]);
+  });
+});
+
+describe('buildFtsQueryPairs', () => {
+  it('asks for any two topic words together', () => {
+    expect(buildFtsQueryPairs('how deep is lake galve')).toBe(
+      '("deep"* "lake"*) OR ("deep"* "galve"*) OR ("lake"* "galve"*)'
+    );
+  });
+
+  it('returns null below three distinct topic words (two of two is all of them)', () => {
+    expect(buildFtsQueryPairs('who created bitcoin')).toBeNull();
+    expect(buildFtsQueryPairs('Python python guido')).toBeNull();
+    expect(buildFtsQueryPairs('what is it')).toBeNull();
+  });
+
+  it('pairs the first eight distinct words', () => {
+    const query = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet';
+    const pairs = buildFtsQueryPairs(query)!;
+    expect(pairs.split(' OR ')).toHaveLength(28);
+    expect(pairs).toContain('"hotel"*');
+    expect(pairs).not.toContain('"india"*');
+  });
+});
+
+describe('searchPagesFts with a pairs expression', () => {
+  let pairHandle: TestDbHandle | null = null;
+  afterEach(() => {
+    pairHandle?.cleanup();
+    pairHandle = null;
+  });
+
+  it('runs as valid FTS5 and needs two of the words', () => {
+    pairHandle = setupTestDb();
+    const add = (title: string, content: string) => {
+      const id = seedPage(pairHandle!.db, { title });
+      pairHandle!.db.prepare('INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)').run(id, title, content);
+      return id;
+    };
+    const lake = add('Lake Galve', 'Lake Galve is deep.');
+    add('Catan', 'A game of deep strategy.');
+    expect(searchPagesFts(buildFtsQueryPairs('how deep is lake galve')!, 10).map((p) => p.page_id)).toEqual([lake]);
   });
 });

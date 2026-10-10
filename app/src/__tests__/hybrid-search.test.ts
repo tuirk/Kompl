@@ -70,8 +70,23 @@ describe('hybridSearch', () => {
       ],
     });
     // No keyword overlap with "pow"; "bitcoin" matches by keyword and meaning.
-    const { items } = await hybridSearch('how does bitcoin agree on history', { limit: 5 });
+    const { items } = await hybridSearch('when was bitcoin created', { limit: 5 });
     expect(ids(items)).toEqual(['bitcoin', 'pow']);
+  });
+
+  it('drops meaning matches far weaker than the best one', async () => {
+    seedWiki();
+    mockVectors({
+      matches: [
+        { page_id: 'pow', similarity: 0.66 },
+        { page_id: 'python', similarity: 0.3 }, // below 0.66 × 0.6
+      ],
+    });
+    expect(ids((await hybridSearch('mechanism of mining', { limit: 5 })).items)).toEqual(['pow']);
+
+    // With no strong match, the absolute floor alone applies.
+    mockVectors({ matches: [{ page_id: 'python', similarity: 0.3 }] });
+    expect(ids((await hybridSearch('mechanism of mining', { limit: 5 })).items)).toEqual(['python']);
   });
 
   it('drops weak meaning matches instead of padding the list', async () => {
@@ -111,14 +126,43 @@ describe('hybridSearch', () => {
     expect(ids(items)).toEqual(['btc-lang']);
   });
 
-  it('ranks pages matching every word above pages sharing one word', async () => {
+  it('needs two shared words to list a page by keyword while meaning search finds something', async () => {
     seedWiki();
     page('history-only', 'History', 'A page about history in general.');
+    page('two-words', 'Bitcoin history', 'How bitcoin history began.');
     page('all-words', 'Bitcoin network timeline', 'The bitcoin network history since 2009.');
-    mockVectors({ matches: [] });
-    const { items } = await hybridSearch('bitcoin network history', { limit: 5 });
-    expect(ids(items)[0]).toBe('all-words');
-    expect(ids(items)).toContain('history-only');
+    const question = 'bitcoin network history';
+
+    mockVectors({ matches: [{ page_id: 'all-words', similarity: 0.5 }] });
+    const working = ids((await hybridSearch(question, { limit: 10 })).items);
+    expect(working[0]).toBe('all-words');
+    expect(working).toContain('two-words');
+    expect(working).not.toContain('history-only');
+
+    // Nothing by meaning (index empty, or nothing close), or meaning search
+    // down: one shared word may be all there is.
+    for (const result of [{ matches: [] }, { status: 503 }]) {
+      mockVectors(result);
+      const fallback = ids((await hybridSearch(question, { limit: 10 })).items);
+      expect(fallback[0]).toBe('all-words');
+      expect(fallback).toContain('history-only');
+    }
+  });
+
+  it('measures the relative floor against matches that may be shown', async () => {
+    seedWiki();
+    const lone = seedSource(handle!.db, { title: 'Lone source' });
+    page('hidden', 'Hidden page', 'unrelated');
+    seedProvenance(handle!.db, 'hidden', lone);
+    setSourceStatus(lone, 'archived');
+    mockVectors({
+      matches: [
+        { page_id: 'hidden', similarity: 0.9 }, // archived: not shown
+        { page_id: 'python', similarity: 0.66 }, // outside the Crypto filter
+        { page_id: 'pow', similarity: 0.3 },
+      ],
+    });
+    expect(ids((await hybridSearch('mechanism of mining', { limit: 5, category: 'Crypto' })).items)).toEqual(['pow']);
   });
 
   it('leaves questions made only of common words to meaning search', async () => {
@@ -151,8 +195,8 @@ describe('GET /api/pages/search', () => {
 
   it('hybrid mode returns public fields and the degraded flag', async () => {
     seedWiki();
-    mockVectors({ matches: [] });
-    const body = await search('q=who%20invented%20bitcoin&mode=hybrid&limit=3');
+    mockVectors({ matches: [{ page_id: 'bitcoin', similarity: 0.5 }] });
+    const body = await search('q=who%20created%20bitcoin&mode=hybrid&limit=3');
     expect(body.count).toBe(1);
     expect(body.degraded).toBe(false);
     expect((body.items as Array<Record<string, unknown>>)[0]).toEqual({

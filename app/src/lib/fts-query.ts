@@ -46,6 +46,26 @@ export function buildFtsQueryAll(query: string): string | null {
   return terms.map((t) => `"${t}"*`).join(' ');
 }
 
+/**
+ * Pages containing at least two of the query's topic words, for questions
+ * with several of them: one shared word ("deep" in "how deep is lake galve")
+ * is too weak to list a page. Returns null below three distinct topic words,
+ * where "two of them" means all of them (buildFtsQueryAll). Words are
+ * compared without case, like the index does. Only the first MAX_PAIR_TERMS
+ * words are paired, which keeps the expression small (28 pairs at most).
+ */
+export function buildFtsQueryPairs(query: string): string | null {
+  const terms = [...new Set(topicTerms(query).map((t) => t.toLowerCase()))].slice(0, MAX_PAIR_TERMS);
+  if (terms.length < 3) return null;
+  const pairs: string[] = [];
+  for (let i = 0; i < terms.length; i++) {
+    for (let j = i + 1; j < terms.length; j++) pairs.push(`("${terms[i]}"* "${terms[j]}"*)`);
+  }
+  return pairs.join(' OR ');
+}
+
+const MAX_PAIR_TERMS = 8;
+
 function tokenize(query: string): string[] {
   return query.split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
 }
