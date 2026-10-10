@@ -21,6 +21,7 @@ import {
   Card, NumberField, SavedBar, SettingCard, SettingRow, SettingsGroup, SettingsNav, TogglePill,
   codeStyle, preStyle,
 } from './_ui';
+import AgentSourcesCard from './AgentSourcesCard';
 import PageUpgradeCard from './PageUpgradeCard';
 import {
   DEFAULT_COMPILE_MODEL, LLM_MODELS, LLM_MODEL_INFO, getProviderForModel, isLlmModel,
@@ -644,6 +645,8 @@ export default function SettingsPage() {
                 </>
               }
             />
+
+            <AgentSourcesCard />
           </SettingsGroup>
 
           {/* ========== Wiki health ========== */}

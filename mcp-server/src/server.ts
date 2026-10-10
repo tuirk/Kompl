@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { KomplClient, type KomplClientOptions } from './kompl-client.js';
+import { registerAddSource } from './tools/add-source.js';
 import { registerListSources } from './tools/list-sources.js';
 import { registerReadPage } from './tools/read-page.js';
 import { registerReadSource } from './tools/read-source.js';
@@ -26,6 +27,7 @@ export const SERVER_INSTRUCTIONS = [
   '- To check what a source actually says, use read_source with the page_id and n (add a query to get the matching passages).',
   '- list_sources shows what the user has saved, e.g. whether a link is already in Kompl.',
   '- recent_changes answers "what is new / what changed"; wiki_status gives the overview and the gaps worth filling.',
+  '- add_source saves links or notes the user asks you to keep. It starts a compile that costs the user money, so never add on your own initiative.',
   "- If Kompl has nothing on a topic, say so instead of silently filling the gap from general knowledge.",
 ].join('\n');
 
@@ -43,5 +45,6 @@ export function createServer(options: KomplClientOptions): McpServer {
   registerListSources(server, client);
   registerRecentChanges(server, client);
   registerWikiStatus(server, client);
+  registerAddSource(server, client);
   return server;
 }

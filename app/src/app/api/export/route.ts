@@ -30,7 +30,7 @@ import {
 import { yamlDoubleQuote } from '@/lib/yaml-escape';
 import { getPageDraftRulesMap } from '@/lib/draft-rules';
 import { exportPageBody } from '@/lib/page-export';
-import { PAGE_UPGRADE_FLAG } from '@/lib/page-upgrade-state';
+import { isBackedUpSetting } from '@/lib/backup-settings';
 import { getSourceTitleSet } from '@/lib/page-sources';
 
 // ---------------------------------------------------------------------------
@@ -285,11 +285,11 @@ export async function GET(request: Request) {
     // The schema version travels in manifest.json. Older Kompl releases copy
     // every settings row on import, so a schema_version row here would
     // overwrite an older install's own version and leave it "degraded".
-    // The page-update flag belongs to a run in this process, never to a backup.
+    // Install-only rows are left out (lib/backup-settings.ts).
     dbFolder.file(
       'settings.json',
       JSON.stringify(
-        getExportableSettings().filter((s) => s.key !== 'schema_version' && s.key !== PAGE_UPGRADE_FLAG),
+        getExportableSettings().filter((s) => isBackedUpSetting(s.key)),
         null,
         2,
       ),

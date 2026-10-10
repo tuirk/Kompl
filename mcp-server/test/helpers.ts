@@ -6,7 +6,7 @@ import { createServer } from '../src/server.js';
 export const BASE_URL = 'http://kompl.test';
 
 /** A route answers with a JSON body (status 200) or a full Response. */
-export type FakeRoute = unknown | ((url: URL) => Response | Promise<Response>);
+export type FakeRoute = unknown | ((url: URL, init?: RequestInit) => Response | Promise<Response>);
 
 export function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -21,14 +21,17 @@ export function json(body: unknown, status = 200): Response {
  */
 export function fakeKompl(routes: Record<string, FakeRoute>) {
   const requested: URL[] = [];
-  const fetchImpl = (async (input: string | URL | Request) => {
+  /** JSON bodies of POST requests, in order. */
+  const posted: unknown[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
     requested.push(url);
+    if (typeof init?.body === 'string') posted.push(JSON.parse(init.body));
     const route = routes[url.pathname];
     if (route === undefined) return json({ error: 'not_found' }, 404);
-    return typeof route === 'function' ? route(url) : json(route);
+    return typeof route === 'function' ? route(url, init) : json(route);
   }) as typeof fetch;
-  return { fetchImpl, requested };
+  return { fetchImpl, requested, posted };
 }
 
 /** Connect a real MCP client to a server backed by `fetchImpl`. */
@@ -37,7 +40,7 @@ export async function connect(
   timeoutMs = 1000,
   baseUrl = BASE_URL
 ): Promise<Client> {
-  const server = createServer({ baseUrl, fetchImpl, timeoutMs });
+  const server = createServer({ baseUrl, fetchImpl, timeoutMs, slowTimeoutMs: timeoutMs });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'kompl-mcp-test', version: '0.0.0' });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);

@@ -17,10 +17,11 @@ const down = (async () => {
 }) as typeof fetch;
 
 describe('tool catalogue', () => {
-  it('lists every tool with a title and read-only annotations', async () => {
+  it('lists every tool with a title; all but add_source are read-only', async () => {
     const client = await connect(fakeKompl({}).fetchImpl);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
+      'add_source',
       'list_sources',
       'read_page',
       'read_source',
@@ -29,7 +30,7 @@ describe('tool catalogue', () => {
       'search_wiki',
       'wiki_status',
     ]);
-    for (const tool of tools) {
+    for (const tool of tools.filter((t) => t.name !== 'add_source')) {
       expect(tool.title).toBeTruthy();
       expect(tool.annotations?.readOnlyHint).toBe(true);
       expect(tool.annotations?.openWorldHint).toBe(false);

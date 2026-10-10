@@ -1,7 +1,8 @@
 /**
  * POST /api/onboarding/finalize
  *
- * Promotes staging rows into a real compile pipeline run:
+ * Promotes staging rows into a real compile pipeline run. The work lives in
+ * lib/finalize-session.ts, shared with POST /api/agent/sources:
  *   - Read included/pending staging rows for the session
  *   - Create compile_progress (creates the 'queued' row the orchestrator
  *     + reconciler + dashboard banner all observe)
@@ -15,19 +16,7 @@
  */
 
 import { NextResponse } from 'next/server';
-
-import {
-  createCompileProgress,
-  getCompileModel,
-  getRunningCompileSession,
-  getSetting,
-  getStagingBySession,
-  logActivity,
-  setSetting,
-  supersedeOrphanQueuedSessions,
-} from '../../../../lib/db';
-import { pageUpgradeBlock } from '@/lib/page-upgrade-state';
-import { triggerSessionCompile } from '@/lib/trigger-n8n';
+import { finalizeSession } from '@/lib/finalize-session';
 
 export async function POST(request: Request) {
   let rawBody: unknown;
@@ -36,113 +25,14 @@ export async function POST(request: Request) {
   } catch {
     return NextResponse.json({ error: 'invalid_json' }, { status: 400 });
   }
-
   if (typeof rawBody !== 'object' || rawBody === null) {
     return NextResponse.json({ error: 'body must be an object' }, { status: 422 });
   }
-
   const body = rawBody as Record<string, unknown>;
   if (typeof body.session_id !== 'string' || !body.session_id) {
     return NextResponse.json({ error: 'missing field: session_id' }, { status: 422 });
   }
-  const session_id = body.session_id;
 
-  // Accept both 'pending' (fresh staging) and 'ingested' (legacy-lifted
-  // by v18 migration — already have a sources row at compile_status='pending'
-  // and need the pipeline to run extract → schema on them). The downstream
-  // extract step reads sources.compile_status regardless of how they got
-  // there, so both kinds finalize cleanly.
-  const staged = getStagingBySession(session_id).filter(
-    (s) => s.included && (s.status === 'pending' || s.status === 'ingested')
-  );
-  if (staged.length === 0) {
-    return NextResponse.json(
-      {
-        error_code: 'no_items_staged',
-        error: 'No included pending staging rows for this session.',
-      },
-      { status: 400 }
-    );
-  }
-
-  // No compile while pages are being updated to the current writing rules
-  // (lib/page-upgrade.ts). Checked before any side effect.
-  const upgrading = pageUpgradeBlock();
-  if (upgrading) return NextResponse.json(upgrading, { status: 409 });
-
-  // Clear orphan queued rows (failed n8n trigger, abandoned tab) so they
-  // do not hold the global gate while the user starts a fresh session.
-  supersedeOrphanQueuedSessions(session_id);
-
-  // Global concurrency gate: only one compile session at a time. Two
-  // concurrent pipelines collide on the Gemini rate limiter singleton,
-  // SQLite WAL writer, and Chroma collection — producing cascading step
-  // failures.
-  const active = getRunningCompileSession();
-  if (active) {
-    if (active.session_id !== session_id) {
-      return NextResponse.json(
-        {
-          error_code: 'session_in_progress',
-          error: 'Another compile session is already running.',
-          active_session_id: active.session_id,
-        },
-        { status: 409 }
-      );
-    }
-    // Same-session replay (double-click, two tabs, network retry). Skip
-    // all side effects — createCompileProgress wipes step state via
-    // ON CONFLICT DO UPDATE, and n8n has no webhook dedupe so a second
-    // trigger starts a second workflow execution.
-    //
-    // Known edge: after a 503 on first trigger, the row is stuck 'queued'
-    // with started_at=NULL and a replay here also returns idempotent —
-    // the user must wait up to 5 min for reconcileStuckCompileSessions
-    // (/api/health sweep) to flip it to 'failed', OR cancel via
-    // DELETE /api/onboarding/session and re-submit.
-    return NextResponse.json(
-      { session_id, queued: staged.length, already_running: true },
-      { status: 200 }
-    );
-  }
-
-  // Mark first-time onboarding complete so dashboard redirect stops sending
-  // the user back to /onboarding. Matches the behaviour of /confirm.
-  if (!getSetting('onboarding_completed')) {
-    setSetting('onboarding_completed', '1');
-  }
-
-  // Create the compile_progress row BEFORE the n8n trigger so a POST failure
-  // still leaves a row for the reconciler to find. Same ordering as /confirm.
-  // v20: lock this session to the current Settings compile_model so a
-  // Settings change mid-run doesn't cause mixed-model output. Preserved
-  // across retries (createCompileProgress ON CONFLICT doesn't overwrite).
-  createCompileProgress(session_id, staged.length, getCompileModel());
-  logActivity('onboarding_confirmed', {
-    source_id: null,
-    details: { session_id, queued: staged.length, deleted: 0 },
-  });
-
-  const trigger = await triggerSessionCompile(session_id);
-  if (!trigger.ok) {
-    logActivity('compile_trigger_failed', {
-      source_id: null,
-      details: {
-        session_id,
-        reason: trigger.reason,
-        upstream_status: trigger.upstreamStatus,
-      },
-    });
-    return NextResponse.json(
-      {
-        error: trigger.reason,
-        session_id,
-        queued: staged.length,
-        upstream_status: trigger.upstreamStatus,
-      },
-      { status: 503 }
-    );
-  }
-
-  return NextResponse.json({ session_id, queued: staged.length }, { status: 200 });
+  const result = await finalizeSession(body.session_id);
+  return NextResponse.json(result.body, { status: result.status });
 }

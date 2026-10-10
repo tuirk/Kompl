@@ -13,6 +13,8 @@ export interface KomplClientOptions {
   fetchImpl?: typeof fetch;
   /** Per-request timeout. */
   timeoutMs?: number;
+  /** Timeout for requests that start work and may wait on n8n (add_source). */
+  slowTimeoutMs?: number;
 }
 
 export type QueryValue = string | number | boolean | undefined;
@@ -22,20 +24,43 @@ export type ApiResult<T> =
   | { ok: false; status: number | null; message: string };
 
 const DEFAULT_TIMEOUT_MS = 20_000;
+/** Longer than the app's own wait for n8n (two 10 s attempts). */
+const DEFAULT_SLOW_TIMEOUT_MS = 45_000;
 
 export class KomplClient {
   readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly slowTimeoutMs: number;
 
   constructor(options: KomplClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.slowTimeoutMs = options.slowTimeoutMs ?? DEFAULT_SLOW_TIMEOUT_MS;
   }
 
   /** GET an app route and parse its JSON body. */
-  async get<T>(path: string, params: Record<string, QueryValue> = {}): Promise<ApiResult<T>> {
+  get<T>(path: string, params: Record<string, QueryValue> = {}): Promise<ApiResult<T>> {
+    return this.request<T>(path, params);
+  }
+
+  /** POST a JSON body to an app route and parse its JSON answer. */
+  post<T>(path: string, body: unknown, options: { slow?: boolean } = {}): Promise<ApiResult<T>> {
+    return this.request<T>(
+      path,
+      {},
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+      options.slow ? this.slowTimeoutMs : this.timeoutMs
+    );
+  }
+
+  private async request<T>(
+    path: string,
+    params: Record<string, QueryValue>,
+    init: RequestInit = {},
+    timeoutMs = this.timeoutMs
+  ): Promise<ApiResult<T>> {
     let url: URL;
     try {
       url = new URL(this.baseUrl + path);
@@ -52,13 +77,13 @@ export class KomplClient {
 
     let res: Response;
     try {
-      res = await this.fetchImpl(url, { signal: AbortSignal.timeout(this.timeoutMs) });
+      res = await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
     } catch (err) {
       return {
         ok: false,
         status: null,
         message: isTimeout(err)
-          ? this.timeoutMessage(path)
+          ? timeoutMessage(path, timeoutMs)
           : `Kompl isn't reachable at ${this.baseUrl}. Is it running? Start it with \`kompl start\`.`,
       };
     }
@@ -73,15 +98,15 @@ export class KomplClient {
         ok: false,
         status: res.status,
         message: isTimeout(err)
-          ? this.timeoutMessage(path)
+          ? timeoutMessage(path, timeoutMs)
           : `Kompl sent a response to ${path} that isn't valid JSON.`,
       };
     }
   }
+}
 
-  private timeoutMessage(path: string): string {
-    return `Kompl took longer than ${Math.round(this.timeoutMs / 1000)}s to answer ${path}. Try again in a moment.`;
-  }
+function timeoutMessage(path: string, timeoutMs: number): string {
+  return `Kompl took longer than ${Math.round(timeoutMs / 1000)}s to answer ${path}. Try again in a moment.`;
 }
 
 /** AbortSignal.timeout rejects with a TimeoutError DOMException (AbortError on some runtimes). */

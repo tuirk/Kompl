@@ -7,6 +7,7 @@
  */
 
 import { NextResponse } from 'next/server';
+import { isCrossSiteRequest } from '@/lib/same-origin';
 import {
   getAutoApprove, setAutoApprove,
   getRelatedPagesMinSources, setRelatedPagesMinSources,
@@ -20,6 +21,7 @@ import {
   getDossierMinScore, setDossierMinScore,
   getDailyCapUsd, setDailyCapUsd,
   getCompileModel, setCompileModel, isLlmModel, LLM_MODELS,
+  getAgentAddSourcesEnabled, setAgentAddSourcesEnabled,
 } from '../../../lib/db';
 
 function buildResponse() {
@@ -38,6 +40,7 @@ function buildResponse() {
     dossier_min_score: getDossierMinScore(),
     daily_cap_usd: getDailyCapUsd(),
     compile_model: getCompileModel(),
+    agent_add_sources_enabled: getAgentAddSourcesEnabled(),
   };
 }
 
@@ -58,6 +61,7 @@ export async function POST(request: Request) {
     dossier_min_score?: number;
     daily_cap_usd?: number;
     compile_model?: string;
+    agent_add_sources_enabled?: boolean;
   };
 
   const knownFields = [
@@ -69,11 +73,22 @@ export async function POST(request: Request) {
     'dossier_max_sources', 'dossier_min_score',
     'daily_cap_usd',
     'compile_model',
+    'agent_add_sources_enabled',
   ];
   if (!knownFields.some((f) => f in body)) {
     return NextResponse.json({ error: 'no recognized setting field in request body' }, { status: 422 });
   }
 
+  if (body.agent_add_sources_enabled !== undefined) {
+    // Turning this on lets agents start paid compiles: never from another site.
+    if (isCrossSiteRequest(request)) {
+      return NextResponse.json({ error: 'cross_site' }, { status: 403 });
+    }
+    if (typeof body.agent_add_sources_enabled !== 'boolean') {
+      return NextResponse.json({ error: 'agent_add_sources_enabled must be a boolean' }, { status: 422 });
+    }
+    setAgentAddSourcesEnabled(body.agent_add_sources_enabled);
+  }
   if (body.auto_approve !== undefined) {
     if (typeof body.auto_approve !== 'boolean') {
       return NextResponse.json({ error: 'auto_approve must be a boolean' }, { status: 422 });

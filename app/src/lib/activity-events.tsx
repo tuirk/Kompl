@@ -537,6 +537,23 @@ function renderOnboardingStaged(row: FeedActivityRow): RowContent {
   };
 }
 
+function renderAgentSourcesAdded(row: FeedActivityRow): RowContent {
+  const { str, num } = makeGetters(row);
+  const count = num('count') ?? 0;
+  const client = str('client');
+  const session = str('session_id');
+  return {
+    primary: <>{client ?? 'An AI agent'} added {count} {count === 1 ? 'source' : 'sources'}</>,
+    secondary: <span style={MONO_DIM}>via MCP add_source</span>,
+    action: session ? (
+      <Link href={`/onboarding/progress?session_id=${encodeURIComponent(session)}`} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>
+        Progress
+      </Link>
+    ) : null,
+    isError: false,
+  };
+}
+
 function renderOnboardingBlockedUrlsSkipped(row: FeedActivityRow): RowContent {
   const { d, str, num } = makeGetters(row);
   const count = num('count') ?? 0;
@@ -679,6 +696,7 @@ export const ACTIVITY_EVENTS = {
   onboarding_confirmed:   { key: 'onboarding_confirmed',   badge: { label: 'ONBOARDING', tone: 'dim'  as Tone }, render: renderOnboardingConfirmed },
   // ── Onboarding v2 Phase 1 (no prior renderer cases) ─────────────────────
   onboarding_staged:      { key: 'onboarding_staged',      badge: { label: 'STAGED',     tone: 'dim'  as Tone }, render: renderOnboardingStaged },
+  agent_sources_added:    { key: 'agent_sources_added',    badge: { label: 'AGENT',      tone: 'neut' as Tone }, render: renderAgentSourcesAdded },
   onboarding_blocked_urls_skipped: { key: 'onboarding_blocked_urls_skipped', badge: { label: 'SKIPPED', tone: 'dim' as Tone }, render: renderOnboardingBlockedUrlsSkipped },
   ingest_url_failed:      { key: 'ingest_url_failed',      badge: { label: 'URL FAIL',   tone: 'red'  as Tone }, render: renderIngestUrlFailed },
   ingest_file_failed:     { key: 'ingest_file_failed',     badge: { label: 'FILE FAIL',  tone: 'red'  as Tone }, render: renderIngestFileFailed },

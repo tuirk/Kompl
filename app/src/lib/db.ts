@@ -2656,6 +2656,21 @@ export function setSourceStatus(sourceId: string, status: 'active' | 'archived')
 // ============================================================================
 
 /**
+ * Whether AI agents may add sources through MCP add_source, which starts
+ * compiles (LLM spend). Off unless the user turns it on in Settings, and
+ * never carried in backups, so restoring one can't switch it on.
+ */
+export const AGENT_ADD_SOURCES_KEY = 'agent_add_sources_enabled';
+
+export function getAgentAddSourcesEnabled(): boolean {
+  return getSetting(AGENT_ADD_SOURCES_KEY) === '1';
+}
+
+export function setAgentAddSourcesEnabled(value: boolean): void {
+  setSetting(AGENT_ADD_SOURCES_KEY, value ? '1' : '0');
+}
+
+/**
  * Get the auto-approve setting. Defaults to true (direct commit) if not set.
  */
 export function getAutoApprove(): boolean {

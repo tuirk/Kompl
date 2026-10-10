@@ -20,6 +20,14 @@ ship with a `migrate.py` step that runs at boot.
   filtered by category and page type, and page with `offset`. While the NLP
   service is down or still loading its model, keyword matches come back with
   a note saying so. The app's search box keeps its keyword search.
+- **New `add_source`** lets an agent save links (up to 5 per call) or a note
+  to the wiki when the user asks. It is off until turned on in Settings →
+  Connect your AI, because each addition starts a compile that uses the AI
+  model. Agents can add 20 items a day, nothing is staged while a compile
+  runs, links already in the wiki are reported instead of added, and every
+  addition shows in the activity feed with the agent's name. The switch is
+  not carried in backups. Served by `POST /api/agent/sources`, which stages
+  and finalizes exactly like the app's Add sources flow.
 - **New `research_topic`** briefs an agent on a topic in one call: the most
   relevant pages with their summaries and the cited lines that best match
   the topic, one source list numbered across all of them (a source cited by

@@ -7,8 +7,8 @@ import zlib from 'zlib';
 import { NextResponse } from 'next/server';
 
 import { getDb, DATA_ROOT, logActivity, safePreviousContentPath } from '@/lib/db';
+import { isBackedUpSetting } from '@/lib/backup-settings';
 import { sanitizeDraftRules } from '@/lib/draft-rules';
-import { PAGE_UPGRADE_FLAG } from '@/lib/page-upgrade-state';
 import { isSafeId } from '@/lib/safe-paths';
 import { resyncAllWikilinks } from '@/lib/wikilinks';
 
@@ -393,12 +393,9 @@ export async function POST(request: Request) {
     }
 
     for (const s of settings) {
-      // schema_version belongs to this database (migrate.py owns it), not to
-      // the backup. Restoring an older value would make /api/health report
-      // the DB as broken until the next restart re-ran migrations.
-      if (s.key === 'schema_version') continue;
-      // The page-update flag arms one confirmed run; a backup never arms it.
-      if (s.key === PAGE_UPGRADE_FLAG) continue;
+      // schema_version, the page-update flag and the agent-sources switch
+      // belong to this install, not to the backup (lib/backup-settings.ts).
+      if (!isBackedUpSetting(s.key)) continue;
       db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`).run(s.key, s.value);
     }
 
