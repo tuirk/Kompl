@@ -29,6 +29,7 @@ import {
   backfillAliasCanonicalPageId,
 } from './db';
 import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from './draft-rules';
+import { recordNewDisputes } from './page-disputes';
 import { upsertVectorWithRetry } from './vector-upsert';
 import { syncPageWikilinks } from './wikilinks';
 import { extractFrontmatterField } from './yaml-frontmatter';
@@ -211,6 +212,10 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
     category: category ?? '',
     source_count: sourceIds.length,
   });
+
+  // Phase 3b: disputes the page records in its own text, for the activity
+  // feed (lib/page-disputes.ts). Never throws.
+  if (typeof markdown === 'string') recordNewDisputes({ page_id, title: plan.title }, markdown);
 
   return { ok: true, plan_id, page_id, title: plan.title };
 }

@@ -297,6 +297,26 @@ describe('redraftPage', () => {
     expect(queued.n).toBe(0); // the retry succeeded, so nothing is left for a backfill
   });
 
+  it('logs a dispute the new version records in its text', async () => {
+    handle = setupTestDb();
+    const pageId = seedRedraftablePage(handle);
+    mockNlp(pageId, {
+      draft: {
+        markdown: draftMarkdown(
+          `${LONG_BODY}
+
+## Disputed: the release year
+
+One source gives 2009 [S1]. Another gives 2008 [S2].`,
+        ),
+      },
+    });
+
+    await redraftPage(pageId);
+
+    expect(getActivityCounts(handle.db).page_dispute_recorded).toBe(1);
+  });
+
   it('leaves the page untouched when the draft is too thin', async () => {
     handle = setupTestDb();
     const pageId = seedRedraftablePage(handle);

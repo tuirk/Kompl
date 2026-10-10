@@ -129,6 +129,14 @@ ship with a `migrate.py` step that runs at boot.
 
 ### Added
 
+- **Disputes in the right panel and the activity feed.** When a page's
+  text records a disagreement between its sources (a "Disputed: …" or
+  "Contradictions" section citing two or more sources), the right panel
+  lists it with how many sources disagree and a link to the section, next
+  to new sources a compile flagged as contradicting the page. Compiles,
+  approvals, page updates, restores and recompiles log each newly recorded
+  dispute once (DISPUTE in the activity feed); a dispute reworded with the
+  same sources is not logged again. No extra LLM calls.
 - **Current models.** Compile model choices are now DeepSeek V4.1 Flash
   (`deepseek-flash`), DeepSeek V4 Pro, Gemini 3.8 Flash, Gemini 3.5
   Flash-Lite and Gemini 3.1 Pro (preview). Gemini 3 requests use
@@ -137,6 +145,10 @@ ship with a `migrate.py` step that runs at boot.
 
 ### Changed
 
+- **Wiki right panel restyled to match the sidebar:** On this page,
+  Disputes, Linked from (the first 8, then Show all), You might also read,
+  and View original source on source notes, in readable 14px rows with
+  hover and keyboard-focus states.
 - **Wiki health checks run when you ask.** Settings → Wiki health has a
   **Run check** button and no longer a "Scheduled wiki health checks"
   switch. The schedule only ever ran from `kompl start`, at most once per 36

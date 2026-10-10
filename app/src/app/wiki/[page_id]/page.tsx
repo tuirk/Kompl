@@ -7,7 +7,8 @@ export const dynamic = 'force-dynamic';
  * Three-column layout:
  *   Left  — WikiSidebar (category tree, graph link, search)
  *   Center — Compiled markdown body
- *   Right  — TOC (from ## headings) + Backlinks panel
+ *   Right  — On this page (## and ### headings), Disputes, Linked from,
+ *            You might also read (./RightPanel.tsx)
  *
  * YAML frontmatter in the markdown file is stripped before rendering.
  */
@@ -29,7 +30,9 @@ import {
   type PageRow,
 } from '../../../lib/db';
 import PageActionButton from './PageActionButton';
-import { healedPageBody, renderMarkdown } from '../../../lib/markdown';
+import { headingAnchor, healedPageBody, renderMarkdown } from '../../../lib/markdown';
+import { findPageDisputes } from '../../../lib/page-disputes';
+import { DisputesPanel, LinkedFrom, RelatedPages, ViewOriginal } from './RightPanel';
 import { expandWikilinksForDisplay } from '../../../lib/wiki-display';
 import { removeEmptyContradictionSections, SYNTHESIZED_PAGE_TYPES } from '../../../lib/page-sections';
 import WikiSidebar from '../../../components/WikiSidebar';
@@ -75,11 +78,6 @@ function displayBody(raw: string, pageType: string): string {
   return SYNTHESIZED_PAGE_TYPES.has(pageType) ? removeEmptyContradictionSections(body).markdown : body;
 }
 
-/** Same slug rule as the heading renderer in lib/markdown.ts. */
-function slugify(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
-}
-
 /**
  * Extract ## and ### headings for the TOC. Skips fenced code blocks (a "# "
  * line in code is not a heading) and strips link syntax, emphasis and
@@ -102,7 +100,7 @@ function extractHeadings(md: string): TocHeading[] {
       .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
       .replace(/[*_`]/g, '')
       .trim();
-    if (text) headings.push({ level: m[1].length, text, anchor: slugify(raw) });
+    if (text) headings.push({ level: m[1].length, text, anchor: headingAnchor(raw) });
   }
   return headings;
 }
@@ -191,129 +189,6 @@ async function PreviousVersionPanel({
   );
 }
 
-/**
- * Contradicting sources panel — rendered next to the Linked resources block
- * on the right sidebar. Reads activity_log rows (via /api/wiki/[page_id]/contradictions)
- * where the match-step LLM triage flagged a source as contradicting this page.
- * Read-only for now; resolve/dismiss verbs and an inbox view are deferred
- * until real usage tells us the right UI shape.
- */
-interface ContradictionItem {
-  source_id: string | null;
-  source_title: string | null;
-  source_url: string | null;
-  source_type: string | null;
-  date_ingested: string | null;
-  reason: string | null;
-  session_id: string | null;
-  detected_at: string | null;
-}
-
-async function ContradictingSourcesPanel({ pageId }: { pageId: string }) {
-  const res = await fetch(
-    `${process.env.APP_URL ?? 'http://app:3000'}/api/wiki/${pageId}/contradictions`,
-    { cache: 'no-store' }
-  ).catch(() => null);
-
-  if (!res || !res.ok) return null;
-
-  const data = (await res.json()) as { items: ContradictionItem[]; count: number };
-  if (data.count === 0) return null;
-
-  return (
-    <section style={{ marginTop: '2rem' }}>
-      <div className="meta" style={{ marginBottom: '0.5rem' }}>
-        Contradicting sources
-      </div>
-      {data.items.map((item, idx) => {
-        const key = `${item.source_id ?? 'unknown'}-${item.detected_at ?? idx}`;
-        const label = item.source_title ?? item.source_url ?? 'Untitled source';
-        const href = item.source_id ? `/source/${item.source_id}` : null;
-        return (
-          <div
-            key={key}
-            style={{
-              fontSize: 12,
-              padding: '0.3em 0',
-              lineHeight: 1.4,
-              borderBottom: '1px solid var(--border)',
-            }}
-          >
-            {href ? (
-              <Link
-                href={href}
-                style={{
-                  display: 'block',
-                  color: 'var(--danger)',
-                  fontWeight: 500,
-                }}
-              >
-                {label}
-              </Link>
-            ) : (
-              <span style={{ color: 'var(--danger)', fontWeight: 500 }}>{label}</span>
-            )}
-            {item.reason && (
-              <div style={{ color: 'var(--fg-dim)', marginTop: '0.2em' }}>{item.reason}</div>
-            )}
-            {(item.source_type || item.date_ingested) && (
-              <div style={{ color: 'var(--fg-muted)', marginTop: '0.2em', fontSize: 11 }}>
-                {item.source_type ? item.source_type : ''}
-                {item.source_type && item.date_ingested ? ' · ' : ''}
-                {item.date_ingested ? <LocalDate iso={item.date_ingested} /> : ''}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </section>
-  );
-}
-
-/**
- * Related pages panel — embedding similarity, zero LLM cost. Gives up after
- * 3 seconds so a slow NLP service never holds up the page (the route logs it).
- */
-async function RelatedPagesPanel({ pageId }: { pageId: string }) {
-  const res = await fetch(
-    `${process.env.APP_URL ?? 'http://app:3000'}/api/wiki/${pageId}/related`,
-    { cache: 'no-store', signal: AbortSignal.timeout(3_000) }
-  ).catch(() => null);
-
-  if (!res || !res.ok) return null;
-
-  const data = (await res.json()) as {
-    items: Array<{ page_id: string; title: string; page_type: string }>;
-    count: number;
-    enabled: boolean;
-  };
-
-  if (!data.enabled || data.count === 0) return null;
-
-  return (
-    <section style={{ marginTop: '2rem' }}>
-      <div className="meta" style={{ marginBottom: '0.5rem' }}>
-        You might also read
-      </div>
-      {data.items.map((p) => (
-        <Link
-          key={p.page_id}
-          href={`/wiki/${p.page_id}`}
-          style={{
-            display: 'block',
-            fontSize: 12,
-            color: 'var(--fg-muted)',
-            padding: '0.2em 0',
-            lineHeight: 1.4,
-          }}
-        >
-          {p.title}
-        </Link>
-      ))}
-    </section>
-  );
-}
-
 export default async function WikiPageDetail({ params }: PageProps) {
   const { page_id } = await params;
   const page: PageRow | null = getPage(page_id);
@@ -328,13 +203,24 @@ export default async function WikiPageDetail({ params }: PageProps) {
   // numbered source list below owns it), turn citations into numbered
   // placeholders, then expand wikilinks, linking each page once. Citations go
   // first: legacy citation groups can contain [[wikilinks]].
-  const scan = rawMarkdown
-    ? scanCitations(displayBody(rawMarkdown, page.page_type), (t) => sourceTitles.has(t.toLowerCase()))
-    : null;
+  const shown = rawMarkdown ? displayBody(rawMarkdown, page.page_type) : null;
+  const scan = shown ? scanCitations(shown, (t) => sourceTitles.has(t.toLowerCase())) : null;
   const cleanMarkdown = scan
     ? expandWikilinksForDisplay(scan.markdown, (t) => titleMap.get(t.toLowerCase()), page_id)
     : null;
   const headings = cleanMarkdown ? extractHeadings(cleanMarkdown) : [];
+
+  // Disputes the page records in its own text, read before citations become
+  // numbered placeholders. Links use the table of contents' anchors, which
+  // are slugged after display rewrites (lib/page-disputes.ts).
+  const disputes = shown
+    ? findPageDisputes(shown).map((d) => ({
+        ...d,
+        anchor: headings.some((h) => h.anchor === d.anchor)
+          ? d.anchor
+          : headings[d.headingIndex]?.anchor ?? d.anchor,
+      }))
+    : [];
 
   const groups = getCategoryGroups();
   const backlinks = getBacklinks(page_id);
@@ -517,14 +403,14 @@ export default async function WikiPageDetail({ params }: PageProps) {
         )}
       </main>
 
-      {/* Right: TOC + Backlinks */}
+      {/* Right: On this page, Disputes, Linked from, You might also read */}
       <aside
+        aria-label="About this page"
         style={{
           width: 293,
           flexShrink: 0,
-          padding: '2rem 1rem',
+          padding: '2rem 0.75rem',
           borderLeft: '1px solid var(--border)',
-          fontSize: 13,
           position: 'sticky',
           // Below the fixed 65px TopNav (same zoomed coordinate space).
           top: 65,
@@ -535,55 +421,17 @@ export default async function WikiPageDetail({ params }: PageProps) {
       >
         <WikiToc headings={headings} />
 
-        <section>
-          <h2 className="meta" style={{ marginBottom: '0.5rem' }}>
-            Linked from ({backlinks.length})
-          </h2>
-          {backlinks.length === 0 ? (
-            <p style={{ color: 'var(--fg-dim)', fontSize: 12, margin: 0 }}>No inbound links yet.</p>
-          ) : (
-            backlinks.map((b) => (
-              <Link
-                key={b.page_id}
-                href={`/wiki/${b.page_id}`}
-                style={{
-                  display: 'block',
-                  fontSize: 12,
-                  color: 'var(--fg-muted)',
-                  padding: '0.2em 0',
-                  lineHeight: 1.4,
-                }}
-              >
-                {b.title}
-              </Link>
-            ))
-          )}
-        </section>
-
         {page.page_type === 'source-summary' && sourceList[0] && (
-          <section style={{ marginTop: '2rem' }}>
-            <Link
-              href={`/source/${sourceList[0].source_id}`}
-              style={{
-                display: 'block',
-                fontSize: 17,
-                fontWeight: 500,
-                color: 'var(--accent)',
-                padding: '0.25em 0',
-                lineHeight: 1.4,
-              }}
-            >
-              View original →
-            </Link>
-          </section>
+          <ViewOriginal sourceId={sourceList[0].source_id} />
         )}
 
         {page_id !== SAVED_LINKS_PAGE_ID && (
-          <>
-            <ContradictingSourcesPanel pageId={page_id} />
-            <RelatedPagesPanel pageId={page_id} />
-          </>
+          <DisputesPanel pageId={page_id} disputes={disputes} sources={sourceList} />
         )}
+
+        <LinkedFrom pages={backlinks} />
+
+        {page_id !== SAVED_LINKS_PAGE_ID && <RelatedPages pageId={page_id} />}
       </aside>
     </div>
   );

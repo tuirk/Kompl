@@ -572,3 +572,49 @@ article img {
     transition: none;
   }
 }
+
+/* =============================================================================
+   Wiki article right panel (components/WikiToc.tsx, app/wiki/[page_id]/RightPanel.tsx)
+   Layout is inline in the components. Colours, hover and keyboard focus live
+   here so the rows behave like the left sidebar's.
+   ============================================================================= */
+
+.wiki-rp-item,
+.wiki-rp-toc a {
+  color: var(--fg-muted);
+  background: transparent;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.wiki-rp-item:hover,
+.wiki-rp-toc a:hover {
+  color: var(--fg);
+  background: var(--bg-card-hover);
+  text-decoration: none;
+}
+.wiki-rp-toc a[aria-current='location'] {
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.08);
+  font-weight: 500;
+}
+.wiki-rp-item:focus-visible,
+.wiki-rp-toc a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.wiki-rp-more > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.wiki-rp-more > summary::-webkit-details-marker {
+  display: none;
+}
+.wiki-rp-more:not([open]) .wiki-rp-less,
+.wiki-rp-more[open] .wiki-rp-all {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wiki-rp-item,
+  .wiki-rp-toc a {
+    transition: none;
+  }
+}

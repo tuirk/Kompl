@@ -58,6 +58,7 @@ import {
 } from '../../../../lib/db';
 import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from '../../../../lib/draft-rules';
 import { flushPendingPage } from '../../../../lib/flush-pending';
+import { recordNewDisputes } from '../../../../lib/page-disputes';
 import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
 import { syncPageWikilinks } from '../../../../lib/wikilinks';
 import { extractFrontmatterField } from '../../../../lib/yaml-frontmatter';
@@ -408,6 +409,10 @@ async function commitSession(session_id: string): Promise<Response> {
       category: category ?? '',
       source_count: sourceIds.length,
     });
+
+    // Phase 3b: disputes the page records in its own text, for the activity
+    // feed (lib/page-disputes.ts). Never throws.
+    if (typeof markdown === 'string') recordNewDisputes({ page_id, title: plan.title }, markdown);
 
     committedPageIds.add(page_id);
     committed++;

@@ -5,7 +5,9 @@
  * whose heading most recently passed the upper 40% of the viewport (the last
  * one once the page is scrolled to the bottom), so the reader always sees
  * where they are. Indentation is relative to the shallowest heading level on
- * the page, so pages that only use ### headings aren't all indented.
+ * the page, so pages that only use ### headings aren't all indented. Rows
+ * match the left sidebar's: a guide line that turns into an accent bar for
+ * the current section; colours and hover live in globals.css (.wiki-rp-toc).
  */
 
 import { useEffect, useState } from 'react';
@@ -54,10 +56,10 @@ export default function WikiToc({ headings }: { headings: TocHeading[] }) {
   const baseLevel = Math.min(...headings.map((h) => h.level));
 
   return (
-    <nav aria-label="On this page" style={{ marginBottom: '2rem' }}>
-      <div className="meta" style={{ marginBottom: '0.5rem' }}>
-        Contents
-      </div>
+    <nav aria-label="On this page" className="wiki-rp-toc">
+      <h2 className="meta" style={{ margin: '0 0 0.4rem', padding: '0 8px', fontWeight: 400 }}>
+        On this page
+      </h2>
       {headings.map((h, i) => {
         const isActive = h.anchor === active;
         return (
@@ -68,12 +70,11 @@ export default function WikiToc({ headings }: { headings: TocHeading[] }) {
             onClick={() => setActive(h.anchor)}
             style={{
               display: 'block',
-              fontSize: 13,
-              lineHeight: 1.4,
-              padding: `0.25em 0 0.25em ${0.7 + (h.level - baseLevel) * 0.9}em`,
-              borderLeft: `2px solid ${isActive ? 'var(--accent)' : 'var(--border)'}`,
-              color: isActive ? 'var(--fg)' : 'var(--fg-muted)',
-              fontWeight: isActive ? 500 : 400,
+              fontSize: 14,
+              lineHeight: '20px',
+              padding: `4px 8px 4px ${10 + (h.level - baseLevel) * 12}px`,
+              borderRadius: '0 6px 6px 0',
+              boxShadow: `inset ${isActive ? '2px 0 0 var(--accent)' : '1px 0 0 var(--border-hover)'}`,
               textDecoration: 'none',
             }}
           >

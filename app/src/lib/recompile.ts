@@ -40,6 +40,7 @@ import { assignCitationLabels, labelsToStoredCitations, rewordLabelSubjects } fr
 import { normalizeFrontmatter, relatedLinkTargets, sourceOnlyTitles, tidyDraftLinks } from './draft-cleanup';
 import { CURRENT_DRAFT_RULES, isDraftedPage, setPageDraftRules } from './draft-rules';
 import { removeEmptyContradictionSections } from './page-sections';
+import { recordNewDisputes } from './page-disputes';
 import { upsertVectorWithRetry } from './vector-upsert';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -239,6 +240,9 @@ export async function recompilePage(
     category: page.category ?? '',
     source_count: newSourceCount,
   });
+
+  // ── Phase 3b: disputes the page records in its own text (activity feed) ──
+  recordNewDisputes({ page_id: pageId, title: page.title }, newMarkdown);
 
   return { outcome: 'rewritten' };
 }

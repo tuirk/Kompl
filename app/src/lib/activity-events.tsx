@@ -329,6 +329,25 @@ function renderPageAction(what: string | ((str: (k: string) => string | null) =>
   };
 }
 
+/** A dispute a page records in its own text (lib/page-disputes.ts). */
+function renderPageDisputeRecorded(row: FeedActivityRow): RowContent {
+  const { d, str } = makeGetters(row);
+  const page_id = str('page_id');
+  const anchor = str('anchor');
+  const href = page_id ? `/wiki/${page_id}${anchor ? `#${anchor}` : ''}` : null;
+  const pageName = str('title') ?? page_id ?? '…';
+  const sides = d && Array.isArray(d.source_ids) ? d.source_ids.length : 0;
+  const primary = href
+    ? <Link href={href} style={LINK_STYLE}><strong>{pageName}</strong></Link>
+    : <strong>{pageName}</strong>;
+  const action = href
+    ? <Link href={href} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+    : null;
+  const topic = str('topic') ?? 'a claim';
+  const text = sides > 0 ? `disputed: ${topic} · ${sides} sources disagree` : `disputed: ${topic}`;
+  return { primary, secondary: <span style={MONO_DIM}>{text}</span>, action, isError: false };
+}
+
 const PAGE_UPGRADE_STOP_TEXT: Record<string, string> = {
   user: 'stopped by you',
   flag_off: 'stopped by you',
@@ -646,6 +665,7 @@ export const ACTIVITY_EVENTS = {
   },
   page_provenance_updated: { key: 'page_provenance_updated', badge: { label: 'NOTED',    tone: 'dim'  as Tone }, render: renderPageProvenanceUpdated },
   page_contradiction_detected: { key: 'page_contradiction_detected', badge: { label: 'CONFLICT', tone: 'red' as Tone }, render: renderPageContradictionDetected },
+  page_dispute_recorded:  { key: 'page_dispute_recorded',  badge: { label: 'DISPUTE',    tone: 'red'  as Tone }, render: renderPageDisputeRecorded },
   // ── Drafts ──────────────────────────────────────────────────────────────
   draft_approved:         { key: 'draft_approved',         badge: { label: 'APPROVED',   tone: 'mint' as Tone }, render: renderDraftApproved },
   draft_rejected:         { key: 'draft_rejected',         badge: { label: 'REJECTED',   tone: 'red'  as Tone }, render: renderDraftRejected },

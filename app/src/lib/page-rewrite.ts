@@ -27,6 +27,7 @@ import type { ActivityEventType } from './activity-events';
 import { stripFrontmatter } from './markdown';
 import { syncPageWikilinks } from './wikilinks';
 import { extractFrontmatterField } from './yaml-frontmatter';
+import { recordNewDisputes } from './page-disputes';
 import { upsertVectorWithRetry } from './vector-upsert';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -134,6 +135,9 @@ export async function commitPageRewrite(args: {
       source_count: page.source_count,
     });
   }
+
+  // ── Phase 3b: disputes the page records in its own text (activity feed) ──
+  recordNewDisputes({ page_id: pageId, title: page.title }, markdown);
 
   return { ok: true, flushed };
 }

@@ -24,6 +24,11 @@ function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
 }
 
+/** The id the renderer gives a heading whose raw markdown source is `raw`. */
+export function headingAnchor(raw: string): string {
+  return slugify(raw);
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
