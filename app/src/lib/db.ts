@@ -632,7 +632,24 @@ export function getCategoryGroups(includeArchived = false): CategoryGroup[] {
 export function searchPages(query: string, limit = 20, excludePageIds?: Set<string>): PageRow[] {
   const ftsQuery = buildFtsQuery(query);
   if (ftsQuery === null) return [];
-  const rows = openDb()
+  const rows = searchPagesFts(ftsQuery, limit);
+  if (!excludePageIds || excludePageIds.size === 0) return rows;
+  return rows.filter((r) => !excludePageIds.has(r.page_id));
+}
+
+/**
+ * Run a prebuilt FTS5 MATCH expression (see lib/fts-query.ts), best match
+ * first. Optional filters apply before LIMIT, so a filtered search isn't cut
+ * short by pages it would drop. Category matches case-insensitively.
+ */
+export function searchPagesFts(
+  ftsQuery: string,
+  limit: number,
+  filters: { category?: string; pageType?: string } = {}
+): PageRow[] {
+  const category = filters.category ?? null;
+  const pageType = filters.pageType ?? null;
+  return openDb()
     .prepare(
       `SELECT p.page_id, p.title, p.page_type, p.category, p.summary,
               p.content_path, p.previous_content_path, p.last_updated,
@@ -640,12 +657,12 @@ export function searchPages(query: string, limit = 20, excludePageIds?: Set<stri
          FROM pages_fts f
          JOIN pages p ON p.page_id = f.page_id
         WHERE pages_fts MATCH ?
+          AND (? IS NULL OR p.category = ? COLLATE NOCASE)
+          AND (? IS NULL OR p.page_type = ?)
         ORDER BY rank
         LIMIT ?`
     )
-    .all(ftsQuery, limit) as PageRow[];
-  if (!excludePageIds || excludePageIds.size === 0) return rows;
-  return rows.filter((r) => !excludePageIds.has(r.page_id));
+    .all(ftsQuery, category, category, pageType, pageType, limit) as PageRow[];
 }
 
 /** Pages that link TO the given page_id (backlinks). */

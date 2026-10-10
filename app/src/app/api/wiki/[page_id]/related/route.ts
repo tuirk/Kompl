@@ -15,10 +15,10 @@
 
 import { NextResponse } from 'next/server';
 import { getAllArchivedPageIds, getDb, getPage, getRelatedPagesMinSources } from '../../../../../lib/db';
+import { searchPageVectors } from '../../../../../lib/vector-search';
 
 export const dynamic = 'force-dynamic';
 
-const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 const MAX_RESULTS = 5;
 /** Candidates asked from Chroma before the filters below drop some. */
 const CANDIDATES = 12;
@@ -78,26 +78,12 @@ export async function GET(_request: Request, { params }: RouteContext): Promise<
 
   // Fetch similar pages from Chroma via NLP service. An empty store answers
   // 200 with no matches; anything else is a failure worth a log line.
-  let vectorMatches: Array<{ page_id: string; similarity: number }> = [];
-  try {
-    const res = await fetch(`${NLP_SERVICE_URL}/vectors/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query_text: queryText, n_results: CANDIDATES }),
-      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      logSearchFailure(page_id, { status: res.status });
-    } else {
-      const data = (await res.json()) as {
-        matches: Array<{ page_id: string; similarity: number }>;
-      };
-      vectorMatches = data.matches ?? [];
-    }
-  } catch (err) {
-    logSearchFailure(page_id, { error: err instanceof Error ? err.message : String(err) });
+  const search = await searchPageVectors(queryText, CANDIDATES, SEARCH_TIMEOUT_MS);
+  if (!search.ok) {
+    logSearchFailure(page_id, search.detail);
     return NextResponse.json({ items: [], count: 0, enabled: true });
   }
+  const vectorMatches = search.matches;
 
   // Exclude self, Saved Links (a system page of unresolved URLs, not content),
   // archived pages and weak matches; resolve titles; take the top MAX_RESULTS.

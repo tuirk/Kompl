@@ -20,7 +20,7 @@ describe('tool catalogue', () => {
   it('lists every tool with a title and read-only annotations', async () => {
     const client = await connect(fakeKompl({}).fetchImpl);
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['list_pages', 'read_page', 'search_wiki', 'wiki_stats']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['read_page', 'search_wiki', 'wiki_stats']);
     for (const tool of tools) {
       expect(tool.title).toBeTruthy();
       expect(tool.annotations?.readOnlyHint).toBe(true);
@@ -79,26 +79,127 @@ describe('kompl client failures', () => {
   });
 });
 
-describe('search_wiki', () => {
-  it('passes the query and limit and keeps the result format', async () => {
-    const kompl = fakeKompl({ '/api/pages/search': { items: [PAGE], count: 1 } });
-    const res = await call(await connect(kompl.fetchImpl), 'search_wiki', { query: 'consensus', limit: 5 });
+describe('search_wiki with a query', () => {
+  it('asks for hybrid search with the filters and keeps the result format', async () => {
+    const kompl = fakeKompl({ '/api/pages/search': { items: [PAGE], count: 1, degraded: false } });
+    const res = await call(await connect(kompl.fetchImpl), 'search_wiki', {
+      query: 'how do networks agree',
+      category: 'Cryptocurrency',
+      page_type: 'concept',
+      limit: 5,
+    });
     expect(res).toEqual({
       text:
         '1 result(s):\n\n' +
         '**Proof of work** (concept) [Cryptocurrency] — A consensus mechanism.\n  ID: `proof-of-work-1`',
       isError: false,
     });
-    expect(kompl.requested[0].searchParams.get('q')).toBe('consensus');
-    expect(kompl.requested[0].searchParams.get('limit')).toBe('5');
+    expect(Object.fromEntries(kompl.requested[0].searchParams)).toEqual({
+      q: 'how do networks agree',
+      mode: 'hybrid',
+      limit: '5',
+      category: 'Cryptocurrency',
+      page_type: 'concept',
+    });
+  });
+
+  it('pages through results with offset and says when more may match', async () => {
+    const items = [PAGE, PYTHON, { ...PAGE, page_id: 'p3', title: 'Third' }];
+    const kompl = fakeKompl({ '/api/pages/search': { items, count: 3, degraded: false } });
+    const res = await call(await connect(kompl.fetchImpl), 'search_wiki', { query: 'x', limit: 2, offset: 1 });
+    expect(kompl.requested[0].searchParams.get('limit')).toBe('3');
+    expect(res.text.startsWith('2 result(s):')).toBe(true);
+    expect(res.text).not.toContain('Proof of work');
+    expect(res.text).toContain('More may match: call again with offset=3.');
+  });
+
+  it('says when meaning-based search was unavailable', async () => {
+    const kompl = fakeKompl({ '/api/pages/search': { items: [PAGE], count: 1, degraded: true } });
+    const res = await call(await connect(kompl.fetchImpl), 'search_wiki', { query: 'x' });
+    expect(res.isError).toBe(false);
+    expect(res.text).toContain('keyword matches only');
   });
 
   it('reports an empty result without flagging an error', async () => {
-    const client = await connect(fakeKompl({ '/api/pages/search': { items: [], count: 0 } }).fetchImpl);
+    const client = await connect(fakeKompl({ '/api/pages/search': { items: [], count: 0, degraded: false } }).fetchImpl);
     expect(await call(client, 'search_wiki', { query: 'nothing' })).toEqual({
       text: 'No results found.',
       isError: false,
     });
+  });
+
+  it('says when paging went past the last result', async () => {
+    const kompl = fakeKompl({ '/api/pages/search': { items: [PAGE], count: 1, degraded: false } });
+    expect(await call(await connect(kompl.fetchImpl), 'search_wiki', { query: 'x', offset: 5 })).toEqual({
+      text: 'No more results: 1 matched.',
+      isError: false,
+    });
+  });
+
+  it('applies filters itself and asks for an update when the app predates hybrid search', async () => {
+    const SAVED = { ...PAGE, page_id: 'saved-links', title: 'Saved Links' };
+    const kompl = fakeKompl({ '/api/pages/search': { items: [SAVED, PAGE, PYTHON], count: 3 } });
+    const res = await call(await connect(kompl.fetchImpl), 'search_wiki', { query: 'x', category: 'programming' });
+    expect(res.text).toContain('**Python**');
+    expect(res.text).not.toContain('Proof of work');
+    expect(res.text).not.toContain('Saved Links');
+    expect(res.text).toContain('Run `kompl update`');
+  });
+
+  it('refuses offsets past the search cap', async () => {
+    const res = await call(await connect(fakeKompl({}).fetchImpl), 'search_wiki', { query: 'x', offset: 100 });
+    expect(res.isError).toBe(true);
+  });
+});
+
+describe('search_wiki without a query (browse)', () => {
+  const SAVED = { ...PAGE, page_id: 'saved-links', title: 'Saved Links', page_type: 'overview', category: null };
+  const index = fakeKompl({
+    '/api/wiki/index': { total_pages: 3, categories: {}, pages: [SAVED, PAGE, PYTHON] },
+  }).fetchImpl;
+
+  it('lists pages newest first, without Saved Links, in the list format', async () => {
+    expect(await call(await connect(index), 'search_wiki', {})).toEqual({
+      text: [
+        'Pages 1–2 of 2, newest first:',
+        '',
+        '• **Proof of work** (concept) [Cryptocurrency] — 2 source(s)\n  ID: `proof-of-work-1`',
+        '',
+        '• **Python** (entity) [Programming] — 2 source(s)\n  ID: `p2`',
+      ].join('\n'),
+      isError: false,
+    });
+  });
+
+  it('treats a blank query as browsing', async () => {
+    const res = await call(await connect(index), 'search_wiki', { query: '   ' });
+    expect(res.text.startsWith('Pages 1–2 of 2')).toBe(true);
+  });
+
+  it('filters by category (case-insensitive) and page type', async () => {
+    expect((await call(await connect(index), 'search_wiki', { category: 'programming' })).text).toContain('Python');
+    const concepts = await call(await connect(index), 'search_wiki', { page_type: 'concept' });
+    expect(concepts.text).toContain('Proof of work');
+    expect(concepts.text).not.toContain('Python');
+  });
+
+  it('pages with offset and points to the next page', async () => {
+    const first = await call(await connect(index), 'search_wiki', { limit: 1 });
+    expect(first.text).toContain('Pages 1–1 of 2');
+    expect(first.text).toContain('More: call again with offset=1.');
+    const past = await call(await connect(index), 'search_wiki', { offset: 5 });
+    expect(past).toEqual({ text: 'No more pages: there are 2.', isError: false });
+  });
+
+  it('says when nothing matches the filters', async () => {
+    expect(await call(await connect(index), 'search_wiki', { page_type: 'comparison' })).toEqual({
+      text: 'No pages match the given filters.',
+      isError: false,
+    });
+  });
+
+  it('flags a failed catalogue load', async () => {
+    expect((await call(await connect(down), 'search_wiki', {})).isError).toBe(true);
   });
 });
 
@@ -148,37 +249,6 @@ describe('read_page', () => {
   it('flags an unknown page as an error with a next step', async () => {
     const res = await call(await connect(fakeKompl({}).fetchImpl), 'read_page', { page_id: 'nope' });
     expect(res).toEqual({ text: 'Page not found: nope. Use search_wiki to find page ids.', isError: true });
-  });
-});
-
-describe('list_pages', () => {
-  const index = fakeKompl({
-    '/api/wiki/index': { total_pages: 2, categories: {}, pages: [PAGE, PYTHON] },
-  }).fetchImpl;
-
-  it('filters by category (case-insensitive) and keeps the list format', async () => {
-    expect(await call(await connect(index), 'list_pages', { category: 'programming' })).toEqual({
-      text: '1 page(s):\n\n• **Python** (entity) [Programming] — 2 source(s)\n  ID: `p2`',
-      isError: false,
-    });
-  });
-
-  it('filters by page type', async () => {
-    const res = await call(await connect(index), 'list_pages', { page_type: 'concept' });
-    expect(res.text).toContain('Proof of work');
-    expect(res.text).not.toContain('Python');
-  });
-
-  it('says when nothing matches', async () => {
-    expect(await call(await connect(index), 'list_pages', { page_type: 'comparison' })).toEqual({
-      text: 'No pages match the given filters.',
-      isError: false,
-    });
-  });
-
-  it('flags a failed catalogue load', async () => {
-    const res = await call(await connect(down), 'list_pages');
-    expect(res.isError).toBe(true);
   });
 });
 

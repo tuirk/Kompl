@@ -12,6 +12,17 @@ ship with a `migrate.py` step that runs at boot.
 
 ### MCP server
 
+- **`search_wiki` understands questions.** It searches by meaning as well
+  as keywords (the local embedding model, no LLM), so "how do computers on a
+  network agree on one shared history" finds proof-of-work consensus and "who
+  created bitcoin" finds Satoshi Nakamoto; questions like these used to
+  return nothing. Results leave out archived pages and Saved Links, can be
+  filtered by category and page type, and page with `offset`. While the NLP
+  service is down or still loading its model, keyword matches come back with
+  a note saying so. The app's search box keeps its keyword search.
+- **`list_pages` is now part of `search_wiki`:** call it without a query to
+  list pages newest first, with the same filters and paging. Permission rules
+  saved for `list_pages` can be removed.
 - **Stays built.** Setup and `kompl update` now build the MCP server, and
   `kompl start` rebuilds it once when its build is older than its source, so
   AI agents run the code that matches the installed Kompl. Before, it was

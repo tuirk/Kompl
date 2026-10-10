@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { buildFtsQuery } from '../lib/fts-query';
+import { buildFtsQuery, buildFtsQueryAll, buildFtsQueryAny } from '../lib/fts-query';
 import { searchPages } from '../lib/db';
 import { setupTestDb, seedPage, type TestDbHandle } from './helpers/test-db';
 
@@ -27,6 +27,36 @@ describe('buildFtsQuery', () => {
   it('returns null when nothing is searchable', () => {
     expect(buildFtsQuery('  -- ** ')).toBeNull();
     expect(buildFtsQuery('')).toBeNull();
+  });
+});
+
+describe('buildFtsQueryAny', () => {
+  it.each([
+    ['who created bitcoin', '"created"* OR "bitcoin"*'],
+    ['How do networks agree on history?', '"networks"* OR "agree"* OR "history"*'],
+    ['sha-256', '"sha"* OR "256"*'],
+    ['rock AND roll', '"rock"* OR "roll"*'],
+  ])('%s → %s', (input, expected) => {
+    expect(buildFtsQueryAny(input)).toBe(expected);
+  });
+
+  it('returns null when only common words are left', () => {
+    expect(buildFtsQueryAny('what is it')).toBeNull();
+    expect(buildFtsQueryAny('')).toBeNull();
+  });
+});
+
+describe('buildFtsQueryAll', () => {
+  it.each([
+    ['who created bitcoin', '"created"* "bitcoin"*'],
+    ['What is the Merge?', '"Merge"*'],
+    ['proof-of-work', '"proof"* "work"*'],
+  ])('%s → %s', (input, expected) => {
+    expect(buildFtsQueryAll(input)).toBe(expected);
+  });
+
+  it('returns null when only common words are left', () => {
+    expect(buildFtsQueryAll('what is it')).toBeNull();
   });
 });
 
