@@ -44,6 +44,8 @@ function isCitationItem(item: string, isKnownTitle: (title: string) => boolean):
 /** Placeholder pair wrapped around citation numbers until the HTML pass. */
 const OPEN = '';
 const CLOSE = '';
+/** The placeholder pair, for code that works on scanCitations() output (lib/cited-text.ts). */
+export { OPEN as CITATION_OPEN, CLOSE as CITATION_CLOSE };
 
 function uuidsIn(text: string): string[] {
   return (text.match(new RegExp(UUID, 'gi')) ?? []).map((u) => u.toLowerCase());

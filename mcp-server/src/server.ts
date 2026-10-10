@@ -4,6 +4,7 @@ import { registerListSources } from './tools/list-sources.js';
 import { registerReadPage } from './tools/read-page.js';
 import { registerReadSource } from './tools/read-source.js';
 import { registerRecentChanges } from './tools/recent-changes.js';
+import { registerResearchTopic } from './tools/research-topic.js';
 import { registerSearchWiki } from './tools/search-wiki.js';
 import { registerWikiStatus } from './tools/wiki-status.js';
 
@@ -19,7 +20,8 @@ export const SERVER_VERSION = '1.0.0';
 export const SERVER_INSTRUCTIONS = [
   "Kompl is the user's personal wiki, compiled from sources they saved (articles, bookmarks, documents).",
   'Each page cites its sources with [n] markers that map to the numbered source list read_page returns.',
-  '- Find pages with search_wiki (ask in plain language; leave the query out to browse), then read them with read_page before answering.',
+  '- For "tell me about X" or a briefing, start with research_topic: one call returns the key pages, cited lines and one shared source list.',
+  '- For a specific lookup, find pages with search_wiki (ask in plain language; leave the query out to browse) and read them with read_page.',
   '- When you answer from Kompl, name the pages you used and keep the [n] source references so the user can check each claim.',
   '- To check what a source actually says, use read_source with the page_id and n (add a query to get the matching passages).',
   '- list_sources shows what the user has saved, e.g. whether a link is already in Kompl.',
@@ -35,6 +37,7 @@ export function createServer(options: KomplClientOptions): McpServer {
     { instructions: SERVER_INSTRUCTIONS }
   );
   registerSearchWiki(server, client);
+  registerResearchTopic(server, client);
   registerReadPage(server, client);
   registerReadSource(server, client);
   registerListSources(server, client);

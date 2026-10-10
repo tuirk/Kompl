@@ -25,6 +25,7 @@ describe('tool catalogue', () => {
       'read_page',
       'read_source',
       'recent_changes',
+      'research_topic',
       'search_wiki',
       'wiki_status',
     ]);
@@ -35,9 +36,10 @@ describe('tool catalogue', () => {
     }
   });
 
-  it('sends server instructions that explain [n] citations', async () => {
+  it('sends server instructions that explain [n] citations, short enough for every client', async () => {
     const client = await connect(fakeKompl({}).fetchImpl);
     expect(client.getInstructions()).toMatch(/\[n\]/);
+    expect(client.getInstructions()!.length).toBeLessThan(2000);
   });
 });
 

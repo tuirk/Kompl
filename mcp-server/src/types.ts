@@ -112,6 +112,35 @@ export interface WikiStatus {
   } | null;
 }
 
+export interface ResearchPack {
+  topic: string;
+  detail: 'brief' | 'full';
+  degraded: boolean;
+  pages: Array<{
+    page_id: string;
+    title: string;
+    page_type: string;
+    category: string | null;
+    summary: string | null;
+    last_updated: string;
+    key_lines: string[];
+    disputes: string[];
+    thin: boolean;
+    /** App path, e.g. /wiki/<page_id>. */
+    path: string;
+  }>;
+  sources: Array<{
+    n: number;
+    source_id: string;
+    title: string;
+    source_url: string | null;
+    date_ingested: string | null;
+    path: string;
+  }>;
+  missing_pages: Array<{ name: string; mentions: number }>;
+  more_pages: Array<{ page_id: string; title: string; page_type: string }>;
+}
+
 /** A list cut at the caller's limit, with the full count. */
 export interface Listed<T> {
   items: T[];

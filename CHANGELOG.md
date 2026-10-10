@@ -20,6 +20,12 @@ ship with a `migrate.py` step that runs at boot.
   filtered by category and page type, and page with `offset`. While the NLP
   service is down or still loading its model, keyword matches come back with
   a note saying so. The app's search box keeps its keyword search.
+- **New `research_topic`** briefs an agent on a topic in one call: the most
+  relevant pages with their summaries and the cited lines that best match
+  the topic, one source list numbered across all of them (a source cited by
+  three pages has one number), what the pages record as disputed, and gaps
+  (names with no page, pages resting on one source). Served by
+  `GET /api/wiki/research`; no LLM.
 - **`read_page` shows where each claim comes from.** Every numbered source
   now carries its address and date, the text matches what the page view
   shows (so `[n]` numbers agree with the app), and the page lists the pages
