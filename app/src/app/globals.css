@@ -528,3 +528,47 @@ article img {
     transition: none;
   }
 }
+
+/* =============================================================================
+   Wiki header actions (components/WikiViewToggle.tsx, WikiPageHeaderActions.tsx)
+   Layout is inline in the components. Colours live here so hover and keyboard
+   focus can change them; the current view is marked with aria-current.
+   ============================================================================= */
+
+.wiki-view-toggle a {
+  color: var(--fg-dim);
+  background: transparent;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.wiki-view-toggle a:hover {
+  color: var(--fg-secondary);
+  background: rgba(var(--accent-rgb), 0.06);
+  text-decoration: none;
+}
+.wiki-view-toggle a[aria-current='page'] {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+.wiki-add-sources {
+  color: var(--accent-text);
+  background: var(--accent);
+  transition: background var(--transition-fast), transform var(--transition-fast);
+}
+.wiki-add-sources:hover {
+  color: var(--accent-text);
+  background: var(--accent-dim);
+}
+.wiki-add-sources:active {
+  transform: scale(0.95);
+}
+.wiki-view-toggle a:focus-visible,
+.wiki-add-sources:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wiki-view-toggle a,
+  .wiki-add-sources {
+    transition: none;
+  }
+}

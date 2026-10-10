@@ -11,7 +11,7 @@ export interface WikiPageHeaderProps {
   lastUpdated?: string | null;
   /** Replaces the category + divider + lastUpdated meta row. */
   metaText?: ReactNode;
-  /** Show the search bar + Graph + Add Sources buttons on the right */
+  /** Show the Wiki/Graph view toggle + Add Sources button on the right */
   showActions?: boolean;
 }
 
@@ -131,7 +131,7 @@ export default function WikiPageHeader({
         ) : null}
       </div>
 
-      {/* Right: search + Graph + Add Sources */}
+      {/* Right: view toggle + Add Sources */}
       {showActions && <WikiPageHeaderActions />}
     </header>
   );

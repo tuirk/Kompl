@@ -146,6 +146,10 @@ ship with a `migrate.py` step that runs at boot.
   and backups.
 - **Settings:** **Auto-approve wiki changes** moved into Advanced tuning, and
   the Review section, which only held that switch, is gone.
+- **Wiki header:** a **Wiki | Graph** view switch replaces the Graph button
+  on the wiki and on the graph page (which drops its "← Wiki" link), the
+  search box that repeated the top bar's is gone, and **Add sources** is a
+  compact + button with a tooltip.
 - **Page history keeps the last 2 versions.** Each time a page is saved,
   its current text is archived as before, and archives beyond the newest
   2 are deleted. "View previous version" and "Restore this version" use

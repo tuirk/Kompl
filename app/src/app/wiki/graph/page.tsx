@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ForceGraphMethods } from 'react-force-graph-2d';
 import { PAGE_TYPE_HEX } from '../../../lib/page-type-palette';
+import WikiViewToggle from '../../../components/WikiViewToggle';
 
 // react-force-graph-2d is the 2D-only variant of the force-graph family.
 // Using it instead of the barrel package (react-force-graph) avoids pulling in
@@ -213,25 +214,17 @@ export default function WikiGraphPage() {
           zIndex: 10,
         }}
       >
-        <Link
-          href="/wiki"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            fontFamily: 'var(--font-mono)', fontSize: 10,
-            textTransform: 'uppercase', letterSpacing: '1px',
-            color: 'var(--fg-dim)', textDecoration: 'none',
-          }}
-        >
-          ← Wiki
-        </Link>
-        <span style={{ width: 1, height: 16, background: 'rgba(71,72,74,0.3)', display: 'inline-block' }} />
         <h1 style={{ margin: 0, fontSize: '0.875rem', fontWeight: 700, fontFamily: 'var(--font-heading)', color: 'var(--fg)', letterSpacing: '-0.35px' }}>
           Knowledge Graph
         </h1>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '1rem', fontSize: 10, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '-0.45px', fontFamily: 'var(--font-body)' }}>
+        <span style={{ width: 1, height: 16, background: 'rgba(71,72,74,0.3)', display: 'inline-block' }} />
+        <div style={{ display: 'flex', gap: '1rem', fontSize: 10, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '-0.45px', fontFamily: 'var(--font-body)' }}>
           <span>{graphData.nodes.length} pages</span>
           <span>·</span>
           <span>{graphData.links.length} links</span>
+        </div>
+        <div style={{ marginLeft: 'auto' }}>
+          <WikiViewToggle active="graph" />
         </div>
       </header>
 
