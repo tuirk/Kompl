@@ -1,4 +1,9 @@
 version: 2
+
+# Routine minor and patch bumps are skipped: version updates are opened only
+# for new major versions. A minor or patch bump that fixes a vulnerability
+# still arrives as a security update, because `update-types` ignores never
+# block security updates. Each entry repeats the rule (no YAML anchors).
 updates:
   - package-ecosystem: npm
     directory: /app
@@ -8,12 +13,9 @@ updates:
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
-    groups:
-      minor-and-patch:
-        update-types:
-          - minor
-          - patch
     ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
       - dependency-name: "@types/node"
         versions: [">=25"]
       # marked v18 changed renderer.heading API — migrate lib/markdown.ts first.
@@ -28,12 +30,9 @@ updates:
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
-    groups:
-      minor-and-patch:
-        update-types:
-          - minor
-          - patch
     ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
       - dependency-name: "@types/node"
         versions: [">=25"]
 
@@ -45,12 +44,9 @@ updates:
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
-    groups:
-      minor-and-patch:
-        update-types:
-          - minor
-          - patch
     ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
       - dependency-name: "@types/node"
         versions: [">=25"]
 
@@ -62,12 +58,9 @@ updates:
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
-    groups:
-      minor-and-patch:
-        update-types:
-          - minor
-          - patch
     ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
       # chromadb 0.4.24 requires numpy<2; 0.5+ / 1.x need deliberate migration (vector_store API).
       - dependency-name: chromadb
         versions: [">=0.5.0"]
@@ -88,7 +81,13 @@ updates:
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
 
+  # Docker base images are pinned by digest and keep every update: digest
+  # bumps are how Node.js and Debian security patches reach the images, and
+  # Dependabot never raises those as security updates.
   - package-ecosystem: docker
     directory: /nlp-service
     schedule:
