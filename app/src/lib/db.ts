@@ -679,6 +679,19 @@ export function getBacklinks(pageId: string): PageRow[] {
     .all(pageId) as PageRow[];
 }
 
+/** Pages the given page links TO (its wikilinks), by title. */
+export function getLinkedPages(pageId: string): Array<{ page_id: string; title: string }> {
+  return openDb()
+    .prepare(
+      `SELECT DISTINCT p.page_id, p.title
+         FROM page_links l
+         JOIN pages p ON p.page_id = l.target_page_id
+        WHERE l.source_page_id = ? AND l.target_page_id != l.source_page_id
+        ORDER BY p.title COLLATE NOCASE`
+    )
+    .all(pageId) as Array<{ page_id: string; title: string }>;
+}
+
 /** Insert a page_links row (called from compile commit when wikilinks are parsed). */
 export function insertPageLink(sourcePageId: string, targetPageId: string, linkType: 'wikilink' | 'provenance' | 'entity-ref'): void {
   openDb()
@@ -2278,8 +2291,11 @@ function buildSourcesWhereSql(
     params.push(options.dateTo.includes('T') ? options.dateTo : options.dateTo + 'T23:59:59');
   }
   if (options?.search) {
-    conditions.push('s.title LIKE ?');
-    params.push(`%${options.search}%`);
+    // Title or address, so "did example.com make it in?" can be answered.
+    // % and _ in the search text are matched literally, not as wildcards.
+    const pattern = `%${options.search.replace(/[\\%_]/g, '\\$&')}%`;
+    conditions.push(`(s.title LIKE ? ESCAPE '\\' OR s.source_url LIKE ? ESCAPE '\\')`);
+    params.push(pattern, pattern);
   }
 
   return {

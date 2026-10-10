@@ -20,6 +20,18 @@ ship with a `migrate.py` step that runs at boot.
   filtered by category and page type, and page with `offset`. While the NLP
   service is down or still loading its model, keyword matches come back with
   a note saying so. The app's search box keeps its keyword search.
+- **`read_page` shows where each claim comes from.** Every numbered source
+  now carries its address and date, the text matches what the page view
+  shows (so `[n]` numbers agree with the app), and the page lists the pages
+  it links to and from. `include_related` adds pages similar in meaning.
+- **New `read_source`** reads the original text Kompl compiled from, by
+  source id or by a page's citation `[n]`. With a query it returns only the
+  matching passages (ranked locally, no LLM); otherwise the text in
+  8,000-character windows. Served by `GET /api/sources/{id}/content`.
+- **New `list_sources`** lists what the user has added, newest first, with
+  how many pages each one feeds, so "did this link make it in?" has an
+  answer. Search matches titles and addresses; the Sources page search in
+  the app now matches addresses too.
 - **`list_pages` is now part of `search_wiki`:** call it without a query to
   list pages newest first, with the same filters and paging. Permission rules
   saved for `list_pages` can be removed.

@@ -1,14 +1,17 @@
 import { NextResponse } from 'next/server';
-import { getPage, readPageMarkdown } from '@/lib/db';
-import { stripFrontmatter } from '@/lib/markdown';
+import { getBacklinks, getLinkedPages, getPage, readPageMarkdown } from '@/lib/db';
 import { citationsToText } from '@/lib/citations';
 import { getNumberedSources, getSourceTitleSet } from '@/lib/page-sources';
+import { displayPageBody } from '@/lib/page-sections';
 
 /** GET /api/wiki/[page_id]/data — full page JSON for the Kompl MCP server.
  *
- *  `content` is the page body (frontmatter removed) with source citations as
- *  plain [n] markers; `sources` is the matching numbered list, one entry per
- *  source (cited sources first, in citation order). Page metadata that the
+ *  `content` is the page body as the page view shows it (frontmatter and
+ *  legacy wrappers removed) with source citations as plain [n] markers;
+ *  `sources` is the matching numbered list, one entry per source (cited
+ *  sources first, in citation order), with its address and date, so the
+ *  numbers agree with the page view. `links` are the pages this page links
+ *  to and `backlinks` the pages linking here. Page metadata that the
  *  frontmatter duplicates is in the top-level fields. */
 export async function GET(
   _request: Request,
@@ -21,7 +24,7 @@ export async function GET(
   }
 
   const sourceTitles = getSourceTitleSet();
-  const body = stripFrontmatter(readPageMarkdown(page_id) ?? '');
+  const body = displayPageBody(readPageMarkdown(page_id) ?? '', page.page_type);
   const { markdown: content, order } = citationsToText(body, (t) => sourceTitles.has(t.toLowerCase()));
 
   const sources = getNumberedSources(page_id, order).map((s) => ({
@@ -29,6 +32,8 @@ export async function GET(
     source_id: s.source_id,
     title: s.title ?? 'Source no longer in the wiki',
     contribution_type: s.contribution_type ?? 'cited',
+    source_url: s.source_url,
+    date: s.date,
   }));
 
   return NextResponse.json({
@@ -41,5 +46,10 @@ export async function GET(
     last_updated: page.last_updated,
     content,
     sources,
+    links: getLinkedPages(page_id),
+    backlinks: getBacklinks(page_id)
+      .filter((p) => p.page_id !== page_id)
+      .map((p) => ({ page_id: p.page_id, title: p.title }))
+      .sort((a, b) => a.title.localeCompare(b.title)),
   });
 }

@@ -30,11 +30,11 @@ import {
   type PageRow,
 } from '../../../lib/db';
 import PageActionButton from './PageActionButton';
-import { headingAnchor, healedPageBody, renderMarkdown } from '../../../lib/markdown';
+import { headingAnchor, renderMarkdown } from '../../../lib/markdown';
 import { findPageDisputes } from '../../../lib/page-disputes';
 import { DisputesPanel, LinkedFrom, RelatedPages, ViewOriginal } from './RightPanel';
 import { expandWikilinksForDisplay } from '../../../lib/wiki-display';
-import { removeEmptyContradictionSections, SYNTHESIZED_PAGE_TYPES } from '../../../lib/page-sections';
+import { displayPageBody } from '../../../lib/page-sections';
 import WikiSidebar from '../../../components/WikiSidebar';
 import SavedLinksInteractive from './SavedLinksInteractive';
 import { PAGE_TYPE_VAR, PAGE_TYPE_LABELS, type PageType } from '../../../lib/page-type-palette';
@@ -66,16 +66,6 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const page = getPage(page_id);
   if (!page) return { title: 'Page not found' };
   return { title: page.title, description: page.summary ?? undefined };
-}
-
-/**
- * Page body as displayed: healed legacy wrappers, and for pages the LLM
- * synthesizes, no Contradictions section that only says there are none.
- * Stored markdown is never changed.
- */
-function displayBody(raw: string, pageType: string): string {
-  const body = healedPageBody(raw);
-  return SYNTHESIZED_PAGE_TYPES.has(pageType) ? removeEmptyContradictionSections(body).markdown : body;
 }
 
 /**
@@ -152,7 +142,7 @@ async function PreviousVersionPanel({
   // version shows its text without them; wikilinks become plain labels.
   const sourceTitles = getSourceTitleSet();
   const prevMarkdown = stripCitationPlaceholders(
-    scanCitations(displayBody(data.content, pageType), (t) => sourceTitles.has(t.toLowerCase())).markdown,
+    scanCitations(displayPageBody(data.content, pageType), (t) => sourceTitles.has(t.toLowerCase())).markdown,
   );
   const prevHtml = renderMarkdown(stripWikilinks(prevMarkdown));
 
@@ -203,7 +193,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
   // numbered source list below owns it), turn citations into numbered
   // placeholders, then expand wikilinks, linking each page once. Citations go
   // first: legacy citation groups can contain [[wikilinks]].
-  const shown = rawMarkdown ? displayBody(rawMarkdown, page.page_type) : null;
+  const shown = rawMarkdown ? displayPageBody(rawMarkdown, page.page_type) : null;
   const scan = shown ? scanCitations(shown, (t) => sourceTitles.has(t.toLowerCase())) : null;
   const cleanMarkdown = scan
     ? expandWikilinksForDisplay(scan.markdown, (t) => titleMap.get(t.toLowerCase()), page_id)

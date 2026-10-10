@@ -1,6 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { KomplClient, type KomplClientOptions } from './kompl-client.js';
+import { registerListSources } from './tools/list-sources.js';
 import { registerReadPage } from './tools/read-page.js';
+import { registerReadSource } from './tools/read-source.js';
 import { registerSearchWiki } from './tools/search-wiki.js';
 import { registerWikiStats } from './tools/wiki-stats.js';
 
@@ -18,6 +20,8 @@ export const SERVER_INSTRUCTIONS = [
   'Each page cites its sources with [n] markers that map to the numbered source list read_page returns.',
   '- Find pages with search_wiki (ask in plain language; leave the query out to browse), then read them with read_page before answering.',
   '- When you answer from Kompl, name the pages you used and keep the [n] source references so the user can check each claim.',
+  '- To check what a source actually says, use read_source with the page_id and n (add a query to get the matching passages).',
+  '- list_sources shows what the user has saved, e.g. whether a link is already in Kompl.',
   "- If Kompl has nothing on a topic, say so instead of silently filling the gap from general knowledge.",
 ].join('\n');
 
@@ -30,6 +34,8 @@ export function createServer(options: KomplClientOptions): McpServer {
   );
   registerSearchWiki(server, client);
   registerReadPage(server, client);
+  registerReadSource(server, client);
+  registerListSources(server, client);
   registerWikiStats(server, client);
   return server;
 }

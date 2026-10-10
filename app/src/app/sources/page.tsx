@@ -224,7 +224,7 @@ export default function SourcesPage() {
         {/* Title search */}
         <input
           type="search"
-          placeholder="Search titles…"
+          placeholder="Search titles and addresses…"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           style={{ ...controlStyle, minWidth: '200px' }}

@@ -7,6 +7,7 @@
  * rules.
  */
 
+import { healedPageBody } from './markdown';
 import { stripWikilinks } from './wikilink-syntax';
 
 /**
@@ -15,6 +16,17 @@ import { stripWikilinks } from './wikilink-syntax';
  * may touch it. Source pages reproduce a source's own text and are left alone.
  */
 export const SYNTHESIZED_PAGE_TYPES: ReadonlySet<string> = new Set(['entity', 'concept', 'comparison', 'overview']);
+
+/**
+ * Page body as displayed: healed legacy wrappers, and for pages the LLM
+ * synthesizes, no Contradictions section that only says there are none.
+ * Stored markdown is never changed. The page view and the page-data API (MCP
+ * read_page) both use it, so their citation numbers agree.
+ */
+export function displayPageBody(raw: string, pageType: string): string {
+  const body = healedPageBody(raw);
+  return SYNTHESIZED_PAGE_TYPES.has(pageType) ? removeEmptyContradictionSections(body).markdown : body;
+}
 
 export interface Heading {
   level: number;

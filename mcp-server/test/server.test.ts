@@ -20,7 +20,7 @@ describe('tool catalogue', () => {
   it('lists every tool with a title and read-only annotations', async () => {
     const client = await connect(fakeKompl({}).fetchImpl);
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['read_page', 'search_wiki', 'wiki_stats']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['list_sources', 'read_page', 'read_source', 'search_wiki', 'wiki_stats']);
     for (const tool of tools) {
       expect(tool.title).toBeTruthy();
       expect(tool.annotations?.readOnlyHint).toBe(true);
@@ -224,6 +224,8 @@ describe('read_page', () => {
         '---',
         '**Sources** (the [n] markers above refer to these):',
         '  [1] Bitcoin paper',
+        '',
+        'To check what a source says, call read_source with this page_id and n.',
       ].join('\n'),
       isError: false,
     });

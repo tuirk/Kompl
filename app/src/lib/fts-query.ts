@@ -50,7 +50,8 @@ function tokenize(query: string): string[] {
   return query.split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
 }
 
-function topicTerms(query: string): string[] {
+/** The words of a query that carry its topic: no common words, no one-letter fragments. */
+export function topicTerms(query: string): string[] {
   return tokenize(query).filter((t) => t.length > 1 && !STOPWORDS.has(t.toLowerCase()));
 }
 
