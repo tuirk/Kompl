@@ -482,3 +482,49 @@ article img {
   text-transform: uppercase;
   letter-spacing: 1.2px;
 }
+
+/* =============================================================================
+   Wiki sidebar (components/WikiSidebar.tsx)
+   Styles are inline in the component. These rules hold what inline styles
+   can't: width and visibility read from [data-collapsed], which a boot script
+   sets before the first paint (so a collapsed sidebar never flashes open),
+   plus hover, keyboard focus and reduced motion.
+   ============================================================================= */
+
+.wiki-sb {
+  --wiki-sb-width: 320px;
+  --wiki-sb-rail: 52px;
+  width: var(--wiki-sb-width);
+  transition: width var(--transition-slow);
+}
+.wiki-sb[data-collapsed='true'] {
+  width: var(--wiki-sb-rail);
+}
+/* .wiki-sb-full shows only expanded, .wiki-sb-rail only collapsed.
+   !important: some of these elements set display inline. */
+.wiki-sb[data-collapsed='true'] .wiki-sb-full,
+.wiki-sb:not([data-collapsed='true']) .wiki-sb-rail {
+  display: none !important;
+}
+.wiki-sb[data-collapsed='true'] .wiki-sb-quick {
+  width: 32px;
+}
+.wiki-sb-item,
+.wiki-sb-btn {
+  color: var(--fg-muted);
+  background: transparent;
+}
+.wiki-sb-item:hover,
+.wiki-sb-btn:hover {
+  color: var(--fg);
+  background: var(--bg-card-hover);
+}
+.wiki-sb :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wiki-sb {
+    transition: none;
+  }
+}

@@ -33,6 +33,13 @@ ship with a `migrate.py` step that runs at boot.
   `--fg-subtle` raised to pass WCAG AA (were 2.5:1 and 4.2:1), a table of
   contents that stays below the top bar and highlights the current section,
   per-page tab titles ("Bitcoin · Kompl") and a proper "not found" page.
+- **Collapsible wiki sidebar:** the left panel folds into a slim icon rail
+  (the button at its top-left, or Ctrl+.) with links to all pages, the graph
+  and activity, and the article widens to fill the space. The choice is
+  remembered per browser, without flashing open on load; windows narrower
+  than 1200px start folded. Expanded, it reads more easily: larger titles,
+  the current page highlighted and scrolled into view, its category opened,
+  full titles on hover, and visible keyboard focus.
 - **Boot hook actually runs:** `instrumentation.ts` moved to `app/src/`.
   Next.js never loaded it from `app/`, so the outbox's pending-page
   reconciler had not run in any build; it now runs at every start, and the
