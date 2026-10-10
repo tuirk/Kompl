@@ -1,8 +1,9 @@
 /**
- * Hybrid page search for AI agents (MCP search_wiki): keyword matches from
- * SQLite FTS5 and meaning matches from the vector index, merged by weighted
- * reciprocal rank fusion. Agents ask questions in plain language, which the
- * strict keyword search used by the app's search box rarely matches.
+ * Hybrid page search for the app's search boxes (lib/search-client.ts) and AI
+ * agents (MCP search_wiki): keyword matches from SQLite FTS5 and meaning
+ * matches from the vector index, merged by weighted reciprocal rank fusion.
+ * People and agents ask questions in plain language, which strict keyword
+ * search rarely matches.
  *
  * No LLM call. If the vector search fails or is slow, keyword results come
  * back alone with `degraded: true`.

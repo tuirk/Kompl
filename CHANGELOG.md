@@ -34,7 +34,7 @@ ship with a `migrate.py` step that runs at boot.
   return nothing. Results leave out archived pages and Saved Links, can be
   filtered by category and page type, and page with `offset`. While the NLP
   service is down or still loading its model, keyword matches come back with
-  a note saying so. The app's search box keeps its keyword search.
+  a note saying so.
 - **Search by meaning works right after a restart.** The embedding model
   (all-MiniLM-L6-v2, about 90 MB) now ships inside the NLP service image and
   loads in the background at startup. Before, every new container (so every
@@ -230,6 +230,14 @@ ship with a `migrate.py` step that runs at boot.
 
 ### Changed
 
+- **Search understands questions.** The top bar's search and the Search page
+  use the same keyword-and-meaning search as MCP `search_wiki`, so "how deep
+  is the lake" finds the page about the lake; keyword search needed every
+  word to appear on the page. Results leave out archived pages and Saved
+  Links. A newer query cancels the one still running, so a slow answer can
+  no longer replace newer results or reopen the dropdown after the box was
+  cleared or left. While the NLP service is still loading its model, results
+  come from keyword matches alone.
 - **Wiki right panel restyled to match the sidebar:** On this page,
   Disputes, Linked from (the first 8, then Show all), You might also read,
   and View original source on source notes, in readable 14px rows with

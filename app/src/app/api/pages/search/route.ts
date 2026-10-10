@@ -4,13 +4,14 @@ import { hybridSearch } from '@/lib/hybrid-search';
 
 /**
  * GET /api/pages/search?q=<query>[&limit=N]
- *   Keyword search (FTS5, every term must match) for the app's search box,
- *   which calls it on each keystroke.
+ *   Keyword search (FTS5, every term must match). Kept for HTTP callers;
+ *   the app's own search boxes use hybrid mode.
  *
  * GET /api/pages/search?q=<query>&mode=hybrid[&limit=N][&category=][&page_type=]
- *   Keyword + meaning search for AI agents (MCP search_wiki); see
- *   lib/hybrid-search.ts. Leaves out archived pages and Saved Links.
- *   Response adds `degraded: true` when only keyword matches were available.
+ *   Keyword + meaning search for the app's search boxes (lib/search-client.ts)
+ *   and AI agents (MCP search_wiki); see lib/hybrid-search.ts. Leaves out
+ *   archived pages and Saved Links. Response adds `degraded: true` when only
+ *   keyword matches were available.
  */
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);

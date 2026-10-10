@@ -1,31 +1,20 @@
 'use client';
 
 /**
- * /wiki/search — Full-text search against pages_fts (FTS5).
- * Client component: search-as-you-type via /api/pages/search.
- * Seeds from `?q=` so TopNav / header "See all" does not force retyping.
+ * /wiki/search — hybrid search: keyword and meaning matches together, so
+ * plain-language questions find the right page (lib/search-client.ts).
+ * Client component: search-as-you-type; a newer query cancels the one in
+ * flight. Seeds from `?q=` so TopNav / header "See all" does not force
+ * retyping.
  */
 
 import Link from 'next/link';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import type { PageRow } from '../../../lib/db';
+import { createSearch, debounce, type SearchHit } from '../../../lib/search-client';
 import WikiPageHeader from '../../../components/WikiPageHeader';
 import { PAGE_TYPE_VAR } from '../../../lib/page-type-palette';
 import { stripWikilinkBrackets } from '../../../lib/wikilink-render';
-
-interface SearchResult {
-  items: PageRow[];
-  count: number;
-}
-
-function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number): T {
-  let timer: ReturnType<typeof setTimeout>;
-  return ((...args: Parameters<T>) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  }) as T;
-}
 
 /** Default export wraps the searchParams-dependent body in Suspense for Next prerender. */
 export default function WikiSearchPage() {
@@ -47,33 +36,46 @@ function WikiSearchInner() {
   const searchParams = useSearchParams();
   const initialQ = (searchParams.get('q') ?? '').trim();
   const [query, setQuery] = useState(initialQ);
-  const [results, setResults] = useState<PageRow[]>([]);
+  const [results, setResults] = useState<SearchHit[]>([]);
   const [loading, setLoading] = useState(!!initialQ);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const search = useCallback(
+  // One runner for this box: a newer query cancels the one still in flight.
+  // Lazy state keeps the runner and its debouncer for the component's life.
+  const [runSearch] = useState(() => createSearch());
+  const [search] = useState(() =>
     debounce(async (q: string) => {
-      if (!q.trim()) {
-        setResults([]);
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
       try {
-        const res = await fetch(`/api/pages/search?q=${encodeURIComponent(q)}`);
-        if (!res.ok) throw new Error(`search failed: ${res.status}`);
-        const data = (await res.json()) as SearchResult;
-        setResults(data.items);
+        const items = await runSearch(q);
+        // Replaced by a newer search, which ends the loading state, or by an
+        // emptied box, which already did.
+        if (items === null) return;
+        setResults(items);
         setError(null);
+        setLoading(false);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'search error');
-      } finally {
         setLoading(false);
       }
-    }, 250),
-    []
+    }, 250)
   );
+
+  // Empty box: drop the search waiting on the pause and the one in flight,
+  // so neither fills the page afterwards.
+  const clearSearch = useCallback(() => {
+    search.cancel();
+    runSearch.cancel();
+    setResults([]);
+    setError(null);
+    setLoading(false);
+  }, [search, runSearch]);
+
+  // Leaving the page drops them too.
+  useEffect(() => () => {
+    search.cancel();
+    runSearch.cancel();
+  }, [search, runSearch]);
 
   // Seed from URL on mount and whenever `?q=` changes (TopNav push).
   useEffect(() => {
@@ -83,17 +85,20 @@ function WikiSearchInner() {
       setLoading(true);
       search(q);
     } else {
-      setResults([]);
-      setLoading(false);
+      clearSearch();
     }
     inputRef.current?.focus();
-  }, [searchParams, search]);
+  }, [searchParams, search, clearSearch]);
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const q = e.target.value;
     setQuery(q);
-    setLoading(!!q.trim());
-    search(q);
+    if (q.trim()) {
+      setLoading(true);
+      search(q);
+    } else {
+      clearSearch();
+    }
   }
 
   return (
