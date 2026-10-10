@@ -5,8 +5,8 @@
  * come first: AI model & spend, Connect your AI (MCP), Review, Wiki health,
  * Backup & restore, then Advanced tuning (collapsed).
  *
- * Other pages link to #compile-model, #integrations and #import — keep
- * those ids. Layout building blocks live in ./_ui.tsx.
+ * Other pages link to #compile-model, #integrations, #import and
+ * #page-upgrade — keep those ids. Layout building blocks live in ./_ui.tsx.
  */
 
 import { useEffect, useState } from 'react';
@@ -20,6 +20,7 @@ import {
   Card, NumberField, SavedBar, SettingCard, SettingRow, SettingsGroup, SettingsNav, TogglePill,
   codeStyle, preStyle,
 } from './_ui';
+import PageUpgradeCard from './PageUpgradeCard';
 import {
   DEFAULT_COMPILE_MODEL, LLM_MODELS, LLM_MODEL_INFO, getProviderForModel, isLlmModel,
   type LlmModel, type LlmProvider,
@@ -688,6 +689,8 @@ export default function SettingsPage() {
 
           {/* ========== Wiki health ========== */}
           <SettingsGroup id="wiki-health" title="Wiki health">
+            <PageUpgradeCard />
+
             <SettingCard
               title="Wiki health checks"
               badge="Beta"

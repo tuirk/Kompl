@@ -27,7 +27,9 @@ __all__ = [
     "ProviderError",
     "ProviderRateLimitedError",
     "ProviderTransientError",
+    "get_model_prices",
     "get_provider",
+    "thinking_budget_is_token_cap",
     "translate_thinking_budget",
 ]
 
@@ -51,6 +53,33 @@ def get_provider(model: str) -> LLMProvider:
         from .deepseek import DeepSeekProvider
         return _REGISTRY.setdefault("deepseek", DeepSeekProvider())
     raise ValueError(f"unknown provider for model {model!r}")
+
+
+def get_model_prices(model: str) -> dict[str, float]:
+    """Per-million-token list prices in effect today for ``model``.
+
+    Returns ``{"input", "output", "cache"}`` exactly as the daily cap counts
+    them: env overrides and announced price changes (gemini.py
+    ``_SCHEDULED_PRICES``) applied. Same prefix dispatch as ``get_provider``;
+    the provider modules are imported lazily for the same reason.
+    """
+    if model.startswith("gemini-"):
+        from .gemini import _get_model_prices as gemini_prices
+        return gemini_prices(model)
+    if model.startswith("deepseek-"):
+        from .deepseek import _get_model_prices as deepseek_prices
+        return deepseek_prices(model)
+    raise ValueError(f"unknown provider for model {model!r}")
+
+
+def thinking_budget_is_token_cap(model: str) -> bool:
+    """True when a call's int thinking budget caps its thinking tokens.
+
+    Gemini 2.5 takes the budget as a hard token limit. Gemini 3.x maps it
+    onto a ``thinking_level`` and DeepSeek onto a ``reasoning_effort``;
+    neither bounds the token count, so cost estimates must allow for more.
+    """
+    return model.startswith("gemini-") and not model.startswith("gemini-3")
 
 
 def translate_thinking_budget(provider: str, call_site: str, raw: int) -> object:

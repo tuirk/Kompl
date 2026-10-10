@@ -5,7 +5,7 @@ All notable changes to Kompl are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The application surface (Next.js API, CLI, MCP server, settings) follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The SQLite schema
-uses a separate monotonic version (currently `v26`); breaking schema changes
+uses a separate monotonic version (currently `v27`); breaking schema changes
 ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
@@ -15,8 +15,9 @@ ship with a `migrate.py` step that runs at boot.
 - **Numbered citations.** Pages cite sources as superscript numbers that
   jump to a numbered source list (cited sources first). Pages drafted
   earlier, which printed raw source UUIDs in assorted shapes, render the same
-  way without a redraft. New drafts cite with `[S1]`-style labels that are
-  stored as `[^source_id]` references, so a page never contains raw ids.
+  way; their stored text is not changed. New drafts cite with `[S1]`-style
+  labels that are stored as `[^source_id]` references, so a page never
+  contains raw ids.
 - **MCP `read_page`** returns the page body without frontmatter, with
   citations as `[n]` and a matching numbered, de-duplicated source list.
 - **Piped wikilinks** (`[[Target|label]]`) render as links showing the label
@@ -56,9 +57,10 @@ ship with a `migrate.py` step that runs at boot.
   Related lists keep at most 5 entries that the page or its sources mention
   (entries a page already had are kept). The link injector no longer adds a
   second link to a page the draft already links.
-- Existing pages are not rewritten: the changes apply to pages drafted or
-  updated after the upgrade. A wiki's `schema.md` is not rewritten either;
-  where it conflicts with these rules, the rules win.
+- Existing pages are not changed on their own: the rules apply to pages
+  drafted or updated after the upgrade, and older pages can be updated from
+  Settings (below). A wiki's `schema.md` is not rewritten either; where it
+  conflicts with these rules, the rules win.
 - **Existing pages read cleaner right after the upgrade**, on display only
   (stored pages are unchanged): each page is linked once in the body
   (Related lists and tables keep their own links), links in headings and
@@ -84,6 +86,39 @@ ship with a `migrate.py` step that runs at boot.
   ("Python 3" → "Python 2", "Python" → "Python 2") are ignored from now on,
   so new sources about Python 3 get their own page; the alias rows are
   kept. Other saved merges keep routing as before.
+- **Update pages to the v0.4 writing rules** (Settings → Wiki health): a
+  compile only adds to a page, so pages written by an earlier version keep
+  their text. The card lists what changed, how many pages were written by an
+  earlier version, and what updating them costs and takes with the selected
+  model (an estimate from each page's sources and current length, the
+  model's prices and its measured speed, shown as a rounded range), with a
+  warning when that can pass today's spending limit. **Update all** rebuilds
+  them one at a time, oldest first, from all their current sources, with
+  progress, spend so far and a Stop button; new compiles can't start
+  meanwhile. A run only touches the pages counted when you confirmed, and
+  stops by itself if it spends more than 1.5 × the high estimate, at the
+  daily spending limit, after 3 failures in a row or when a compile starts.
+  Pages it can't rebuild (sources too short for a full page, or unreadable)
+  keep their text, are listed on the card, and aren't offered or charged
+  again until a compile changes them. Each page's previous version is
+  archived first, and **Restore this version** (under "View previous
+  version" on the page, when that version is available) puts it back. A
+  restored page keeps the text you chose: Update all doesn't rewrite it
+  again. A restart ends a run; Update all again continues with the pages
+  that are left, never charging a page twice. Leaving the pages is fine:
+  they still improve as new sources arrive. A one-time notice after
+  upgrading points to the card; a fresh install has no older pages, so it
+  doesn't see one. With nothing to update, the card says how many pages
+  follow the current rules and lists what changed. Schema v26 → v27 adds
+  `pages.draft_rules` (the rules a
+  page's text follows; NULL = written before v0.4, every existing page) and
+  `page_plans.draft_rules` (so a draft made under older rules that is
+  approved later is still offered for an update). Backups carry both; older
+  backups import as NULL. The nlp-service gains `GET /llm/pricing` for the
+  estimate. The rules version lives in one place (`lib/writing-rules.ts`):
+  a later release that changes the writing rules sets it and lists what
+  changed, and the card and the notice offer every page written under older
+  rules again.
 
 ### Added
 

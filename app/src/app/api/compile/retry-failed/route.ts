@@ -58,6 +58,7 @@ import {
   getDb,
   getRunningCompileSession,
 } from '@/lib/db';
+import { pageUpgradeBlock } from '@/lib/page-upgrade-state';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
 interface StagingMini {
@@ -88,6 +89,10 @@ export async function POST(request: Request) {
       { status: 409 }
     );
   }
+
+  // No compile while pages are being updated to the current writing rules.
+  const upgrading = pageUpgradeBlock();
+  if (upgrading) return NextResponse.json(upgrading, { status: 409 });
 
   // Global concurrency gate: block retry if a DIFFERENT session is active.
   const active = getRunningCompileSession();

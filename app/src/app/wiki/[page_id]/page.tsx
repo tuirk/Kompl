@@ -23,10 +23,12 @@ import {
   getBacklinks,
   getPage,
   getPageTitleMap,
+  getRunningCompileSession,
   getUnresolvedLinks,
   readPageMarkdown,
   type PageRow,
 } from '../../../lib/db';
+import PageActionButton from './PageActionButton';
 import { healedPageBody, renderMarkdown } from '../../../lib/markdown';
 import { expandWikilinksForDisplay } from '../../../lib/wiki-display';
 import { removeEmptyContradictionSections, SYNTHESIZED_PAGE_TYPES } from '../../../lib/page-sections';
@@ -119,15 +121,24 @@ function parseFrontmatterEntities(md: string): string[] {
     .filter(Boolean);
 }
 
-/** Collapsible panel that loads and renders the previous version of a page. */
+/**
+ * Collapsible panel that loads and renders the previous version of a page.
+ * "Restore this version" shows only when that version can be read: a page
+ * restored from a backup keeps the pointer, but backups don't carry the
+ * archived file.
+ */
 async function PreviousVersionPanel({
   pageId,
   pageType,
   lastUpdated,
+  restorable,
+  restoreDisabledReason,
 }: {
   pageId: string;
   pageType: string;
   lastUpdated: string;
+  restorable: boolean;
+  restoreDisabledReason: string | null;
 }) {
   const res = await fetch(
     `${process.env.APP_URL ?? 'http://app:3000'}/api/wiki/${pageId}/previous`,
@@ -148,21 +159,35 @@ async function PreviousVersionPanel({
   const prevHtml = renderMarkdown(stripWikilinks(prevMarkdown));
 
   return (
-    <div
-      style={{
-        marginTop: '0.75rem',
-        padding: '1rem 1.25rem',
-        borderRadius: 6,
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border)',
-        opacity: 0.75,
-      }}
-    >
-      <div className="meta" style={{ marginBottom: '0.5rem' }}>
-        Previous version · before <LocalDate iso={lastUpdated} />
+    <>
+      <div
+        style={{
+          marginTop: '0.75rem',
+          padding: '1rem 1.25rem',
+          borderRadius: 6,
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border)',
+          opacity: 0.75,
+        }}
+      >
+        <div className="meta" style={{ marginBottom: '0.5rem' }}>
+          Previous version · before <LocalDate iso={lastUpdated} />
+        </div>
+        <article dangerouslySetInnerHTML={{ __html: prevHtml }} style={{ fontSize: 13 }} />
       </div>
-      <article dangerouslySetInnerHTML={{ __html: prevHtml }} style={{ fontSize: 13 }} />
-    </div>
+      {restorable && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.75rem' }}>
+          <PageActionButton
+            endpoint={`/api/wiki/${pageId}/restore-previous`}
+            label="Restore this version"
+            busyLabel="Restoring…"
+            confirmLabel="Restore"
+            confirmText="Put this previous version back? The current version becomes the previous one, so you can switch back."
+            disabledReason={restoreDisabledReason}
+          />
+        </div>
+      )}
+    </>
   );
 }
 
@@ -474,7 +499,15 @@ export default async function WikiPageDetail({ params }: PageProps) {
                 >
                   View previous version
                 </summary>
-                <PreviousVersionPanel pageId={page_id} pageType={page.page_type} lastUpdated={page.last_updated} />
+                <PreviousVersionPanel
+                  pageId={page_id}
+                  pageType={page.page_type}
+                  lastUpdated={page.last_updated}
+                  restorable={page_id !== 'saved-links'}
+                  restoreDisabledReason={
+                    getRunningCompileSession() ? 'A compile is running. Restore when it has finished.' : null
+                  }
+                />
               </details>
             )}
           </footer>

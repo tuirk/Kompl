@@ -1128,6 +1128,11 @@ When selecting the category field, you MUST use one of the exact category string
 
 _CITED_PAGE_TYPES = ("entity", "concept", "comparison", "overview")
 
+# Output ceiling for one draft_page call. DeepSeek counts reasoning tokens
+# against it too. GET /llm/pricing reports it (with the prompt cap above) so
+# the app's page-update estimate works from the same limits.
+_DRAFT_PAGE_MAX_OUTPUT_TOKENS = 16384
+
 _CITATION_RULES = """\
 CITATIONS:
 - Each source below (and each block of pre-extracted data) has a label such as [S1].
@@ -1325,7 +1330,7 @@ def draft_page(
             ],
             response_model=None,
             thinking_budget=_read_thinking_budget('draft_page'),
-            max_output_tokens=16384,
+            max_output_tokens=_DRAFT_PAGE_MAX_OUTPUT_TOKENS,
             temperature=0.3,
             step="draft_page",
             extra={"retry": False},

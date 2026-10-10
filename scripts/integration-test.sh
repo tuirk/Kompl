@@ -15,7 +15,7 @@
 #
 # Stage state at commit 8:
 #   Stage 0  — REAL (cold start)
-#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=26)
+#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=27)
 #   Stage 4  — REAL (text connector stage end-to-end, no API key needed)
 #   Stage 11 — REAL (onboarding API canary via /stage → /finalize → pipeline)
 #   Stage 11b — REAL (finalize surfaces n8n-down as 503)
@@ -298,8 +298,8 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":26'; then
-        echo "  FAIL: schema_version != 26"
+    if ! echo "$response" | grep -q '"schema_version":27'; then
+        echo "  FAIL: schema_version != 27"
         record_stage 1 REAL FAIL
         return 1
     fi

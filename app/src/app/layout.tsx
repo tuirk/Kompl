@@ -3,6 +3,7 @@ import { Suspense } from 'react';
 import { Space_Grotesk, Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import TopNav from '@/components/TopNav';
+import PageUpgradeNotice from '@/components/PageUpgradeNotice';
 
 // Obsidian Kinetic — font loading via next/font (zero layout shift, self-hosted)
 const spaceGrotesk = Space_Grotesk({
@@ -42,6 +43,7 @@ export default function RootLayout({
           <TopNav />
         </Suspense>
         {children}
+        <PageUpgradeNotice />
       </body>
     </html>
   );

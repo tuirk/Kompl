@@ -26,7 +26,9 @@ Commit 7 additions (vector store):
   - POST /vectors/backfill      — upsert all pages not yet in Chroma (idempotent)
   - POST /storage/read-page     — read a compiled wiki page by page_id
 
-  GET /llm/usage               — today's Gemini spend vs daily cap (from /data/llm-cap.json)
+  GET /llm/usage               — today's LLM spend vs daily cap (from /data/llm-cap.json)
+  GET /llm/pricing             — a model's per-1M-token prices + draft_page limits
+                                 (page-update estimate in Settings > Wiki health)
 
 Future commits will add routers for:
   - pipeline    (commit 10 — /pipeline/draft, /pipeline/plan)

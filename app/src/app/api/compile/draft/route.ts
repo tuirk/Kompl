@@ -48,6 +48,7 @@ import {
 } from '../../../../lib/citations';
 import { getSourceTitleSet } from '../../../../lib/page-sources';
 import { normalizeFrontmatter, SOURCE_PAGE_TYPES, sourceOnlyTitles } from '../../../../lib/draft-cleanup';
+import { CURRENT_DRAFT_RULES } from '../../../../lib/draft-rules';
 import { removeEmptyContradictionSections } from '../../../../lib/page-sections';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -694,7 +695,8 @@ export async function POST(request: Request) {
         const firstConcept = (ext?.concepts as Array<{ definition?: string }> | undefined)?.[0]?.definition;
         const summaryText = (firstClaim ?? firstConcept ?? src.markdown.slice(0, 120).replace(/\n/g, ' ')).trim();
         const rawDraft = `---\ntitle: ${yamlDoubleQuote(plan.title)}\ncategory: ${category}\nsummary: ${yamlDoubleQuote(summaryText)}\n---\n\n${src.markdown}`;
-        updatePlanDraft(plan.plan_id, rawDraft);
+        // The user's own text: no writing rules apply (lib/draft-rules.ts).
+        updatePlanDraft(plan.plan_id, rawDraft, null);
         return { pageType: plan.page_type, markdown: rawDraft };
       }
 
@@ -790,7 +792,9 @@ export async function POST(request: Request) {
         markdown = removeEmptyContradictionSections(markdown).markdown;
       }
 
-      updatePlanDraft(plan.plan_id, markdown);
+      // Drafted by this version's prompt and cleanup. The commit copies the
+      // marker to the page only when the plan drafted from scratch.
+      updatePlanDraft(plan.plan_id, markdown, CURRENT_DRAFT_RULES);
       return { pageType: plan.page_type, markdown };
     });
 

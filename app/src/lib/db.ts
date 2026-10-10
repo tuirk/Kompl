@@ -1495,14 +1495,19 @@ export function getPagesForSession(
     .all(sessionId) as Array<{ page_id: string; title: string }>;
 }
 
-export function updatePlanDraft(planId: string, draftContent: string): void {
+/**
+ * Store a plan's draft. `draftRules` records the writing rules an LLM draft
+ * was made under (lib/draft-rules.ts CURRENT_DRAFT_RULES); null for drafts
+ * that are not LLM-written (original-source passthroughs).
+ */
+export function updatePlanDraft(planId: string, draftContent: string, draftRules: string | null): void {
   openDb()
     .prepare(
       `UPDATE page_plans
-          SET draft_content = ?, draft_status = 'drafted'
+          SET draft_content = ?, draft_status = 'drafted', draft_rules = ?
         WHERE plan_id = ?`
     )
-    .run(draftContent, planId);
+    .run(draftContent, draftRules, planId);
 }
 
 export function updatePlanCrossref(planId: string, draftContent: string): void {
@@ -3633,6 +3638,8 @@ export interface PagePlanExportRow {
   draft_content: string | null;
   draft_status: string;
   created_at: string;
+  /** v27: writing rules the draft was made under; null for pre-v0.4 drafts. */
+  draft_rules: string | null;
 }
 
 export function getAllPagePlans(): PagePlanExportRow[] {
@@ -3640,7 +3647,7 @@ export function getAllPagePlans(): PagePlanExportRow[] {
     .prepare(
       `SELECT plan_id, session_id, title, page_type, action,
               source_ids, existing_page_id, related_plan_ids,
-              draft_content, draft_status, created_at
+              draft_content, draft_status, created_at, draft_rules
          FROM page_plans
         ORDER BY created_at`
     )

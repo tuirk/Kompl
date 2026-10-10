@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -700,6 +700,37 @@ def migrate():
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('compile_model', ?)",
             (seeded_model,),
         )
+
+    if current < 27:
+        print("  applying migration v27 (pages.draft_rules + page_plans.draft_rules)...")
+        # Writing-rules marker. v0.4 writes pages under stricter rules
+        # (sources only, numbered citations, each page linked once, at most
+        # 5 Related entries, no empty Contradictions sections, four
+        # frontmatter keys). A compile only adds to an existing page, so a
+        # page keeps its older text until the user updates it from
+        # Settings > Wiki health (app/src/lib/draft-rules.ts):
+        #   pages.draft_rules       'v0.4' when the page's text was written
+        #                           from scratch under those rules; NULL for
+        #                           every page written before v0.4, and for
+        #                           original-source pages and Saved Links
+        #   page_plans.draft_rules  the same marker on a compile draft, copied
+        #                           to the page when a from-scratch plan
+        #                           commits; NULL for drafts made before v0.4
+        #                           (e.g. ones still waiting for approval)
+        # Additive only, no backfill: NULL is exactly "written by an earlier
+        # version", so existing pages and pending drafts need no rewrite here.
+        page_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(pages)").fetchall()
+        }
+        if "draft_rules" not in page_cols:
+            conn.execute("ALTER TABLE pages ADD COLUMN draft_rules TEXT")
+        plan_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(page_plans)").fetchall()
+        }
+        if "draft_rules" not in plan_cols:
+            conn.execute("ALTER TABLE page_plans ADD COLUMN draft_rules TEXT")
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

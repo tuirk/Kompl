@@ -1,4 +1,4 @@
--- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=26.
+-- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=27.
 -- If migrate.py changes, update this file. Tests will fail loudly on drift.
 
 CREATE TABLE sources (
@@ -31,7 +31,10 @@ CREATE TABLE pages (
   last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
   source_count INTEGER DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  pending_content TEXT
+  pending_content TEXT,
+  -- v27: writing rules the page's text was drafted under ('v0.4');
+  -- NULL = written by an earlier version (lib/draft-rules.ts).
+  draft_rules TEXT
 );
 
 CREATE TABLE provenance (
@@ -106,7 +109,9 @@ CREATE TABLE page_plans (
   draft_content TEXT,
   draft_status TEXT DEFAULT 'planned',
   draft_error TEXT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  -- v27: writing rules the draft was made under; NULL for pre-v0.4 drafts.
+  draft_rules TEXT
 );
 
 CREATE TABLE compile_progress (
@@ -226,6 +231,6 @@ CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id
 CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '26');
+INSERT INTO settings (key, value) VALUES ('schema_version', '27');
 -- v26: fresh installs get an explicit compile_model row (DEFAULT_COMPILE_MODEL).
 INSERT INTO settings (key, value) VALUES ('compile_model', 'deepseek-flash');

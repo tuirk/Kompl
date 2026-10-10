@@ -31,7 +31,7 @@ describe('.kompl backup settings', () => {
       (s) => s.key,
     );
 
-    expect(manifest.schema_version).toBe(26);
+    expect(manifest.schema_version).toBe(27);
     expect(keys).not.toContain('schema_version');
     expect(keys).toContain('compile_model');
   });

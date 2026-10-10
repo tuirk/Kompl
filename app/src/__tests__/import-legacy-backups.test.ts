@@ -60,7 +60,7 @@ describe('POST /api/import — backups from older versions', () => {
       }),
     );
     expect(res.status).toBe(200);
-    expect(setting('schema_version')).toBe('26');
+    expect(setting('schema_version')).toBe('27');
     expect(setting('auto_approve')).toBe('0');
   });
 

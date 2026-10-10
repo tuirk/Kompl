@@ -8,6 +8,7 @@
  *   Phase 2 (sync db.transaction()):
  *     - insertPage()
  *     - setPendingContent() (outbox — markdown stored for boot reconciler)
+ *     - draft_rules marker copied from a from-scratch plan (lib/draft-rules.ts)
  *     - insertProvenance()
  *     - pages_fts upsert
  *     - insertActivity('page_compiled', ...)
@@ -55,6 +56,7 @@ import {
   getPendingFlushPages,
   backfillAliasCanonicalPageId,
 } from '../../../../lib/db';
+import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from '../../../../lib/draft-rules';
 import { flushPendingPage } from '../../../../lib/flush-pending';
 import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
 import { syncPageWikilinks } from '../../../../lib/wikilinks';
@@ -313,6 +315,12 @@ async function commitSession(session_id: string): Promise<Response> {
 
         // Outbox: store markdown for Phase 3a flush + crash recovery.
         setPendingContent(page_id, markdown);
+
+        // Writing-rules marker (lib/draft-rules.ts): a page drafted from
+        // scratch takes its draft's marker; an update keeps the page's own.
+        if (planDraftsFromScratch(plan) && isDraftedPage({ page_id, page_type: plan.page_type })) {
+          copyPlanDraftRules(db, plan.plan_id, page_id);
+        }
 
         const contribType = plan.action === 'update' ? 'updated' : 'created';
         for (const sid of sourceIds) {

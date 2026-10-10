@@ -7,6 +7,8 @@ import zlib from 'zlib';
 import { NextResponse } from 'next/server';
 
 import { getDb, DATA_ROOT, logActivity, safePreviousContentPath } from '@/lib/db';
+import { sanitizeDraftRules } from '@/lib/draft-rules';
+import { PAGE_UPGRADE_FLAG } from '@/lib/page-upgrade-state';
 import { isSafeId } from '@/lib/safe-paths';
 import { resyncAllWikilinks } from '@/lib/wikilinks';
 
@@ -182,11 +184,14 @@ export async function POST(request: Request) {
     }
 
     for (const p of pages) {
+      // draft_rules exists from schema v27. Older backups don't carry it and
+      // import as NULL: "written by an earlier version", offered for an update.
       db.prepare(
         `INSERT OR IGNORE INTO pages
            (page_id, title, page_type, category, summary, content_path,
-            previous_content_path, last_updated, source_count, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            previous_content_path, last_updated, source_count, created_at,
+            draft_rules)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         p.page_id as string,
         p.title as string,
@@ -200,7 +205,8 @@ export async function POST(request: Request) {
         safePreviousContentPath(p.page_id as string, (p.previous_content_path as string | null) ?? null),
         p.last_updated as string,
         (p.source_count as number | null) ?? 0,
-        p.created_at as string
+        p.created_at as string,
+        sanitizeDraftRules(p.draft_rules)
       );
 
       // Decompress synchronously for FTS5 — buffer already in memory from Phase 1
@@ -362,12 +368,14 @@ export async function POST(request: Request) {
     }
 
     for (const pp of pagePlans) {
+      // draft_rules (v27): older backups import as NULL, so a pre-v0.4 draft
+      // still waiting for approval never marks its page as current.
       db.prepare(
         `INSERT OR IGNORE INTO page_plans
            (plan_id, session_id, title, page_type, action,
             source_ids, existing_page_id, related_plan_ids,
-            draft_content, draft_status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            draft_content, draft_status, created_at, draft_rules)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         pp.plan_id as string,
         pp.session_id as string,
@@ -379,7 +387,8 @@ export async function POST(request: Request) {
         (pp.related_plan_ids as string | null) ?? null,
         (pp.draft_content as string | null) ?? null,
         (pp.draft_status as string | null) ?? 'planned',
-        pp.created_at as string
+        pp.created_at as string,
+        sanitizeDraftRules(pp.draft_rules)
       );
     }
 
@@ -388,6 +397,8 @@ export async function POST(request: Request) {
       // the backup. Restoring an older value would make /api/health report
       // the DB as broken until the next restart re-ran migrations.
       if (s.key === 'schema_version') continue;
+      // The page-update flag arms one confirmed run; a backup never arms it.
+      if (s.key === PAGE_UPGRADE_FLAG) continue;
       db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`).run(s.key, s.value);
     }
 

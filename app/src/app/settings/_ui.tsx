@@ -79,6 +79,7 @@ export function SettingCard({
   id,
   title,
   badge,
+  badgeTone,
   summary,
   details,
   control,
@@ -89,6 +90,7 @@ export function SettingCard({
   id?: string;
   title: string;
   badge?: string;
+  badgeTone?: BadgeTone;
   summary: ReactNode;
   details?: ReactNode;
   control?: ReactNode;
@@ -113,7 +115,7 @@ export function SettingCard({
         <div style={{ flex: '1 1 340px', minWidth: 0 }}>
           <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: 8 }}>
             {title}
-            {badge && <Badge>{badge}</Badge>}
+            {badge && <Badge tone={badgeTone}>{badge}</Badge>}
           </div>
           <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.55 }}>{summary}</div>
           {details && <Details>{details}</Details>}
@@ -179,7 +181,17 @@ export function Details({ label = 'Details', children }: { label?: string; child
   );
 }
 
-export function Badge({ children }: { children: ReactNode }) {
+/** warning: Beta and "needs attention"; success: all done; accent: in progress. */
+export type BadgeTone = 'warning' | 'success' | 'accent';
+
+const BADGE_TONES: Record<BadgeTone, { rgb: string; color: string }> = {
+  warning: { rgb: 'var(--warning-rgb)', color: 'var(--warning)' },
+  success: { rgb: 'var(--success-rgb)', color: 'var(--success)' },
+  accent: { rgb: 'var(--accent-rgb)', color: 'var(--accent)' },
+};
+
+export function Badge({ children, tone = 'warning' }: { children: ReactNode; tone?: BadgeTone }) {
+  const { rgb, color } = BADGE_TONES[tone];
   return (
     <span
       style={{
@@ -188,9 +200,9 @@ export function Badge({ children }: { children: ReactNode }) {
         fontWeight: 700,
         letterSpacing: '0.08em',
         textTransform: 'uppercase',
-        background: 'rgba(var(--warning-rgb), 0.1)',
-        border: '1px solid rgba(var(--warning-rgb), 0.25)',
-        color: 'var(--warning)',
+        background: `rgba(${rgb}, 0.1)`,
+        border: `1px solid rgba(${rgb}, 0.25)`,
+        color,
         borderRadius: 4,
       }}
     >

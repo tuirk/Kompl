@@ -86,9 +86,36 @@ async function resyncWikilinksOnce(): Promise<void> {
   );
 }
 
+/**
+ * A restart ends any bulk page update (its state lived in the old process),
+ * so its CLAUDE.md rule-7 flag goes back to off; the next run needs a new
+ * confirmation in Settings > Wiki health (lib/page-upgrade.ts).
+ */
+async function disarmPageUpgrade(): Promise<void> {
+  if (process.env.NEXT_RUNTIME === 'edge') return;
+
+  const { getSetting, setSetting } = await import('./lib/db');
+  const { PAGE_UPGRADE_FLAG } = await import('./lib/page-upgrade-state');
+  if (getSetting(PAGE_UPGRADE_FLAG) === '1') setSetting(PAGE_UPGRADE_FLAG, '0');
+}
+
 export async function register(): Promise<void> {
   // Skip in Edge runtime — SQLite is Node-only.
   if (process.env.NEXT_RUNTIME === 'edge') return;
+
+  try {
+    await disarmPageUpgrade();
+  } catch (err) {
+    // Non-fatal: the flag only lets a confirmed run start, and only a new
+    // confirmation (which sets it again) starts one.
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: 'page_upgrade_disarm_failed',
+        error: err instanceof Error ? err.message : String(err),
+      })
+    );
+  }
 
   try {
     await reconcilePendingFlushes();

@@ -28,7 +28,9 @@ import {
   setLastBackupAt,
 } from '@/lib/db';
 import { yamlDoubleQuote } from '@/lib/yaml-escape';
+import { getPageDraftRulesMap } from '@/lib/draft-rules';
 import { exportPageBody } from '@/lib/page-export';
+import { PAGE_UPGRADE_FLAG } from '@/lib/page-upgrade-state';
 import { getSourceTitleSet } from '@/lib/page-sources';
 
 // ---------------------------------------------------------------------------
@@ -261,7 +263,14 @@ export async function GET(request: Request) {
 
     const dbFolder = zip.folder('db')!;
     dbFolder.file('sources.json', JSON.stringify(sources, null, 2));
-    dbFolder.file('pages.json', JSON.stringify(pages, null, 2));
+    // draft_rules (v27) says which writing rules each page follows, so a
+    // restored wiki offers the same pages for an update. Older releases'
+    // imports ignore the extra field.
+    const draftRules = getPageDraftRulesMap();
+    dbFolder.file(
+      'pages.json',
+      JSON.stringify(pages.map((p) => ({ ...p, draft_rules: draftRules.get(p.page_id) ?? null })), null, 2),
+    );
     dbFolder.file('provenance.json', JSON.stringify(getAllProvenance(), null, 2));
     dbFolder.file('aliases.json', JSON.stringify(getAllAliases(), null, 2));
     dbFolder.file('extractions.json', JSON.stringify(getAllExtractions(), null, 2));
@@ -276,9 +285,14 @@ export async function GET(request: Request) {
     // The schema version travels in manifest.json. Older Kompl releases copy
     // every settings row on import, so a schema_version row here would
     // overwrite an older install's own version and leave it "degraded".
+    // The page-update flag belongs to a run in this process, never to a backup.
     dbFolder.file(
       'settings.json',
-      JSON.stringify(getExportableSettings().filter((s) => s.key !== 'schema_version'), null, 2),
+      JSON.stringify(
+        getExportableSettings().filter((s) => s.key !== 'schema_version' && s.key !== PAGE_UPGRADE_FLAG),
+        null,
+        2,
+      ),
     );
 
     const rawFolder = zip.folder('raw')!;

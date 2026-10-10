@@ -7,6 +7,7 @@
  */
 import { NextResponse } from 'next/server';
 import { getCompileProgress, getRunningCompileSession, resetForRetry } from '@/lib/db';
+import { pageUpgradeBlock } from '@/lib/page-upgrade-state';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
 export async function POST(request: Request) {
@@ -21,6 +22,10 @@ export async function POST(request: Request) {
 
   const progress = getCompileProgress(session_id);
   if (!progress) return NextResponse.json({ error: 'no_progress_record' }, { status: 404 });
+
+  // No compile while pages are being updated to the current writing rules.
+  const upgrading = pageUpgradeBlock();
+  if (upgrading) return NextResponse.json(upgrading, { status: 409 });
 
   // Global concurrency gate.
   const active = getRunningCompileSession();

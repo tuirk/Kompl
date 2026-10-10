@@ -6,8 +6,8 @@
  *     compile/commit/route.ts has its own loop optimised for batched FTS5 + wikilinks.
  *
  * Implements the same outbox commit pattern (CLAUDE.md rule #5):
- *   Phase 2 (sync db.transaction): insertPage + setPendingContent + insertProvenance
- *     + FTS5 + insertActivity + updatePlanStatus('committed').
+ *   Phase 2 (sync db.transaction): insertPage + setPendingContent + draft_rules
+ *     marker + insertProvenance + FTS5 + insertActivity + updatePlanStatus('committed').
  *   Phase 3a (awaited): flush pending_content to disk via /storage/write-page →
  *     clearPendingContent.
  *   Phase 3b (fire-and-forget): syncPageWikilinks for [[Title]] resolution +
@@ -28,6 +28,7 @@ import {
   getPageTitleMap,
   backfillAliasCanonicalPageId,
 } from './db';
+import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from './draft-rules';
 import { upsertVectorWithRetry } from './vector-upsert';
 import { syncPageWikilinks } from './wikilinks';
 import { extractFrontmatterField } from './yaml-frontmatter';
@@ -115,6 +116,13 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
       });
 
       setPendingContent(page_id, markdown);
+
+      // Writing-rules marker (lib/draft-rules.ts): a page drafted from
+      // scratch takes its draft's marker (NULL for a draft made before v0.4);
+      // an update keeps the page's own.
+      if (planDraftsFromScratch(plan) && isDraftedPage({ page_id, page_type: plan.page_type })) {
+        copyPlanDraftRules(db, plan_id, page_id);
+      }
 
       if (sourceIds.length > 0) {
         const contribType = plan.action === 'update' ? 'updated' : 'created';

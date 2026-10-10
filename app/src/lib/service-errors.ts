@@ -19,6 +19,8 @@
  * add a test row in `__tests__/service-errors.test.ts`.
  */
 
+import { CURRENT_DRAFT_RULES } from './writing-rules';
+
 export interface Remediation {
   title: string;
   body: string;
@@ -105,6 +107,11 @@ export const SERVICE_ERROR_MESSAGES = {
     title: 'Another compile session is already running. Wait for it to finish or cancel it from the progress page.',
     body: 'Only one compile session per database is supported at a time.',
     fix: 'Visit the Progress page, wait for completion, or cancel the active session.',
+  },
+  page_upgrade_in_progress: {
+    title: `Kompl is updating pages to the ${CURRENT_DRAFT_RULES} writing rules. Start the compile once the update finishes, or stop the update in Settings → Wiki health.`,
+    body: 'The page update tracks its own LLM spending and writes pages one at a time, so a compile cannot run at the same time.',
+    fix: 'Wait for the update to finish, or select Stop in Settings → Wiki health.',
   },
 
   // ── Pre-stage health codes (consumed by /onboarding/health table) ──────

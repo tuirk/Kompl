@@ -309,6 +309,59 @@ function renderPageRecompileFailed(row: FeedActivityRow): RowContent {
   return { primary, secondary, action, isError: true };
 }
 
+/**
+ * Page-level actions (page update, Restore): page link + what happened.
+ * `what` may read the row's details (e.g. the rules version it recorded).
+ */
+function renderPageAction(what: string | ((str: (k: string) => string | null) => string)) {
+  return function renderPageActionRow(row: FeedActivityRow): RowContent {
+    const { str } = makeGetters(row);
+    const page_id = str('page_id');
+    const pageName = str('title') ?? page_id ?? '…';
+    const primary = page_id
+      ? <Link href={`/wiki/${page_id}`} style={LINK_STYLE}><strong>{pageName}</strong></Link>
+      : <strong>{pageName}</strong>;
+    const action = page_id
+      ? <Link href={`/wiki/${page_id}`} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+      : null;
+    const text = typeof what === 'string' ? what : what(str);
+    return { primary, secondary: <span style={MONO_DIM}>{text}</span>, action, isError: false };
+  };
+}
+
+const PAGE_UPGRADE_STOP_TEXT: Record<string, string> = {
+  user: 'stopped by you',
+  flag_off: 'stopped by you',
+  compile_started: 'a compile started',
+  daily_cost_ceiling: "today's spending limit reached",
+  consecutive_failures: '3 failures in a row',
+  overspend: 'spending passed 1.5 × the estimate',
+  error: 'unexpected error',
+};
+
+/** One row per run of the bulk page update (lib/page-upgrade.ts): started, finished or stopped. */
+function renderPageUpgradeRun(row: FeedActivityRow): RowContent {
+  const { str, num } = makeGetters(row);
+  const phase = str('phase');
+  const pages = num('pages') ?? 0;
+  const verb = phase === 'started' ? 'started' : phase === 'finished' ? 'finished' : 'stopped';
+  const parts =
+    phase === 'started'
+      ? [`${pages} page${pages !== 1 ? 's' : ''}`]
+      : [
+          `${num('updated') ?? 0} updated`,
+          `${num('skipped') ?? 0} skipped`,
+          `${num('failed') ?? 0} failed`,
+          phase === 'stopped' ? PAGE_UPGRADE_STOP_TEXT[str('reason') ?? ''] ?? null : null,
+        ].filter((p): p is string => Boolean(p));
+  return {
+    primary: <>Page update to the {str('rules') ?? 'current'} writing rules {verb}</>,
+    secondary: <span style={MONO_DIM}>{parts.join(' · ')}</span>,
+    action: <Link href="/settings#page-upgrade" style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>,
+    isError: phase === 'stopped' && (str('reason') === 'error' || str('reason') === 'consecutive_failures'),
+  };
+}
+
 function renderLintComplete(row: FeedActivityRow): RowContent {
   const { d } = makeGetters(row);
   const raw = d as Record<string, unknown> | null;
@@ -576,6 +629,21 @@ export const ACTIVITY_EVENTS = {
   page_archived:          { key: 'page_archived',          badge: { label: 'ARCHIVED',   tone: 'dim'  as Tone }, render: renderPageArchived },
   page_recompiled:        { key: 'page_recompiled',        badge: { label: 'RECOMPILED', tone: 'neut' as Tone }, render: renderPageRecompiled },
   page_recompile_failed:  { key: 'page_recompile_failed',  badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderPageRecompileFailed },
+  // page_redrafted: a page rebuilt from its sources (internal name kept for existing rows).
+  page_redrafted:         { key: 'page_redrafted',         badge: { label: 'UPGRADED',   tone: 'neut' as Tone }, render: renderPageAction((str) => `updated to the ${str('draft_rules') ?? 'current'} writing rules`) },
+  page_redraft_failed:    { key: 'page_redraft_failed',    badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderPageRecompileFailed },
+  page_version_restored:  { key: 'page_version_restored',  badge: { label: 'RESTORED',   tone: 'dim'  as Tone }, render: renderPageAction('previous version restored') },
+  page_upgrade_run: {
+    key: 'page_upgrade_run',
+    badge: (row: FeedActivityRow) => {
+      const { str } = makeGetters(row);
+      const phase = str('phase');
+      if (phase === 'finished') return { label: 'UPGRADED', tone: 'mint' as Tone };
+      if (phase === 'stopped') return { label: 'STOPPED', tone: 'dim' as Tone };
+      return { label: 'UPGRADING', tone: 'neut' as Tone };
+    },
+    render: renderPageUpgradeRun,
+  },
   page_provenance_updated: { key: 'page_provenance_updated', badge: { label: 'NOTED',    tone: 'dim'  as Tone }, render: renderPageProvenanceUpdated },
   page_contradiction_detected: { key: 'page_contradiction_detected', badge: { label: 'CONFLICT', tone: 'red' as Tone }, render: renderPageContradictionDetected },
   // ── Drafts ──────────────────────────────────────────────────────────────

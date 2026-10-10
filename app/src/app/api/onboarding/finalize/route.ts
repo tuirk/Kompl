@@ -26,6 +26,7 @@ import {
   setSetting,
   supersedeOrphanQueuedSessions,
 } from '../../../../lib/db';
+import { pageUpgradeBlock } from '@/lib/page-upgrade-state';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
 export async function POST(request: Request) {
@@ -63,6 +64,11 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
+
+  // No compile while pages are being updated to the current writing rules
+  // (lib/page-upgrade.ts). Checked before any side effect.
+  const upgrading = pageUpgradeBlock();
+  if (upgrading) return NextResponse.json(upgrading, { status: 409 });
 
   // Clear orphan queued rows (failed n8n trigger, abandoned tab) so they
   // do not hold the global gate while the user starts a fresh session.

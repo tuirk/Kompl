@@ -6,11 +6,13 @@
  * source_count (which leaves stale content), we re-draft the page using only
  * the remaining sources and commit the result.
  *
- * Flow:
- *   Phase 1 (async) — read remaining sources, call /pipeline/draft-page,
- *                      call /storage/write-page
- *   Phase 2 (sync)  — db.transaction: update pages + FTS5
- *   Phase 3 (f&f)   — vector upsert
+ * Flow (outbox, CLAUDE.md rule 5):
+ *   Phase 1 (async)  — read remaining sources, call /pipeline/draft-page
+ *   Phase 2 (sync)   — db.transaction: update pages + pending_content +
+ *                      draft_rules marker + FTS5
+ *   Phase 3a (await) — /storage/write-page, then clearPendingContent
+ *   Phase 3c         — page_links resync
+ *   Phase 3b (f&f)   — vector upsert
  *
  * Throws on draft or write failure — caller catches and falls back to
  * decrementPageSourceCount so the source deletion still completes.
@@ -36,6 +38,7 @@ import { syncPageWikilinks } from './wikilinks';
 import { LONG_HTTP_AGENT } from './long-http-agent';
 import { assignCitationLabels, labelsToStoredCitations, rewordLabelSubjects } from './citations';
 import { normalizeFrontmatter, relatedLinkTargets, sourceOnlyTitles, tidyDraftLinks } from './draft-cleanup';
+import { CURRENT_DRAFT_RULES, isDraftedPage, setPageDraftRules } from './draft-rules';
 import { removeEmptyContradictionSections } from './page-sections';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -204,6 +207,10 @@ export async function recompilePage(
 
     // Outbox: store markdown for Phase 3a flush + crash recovery.
     setPendingContent(pageId, newMarkdown);
+
+    // Drafted from scratch with this version's prompt and cleanup, so the
+    // page now follows the current writing rules (lib/draft-rules.ts).
+    if (isDraftedPage(page)) setPageDraftRules(db, pageId, CURRENT_DRAFT_RULES);
 
     // FTS5 upsert: strip frontmatter before indexing
     const bodyForFts = newMarkdown.replace(/^---[\s\S]*?---\n*/m, '');
