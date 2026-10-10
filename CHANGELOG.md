@@ -205,6 +205,9 @@ ship with a `migrate.py` step that runs at boot.
   NLP service can't hold up a wiki page, and failed searches are logged.
   The Settings text now says what it counts: sources that aren't archived;
   0 shows the panel whenever similar pages exist.
+- **Search vectors stay current:** page updates, restores and recompiles
+  refresh a page's vector with the same retries as a compile, and a page
+  whose save is completed at startup gets its vector refreshed too.
 - **CLI tests no longer overwrite your backup:** the `kompl start` tests ran
   against the real home folder and could replace
   `~/.kompl/backups/kompl-backup.kompl.zip` with an empty file. They now use a

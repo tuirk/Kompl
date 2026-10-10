@@ -21,8 +21,9 @@ async function reconcilePendingFlushes(): Promise<void> {
   // Dynamically import so the modules only resolve in Node runtime.
   // flushPendingPage lives in src/lib/flush-pending.ts — shared with the
   // commit route's post-loop durability pass.
-  const { getPendingFlushPages, clearPendingContent } = await import('./lib/db');
+  const { getPage, getPendingFlushPages, clearPendingContent } = await import('./lib/db');
   const { flushPendingPage } = await import('./lib/flush-pending');
+  const { upsertVectorWithRetry } = await import('./lib/vector-upsert');
 
   const pending = getPendingFlushPages();
   if (pending.length === 0) return;
@@ -43,6 +44,18 @@ async function reconcilePendingFlushes(): Promise<void> {
     if (result.ok) {
       clearPendingContent(row.page_id, result.previousPath);
       flushed++;
+      // The commit's own vector refresh needs the file on disk, so it was
+      // skipped or embedded the old text; refresh it now (Saved Links has no
+      // vector). Never throws.
+      const page = getPage(row.page_id);
+      if (page && page.page_id !== 'saved-links') {
+        void upsertVectorWithRetry(page.page_id, {
+          title: page.title,
+          page_type: page.page_type,
+          category: page.category ?? '',
+          source_count: page.source_count,
+        });
+      }
     } else {
       failed++;
     }

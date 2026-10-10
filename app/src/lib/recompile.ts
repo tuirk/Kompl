@@ -12,7 +12,7 @@
  *                      draft_rules marker + FTS5
  *   Phase 3a (await) — /storage/write-page, then clearPendingContent
  *   Phase 3c         — page_links resync
- *   Phase 3b (f&f)   — vector upsert
+ *   Phase 3b (f&f)   — vector refresh, retried like a compile's
  *
  * Throws on draft or write failure — caller catches and falls back to
  * decrementPageSourceCount so the source deletion still completes.
@@ -40,6 +40,7 @@ import { assignCitationLabels, labelsToStoredCitations, rewordLabelSubjects } fr
 import { normalizeFrontmatter, relatedLinkTargets, sourceOnlyTitles, tidyDraftLinks } from './draft-cleanup';
 import { CURRENT_DRAFT_RULES, isDraftedPage, setPageDraftRules } from './draft-rules';
 import { removeEmptyContradictionSections } from './page-sections';
+import { upsertVectorWithRetry } from './vector-upsert';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -231,21 +232,13 @@ export async function recompilePage(
   // partial/no wikilinks (boot reconciler covers pending_content, not page_links).
   syncPageWikilinks(getDb(), pageId, newMarkdown, getPageTitleMap());
 
-  // ── Phase 3b: vector upsert — fire-and-forget ────────────────────────────
-  void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      page_id: pageId,
-      metadata: {
-        title: page.title,
-        page_type: page.page_type,
-        category: page.category ?? '',
-        source_count: newSourceCount,
-      },
-    }),
-    signal: AbortSignal.timeout(30_000),
-  }).catch(() => {});
+  // ── Phase 3b: vector refresh — fire-and-forget, retried like a compile's ─
+  void upsertVectorWithRetry(pageId, {
+    title: page.title,
+    page_type: page.page_type,
+    category: page.category ?? '',
+    source_count: newSourceCount,
+  });
 
   return { outcome: 'rewritten' };
 }

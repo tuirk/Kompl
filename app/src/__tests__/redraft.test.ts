@@ -61,15 +61,18 @@ function draftMarkdown(body: string): string {
 interface MockOptions {
   draft?: { status?: number; markdown?: string };
   duringDraft?: () => void;
+  /** How many /vectors/upsert attempts fail before one succeeds. */
+  vectorFailures?: number;
 }
 
 interface MockCalls {
   draftBodies: Array<Record<string, unknown>>;
   writes: Array<{ markdown: string; pendingAtWrite: string | null }>;
+  vectorUpserts: number;
 }
 
 function mockNlp(pageId: string, opts: MockOptions = {}): MockCalls {
-  const calls: MockCalls = { draftBodies: [], writes: [] };
+  const calls: MockCalls = { draftBodies: [], writes: [], vectorUpserts: 0 };
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
@@ -92,7 +95,11 @@ function mockNlp(pageId: string, opts: MockOptions = {}): MockCalls {
           previous_path: `/data/pages/${pageId}.20261009-120000-000000.md.gz`,
         });
       }
-      if (u.endsWith('/vectors/upsert')) return Response.json({ ok: true });
+      if (u.endsWith('/vectors/upsert')) {
+        calls.vectorUpserts++;
+        if (calls.vectorUpserts <= (opts.vectorFailures ?? 0)) return new Response('busy', { status: 503 });
+        return Response.json({ ok: true });
+      }
       return new Response('not found', { status: 404 });
     }),
   );
@@ -275,6 +282,19 @@ describe('redraftPage', () => {
     const result = await redraftPage(pageId, { model: 'gemini-3.8-flash' });
     expect(result.model).toBe('gemini-3.8-flash');
     expect(calls.draftBodies[0].compile_model).toBe('gemini-3.8-flash');
+  });
+
+  it('refreshes the page vector after the save, retrying a failed attempt like a compile', async () => {
+    handle = setupTestDb();
+    const pageId = seedRedraftablePage(handle);
+    const calls = mockNlp(pageId, { vectorFailures: 1 });
+
+    await redraftPage(pageId);
+
+    // Fire-and-forget after the save: wait for the retry (500 ms backoff).
+    await vi.waitFor(() => expect(calls.vectorUpserts).toBe(2), { timeout: 3_000 });
+    const queued = handle.db.prepare('SELECT COUNT(*) AS n FROM vector_backfill_queue').get() as { n: number };
+    expect(queued.n).toBe(0); // the retry succeeded, so nothing is left for a backfill
   });
 
   it('leaves the page untouched when the draft is too thin', async () => {

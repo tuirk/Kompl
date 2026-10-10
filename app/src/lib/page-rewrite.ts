@@ -10,7 +10,7 @@
  *   Phase 3a (awaited): /storage/write-page — archives the current file as
  *            {page_id}.{timestamp}.md.gz — then clearPendingContent
  *   Phase 3c: page_links resync
- *   Phase 3b (fire-and-forget): vector upsert
+ *   Phase 3b (fire-and-forget): vector refresh, retried like a compile's
  * If Phase 3a fails, pending_content stays set and the boot reconciler
  * (instrumentation.ts) flushes it on the next start; nothing is lost.
  */
@@ -27,6 +27,7 @@ import type { ActivityEventType } from './activity-events';
 import { stripFrontmatter } from './markdown';
 import { syncPageWikilinks } from './wikilinks';
 import { extractFrontmatterField } from './yaml-frontmatter';
+import { upsertVectorWithRetry } from './vector-upsert';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -123,21 +124,15 @@ export async function commitPageRewrite(args: {
   }
 
   // ── Phase 3b: vectors (fire-and-forget; reads the flushed file) ──
+  // Same retries as a compile, never throws. If the flush failed, the boot
+  // reconciler refreshes the vector once it writes the file.
   if (flushed) {
-    void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        page_id: pageId,
-        metadata: {
-          title: page.title,
-          page_type: page.page_type,
-          category: page.category ?? category ?? '',
-          source_count: page.source_count,
-        },
-      }),
-      signal: AbortSignal.timeout(30_000),
-    }).catch(() => {});
+    void upsertVectorWithRetry(pageId, {
+      title: page.title,
+      page_type: page.page_type,
+      category: page.category ?? category ?? '',
+      source_count: page.source_count,
+    });
   }
 
   return { ok: true, flushed };
