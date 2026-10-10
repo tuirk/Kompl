@@ -11,7 +11,7 @@ import { registerWikiStatus } from './tools/wiki-status.js';
 
 export const SERVER_NAME = 'kompl-wiki';
 /** Keep in step with package.json "version". */
-export const SERVER_VERSION = '1.0.0';
+export const SERVER_VERSION = '2.0.0';
 
 /**
  * Sent to the client at connect time; clients that support server

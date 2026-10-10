@@ -29,6 +29,7 @@
 #   Stage 18 — REAL (wiki-aware update, skipped without GEMINI_API_KEY)
 #   Stage 19 — removed (in-app chat retired; MCP is the query surface)
 #   Stage 20 — REAL (source management + settings + drafts endpoints)
+#   Stage 28 — REAL (MCP server: every tool over stdio, no API key needed)
 #   All other stages — TODO.
 #
 # As real services land, each stage gets its real implementation in the same
@@ -1613,6 +1614,7 @@ main() {
     stage_25_finalize_end_to_end
     stage_26_finalize_accepts_ingested
     stage_27_patch_excludes_from_finalize
+    stage_28_mcp_server
 
     echo
     echo "=== Stage summary ==="
@@ -1620,7 +1622,7 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 23 stages (0, 1, 4, 11–12b, 13–18, 20–27) executed, all passed ==="
+    echo "=== All 24 stages (0, 1, 4, 11–12b, 13–18, 20–28) executed, all passed ==="
     exit 0
 }
 
@@ -2400,6 +2402,39 @@ except Exception:
     echo "  stage 27 PASS — PATCH filter respected by finalize"
     record_stage 27 REAL PASS
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 28 — MCP server (REAL)
+#
+# Builds mcp-server/, launches dist/index.js over stdio the way an AI agent
+# does, and calls every tool against the running app through
+# scripts/mcp-smoke.mjs: the eight tools are listed, the read tools answer,
+# an unknown page or source is an error, and add_source refuses an address
+# that isn't a link, so nothing is staged or compiled.
+# ---------------------------------------------------------------------------
+stage_28_mcp_server() {
+    echo "--- stage 28: MCP server tools over stdio ---"
+    local root
+    root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+    # Always build (seconds), so a stale dist/ never stands in for the source;
+    # install first only when node_modules is missing or half-written.
+    if ! (cd "$root/mcp-server" \
+        && { [ -f node_modules/.package-lock.json ] || npm ci --no-audit --no-fund; } \
+        && npm run build); then
+        echo "  FAIL: could not build mcp-server"
+        record_stage 28 REAL FAIL
+        return 1
+    fi
+
+    if node "$root/scripts/mcp-smoke.mjs"; then
+        echo "  stage 28 PASS — MCP tools answer over stdio"
+        record_stage 28 REAL PASS
+        return 0
+    fi
+    record_stage 28 REAL FAIL
+    return 1
 }
 
 main "$@"

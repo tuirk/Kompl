@@ -12,6 +12,21 @@ ship with a `migrate.py` step that runs at boot.
 
 ### MCP server
 
+- **Upgrading.** The MCP server is now 2.0.0 with eight tools. `list_pages`
+  is now `search_wiki` without a query (newest first, same filters and
+  paging) and `wiki_stats` is now `wiki_status`, so your agent asks to
+  approve Kompl's tools again; permission rules saved for the old names can
+  be removed. The server name (`kompl-wiki`), launch path and `KOMPL_URL`
+  are unchanged, so existing agent configs keep working. The first
+  `kompl start` after updating rebuilds the server; restart your agent to
+  load it.
+- **Setup for more agents.** The README and Settings → Connect your AI give
+  the setup for Claude Code, Codex, Claude Desktop, Cursor, VS Code, Gemini
+  CLI, Pi and Hermes, replacing the claim that Claude Code registers Kompl
+  on its own (the `.mcp.json` it relied on is not shipped).
+- **Tested end to end.** Integration stage 28 (`scripts/mcp-smoke.mjs`)
+  launches the built server over stdio and calls every tool against the
+  running app; it needs no API key.
 - **`search_wiki` understands questions.** It searches by meaning as well
   as keywords (the local embedding model, no LLM), so "how do computers on a
   network agree on one shared history" finds proof-of-work consensus and "who
@@ -61,18 +76,11 @@ ship with a `migrate.py` step that runs at boot.
   covered by any page title or alias, whatever the case (a "Bitcoin"
   concept page covers "bitcoin"), and dates, amounts and ordinals ("second",
   "2009") are no longer listed. Settings → Wiki health shows the same.
-- **`list_pages` is now part of `search_wiki`:** call it without a query to
-  list pages newest first, with the same filters and paging. Permission rules
-  saved for `list_pages` and `wiki_stats` can be removed.
 - **Stays built.** Setup and `kompl update` now build the MCP server, and
   `kompl start` rebuilds it once when its build is older than its source, so
   AI agents run the code that matches the installed Kompl. Before, it was
   built by hand once at install and never again. Restart your AI agent after
   an update to load the new version.
-- **`wiki_stats` no longer writes.** It read `/api/health`, which also repairs
-  stuck compile sessions; it now reads `/api/wiki/stats` and shows active
-  sources, entity and concept counts and the last ingest and compile times
-  (instead of schema version and table count).
 - **Failed calls are marked as errors** (`isError`) with a next step ("Start
   it with `kompl start`", "Use search_wiki to find page ids"), and every tool
   has a title and read-only annotations.

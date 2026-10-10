@@ -565,29 +565,33 @@ export default function SettingsPage() {
               title="Connect AI agents (MCP)"
               summary={
                 <>
-                  Expose your wiki to Claude Code, Claude Desktop, Cursor, or any MCP-capable AI agent as a live knowledge source.
-                  The server provides four tools:{' '}
-                  <code style={codeStyle}>search_wiki</code>,{' '}
-                  <code style={codeStyle}>read_page</code>,{' '}
-                  <code style={codeStyle}>list_pages</code>,{' '}
-                  <code style={codeStyle}>wiki_stats</code>.
+                  Expose your wiki to Claude Code, Claude Desktop, Cursor, Codex, Gemini CLI or any MCP-capable AI agent.
+                  Its eight tools let the agent search your pages, brief itself on a topic, read pages and the sources
+                  behind them, see what changed and what is missing, and, if you allow it below, add sources.
                   Kompl must be running for the tools to respond.
                 </>
               }
               footer={
                 <>
-                  <StepLabel first>Step 1 — Build the server (once)</StepLabel>
-                  <pre style={preStyle}>cd mcp-server &amp;&amp; npm install &amp;&amp; npm run build</pre>
+                  <StepLabel first>Step 1 — The server is built for you</StepLabel>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.5rem' }}>
+                    Setup, <code style={codeStyle}>kompl update</code> and <code style={codeStyle}>kompl start</code> build
+                    it. To build it by hand:
+                  </div>
+                  <pre style={preStyle}>cd mcp-server &amp;&amp; npm ci &amp;&amp; npm run build</pre>
 
                   <StepLabel>Step 2 — Register with your AI client</StepLabel>
-                  <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.65rem' }}>
-                    <strong style={{ color: 'var(--fg)' }}>Claude Code:</strong> auto-registered via{' '}
-                    <code style={codeStyle}>.mcp.json</code>{' '}
-                    in the Kompl folder — just restart Claude Code after building.
-                  </div>
                   <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.5rem' }}>
-                    <strong style={{ color: 'var(--fg)' }}>Claude Desktop, Cursor, other clients:</strong> paste the block
-                    below into the client&apos;s MCP config file. Typical paths:
+                    <strong style={{ color: 'var(--fg)' }}>Claude Code</strong> and{' '}
+                    <strong style={{ color: 'var(--fg)' }}>Codex</strong>:
+                  </div>
+                  <pre style={preStyle}>claude mcp add --scope user kompl-wiki -- node {'<KOMPL_INSTALL_PATH>'}/mcp-server/dist/index.js</pre>
+                  <pre style={preStyle}>codex mcp add kompl-wiki -- node {'<KOMPL_INSTALL_PATH>'}/mcp-server/dist/index.js</pre>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.5rem' }}>
+                    <strong style={{ color: 'var(--fg)' }}>Claude Desktop, Cursor, Gemini CLI, Pi and other clients:</strong>{' '}
+                    paste the block below into the client&apos;s MCP config file (VS Code:{' '}
+                    <code style={codeStyle}>.vscode/mcp.json</code> with <code style={codeStyle}>&quot;servers&quot;</code>{' '}
+                    in place of <code style={codeStyle}>&quot;mcpServers&quot;</code>). Typical paths:
                   </div>
                   <ul
                     style={{
@@ -609,6 +613,17 @@ export default function SettingsPage() {
                     <li>
                       Linux:{' '}
                       <code style={codeStyle}>~/.config/Claude/claude_desktop_config.json</code>
+                    </li>
+                    <li>
+                      Cursor <code style={codeStyle}>~/.cursor/mcp.json</code> · Gemini CLI{' '}
+                      <code style={codeStyle}>~/.gemini/settings.json</code> · Pi (with the{' '}
+                      <code style={codeStyle}>pi-mcp-adapter</code> extension){' '}
+                      <code style={codeStyle}>~/.pi/agent/mcp.json</code>
+                    </li>
+                    <li>
+                      Hermes: the <code style={codeStyle}>kompl-wiki</code> entry alone, without the{' '}
+                      <code style={codeStyle}>mcpServers</code> wrapper, under{' '}
+                      <code style={codeStyle}>mcp_servers:</code> in <code style={codeStyle}>~/.hermes/config.yaml</code>
                     </li>
                   </ul>
 
@@ -640,7 +655,8 @@ export default function SettingsPage() {
                     <code style={codeStyle}>{'<KOMPL_INSTALL_PATH>'}</code>{' '}
                     with the absolute path to your Kompl folder (e.g.{' '}
                     <code style={codeStyle}>C:/Users/you/kompl</code>
-                    ).
+                    ). Pi and Hermes run tools without asking you first, so with agents allowed to add sources they
+                    can start compiles on their own.
                   </div>
                 </>
               }

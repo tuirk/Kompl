@@ -135,40 +135,63 @@ using; nothing switches providers on update.
 
 Kompl has no built-in chat. Your agent asks the questions and Kompl serves the
 compiled pages, with provenance back to the originals instead of raw chunks.
-**Settings → Connect your AI** has the same steps and a copy button for the config.
+**Settings → Connect your AI** has the same steps.
 
-1. Build the server once:
+**Build.** Setup and `kompl update` build the MCP server for you, and
+`kompl start` rebuilds it when its build is older than its source. To build it
+by hand: `cd mcp-server && npm ci && npm run build`. Restart your agent after
+an update to load the new tools.
 
-   ```bash
-   cd mcp-server && npm install && npm run build
-   ```
+**Connect your agent.** The server is a local process that your agent starts:
+`node <KOMPL_INSTALL_PATH>/mcp-server/dist/index.js`, with `<KOMPL_INSTALL_PATH>`
+replaced by the absolute path to your Kompl folder. It talks to Kompl at
+`KOMPL_URL` (default `http://localhost:3000`).
 
-2. Register it with your client.
-   - **Claude Code:** registered automatically through `.mcp.json` in the Kompl
-     folder. Restart Claude Code after building.
-   - **Claude Desktop, Cursor and other clients:** add this to the client's MCP
-     config (Claude Desktop: `claude_desktop_config.json`), replacing
-     `<KOMPL_INSTALL_PATH>` with the absolute path to your Kompl folder.
+| Agent | Setup |
+|---|---|
+| Claude Code | `claude mcp add --scope user kompl-wiki -- node <KOMPL_INSTALL_PATH>/mcp-server/dist/index.js` |
+| Codex (CLI, IDE extension, ChatGPT desktop app) | `codex mcp add kompl-wiki -- node <KOMPL_INSTALL_PATH>/mcp-server/dist/index.js` |
+| Claude Desktop, Cursor, Gemini CLI | the block below in `claude_desktop_config.json`, `~/.cursor/mcp.json` or `~/.gemini/settings.json` |
+| Pi | the block below in `~/.pi/agent/mcp.json`, read by the `pi-mcp-adapter` extension |
+| VS Code | the block below in `.vscode/mcp.json`, with `"servers"` in place of `"mcpServers"` |
+| Hermes Agent | under `mcp_servers:` in `~/.hermes/config.yaml`: `kompl-wiki: { command: node, args: ["<KOMPL_INSTALL_PATH>/mcp-server/dist/index.js"] }` |
 
-   ```json
-   {
-     "mcpServers": {
-       "kompl-wiki": {
-         "type": "stdio",
-         "command": "node",
-         "args": ["<KOMPL_INSTALL_PATH>/mcp-server/dist/index.js"],
-         "env": { "KOMPL_URL": "http://localhost:3000" }
-       }
-     }
-   }
-   ```
+```json
+{
+  "mcpServers": {
+    "kompl-wiki": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["<KOMPL_INSTALL_PATH>/mcp-server/dist/index.js"],
+      "env": { "KOMPL_URL": "http://localhost:3000" }
+    }
+  }
+}
+```
 
-The server exposes four read-only tools: `search_wiki`, `read_page`, `list_pages`
-and `wiki_stats`. `read_page` returns the page with numbered `[n]` citations and
-the matching source list, so your agent can tell you where each claim came from.
-Kompl must be running (`kompl start`) for the tools to respond.
-Not using MCP? The same data is on plain HTTP: `/api/pages/search`,
-`/api/wiki/{page_id}/data` and `/api/wiki/index`.
+> **Pi and Hermes run tools without asking you first.** If you turn on *Let AI
+> agents add sources*, they can add sources and start compiles (which count
+> toward your daily spend cap) on their own. Leave it off unless you're
+> comfortable with that.
+
+**Tools.** All but `add_source` only read. Kompl must be running
+(`kompl start`) for them to answer.
+
+| Tool | What it does |
+|---|---|
+| `search_wiki` | Finds pages by keywords and meaning; without a query, lists pages newest first |
+| `research_topic` | One-call brief on a topic: key pages, their cited lines, one source list numbered across them, disputes, gaps |
+| `read_page` | A page with `[n]` citations, its numbered sources (address and date) and the pages it links to and from |
+| `read_source` | The original text behind a source or a page's citation `[n]`, or just the passages that match a query |
+| `list_sources` | What you've added, searchable by title or address |
+| `recent_changes` | What changed since a date, in one compile, or on one page (with the sections that changed) |
+| `wiki_status` | Size, a running compile, what waits for you, and gaps worth filling |
+| `add_source` | Saves links (up to 5 at a time) or a note and compiles them. Off until you turn it on in **Settings → Connect your AI**; at most 20 a day |
+
+Not using MCP? The same data is on plain HTTP: `/api/pages/search?mode=hybrid`,
+`/api/wiki/research`, `/api/wiki/{page_id}/data`, `/api/sources`,
+`/api/sources/{id}/content`, `/api/wiki/changes`, `/api/wiki/status` and
+`/api/wiki/index`.
 
 > ⚠ **Single-tenant.** There is no multi-user auth. Don't expose your instance to
 > the internet without putting your own auth in front of it.

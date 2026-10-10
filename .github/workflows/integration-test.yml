@@ -116,6 +116,13 @@ jobs:
       - name: Install ripgrep (stage 11d)
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      - name: Set up Node (stage 28 builds and drives the MCP server)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: mcp-server/package-lock.json
+
       - name: Run integration test
         run: bash scripts/integration-test.sh
         env:
