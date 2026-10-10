@@ -3046,9 +3046,10 @@ export function getStaleSources(thresholdDays: number): StaleSourceRow[] {
 // ============================================================================
 
 /**
- * Whether the scheduled lint pass (36h startup hook fired by `kompl start`) is enabled.
- * Defaults to true. When false, lint-pass/route.ts returns early immediately.
- * Manual trigger in settings bypasses this flag.
+ * Legacy setting for the scheduled lint pass that `kompl start` used to fire.
+ * That schedule was retired in v0.4: lint-pass/route.ts runs only when the user
+ * asks, whatever this says. Kept so the settings API, older clients and
+ * backups that carry the row keep working.
  */
 export function getLintEnabled(): boolean {
   return getSetting('lint_enabled') !== '0';

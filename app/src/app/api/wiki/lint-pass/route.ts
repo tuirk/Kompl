@@ -1,8 +1,7 @@
 /**
  * POST /api/wiki/lint-pass
  *
- * The lint engine. Callable from /settings "Run Now" and the 36h kompl start
- * startup hook (cli/src/startup-tasks.ts).
+ * The lint engine behind Settings > Wiki health "Run check".
  *
  * Checks performed:
  *   1. Orphan pages — no inbound or outbound page_links
@@ -12,15 +11,19 @@
  *   4. Dead provenance — provenance rows referencing deleted sources
  *   5. Contradiction detection (LLM-assisted, best-effort) via nlp-service
  *
- * Scheduled callers respect the lint_enabled setting.
- * Pass { manual: true } in the request body to bypass that guard.
+ * Check 5 calls the LLM, so the pass runs only when the user asks for it
+ * ({ manual: true }). The scheduled run that `kompl start` used to fire (at
+ * most once per 36 hours, only from the CLI) was retired in v0.4; older CLIs
+ * still call without `manual` and get { skipped: true }, which they report as
+ * skipped. The lint_enabled setting is kept for old clients and backups but no
+ * longer starts anything.
  *
- * Request: {} | { manual?: boolean }
- * Response: LintResult (+ skipped?: true when lint_enabled=false and manual≠true)
+ * Request: { manual: true } (anything else is skipped)
+ * Response: LintResult, or { skipped: true }
  */
 
 import { NextResponse } from 'next/server';
-import { getCompileModel, getDb, logActivity, getLintEnabled, setLastLintAt } from '../../../../lib/db';
+import { getCompileModel, getDb, logActivity, setLastLintAt } from '../../../../lib/db';
 import { regenerateSavedLinksPage } from '../../../../lib/saved-links';
 import type {
   LintContradiction,
@@ -76,7 +79,8 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => ({})) as { manual?: boolean };
   const isManual = body.manual === true;
 
-  if (!isManual && !getLintEnabled()) {
+  // Only the Run check button starts a pass (see the header comment).
+  if (!isManual) {
     return NextResponse.json({ skipped: true } satisfies Partial<LintResults>);
   }
 

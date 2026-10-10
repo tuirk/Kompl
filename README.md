@@ -177,7 +177,7 @@ Not using MCP? The same data is on plain HTTP: `/api/pages/search`,
 
 | Command | What it does |
 |---|---|
-| `kompl start` | Start Kompl (also runs a lint pass and a local backup if either is more than 36 hours old) |
+| `kompl start` | Start Kompl (also saves a local backup if the last one is more than 36 hours old) |
 | `kompl stop` / `kompl restart` | Stop, or stop and start |
 | `kompl open` | Open the app in your browser |
 | `kompl status` | Health check: app, database, NLP service, vector index |

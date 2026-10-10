@@ -86,11 +86,15 @@ describe('POST /api/wiki/lint-pass', () => {
     expect(details.contradiction_count).toBeUndefined();
   });
 
-  it('skips when lint disabled and not manual', async () => {
-    setLintEnabled(false);
+  it('runs only when the user asks; older CLIs calling without manual are skipped', async () => {
+    // lint_enabled is on (beforeEach): it no longer starts a pass on its own.
     const { res, body } = await postLint({});
     expect(res.ok).toBe(true);
     expect(body.skipped).toBe(true);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled(); // no LLM call
+
+    const manual = await postLint({ manual: true });
+    expect(manual.body.skipped).toBeUndefined();
   });
 
   it('enriches contradiction titles from page pairs', async () => {

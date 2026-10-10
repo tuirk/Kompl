@@ -107,9 +107,6 @@ export default function SettingsPage() {
     deepseek_present: boolean;
   } | null>(null);
 
-  const [lintEnabled, setLintEnabledState] = useState<boolean | null>(null);
-  const [lintSaving, setLintSaving] = useState(false);
-  const [lintSaved, setLintSaved] = useState(false);
   const [lintRunning, setLintRunning] = useState(false);
 
   const [lintLastResult, setLintLastResult] = useState<LintResult | null>(null);
@@ -124,7 +121,6 @@ export default function SettingsPage() {
         auto_approve: boolean;
         related_pages_min_sources: number;
         stale_threshold_days: number;
-        lint_enabled: boolean;
         lint_last_result: Record<string, unknown> | null;
         min_source_chars: number;
         min_draft_chars: number;
@@ -137,7 +133,6 @@ export default function SettingsPage() {
         setAutoApprove(data.auto_approve);
         setRelatedMinSources(data.related_pages_min_sources);
         setStaleThreshold(data.stale_threshold_days);
-        setLintEnabledState(data.lint_enabled);
         setLintLastResultRaw(data.lint_last_result);
         setLintLastResult(normalizeLintResult(data.lint_last_result));
         setMinSourceChars(data.min_source_chars);
@@ -248,19 +243,6 @@ export default function SettingsPage() {
     } finally {
       setImportLoading(false);
     }
-  }
-
-  async function toggleLint() {
-    if (lintEnabled === null || lintSaving) return;
-    const newVal = !lintEnabled;
-    setLintSaving(true);
-    setLintSaved(false);
-    const _ok = await saveSettingToApi({ lint_enabled: newVal });
-    if (!_ok) { setLintSaving(false); showToast(toUserMessage("settings_save_failed"), "error"); return; }
-    setLintEnabledState(newVal);
-    setLintSaving(false);
-    setLintSaved(true);
-    setTimeout(() => setLintSaved(false), 2000);
   }
 
   async function runLintNow() {
@@ -673,34 +655,23 @@ export default function SettingsPage() {
               badge="Beta"
               summary={
                 <>
-                  Scans for orphan pages, stale summaries, dead provenance links,
-                  entity names with no wiki page (3+ sources mention them), and
-                  contradictions between pages. Runs when you click Run Now, or
-                  automatically at startup if lint hasn&apos;t run in the last 36 hours
-                  (when lint is enabled).
+                  Checks the wiki for orphan pages, stale summaries, broken source references,
+                  entities mentioned by three or more sources that have no page yet, and
+                  contradictions between pages. The contradiction check uses your AI model, so
+                  checks run only when you start one.
                 </>
               }
               control={
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
-                  <button
-                    type="button"
-                    onClick={() => void runLintNow()}
-                    disabled={lintRunning}
-                    className="btn-outline"
-                    style={{ padding: '0.45rem 1rem', borderRadius: 20, fontSize: '0.85rem' }}
-                  >
-                    {lintRunning ? 'Running…' : 'Run Now'}
-                  </button>
-                  <TogglePill
-                    label="Scheduled wiki health checks"
-                    value={lintEnabled}
-                    onClick={() => void toggleLint()}
-                    disabled={lintSaving}
-                    defaultHint="ON"
-                  />
-                </div>
+                <button
+                  type="button"
+                  onClick={() => void runLintNow()}
+                  disabled={lintRunning}
+                  className="btn-outline"
+                  style={{ padding: '0.45rem 1rem', borderRadius: 20, fontSize: '0.85rem' }}
+                >
+                  {lintRunning ? 'Running…' : 'Run check'}
+                </button>
               }
-              saved={lintSaved ? 'Saved.' : null}
             >
               {(lintLastResult || lintRunning) && (
                 <div style={{ padding: '0 1.5rem 1.25rem', borderTop: '1px solid var(--border)' }}>

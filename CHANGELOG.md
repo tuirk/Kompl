@@ -137,6 +137,13 @@ ship with a `migrate.py` step that runs at boot.
 
 ### Changed
 
+- **Wiki health checks run when you ask.** Settings → Wiki health has a
+  **Run check** button and no longer a "Scheduled wiki health checks"
+  switch. The schedule only ever ran from `kompl start`, at most once per 36
+  hours, and its contradiction check spends LLM credit without asking.
+  `kompl start` still saves a local backup; older CLIs that still request a
+  check get it skipped. The `lint_enabled` setting is kept for older clients
+  and backups.
 - **Settings:** **Auto-approve wiki changes** moved into Advanced tuning, and
   the Review section, which only held that switch, is gone.
 - **Page history keeps the last 2 versions.** Each time a page is saved,
@@ -188,6 +195,10 @@ ship with a `migrate.py` step that runs at boot.
 
 ### Fixed
 
+- **CLI tests no longer overwrite your backup:** the `kompl start` tests ran
+  against the real home folder and could replace
+  `~/.kompl/backups/kompl-backup.kompl.zip` with an empty file. They now use a
+  temporary folder.
 - **CLI on a fresh clone:** `cli/package.json` gains a `prepare` script, so
   `npm install` (run by `setup.js` and `kompl update`) builds `dist/`.
   Before this, `kompl` failed with `Cannot find module '../dist/index.js'`
