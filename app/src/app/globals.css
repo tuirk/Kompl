@@ -633,3 +633,14 @@ article img {
     transition: none;
   }
 }
+
+/* =============================================================================
+   Knowledge graph legend (app/wiki/graph/GraphLegend.tsx)
+   Each toggle is a visually hidden checkbox inside its row, so the row shows
+   the keyboard focus.
+   ============================================================================= */
+
+.graph-legend-row:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

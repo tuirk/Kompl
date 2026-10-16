@@ -702,63 +702,6 @@ export function insertPageLink(sourcePageId: string, targetPageId: string, linkT
     .run(sourcePageId, targetPageId, linkType);
 }
 
-/** Graph data for /api/wiki/graph — all pages as nodes, provenance as edges. */
-export interface GraphNode {
-  id: string;
-  label: string;
-  group: string;    // page_type
-  category: string;
-  source_count: number;
-  summary?: string | null;
-  last_updated?: string;
-  archived?: boolean;  // true when all backing sources are archived (muted styling)
-}
-
-export interface GraphLink {
-  source: string;
-  target: string;
-  type: string;
-}
-
-export interface GraphData {
-  nodes: GraphNode[];
-  links: GraphLink[];
-}
-
-export function getWikiGraph(includeArchived = false): GraphData {
-  const db = openDb();
-  const allNodes = db
-    .prepare(
-      `SELECT page_id AS id, title AS label, page_type AS "group",
-              COALESCE(category, 'Uncategorized') AS category,
-              source_count, summary, last_updated
-         FROM pages
-        ${includeArchived ? '' : "WHERE page_type != 'archived'"}`
-    )
-    .all() as GraphNode[];
-
-  const archivedIds = getAllArchivedPageIds();
-  let nodes: GraphNode[];
-  if (includeArchived) {
-    // Mark archived nodes for muted styling; include all
-    nodes = allNodes.map((n) => archivedIds.has(n.id) ? { ...n, archived: true } : n);
-  } else {
-    nodes = allNodes.filter((n) => !archivedIds.has(n.id));
-  }
-
-  const nodeIdSet = new Set(nodes.map((n) => n.id));
-  const allLinks = db
-    .prepare(
-      `SELECT source_page_id AS source, target_page_id AS target, link_type AS type
-         FROM page_links`
-    )
-    .all() as GraphLink[];
-  // Only include links where both endpoints are visible nodes
-  const links = allLinks.filter((l) => nodeIdSet.has(l.source) && nodeIdSet.has(l.target));
-
-  return { nodes, links };
-}
-
 /** Count of compiled wiki pages. Used by /api/compile/extract to determine wiki_exists. */
 export function getPageCount(): number {
   const row = openDb()

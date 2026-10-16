@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
+    "d3-force-3d": "3.0.6",
     "jszip": "^3.10.1",
     "lucide-react": "^1.33.0",
     "marked": "^12.0.0",

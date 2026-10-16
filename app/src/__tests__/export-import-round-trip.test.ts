@@ -24,11 +24,11 @@ import {
   getAllPageLinks,
   getAllPagePlans,
   getAllRelationshipMentions,
-  getWikiGraph,
   insertPageLink,
   insertEntityMentions,
   insertRelationshipMentions,
 } from '../lib/db';
+import { getWikiGraph } from '../lib/wiki-graph';
 import {
   seedCompileProgress,
   seedPage,
@@ -80,9 +80,9 @@ describe('page_links export shape', () => {
 
     const graph = getWikiGraph();
     expect(graph.links).toHaveLength(1);
-    expect(graph.links[0].source).toBe(alpha);
-    expect(graph.links[0].target).toBe(beta);
-    expect(graph.links[0].type).toBe('wikilink');
+    // One line per page pair, ends in id order.
+    const [first, second] = [alpha, beta].sort();
+    expect(graph.links[0]).toMatchObject({ source: first, target: second, wikilink: true, relations: [] });
   });
 });
 

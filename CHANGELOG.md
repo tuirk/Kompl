@@ -118,6 +118,24 @@ ship with a `migrate.py` step that runs at boot.
   page. The page JSON behind MCP `read_page` (`/api/wiki/[page_id]/data`)
   gains `connections` and keeps `links` and `backlinks`; the same data is at
   `GET /api/wiki/[page_id]/connections`. The Saved Links page has no card.
+- **The graph is a topic map.** Pages are coloured and grouped into islands
+  by category, with each island's name over it when zoomed out; islands
+  that share connections sit side by side, and the layout is the same on
+  every visit. Lines show typed relations only, one per pair of pages,
+  coloured by relation (the legend has the key) and wider when more sources
+  say so. Hover a page to light up its neighbours. Click a page for its
+  type, category, summary and connections grouped by relation, each opening
+  to its evidence; click a line to see why the two pages connect: each
+  relation, its source count and the sentences behind it, linked to their
+  sources. The legend hides or shows each topic and page type, and has
+  toggles for source pages, "related to" lines, plain links and archived
+  pages (all off by default). The header counts the pages and connections
+  on screen. Page names never cover another name, and cover a page only
+  when a topic's main page has nowhere else to go; the side panel opens
+  over the map without moving it. The old "Relatedness" figure is gone, and
+  the Saved Links page no longer appears on the graph. `GET /api/wiki/graph`
+  now returns one line per page pair (`relations`, `wikilink`, `weight`),
+  each page's `degree`, and `missing`; only the graph page reads it.
 
 ### Wiki readability
 
