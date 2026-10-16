@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -731,6 +731,26 @@ def migrate():
         }
         if "draft_rules" not in plan_cols:
             conn.execute("ALTER TABLE page_plans ADD COLUMN draft_rules TEXT")
+
+    if current < 28:
+        print("  applying migration v28 (relationship_mentions.description)...")
+        # Evidence for typed connections. The extract LLM returns a
+        # one-sentence description with every relationship ("Bitcoin uses
+        # proof-of-work consensus."); before v28 it was dropped at insert and
+        # only survived in extractions.llm_output. The wiki's connections
+        # card, graph and MCP tools show it next to the relation.
+        #   description  the LLM's sentence, trimmed and clipped to 300 chars
+        #                (app/src/lib/relation-rows.ts); NULL = not yet filled
+        # Additive only. Existing rows stay NULL here and are filled once at
+        # app boot from the stored extractions, with no LLM calls
+        # (app/src/lib/relation-backfill.ts); new extractions write it
+        # directly.
+        rel_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(relationship_mentions)").fetchall()
+        }
+        if "description" not in rel_cols:
+            conn.execute("ALTER TABLE relationship_mentions ADD COLUMN description TEXT")
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

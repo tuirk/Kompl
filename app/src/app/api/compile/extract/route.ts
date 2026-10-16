@@ -46,6 +46,7 @@ import {
   updateSourceTitle,
 } from '../../../../lib/db';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
+import { buildRelationRows } from '../../../../lib/relation-rows';
 
 // "Garbage" source titles — what we get when MarkItDown can't pull a title
 // from PDF metadata and the cascade falls through to the filename stub.
@@ -408,7 +409,7 @@ export async function POST(request: Request) {
     const llm = llmOutput as {
       entities?: Array<{ name?: string; type?: string }>;
       concepts?: Array<{ name?: string }>;
-      relationships?: Array<{ from_entity?: string; to?: string; type?: string }>;
+      relationships?: unknown;
     };
     const mentionRows: Array<{ canonical_name: string; source_id: string; entity_type: string | null }> = [];
     const seen = new Set<string>();
@@ -436,29 +437,11 @@ export async function POST(request: Request) {
     }
     insertEntityMentions(mentionRows);
 
-    // Relationship mentions. Direction-agnostic types (competes_with,
-    // contradicts) are stored with from/to sorted lowercase so "A vs B" and
-    // "B vs A" share one PK. Directional types keep their natural order.
-    const DIRECTION_AGNOSTIC = new Set(['competes_with', 'contradicts']);
-    const relRows: Array<{
-      from_canonical: string;
-      to_canonical: string;
-      relationship_type: string;
-      source_id: string;
-    }> = [];
-    for (const rel of llm.relationships ?? []) {
-      const fromRaw = (rel.from_entity ?? '').trim();
-      const toRaw = (rel.to ?? '').trim();
-      const type = (rel.type ?? '').trim();
-      if (!fromRaw || !toRaw || !type) continue;
-      let from = pin(fromRaw);
-      let to = pin(toRaw);
-      if (DIRECTION_AGNOSTIC.has(type) && from.toLowerCase() > to.toLowerCase()) {
-        [from, to] = [to, from];
-      }
-      relRows.push({ from_canonical: from, to_canonical: to, relationship_type: type, source_id });
-    }
-    insertRelationshipMentions(relRows);
+    // Relationship mentions (lib/relation-rows.ts). Direction-agnostic types
+    // (competes_with, contradicts) are stored with from/to sorted lowercase so
+    // "A vs B" and "B vs A" share one PK; directional types keep their natural
+    // order. Each row carries the LLM's one-sentence description (v28).
+    insertRelationshipMentions(buildRelationRows(llm.relationships, source_id, pin));
 
     logActivity('extraction_complete', {
       source_id,

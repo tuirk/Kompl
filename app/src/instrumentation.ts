@@ -100,6 +100,34 @@ async function resyncWikilinksOnce(): Promise<void> {
 }
 
 /**
+ * Fill relationship_mentions.description (schema v28) once from the stored
+ * extractions, so relations extracted before v28 show the LLM's sentence as
+ * well. No LLM calls; only rows still NULL are written. Bump
+ * RELATION_BACKFILL_VERSION when src/lib/relation-backfill.ts learns to
+ * match rows it used to miss.
+ */
+const RELATION_BACKFILL_VERSION = '1';
+
+async function backfillRelationsOnce(): Promise<void> {
+  if (process.env.NEXT_RUNTIME === 'edge') return;
+
+  const { getDb, getSetting, setSetting } = await import('./lib/db');
+  if (getSetting('relation_descriptions_backfill_version') === RELATION_BACKFILL_VERSION) return;
+
+  const { backfillRelationDescriptions } = await import('./lib/relation-backfill');
+  const result = backfillRelationDescriptions(getDb());
+  setSetting('relation_descriptions_backfill_version', RELATION_BACKFILL_VERSION);
+  console.log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      event: 'relation_descriptions_backfill_done',
+      version: RELATION_BACKFILL_VERSION,
+      ...result,
+    })
+  );
+}
+
+/**
  * A restart ends any bulk page update (its state lived in the old process),
  * so its CLAUDE.md rule-7 flag goes back to off; the next run needs a new
  * confirmation in Settings > Wiki health (lib/page-upgrade.ts).
@@ -155,6 +183,20 @@ export async function register(): Promise<void> {
       JSON.stringify({
         ts: new Date().toISOString(),
         event: 'wikilinks_resync_failed',
+        error: msg,
+      })
+    );
+  }
+
+  try {
+    await backfillRelationsOnce();
+  } catch (err) {
+    // Non-fatal: relations show without their sentence; the next boot retries.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: 'relation_descriptions_backfill_failed',
         error: msg,
       })
     );

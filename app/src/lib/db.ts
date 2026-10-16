@@ -996,7 +996,10 @@ export function getSourceIdsMentioning(canonicalName: string): string[] {
  * Bulk insert (from, to, type, source_id) rows into relationship_mentions.
  * Caller is responsible for normalizing from/to order for direction-agnostic
  * relationships (competes_with, contradicts) so the PK collapses "A vs B"
- * and "B vs A" to one row.
+ * and "B vs A" to one row (lib/relation-rows.ts does both).
+ *
+ * An existing row keeps its other columns (first_seen_at included); only its
+ * description (v28) is refreshed, and only by a non-null one.
  */
 export function insertRelationshipMentions(
   mentions: Array<{
@@ -1004,17 +1007,28 @@ export function insertRelationshipMentions(
     to_canonical: string;
     relationship_type: string;
     source_id: string;
+    description?: string | null;
   }>
 ): void {
   if (mentions.length === 0) return;
   const db = openDb();
   const stmt = db.prepare(
-    `INSERT OR IGNORE INTO relationship_mentions
-       (from_canonical, to_canonical, relationship_type, source_id)
-     VALUES (@from_canonical, @to_canonical, @relationship_type, @source_id)`
+    `INSERT INTO relationship_mentions
+       (from_canonical, to_canonical, relationship_type, source_id, description)
+     VALUES (@from_canonical, @to_canonical, @relationship_type, @source_id, @description)
+     ON CONFLICT(from_canonical, to_canonical, relationship_type, source_id)
+       DO UPDATE SET description = COALESCE(excluded.description, description)`
   );
   db.transaction((rows: typeof mentions) => {
-    for (const row of rows) stmt.run(row);
+    for (const row of rows) {
+      stmt.run({
+        from_canonical: row.from_canonical,
+        to_canonical: row.to_canonical,
+        relationship_type: row.relationship_type,
+        source_id: row.source_id,
+        description: row.description ?? null,
+      });
+    }
   })(mentions);
 }
 
@@ -1367,12 +1381,43 @@ export function normalizeSessionMentionsToCanonical(
        WHERE to_canonical = ? COLLATE NOCASE
          AND source_id IN (${placeholders})`
   );
+  // The REPLACE deletes the canonical row the alias row collides with; when
+  // the alias row has no description (v28), first copy the canonical row's
+  // over, so the relation keeps its sentence.
+  const keepRelDescriptionFrom = db.prepare(
+    `UPDATE relationship_mentions SET description = (
+        SELECT c.description FROM relationship_mentions c
+         WHERE c.source_id = relationship_mentions.source_id
+           AND c.relationship_type = relationship_mentions.relationship_type
+           AND c.from_canonical = ? COLLATE NOCASE
+           AND c.to_canonical = relationship_mentions.to_canonical
+           AND c.description IS NOT NULL
+           AND c.rowid != relationship_mentions.rowid)
+       WHERE from_canonical = ? COLLATE NOCASE
+         AND description IS NULL
+         AND source_id IN (${placeholders})`
+  );
+  const keepRelDescriptionTo = db.prepare(
+    `UPDATE relationship_mentions SET description = (
+        SELECT c.description FROM relationship_mentions c
+         WHERE c.source_id = relationship_mentions.source_id
+           AND c.relationship_type = relationship_mentions.relationship_type
+           AND c.to_canonical = ? COLLATE NOCASE
+           AND c.from_canonical = relationship_mentions.from_canonical
+           AND c.description IS NOT NULL
+           AND c.rowid != relationship_mentions.rowid)
+       WHERE to_canonical = ? COLLATE NOCASE
+         AND description IS NULL
+         AND source_id IN (${placeholders})`
+  );
 
   db.transaction(() => {
     for (const { alias, canonical } of aliasToCanonical) {
       if (alias.toLowerCase() === canonical.toLowerCase()) continue;
       updEntity.run(canonical, alias, ...sourceIds);
+      keepRelDescriptionFrom.run(canonical, alias, ...sourceIds);
       updRelFrom.run(canonical, alias, ...sourceIds);
+      keepRelDescriptionTo.run(canonical, alias, ...sourceIds);
       updRelTo.run(canonical, alias, ...sourceIds);
     }
   })();
@@ -3589,12 +3634,15 @@ export interface RelationshipMentionRow {
   relationship_type: string;
   source_id: string;
   first_seen_at: string;
+  /** v28; null until filled (lib/relation-backfill.ts). */
+  description: string | null;
 }
 
 export function getAllRelationshipMentions(): RelationshipMentionRow[] {
   return openDb()
     .prepare(
-      `SELECT from_canonical, to_canonical, relationship_type, source_id, first_seen_at
+      `SELECT from_canonical, to_canonical, relationship_type, source_id, first_seen_at,
+              description
          FROM relationship_mentions
         ORDER BY first_seen_at`
     )

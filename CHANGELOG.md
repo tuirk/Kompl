@@ -5,7 +5,7 @@ All notable changes to Kompl are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The application surface (Next.js API, CLI, MCP server, settings) follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The SQLite schema
-uses a separate monotonic version (currently `v27`); breaking schema changes
+uses a separate monotonic version (currently `v28`); breaking schema changes
 ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
@@ -94,6 +94,18 @@ ship with a `migrate.py` step that runs at boot.
 - **MCP SDK 1.32.1** (fixes an advisory affecting 1.12–1.30) with refreshed
   dependencies; `npm audit` reports none. The server has its own tests and CI
   job.
+
+### Knowledge graph
+
+- **Relations keep their evidence.** Each typed relation the extractor finds
+  between two names (uses, part of, created by, competes with, contradicts,
+  related to) now stores its one-sentence explanation, e.g. "Bitcoin uses
+  proof-of-work consensus." Before, that sentence was dropped when the
+  relation was saved. Schema v27 → v28 adds `relationship_mentions.description`.
+  On the first start after upgrading, existing relations get their sentence
+  from the stored extractions (no LLM calls; only empty ones are filled), and
+  restoring an older backup fills them the same way. Backups carry the
+  column.
 
 ### Wiki readability
 

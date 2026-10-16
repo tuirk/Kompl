@@ -9,6 +9,8 @@ import { NextResponse } from 'next/server';
 import { getDb, DATA_ROOT, logActivity, safePreviousContentPath } from '@/lib/db';
 import { isBackedUpSetting } from '@/lib/backup-settings';
 import { sanitizeDraftRules } from '@/lib/draft-rules';
+import { backfillRelationDescriptions } from '@/lib/relation-backfill';
+import { cleanRelationDescription } from '@/lib/relation-rows';
 import { isSafeId } from '@/lib/safe-paths';
 import { resyncAllWikilinks } from '@/lib/wikilinks';
 
@@ -291,16 +293,20 @@ export async function POST(request: Request) {
     }
 
     for (const r of relationshipMentions) {
+      // description exists from schema v28; older backups import it as NULL
+      // and the backfill below fills it from the restored extractions.
       db.prepare(
         `INSERT OR IGNORE INTO relationship_mentions
-           (from_canonical, to_canonical, relationship_type, source_id, first_seen_at)
-         VALUES (?, ?, ?, ?, ?)`
+           (from_canonical, to_canonical, relationship_type, source_id, first_seen_at,
+            description)
+         VALUES (?, ?, ?, ?, ?, ?)`
       ).run(
         r.from_canonical as string,
         r.to_canonical as string,
         r.relationship_type as string,
         r.source_id as string,
-        r.first_seen_at as string
+        r.first_seen_at as string,
+        cleanRelationDescription(r.description)
       );
     }
 
@@ -416,6 +422,15 @@ export async function POST(request: Request) {
   // [[Target|label]] links were once dropped); import only runs on an empty
   // wiki, so this touches exactly the restored pages.
   resyncAllWikilinks(db);
+
+  // Relations from a backup older than schema v28 carry no description; fill
+  // them from the restored extractions (no LLM calls). Non-fatal: the data
+  // is already committed, and the relations still show without a sentence.
+  try {
+    backfillRelationDescriptions(db);
+  } catch (err) {
+    console.error('[import] relation description backfill failed:', err instanceof Error ? err.message : err);
+  }
 
   // -------------------------------------------------------------------------
   // Phase 3: Vector restore or backfill + activity log
