@@ -612,9 +612,24 @@ article img {
 .wiki-rp-more[open] .wiki-rp-all {
   display: none;
 }
+/* A connection's evidence toggle (ConnectionsPanel.tsx): a chevron beside the row. */
+.wiki-rp-why > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.wiki-rp-why > summary::-webkit-details-marker {
+  display: none;
+}
+.wiki-rp-why > summary svg {
+  transition: transform var(--transition-fast);
+}
+.wiki-rp-why[open] > summary svg {
+  transform: rotate(180deg);
+}
 @media (prefers-reduced-motion: reduce) {
   .wiki-rp-item,
-  .wiki-rp-toc a {
+  .wiki-rp-toc a,
+  .wiki-rp-why > summary svg {
     transition: none;
   }
 }

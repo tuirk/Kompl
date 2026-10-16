@@ -2,7 +2,8 @@
  * GET /api/wiki/[page_id]/data — the page JSON behind MCP read_page. Pins
  * what agents rely on: [n] citations numbered like the page view (same body
  * pipeline, so an empty Contradictions section is dropped the same way),
- * sources with address and date, and the page's links and backlinks.
+ * sources with address and date, the page's connections, and its links and
+ * backlinks (kept for MCP builds that predate connections).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -69,6 +70,45 @@ describe('page data', () => {
     insertPageLink('satoshi', 'bitcoin', 'wikilink');
 
     const { body } = await pageData('bitcoin');
+    expect(body.links).toEqual([{ page_id: 'pow', title: 'Proof of work' }]);
+    expect(body.backlinks).toEqual([{ page_id: 'satoshi', title: 'Satoshi Nakamoto' }]);
+  });
+
+  it('adds the connections card next to the unchanged links and backlinks', async () => {
+    handle = setupTestDb();
+    const db = handle.db;
+    const paper = seedSource(db, { source_id: 'src-paper', title: 'Bitcoin paper' });
+    seedPage(db, { page_id: 'bitcoin', title: 'Bitcoin' });
+    seedPage(db, { page_id: 'pow', title: 'Proof of work', page_type: 'concept' });
+    seedPage(db, { page_id: 'satoshi', title: 'Satoshi Nakamoto' });
+    insertPageLink('bitcoin', 'pow', 'wikilink');
+    insertPageLink('satoshi', 'bitcoin', 'wikilink');
+    db.prepare(
+      `INSERT INTO relationship_mentions (from_canonical, to_canonical, relationship_type, source_id, description)
+       VALUES ('Bitcoin', 'Proof of work', 'uses', ?, 'Bitcoin uses proof of work.')`
+    ).run(paper);
+
+    const { body } = await pageData('bitcoin');
+    expect(body.connections).toEqual({
+      groups: [
+        {
+          label: 'Uses',
+          items: [
+            {
+              page_id: 'pow',
+              title: 'Proof of work',
+              type: 'uses',
+              direction: 'out',
+              source_count: 1,
+              evidence: [
+                { source_id: paper, source_title: 'Bitcoin paper', source_archived: false, sentence: 'Bitcoin uses proof of work.' },
+              ],
+            },
+          ],
+        },
+      ],
+      linked_only: [{ page_id: 'satoshi', title: 'Satoshi Nakamoto' }],
+    });
     expect(body.links).toEqual([{ page_id: 'pow', title: 'Proof of work' }]);
     expect(body.backlinks).toEqual([{ page_id: 'satoshi', title: 'Satoshi Nakamoto' }]);
   });

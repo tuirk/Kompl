@@ -3,6 +3,7 @@ import { getBacklinks, getLinkedPages, getPage, readPageMarkdown } from '@/lib/d
 import { citationsToText } from '@/lib/citations';
 import { getNumberedSources, getSourceTitleSet } from '@/lib/page-sources';
 import { displayPageBody } from '@/lib/page-sections';
+import { getPageConnections } from '@/lib/relations';
 
 /** GET /api/wiki/[page_id]/data — full page JSON for the Kompl MCP server.
  *
@@ -10,9 +11,12 @@ import { displayPageBody } from '@/lib/page-sections';
  *  legacy wrappers removed) with source citations as plain [n] markers;
  *  `sources` is the matching numbered list, one entry per source (cited
  *  sources first, in citation order), with its address and date, so the
- *  numbers agree with the page view. `links` are the pages this page links
- *  to and `backlinks` the pages linking here. Page metadata that the
- *  frontmatter duplicates is in the top-level fields. */
+ *  numbers agree with the page view. `connections` is the page's connections
+ *  card (lib/relations.ts getPageConnections: typed relations with their
+ *  evidence, then the other wikilinked pages). `links` are the pages this
+ *  page links to and `backlinks` the pages linking here; both stay for MCP
+ *  builds that predate `connections`. Page metadata that the frontmatter
+ *  duplicates is in the top-level fields. */
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ page_id: string }> }
@@ -46,6 +50,7 @@ export async function GET(
     last_updated: page.last_updated,
     content,
     sources,
+    connections: getPageConnections(page_id),
     links: getLinkedPages(page_id),
     backlinks: getBacklinks(page_id)
       .filter((p) => p.page_id !== page_id)

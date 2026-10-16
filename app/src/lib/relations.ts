@@ -18,9 +18,15 @@ export { getRelationEdges, type EdgeRelation, type MissingPage, type RelationEdg
 /** Evidence entries kept per connection: sentences first, newest first. */
 const EVIDENCE_PER_ITEM = 3;
 
+/**
+ * One source behind a connection. Archived sources stay (they still count in
+ * source_count and the page's numbered list); source_archived lets the card
+ * mark them.
+ */
 export interface RelationEvidence {
   source_id: string;
   source_title: string;
+  source_archived: boolean;
   sentence: string | null;
 }
 
@@ -100,7 +106,7 @@ export function getPageConnections(pageId: string): PageConnections {
     }
   }
 
-  const sourceTitle = db.prepare('SELECT title FROM sources WHERE source_id = ?');
+  const sourceRow = db.prepare('SELECT title, status FROM sources WHERE source_id = ?');
   const byLabel = new Map<string, ConnectionItem[]>();
   for (const { item, sentences } of items.values()) {
     item.source_count = sentences.size;
@@ -108,8 +114,10 @@ export function getPageConnections(pageId: string): PageConnections {
     const ranked = [...all.filter(([, s]) => s !== null), ...all.filter(([, s]) => s === null)];
     for (const [source_id, sentence] of ranked) {
       if (item.evidence.length >= EVIDENCE_PER_ITEM) break;
-      const source = sourceTitle.get(source_id) as { title: string } | undefined;
-      if (source) item.evidence.push({ source_id, source_title: source.title, sentence });
+      const source = sourceRow.get(source_id) as { title: string; status: string | null } | undefined;
+      if (source) {
+        item.evidence.push({ source_id, source_title: source.title, source_archived: source.status === 'archived', sentence });
+      }
     }
     const label = relationLabel(item.type, item.direction);
     byLabel.set(label, [...(byLabel.get(label) ?? []), item]);

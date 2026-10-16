@@ -106,6 +106,18 @@ ship with a `migrate.py` step that runs at boot.
   from the stored extractions (no LLM calls; only empty ones are filled), and
   restoring an older backup fills them the same way. Backups carry the
   column.
+- **Connections card on every page.** The right panel's "Linked from" list
+  becomes "Connections": the page's typed relations grouped by label (Part
+  of, Includes, Created by, Created, Uses, Used by, Competes with,
+  Contradicts, then "Related to", which shows 3 rows before "Show all"),
+  each with how many sources say so. Names with no page yet are listed and
+  marked. The arrow beside a connection opens the sentences that explain it,
+  each linking to its source; archived sources are marked "(archived)".
+  Pages linked either way with no typed relation follow under "Also linked".
+  Relations written with an alias of the page (e.g. "BTC") count for the
+  page. The page JSON behind MCP `read_page` (`/api/wiki/[page_id]/data`)
+  gains `connections` and keeps `links` and `backlinks`; the same data is at
+  `GET /api/wiki/[page_id]/connections`. The Saved Links page has no card.
 
 ### Wiki readability
 
@@ -251,9 +263,8 @@ ship with a `migrate.py` step that runs at boot.
   cleared or left. While the NLP service is still loading its model, results
   come from keyword matches alone.
 - **Wiki right panel restyled to match the sidebar:** On this page,
-  Disputes, Linked from (the first 8, then Show all), You might also read,
-  and View original source on source notes, in readable 14px rows with
-  hover and keyboard-focus states.
+  Disputes, Connections, You might also read, and View original source on
+  source notes, in readable 14px rows with hover and keyboard-focus states.
 - **Wiki health checks run when you ask.** Settings → Wiki health has a
   **Run check** button and no longer a "Scheduled wiki health checks"
   switch. The schedule only ever ran from `kompl start`, at most once per 36

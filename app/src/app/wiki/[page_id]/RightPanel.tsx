@@ -1,8 +1,9 @@
 /**
  * The wiki article's right panel, below "On this page" (components/WikiToc):
- * Disputes, Linked from, You might also read and, for source notes, the
- * original. Server components, laid out like the left sidebar: rows that tint
- * on hover and show a focus ring for the keyboard, section labels with counts.
+ * Disputes, Connections (./ConnectionsPanel.tsx, built from the pieces
+ * exported here), You might also read and, for source notes, the original.
+ * Server components, laid out like the left sidebar: rows that tint on hover
+ * and show a focus ring for the keyboard, section labels with counts.
  * Colours and hover live in globals.css (.wiki-rp-*).
  */
 
@@ -14,12 +15,10 @@ import type { PageDispute } from '../../../lib/page-disputes';
 import type { NumberedSource } from '../../../lib/page-sources';
 
 const APP_URL = process.env.APP_URL ?? 'http://app:3000';
-/** "Linked from" rows shown before "Show all". */
-const LINKED_FROM_VISIBLE = 8;
 /** The panel's own API reads; never hold the page longer. */
 const FETCH_TIMEOUT_MS = 3_000;
 
-const ROW: CSSProperties = {
+export const ROW: CSSProperties = {
   display: 'block',
   padding: '4px 8px',
   borderRadius: 6,
@@ -27,8 +26,8 @@ const ROW: CSSProperties = {
   lineHeight: '20px',
   textDecoration: 'none',
 };
-const TRUNCATE: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
-const NOTE: CSSProperties = { display: 'block', fontSize: 12, lineHeight: '17px', color: 'var(--fg-dim)' };
+export const TRUNCATE: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+export const NOTE: CSSProperties = { display: 'block', fontSize: 12, lineHeight: '17px', color: 'var(--fg-dim)' };
 const ICON: CSSProperties = { flexShrink: 0, marginTop: 3 };
 
 export function PanelSection({ label, count, children }: { label: string; count?: number; children: ReactNode }) {
@@ -46,7 +45,7 @@ export function PanelSection({ label, count, children }: { label: string; count?
   );
 }
 
-function PageRow({ href, title }: { href: string; title: string }) {
+export function PageRow({ href, title }: { href: string; title: string }) {
   return (
     <Link href={href} className="wiki-rp-item" title={title} style={{ ...ROW, ...TRUNCATE }}>
       {title}
@@ -139,36 +138,6 @@ export async function DisputesPanel({
           </div>
         );
       })}
-    </PanelSection>
-  );
-}
-
-/** Pages that link here: the first few, the rest behind "Show all". */
-export function LinkedFrom({ pages }: { pages: ReadonlyArray<{ page_id: string; title: string }> }) {
-  const visible = pages.slice(0, LINKED_FROM_VISIBLE);
-  const rest = pages.slice(LINKED_FROM_VISIBLE);
-  return (
-    <PanelSection label="Linked from" count={pages.length}>
-      {pages.length === 0 ? (
-        <p style={{ ...NOTE, margin: 0, padding: '0 8px' }}>No pages link here yet.</p>
-      ) : (
-        <>
-          {visible.map((p) => (
-            <PageRow key={p.page_id} href={`/wiki/${p.page_id}`} title={p.title} />
-          ))}
-          {rest.length > 0 && (
-            <details className="wiki-rp-more">
-              <summary className="wiki-rp-item" style={{ ...ROW, fontSize: 13, color: 'var(--accent)' }}>
-                <span className="wiki-rp-all">Show all {pages.length}</span>
-                <span className="wiki-rp-less">Show fewer</span>
-              </summary>
-              {rest.map((p) => (
-                <PageRow key={p.page_id} href={`/wiki/${p.page_id}`} title={p.title} />
-              ))}
-            </details>
-          )}
-        </>
-      )}
     </PanelSection>
   );
 }

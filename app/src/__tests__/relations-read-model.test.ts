@@ -119,9 +119,9 @@ describe('getPageConnections', () => {
     expect(uses).toHaveLength(1);
     expect(uses[0]).toMatchObject({ page_id: 'pow', title: 'Proof of work', source_count: 4, direction: 'out' });
     expect(uses[0].evidence).toEqual([
-      { source_id: 'src-4', source_title: 'Source 4', sentence: 'Satoshi coin relies on PoW.' },
-      { source_id: 'src-3', source_title: 'Source 3', sentence: 'Mining is proof of work.' },
-      { source_id: 'src-1', source_title: 'Source 1', sentence: 'Bitcoin uses proof of work.' },
+      { source_id: 'src-4', source_title: 'Source 4', source_archived: false, sentence: 'Satoshi coin relies on PoW.' },
+      { source_id: 'src-3', source_title: 'Source 3', source_archived: false, sentence: 'Mining is proof of work.' },
+      { source_id: 'src-1', source_title: 'Source 1', source_archived: false, sentence: 'Bitcoin uses proof of work.' },
     ]);
   });
 
@@ -181,6 +181,31 @@ describe('getPageConnections', () => {
         { source: 'bitcoin', target: 'pow', relations: [{ type: 'uses', direction: 'out', source_count: 1 }], wikilink: false, weight: 1 },
       ]);
     }
+  });
+
+  it('keeps evidence from an archived source and flags it', () => {
+    handle = setupTestDb();
+    const db = handle.db;
+    seedSource(db, { source_id: 'src-live', title: 'Live source' });
+    seedSource(db, { source_id: 'src-old', title: 'Old source' });
+    seedPage(db, { page_id: 'bitcoin', title: 'Bitcoin' });
+    seedPage(db, { page_id: 'pow', title: 'Proof of work' });
+    seedProvenance(db, 'bitcoin', 'src-live');
+    seedProvenance(db, 'bitcoin', 'src-old');
+    const rel = db.prepare(
+      `INSERT INTO relationship_mentions (from_canonical, to_canonical, relationship_type, source_id, description, first_seen_at)
+       VALUES ('Bitcoin', 'Proof of work', 'uses', ?, ?, ?)`
+    );
+    rel.run('src-live', 'Bitcoin uses proof of work.', '2026-01-01 00:00:00');
+    rel.run('src-old', 'Miners run proof of work.', '2026-01-02 00:00:00');
+    setSourceStatus('src-old', 'archived');
+
+    const [item] = getPageConnections('bitcoin').groups[0].items;
+    expect(item).toMatchObject({ page_id: 'pow', source_count: 2 });
+    expect(item.evidence).toEqual([
+      { source_id: 'src-old', source_title: 'Old source', source_archived: true, sentence: 'Miners run proof of work.' },
+      { source_id: 'src-live', source_title: 'Live source', source_archived: false, sentence: 'Bitcoin uses proof of work.' },
+    ]);
   });
 
   it('returns empty lists for an unknown page', () => {

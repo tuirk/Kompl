@@ -7,8 +7,8 @@ export const dynamic = 'force-dynamic';
  * Three-column layout:
  *   Left  — WikiSidebar (category tree, graph link, search)
  *   Center — Compiled markdown body
- *   Right  — On this page (## and ### headings), Disputes, Linked from,
- *            You might also read (./RightPanel.tsx)
+ *   Right  — On this page (## and ### headings), Disputes, Connections,
+ *            You might also read (./RightPanel.tsx, ./ConnectionsPanel.tsx)
  *
  * YAML frontmatter in the markdown file is stripped before rendering.
  */
@@ -21,7 +21,6 @@ import WikiPageHeader from '../../../components/WikiPageHeader';
 import { LocalDate } from '../../../components/LocalDate';
 import {
   getCategoryGroups,
-  getBacklinks,
   getPage,
   getPageTitleMap,
   getRunningCompileSession,
@@ -32,7 +31,9 @@ import {
 import PageActionButton from './PageActionButton';
 import { headingAnchor, renderMarkdown } from '../../../lib/markdown';
 import { findPageDisputes } from '../../../lib/page-disputes';
-import { DisputesPanel, LinkedFrom, RelatedPages, ViewOriginal } from './RightPanel';
+import { DisputesPanel, RelatedPages, ViewOriginal } from './RightPanel';
+import ConnectionsPanel from './ConnectionsPanel';
+import { getPageConnections } from '../../../lib/relations';
 import { expandWikilinksForDisplay } from '../../../lib/wiki-display';
 import { displayPageBody } from '../../../lib/page-sections';
 import WikiSidebar from '../../../components/WikiSidebar';
@@ -213,7 +214,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
     : [];
 
   const groups = getCategoryGroups();
-  const backlinks = getBacklinks(page_id);
+  const connections = page_id !== SAVED_LINKS_PAGE_ID ? getPageConnections(page_id) : null;
 
   // Cited sources first (numbers match the markers), then the other sources.
   const sourceList = getNumberedSources(page_id, scan?.order ?? []);
@@ -393,7 +394,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
         )}
       </main>
 
-      {/* Right: On this page, Disputes, Linked from, You might also read */}
+      {/* Right: On this page, Disputes, Connections, You might also read */}
       <aside
         aria-label="About this page"
         style={{
@@ -419,7 +420,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
           <DisputesPanel pageId={page_id} disputes={disputes} sources={sourceList} />
         )}
 
-        <LinkedFrom pages={backlinks} />
+        {connections && <ConnectionsPanel connections={connections} />}
 
         {page_id !== SAVED_LINKS_PAGE_ID && <RelatedPages pageId={page_id} />}
       </aside>
