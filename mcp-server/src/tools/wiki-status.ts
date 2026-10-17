@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KomplClient } from '../kompl-client.js';
+import { clip } from '../format.js';
 import { failure, READ_ONLY, text } from '../result.js';
 import type { Summary, WikiStats, WikiStatus } from '../types.js';
 
@@ -13,7 +14,8 @@ export function registerWikiStatus(server: McpServer, client: KomplClient): void
         "Overview of the user's Kompl wiki: its size, whether a compile is running, what waits for the user " +
         '(drafts to review, links that failed to import) and gaps worth filling: names mentioned in several ' +
         'sources with no page yet, pages resting on a single source, unlinked pages, old sources, and ' +
-        'contradictions from the last health check. Reports only; changes nothing.',
+        'contradictions from the last health check; plus the topic clusters of the knowledge graph and the ' +
+        'bridge pages that join topics. Reports only; changes nothing.',
       inputSchema: {},
       annotations: READ_ONLY,
     },
@@ -69,12 +71,38 @@ function format(s: WikiStatus): string {
         )
       : '• No health check has been run yet. The user can run one in Settings → Wiki health (it uses the LLM).'
   );
+  // Older apps send neither.
+  if (s.clusters) lines.push('', ...clusterLines(s.clusters));
+  if (s.bridges) lines.push(...bridgeLines(s.bridges));
   return lines.join('\n');
 }
 
-/** Raw upstream errors can be long JSON; the start says enough. */
-function clip(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+function clusterLines(clusters: NonNullable<WikiStatus['clusters']>): string[] {
+  if (!clusters.count) return ['**Topic clusters:** none yet.'];
+  const more = clusters.count - clusters.top.length;
+  return [
+    '**Topic clusters** (categories on the knowledge graph: their pages, not counting source pages, and the typed connections inside each)',
+    ...clusters.top.map((c) => `• ${c.name}: ${plural(c.pages, 'page')}, ${plural(c.connections, 'connection')} inside`),
+    ...(more > 0 ? [`• and ${plural(more, 'more topic')}`] : []),
+  ];
+}
+
+function bridgeLines(bridges: NonNullable<WikiStatus['bridges']>): string[] {
+  if (!bridges.length) return ['**Bridge pages:** none yet (no page sits between pages of two or more topics).'];
+  return [
+    '**Bridge pages** (on many of the shortest ways between other pages, with connections in several topics)',
+    ...bridges.map((b) => `• ${b.title} (\`${b.page_id}\`, ${b.category}) joins ${topicList(b.joins)}`),
+  ];
+}
+
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
+}
+
+/** "AI", "AI and Crypto", "AI, Crypto and Travel" */
+function topicList(topics: string[]): string {
+  if (topics.length < 2) return topics[0] ?? '';
+  return `${topics.slice(0, -1).join(', ')} and ${topics[topics.length - 1]}`;
 }
 
 /** `plus` marks a count that stopped at the check's limit ("50+"). */

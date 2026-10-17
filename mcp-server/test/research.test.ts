@@ -54,6 +54,8 @@ describe('research_topic', () => {
     expect(res.text).toContain(`[2] Mining blog — ${BASE_URL}/source/s2 · added 2026-10-02`);
     expect(res.text).toContain('**Gaps:** named in several sources but no page: Satoshi Nakamoto (4); resting on one source: Bitcoin.');
     expect(res.text).toContain('**Also relevant:** SHA-256 (`sha`)');
+    // An app from before connections: no connections section.
+    expect(res.text).not.toContain('How these pages connect');
     expect(Object.fromEntries(kompl.requested[0].searchParams)).toEqual({ topic: 'bitcoin mining', detail: 'brief' });
   });
 
@@ -77,5 +79,44 @@ describe('research_topic', () => {
     const res = await call(await connect(kompl.fetchImpl), 'research_topic', { topic: 'x', detail: 'full' });
     expect(res.isError).toBe(true);
     expect(res.text).toContain('Run `kompl update`');
+  });
+});
+
+describe('research_topic connections', () => {
+  const connection = (from: [string, string], to: [string, string], label: string, sources: number[], source_count: number, sentence: string | null) => ({
+    from: { page_id: from[0], title: from[1] },
+    to: { page_id: to[0], title: to[1] },
+    type: label.toLowerCase().replace(/ /g, '_'),
+    label,
+    source_count,
+    sources,
+    sentence,
+  });
+
+  it('shows how the pack pages connect, after the pages and before the sources', async () => {
+    const long = `${'Bitcoin rewards miners who find proof of work '.repeat(5)}end.`;
+    const kompl = fakeKompl({
+      '/api/wiki/research': {
+        ...PACK,
+        sources: [...PACK.sources, { n: 3, source_id: 's3', title: 'Third', source_url: null, date_ingested: null, path: '/source/s3' }],
+        connections: [
+          connection(['btc', 'Bitcoin'], ['pow', 'Proof of work'], 'Uses', [1, 3], 4, 'Bitcoin uses proof of work.'),
+          connection(['pow', 'Proof of work'], ['sha', 'SHA-256'], 'Part of', [2], 1, null),
+          connection(['btc', 'Bitcoin'], ['pow', 'Proof of work'], 'Related to', [1], 1, long),
+        ],
+      },
+    });
+    const res = await call(await connect(kompl.fetchImpl), 'research_topic', { topic: 'bitcoin mining' });
+    const lines = res.text.split('\n');
+    const at = lines.indexOf('**How these pages connect:**');
+    expect(at).toBeGreaterThan(lines.indexOf('- Bitcoin rewards mining[1].'));
+    expect(at).toBeLessThan(lines.indexOf('**Sources** (numbers are shared by all pages above):'));
+    expect(lines.slice(at + 1, at + 4)).toEqual([
+      '- Bitcoin uses Proof of work — Bitcoin uses proof of work. [1][3] · 4 sources',
+      // A page outside the pack carries its page_id so it can be read.
+      '- Proof of work part of SHA-256 (`sha`) [2]',
+      `- Bitcoin related to Proof of work — ${long.slice(0, 159)}… [1]`,
+    ]);
+    expect(res.text).toContain('[3] Third — http://kompl.test/source/s3');
   });
 });

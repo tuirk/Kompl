@@ -1,8 +1,12 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KomplClient } from '../kompl-client.js';
+import { clip } from '../format.js';
 import { failure, READ_ONLY, text } from '../result.js';
-import type { ResearchPack } from '../types.js';
+import type { PageLink, ResearchConnection, ResearchPack } from '../types.js';
+
+/** Characters of a connection's evidence sentence (as in read_page). */
+const MAX_SENTENCE = 160;
 
 // GET /api/wiki/research?topic=&detail= → one topic pack, sources numbered across pages
 export function registerResearchTopic(server: McpServer, client: KomplClient): void {
@@ -12,8 +16,9 @@ export function registerResearchTopic(server: McpServer, client: KomplClient): v
       title: 'Research topic',
       description:
         "Brief yourself on a topic from the user's Kompl wiki in one call: the most relevant pages with their " +
-        'summaries and key cited lines, ONE numbered source list shared by all of them (with addresses), what ' +
-        'the pages record as disputed, and gaps (names with no page, pages resting on one source). Use for ' +
+        'summaries and key cited lines, how those pages connect (each relation with its sources), ONE numbered ' +
+        'source list shared by all of them (with addresses), what the pages record as disputed, and gaps ' +
+        '(names with no page, pages resting on one source). Use for ' +
         '"tell me about X" or "brief me on X"; for a specific lookup use search_wiki and read_page.',
       inputSchema: {
         topic: z.string().describe('The topic, question or name to research'),
@@ -58,6 +63,13 @@ function format(pack: ResearchPack, baseUrl: string): string {
     if (p.disputes.length) out.push(`Disputed here: ${p.disputes.join('; ')}`);
   });
 
+  // Older apps send no connections.
+  if (pack.connections?.length) {
+    const inPack = new Set(pack.pages.map((p) => p.page_id));
+    out.push('', '**How these pages connect:**');
+    for (const c of pack.connections) out.push(connectionLine(c, inPack));
+  }
+
   if (pack.sources.length) {
     out.push('', '**Sources** (numbers are shared by all pages above):');
     for (const s of pack.sources) {
@@ -81,4 +93,18 @@ function format(pack: ResearchPack, baseUrl: string): string {
   }
   out.push('', 'Read a page in full with read_page; check a source with read_source.');
   return out.join('\n');
+}
+
+/**
+ * "- Bitcoin uses Proof of work — Bitcoin uses proof of work. [1][3] · 4 sources".
+ * The label reads from `from`; a page outside the pack carries its page_id.
+ */
+function connectionLine(c: ResearchConnection, inPack: Set<string>): string {
+  const end = (p: PageLink) => (inPack.has(p.page_id) ? p.title : `${p.title} (\`${p.page_id}\`)`);
+  const relation = c.label.charAt(0).toLowerCase() + c.label.slice(1);
+  const parts = [`- ${end(c.from)} ${relation} ${end(c.to)}`];
+  if (c.sentence) parts.push(`— ${clip(c.sentence, MAX_SENTENCE)}`);
+  if (c.sources.length) parts.push(c.sources.map((n) => `[${n}]`).join(''));
+  if (c.source_count > 1) parts.push(`· ${c.source_count} sources`);
+  return parts.join(' ');
 }

@@ -25,9 +25,39 @@ export interface PageLink {
   title: string;
 }
 
+/** One source behind a connection; archived sources stay and are marked. */
+export interface ConnectionEvidence {
+  source_id: string;
+  source_title: string;
+  source_archived: boolean;
+  /** The sentence the source gives for the relation, when one was kept. */
+  sentence: string | null;
+}
+
+/** A typed relation of the page, read from the page's side ("Uses", "Used by"). */
+export interface ConnectionItem {
+  /** null: a name with no page yet. */
+  page_id: string | null;
+  title: string;
+  type: string;
+  direction: 'out' | 'in';
+  source_count: number;
+  /** At most 3, sentences first, newest first. */
+  evidence: ConnectionEvidence[];
+}
+
+export interface PageConnections {
+  /** Grouped by label in the app's display order; "Related to" last. */
+  groups: Array<{ label: string; items: ConnectionItem[] }>;
+  /** Pages linked either way with no typed relation. */
+  linked_only: PageLink[];
+}
+
 export interface PageData extends PageMeta {
   content: string;
   sources: PageSource[];
+  /** Typed connections with their evidence (older apps omit it). */
+  connections?: PageConnections;
   /** Pages this page links to / pages linking here (older apps omit both). */
   links?: PageLink[];
   backlinks?: PageLink[];
@@ -110,6 +140,10 @@ export interface WikiStatus {
     at: string | null;
     contradictions: Summary<{ page_a: string; page_b: string; claim: string }>;
   } | null;
+  /** Topics on the knowledge graph's default view, most pages first (older apps omit it). */
+  clusters?: Summary<{ name: string; pages: number; connections: number }>;
+  /** Pages on many shortest ways between others, joining 2+ topics (older apps omit it). */
+  bridges?: Array<{ page_id: string; title: string; category: string; joins: string[] }>;
 }
 
 export interface ResearchPack {
@@ -139,6 +173,20 @@ export interface ResearchPack {
   }>;
   missing_pages: Array<{ name: string; mentions: number }>;
   more_pages: Array<{ page_id: string; title: string; page_type: string }>;
+  /** Typed relations touching the pack's pages, strongest first (older apps omit it). */
+  connections?: ResearchConnection[];
+}
+
+export interface ResearchConnection {
+  from: PageLink;
+  to: PageLink;
+  type: string;
+  /** Read from `from`: "Uses", "Part of", "Created by". */
+  label: string;
+  source_count: number;
+  /** Numbers in the pack's shared source list; the sentence's source first. */
+  sources: number[];
+  sentence: string | null;
 }
 
 /** A list cut at the caller's limit, with the full count. */

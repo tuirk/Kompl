@@ -6,7 +6,10 @@
  *     with no page, pages resting on one source, unlinked pages, sources
  *     older than the Settings stale threshold;
  *   - contradictions found by the last manual health check, which is the
- *     only check that uses the LLM.
+ *     only check that uses the LLM;
+ *   - the knowledge graph's topic clusters and bridge pages, as the map's
+ *     default view shows them (lib/graph-report.ts; cached, report-only;
+ *     left out, and logged, if building it fails).
  *
  * Never writes, and never calls the LLM or the NLP service.
  */
@@ -25,6 +28,7 @@ import {
   getVectorBacklogCount,
   getWikiStats,
 } from '@/lib/db';
+import { graphReportCached, type GraphReport } from '@/lib/graph-report';
 import { normalizeLintResult } from '@/lib/lint-result';
 import { getThinPages, MISSING_NAMES_LIMIT, runHealthChecksCached } from '@/lib/wiki-health';
 
@@ -46,6 +50,7 @@ export async function GET() {
   const thresholdDays = getStaleThresholdDays();
   const lastCheck = normalizeLintResult(getLastLintResult());
   const running = getRunningCompileSession();
+  const graph = graphReport(db);
 
   return NextResponse.json({
     stats: getWikiStats(),
@@ -86,5 +91,23 @@ export async function GET() {
           })),
         }
       : null,
+    // Left out if the graph report failed: the MCP then reads it as an older app.
+    ...(graph ? { clusters: graph.clusters, bridges: graph.bridges } : {}),
   });
+}
+
+/** The graph part is an extra: if it throws, the rest of the snapshot still answers. */
+function graphReport(db: ReturnType<typeof getDb>): GraphReport | null {
+  try {
+    return graphReportCached(db);
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: 'wiki_status_graph_report_failed',
+        error: err instanceof Error ? err.message : String(err),
+      })
+    );
+    return null;
+  }
 }

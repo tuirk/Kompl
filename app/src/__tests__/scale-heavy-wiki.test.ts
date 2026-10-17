@@ -1,10 +1,12 @@
 /**
  * Scale gate for the knowledge graph: a heavy wiki (helpers/heavy-wiki.ts:
  * ~800 sources, ~1,500 pages, 8,000 relation rows, 6,000 wikilinks) must keep
- * the boot backfill, the page view's connections, the graph payload and the
- * graph model fast. Budgets sit far above the measured local times (slow CI
- * runners), so only an order-of-magnitude regression fails; each assertion
- * message carries the measured time, and afterAll prints one summary line.
+ * the boot backfill, the page view's connections, the graph payload, the
+ * graph model and the MCP additions (research_topic's relations, wiki_status's
+ * topic clusters and bridges) fast. Budgets sit far above the measured local
+ * times (slow CI runners), so only an order-of-magnitude regression fails;
+ * each assertion message carries the measured time, and afterAll prints one
+ * summary line.
  *
  * "cold" = the first call after the archived-pages cache (db.ts, 30 s) is
  * dropped, as a request pays it after a quiet spell; p50/p95 = 20 warm calls.
@@ -14,13 +16,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GET as getConnectionsRoute } from '../app/api/wiki/[page_id]/connections/route';
 import { GET as getDataRoute } from '../app/api/wiki/[page_id]/data/route';
 import { setSourceStatus } from '../lib/db';
+import { mapBridges } from '../lib/graph-bridges';
 import { findBridges } from '../lib/graph-metrics';
 import { buildMissingLayer, withMissing } from '../lib/graph-missing';
 import { buildGraphModel, DEFAULT_FILTERS, filterGraph, type GraphFilters } from '../lib/graph-model';
 import { shortestPath } from '../lib/graph-path';
+import { buildGraphReport, graphReportCached } from '../lib/graph-report';
 import { focusGraph } from '../lib/graph-scope';
 import { backfillRelationDescriptions } from '../lib/relation-backfill';
-import { getPageConnections, getRelationEdges } from '../lib/relations';
+import { getPageConnections, getRelationEdges, getRelationsAmong } from '../lib/relations';
 import { getWikiGraph } from '../lib/wiki-graph';
 import { HEAVY, seedHeavyWiki, type HeavyWiki } from './helpers/heavy-wiki';
 import { setupTestDb, type TestDbHandle } from './helpers/test-db';
@@ -43,8 +47,14 @@ const BUDGET = {
   edgesP95: 1500, // ~130 / ~150
   modelP95: 500, // ~55 / ~21
   filterP95: 150, // <= ~12 / ~4
-  bridges: 3000, // ~340 alone: betweenness + bridges with every toggle on (1,490 pages, 8,782 lines)
-  explore: 300, // ~18 alone: a path across the map, a 2-hop focus on the busiest page, the missing names
+  // The explore measures check the BEST of EXPLORE_RUNS: a busy machine stretches single runs (worst up to
+  // ~3,000 under suite load, 2026-10-17) but barely moves the best, and a real slowdown slows every run.
+  bridges: 3000, // best ~650-880 alone and in the suite: betweenness + bridges with every toggle on (1,490 pages, 8,782 lines); no app path runs this
+  bridgesDefault: 1500, // best ~135 / ~175: the map's bridges as the app finds them (default view: payload, model, betweenness)
+  explore: 300, // best ~11 / ~13: a path across the map, a 2-hop focus on the busiest page, the missing names
+  researchConnections: 1500, // ~85 / ~140 (2026-10-17): MCP research_topic, relations around a 10-page pack of hubs
+  graphReportCold: 5000, // ~440 / ~1040: MCP wiki_status topic clusters + bridges, uncached
+  graphReportCached: 100, // ~1 / ~1: the same from the cache (only the version stamp query runs)
 } as const;
 /** Warm runs for the slower explore measures (betweenness is O(pages x lines)). */
 const EXPLORE_RUNS = 5;
@@ -68,6 +78,12 @@ async function timedAsync<T>(fn: () => Promise<T>): Promise<{ ms: number; value:
   const t0 = performance.now();
   const value = await fn();
   return { ms: performance.now() - t0, value };
+}
+
+/** EXPLORE_RUNS timed calls: the best and the worst. */
+function runs(fn: () => unknown): { best: number; worst: number } {
+  const ms = Array.from({ length: EXPLORE_RUNS }, () => timed(fn).ms);
+  return { best: Math.min(...ms), worst: Math.max(...ms) };
 }
 
 function percentiles(samples: number[]): { p50: number; p95: number } {
@@ -205,24 +221,53 @@ describe('heavy wiki scale', { timeout: 60_000 }, () => {
     const model = buildGraphModel(JSON.parse(JSON.stringify(getWikiGraph(true))));
     const visible = filterGraph(model, allOn);
     const topicOf = (id: string) => model.byId.get(id)?.category ?? null;
-    const runs = (fn: () => unknown) => Array.from({ length: EXPLORE_RUNS }, () => timed(fn).ms);
-    const worst = (fn: () => unknown) => Math.max(...runs(fn));
-
     const bridges = findBridges(visible.neighbours, topicOf);
     expect(bridges.length).toBeGreaterThan(0);
     const bridgeRuns = runs(() => findBridges(visible.neighbours, topicOf));
-    const bridgeMs = Math.max(...bridgeRuns);
-    summary.push(`bridges nodes=${visible.nodes.length} links=${visible.links.length} best=${Math.min(...bridgeRuns).toFixed(1)} worst=${bridgeMs.toFixed(1)}`);
-    expect(bridgeMs, fmt('findBridges all-on worst', bridgeMs, BUDGET.bridges)).toBeLessThan(BUDGET.bridges);
+    summary.push(`bridges.allOn nodes=${visible.nodes.length} links=${visible.links.length} best=${bridgeRuns.best.toFixed(1)} worst=${bridgeRuns.worst.toFixed(1)}`);
+    expect(bridgeRuns.best, fmt('findBridges all-on best', bridgeRuns.best, BUDGET.bridges)).toBeLessThan(BUDGET.bridges);
 
     const busiest = [...visible.linksOf].sort((x, y) => y[1].length - x[1].length)[0][0];
     const far = visible.nodes[visible.nodes.length - 1].id;
     const layer = buildMissingLayer(model);
-    const exploreMs = worst(() => {
+    const explore = runs(() => {
       shortestPath(visible, busiest, far);
       withMissing(focusGraph(model, allOn, visible, busiest, 2), layer);
     });
-    summary.push(`explore busiest=${visible.linksOf.get(busiest)?.length}lines worst=${exploreMs.toFixed(1)}`);
-    expect(exploreMs, fmt('path + focus + missing worst', exploreMs, BUDGET.explore)).toBeLessThan(BUDGET.explore);
+    summary.push(`explore busiest=${visible.linksOf.get(busiest)?.length}lines best=${explore.best.toFixed(1)} worst=${explore.worst.toFixed(1)}`);
+    expect(explore.best, fmt('path + focus + missing best', explore.best, BUDGET.explore)).toBeLessThan(BUDGET.explore);
+  });
+
+  it("finds the map's bridges on the default view fast, as the app does", () => {
+    const find = () => mapBridges(buildGraphModel(getWikiGraph(false)));
+    expect(find().size).toBeGreaterThan(0);
+    const timing = runs(find);
+    summary.push(`bridges.default best=${timing.best.toFixed(1)} worst=${timing.worst.toFixed(1)}`);
+    expect(timing.best, fmt('mapBridges default best', timing.best, BUDGET.bridgesDefault)).toBeLessThan(BUDGET.bridgesDefault);
+  });
+
+  it('finds the relations around a research pack of hub pages fast', () => {
+    // research_topic's full pack holds 10 pages; the busiest ones are the worst case.
+    const pack = (handle.db.prepare(`SELECT page_id FROM pages WHERE page_type IN ('entity', 'concept') ORDER BY source_count DESC, page_id LIMIT 10`).all() as Array<{ page_id: string }>).map((r) => r.page_id);
+    const found = getRelationsAmong(pack, 12);
+    expect(found).toHaveLength(12);
+    const { cold, p95 } = profile(`research.connections pack=${pack.length} found=${found.length}`, () => getRelationsAmong(pack, 12));
+    expect(cold, fmt('getRelationsAmong cold', cold, BUDGET.researchConnections)).toBeLessThan(BUDGET.researchConnections);
+    expect(p95, fmt('getRelationsAmong p95', p95, BUDGET.researchConnections)).toBeLessThan(BUDGET.researchConnections);
+  });
+
+  it('reports topic clusters and bridges fast, and faster from the cache', () => {
+    dropArchivedCache();
+    const cold = timed(() => buildGraphReport());
+    expect(cold.value.clusters.top).toHaveLength(6);
+    expect(cold.value.bridges.length).toBeGreaterThan(0);
+    const first = timed(() => graphReportCached(handle.db));
+    const samples = Array.from({ length: RUNS }, () => timed(() => graphReportCached(handle.db)));
+    expect(samples.every((s) => s.value === first.value)).toBe(true);
+    const { p50, p95 } = percentiles(samples.map((s) => s.ms));
+    summary.push(`graphReport cold=${cold.ms.toFixed(1)} firstCached=${first.ms.toFixed(1)} cached p50=${p50.toFixed(1)} p95=${p95.toFixed(1)}`);
+    expect(cold.ms, fmt('buildGraphReport cold', cold.ms, BUDGET.graphReportCold)).toBeLessThan(BUDGET.graphReportCold);
+    expect(first.ms, fmt('graphReportCached first', first.ms, BUDGET.graphReportCold)).toBeLessThan(BUDGET.graphReportCold);
+    expect(p95, fmt('graphReportCached p95', p95, BUDGET.graphReportCached)).toBeLessThan(BUDGET.graphReportCached);
   });
 });

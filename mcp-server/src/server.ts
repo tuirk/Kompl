@@ -24,6 +24,7 @@ export const SERVER_INSTRUCTIONS = [
   '- For "tell me about X" or a briefing, start with research_topic: one call returns the key pages, cited lines and one shared source list.',
   '- For a specific lookup, find pages with search_wiki (ask in plain language; leave the query out to browse) and read them with read_page.',
   '- When you answer from Kompl, name the pages you used and keep the [n] source references so the user can check each claim.',
+  '- read_page and research_topic also show how pages connect: each relation (uses, part of, created by...) with the source that says so.',
   '- To check what a source actually says, use read_source with the page_id and n (add a query to get the matching passages).',
   '- list_sources shows what the user has saved, e.g. whether a link is already in Kompl.',
   '- recent_changes answers "what is new / what changed"; wiki_status gives the overview and the gaps worth filling.',

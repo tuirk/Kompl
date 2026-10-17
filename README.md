@@ -180,12 +180,12 @@ replaced by the absolute path to your Kompl folder. It talks to Kompl at
 | Tool | What it does |
 |---|---|
 | `search_wiki` | Finds pages by keywords and meaning; without a query, lists pages newest first |
-| `research_topic` | One-call brief on a topic: key pages, their cited lines, one source list numbered across them, disputes, gaps |
-| `read_page` | A page with `[n]` citations, its numbered sources (address and date) and the pages it links to and from |
+| `research_topic` | One-call brief on a topic: key pages, their cited lines, how they connect, one source list numbered across them, disputes, gaps |
+| `read_page` | A page with `[n]` citations, its numbered sources (address and date), and how it connects to other pages (each relation with its source) |
 | `read_source` | The original text behind a source or a page's citation `[n]`, or just the passages that match a query |
 | `list_sources` | What you've added, searchable by title or address |
 | `recent_changes` | What changed since a date, in one compile, or on one page (with the sections that changed) |
-| `wiki_status` | Size, a running compile, what waits for you, and gaps worth filling |
+| `wiki_status` | Size, a running compile, what waits for you, gaps worth filling, topic clusters and bridge pages |
 | `add_source` | Saves links (up to 5 at a time) or a note and compiles them. Off until you turn it on in **Settings → Connect your AI**; at most 20 a day |
 
 Not using MCP? The same data is on plain HTTP: `/api/pages/search?mode=hybrid`,

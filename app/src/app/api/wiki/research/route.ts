@@ -3,8 +3,10 @@
  *
  * One-call topic pack for MCP research_topic (lib/research.ts): the most
  * relevant pages with summaries and key cited lines, one source list
- * numbered across them, the disputes they record, and gaps around the
- * topic. Page and source links are relative app paths.
+ * numbered across them, the disputes they record, gaps around the topic,
+ * and `connections`: typed relations touching those pages (at most 12,
+ * strongest first), each citing the shared source numbers. Page and source
+ * links are relative app paths.
  *
  * brief (default): 5 pages × 3 lines; full: 10 pages × 6 lines.
  * Errors: 400 missing_topic. No LLM; the vector search behind hybrid search

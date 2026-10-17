@@ -60,6 +60,26 @@ ship with a `migrate.py` step that runs at boot.
   now carries its address and date, the text matches what the page view
   shows (so `[n]` numbers agree with the app), and the page lists the pages
   it links to and from. `include_related` adds pages similar in meaning.
+- **Agents see how pages connect.** `read_page` lists the page's
+  connections, one per line, each with its relation read from the page's
+  side ("Uses: Proof-of-work consensus"), the sentence that explains it and
+  the source behind it: the page's own `[n]` when the page cites that
+  source, otherwise the source's title and id, with archived sources
+  marked. It shows 15 in full (the strongest: specific relations before
+  "Related to", then most sources) and names the other pages among the
+  rest, so every live page the old link lists named is still there; then "Also
+  linked" for pages linked with no typed relation. `research_topic` adds
+  "How these pages connect": up to 12 relations among the pack's pages or
+  to other pages, strongest first, cited with the pack's shared source
+  numbers; "related to" is left out where a more specific relation already
+  joins the two pages. `wiki_status` adds the knowledge graph's topic
+  clusters (the six biggest categories, with their pages, source pages not
+  counted, and the connections inside each) and up to five bridge pages,
+  the same ones the graph badges, with the topics they join. If that part
+  fails, the rest of the status still answers. It still only reports.
+  There are no new tools and no LLM calls.
+  Against an older Kompl app the tools answer as before, and MCP servers
+  built before this change keep working with the new app.
 - **New `read_source`** reads the original text Kompl compiled from, by
   source id or by a page's citation `[n]`. With a query it returns only the
   matching passages (ranked locally, no LLM); otherwise the text in
@@ -172,6 +192,15 @@ ship with a `migrate.py` step that runs at boot.
   rest sit behind "Show all" as compact rows, so every connection is still
   listed. The graph's page panel keeps every row in full, evidence
   included, behind the same "Show all".
+- **AI agents see the connections too:** `read_page`, `research_topic` and
+  `wiki_status` report them (see MCP server above).
+- **Relation types outside the vocabulary keep their direction.** A type
+  the extractor names on its own, such as "founded by", reads "Founded by"
+  from one page and "Founded" from the other; a type with no plain reverse
+  reads "Located in" and "← Located in" (the arrow: it reads from the other
+  page). Its two directions are no longer merged into one connection. The
+  Connections card, the graph and `read_page` all read it the same way.
+  Only competes with, contradicts and related to read the same both ways.
 
 ### Wiki readability
 

@@ -65,6 +65,44 @@ describe('wiki_status', () => {
     expect(res.text).toContain('• Named in 3+ sources but no page (50+): A (9 sources); and 49+ more');
   });
 
+  it('lists topic clusters and bridge pages, and leaves both out for an app that sends neither', async () => {
+    const status = {
+      ...STATUS,
+      clusters: {
+        count: 8,
+        top: [
+          { name: 'Travel', pages: 25, connections: 18 },
+          { name: 'Board Games', pages: 1, connections: 1 },
+        ],
+      },
+      bridges: [
+        { page_id: 'btc', title: 'Bitcoin network', category: 'Crypto', joins: ['Crypto', 'AI', 'Travel'] },
+        { page_id: 'claude', title: 'Claude', category: 'AI', joins: ['AI', 'Crypto'] },
+      ],
+    };
+    const res = await call(await connect(fakeKompl({ '/api/wiki/status': status }).fetchImpl), 'wiki_status');
+    const lines = res.text.split('\n');
+    const at = lines.findIndex((l) => l.startsWith('**Topic clusters**'));
+    expect(lines[at]).toContain('not counting source pages');
+    expect(at).toBeGreaterThan(lines.findIndex((l) => l.startsWith('**Gaps**')));
+    expect(lines.slice(at + 1)).toEqual([
+      '• Travel: 25 pages, 18 connections inside',
+      '• Board Games: 1 page, 1 connection inside',
+      '• and 6 more topics',
+      '**Bridge pages** (on many of the shortest ways between other pages, with connections in several topics)',
+      '• Bitcoin network (`btc`, Crypto) joins Crypto, AI and Travel',
+      '• Claude (`claude`, AI) joins AI and Crypto',
+    ]);
+
+    const empty = { ...STATUS, clusters: { count: 0, top: [] }, bridges: [] };
+    const none = await call(await connect(fakeKompl({ '/api/wiki/status': empty }).fetchImpl), 'wiki_status');
+    expect(none.text).toContain('**Topic clusters:** none yet.\n**Bridge pages:** none yet (no page sits between pages of two or more topics).');
+
+    const older = await call(await connect(fakeKompl({ '/api/wiki/status': STATUS }).fetchImpl), 'wiki_status');
+    expect(older.text).not.toContain('Topic clusters');
+    expect(older.text).not.toContain('Bridge pages');
+  });
+
   it('falls back to the basic counts on an app without the status route', async () => {
     const kompl = fakeKompl({
       '/api/wiki/status': () => new Response('<html>404</html>', { status: 404 }),

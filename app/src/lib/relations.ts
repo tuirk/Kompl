@@ -14,6 +14,7 @@ import { buildNameMap, loadPages, loadRelationRows } from './relation-names';
 import { compareRelationLabels, relationLabel, type RelationDirection } from './relation-labels';
 
 export { getRelationEdges, type EdgeRelation, type MissingPage, type RelationEdge, type RelationEdges } from './relation-edges';
+export { getRelationsAmong, type PageRelation, type RelationEnd } from './relation-among';
 
 /** Evidence entries kept per connection: sentences first, newest first. */
 const EVIDENCE_PER_ITEM = 3;
@@ -32,8 +33,9 @@ export interface RelationEvidence {
 
 /**
  * One connection of a page. For symmetric types (the same label both ways:
- * competes_with, contradicts, related_to, unknown types) both directions
- * merge into one item that keeps the direction of its newest row.
+ * competes_with, contradicts, related_to) both directions merge into one
+ * item that keeps the direction of its newest row. Unknown types are
+ * directional, so each direction is its own item and label.
  */
 export interface ConnectionItem {
   page_id: string | null;

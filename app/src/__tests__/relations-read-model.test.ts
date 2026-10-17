@@ -80,8 +80,9 @@ describe('relation labels', () => {
     expect(relationLabel('created_by', 'in')).toBe('Created');
     expect(relationLabel('uses', 'in')).toBe('Used by');
     expect(relationLabel('competes_with', 'in')).toBe('Competes with');
+    // Unknown types are directional (relation-direction.test.ts has the rest).
     expect(relationLabel('influenced_by', 'out')).toBe('Influenced by');
-    expect(relationLabel('influenced_by', 'in')).toBe('Influenced by');
+    expect(relationLabel('influenced_by', 'in')).toBe('Influenced');
   });
 });
 

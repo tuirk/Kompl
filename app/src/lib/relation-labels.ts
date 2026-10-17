@@ -23,34 +23,58 @@ const ORDER = [
   'Competes with', 'Contradicts',
 ];
 const RELATED_TO = 'Related to';
+/** Starts an unknown type's label read from its `to` end: it reads from the other page to this one. */
+const REVERSED = '← ';
 
-/** "influenced_by" -> "Influenced by"; the same label in both directions. */
+/**
+ * Types that read the same from both ends; callers merge both directions of
+ * such a relation into one. Every other type, unknown ones included, is
+ * directional: the extractor stores it in its natural order.
+ */
+export const SYMMETRIC_RELATIONS: ReadonlySet<string> = new Set(['competes_with', 'contradicts', 'related_to']);
+
+/** "influenced_by" -> "Influenced by": an unknown type read from its `from` end. */
 function otherTypeLabel(type: string): string {
   const words = type.replace(/_/g, ' ').trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : type;
 }
 
+/**
+ * An unknown type read from its `to` end. "X by" types turn active, as
+ * created_by's "Created by" / "Created" do ("Founded by" -> "Founded");
+ * any other gets an arrow saying it reads from the other page
+ * ("Located in" -> "← Located in").
+ */
+function otherTypeReverseLabel(type: string): string {
+  const forward = otherTypeLabel(type);
+  const active = forward.replace(/\s+by$/i, '');
+  return active !== forward && active.length > 0 ? active : `${REVERSED}${forward}`;
+}
+
 export function relationLabel(type: string, direction: RelationDirection): string {
   const known = KNOWN[type];
   if (known) return direction === 'out' ? known[0] : known[1];
-  return otherTypeLabel(type);
+  // Every symmetric type is known, so an unknown type here is directional.
+  if (direction === 'out') return otherTypeLabel(type);
+  return otherTypeReverseLabel(type);
+}
+
+/** competes_with, contradicts and related_to (SYMMETRIC_RELATIONS); never an unknown type. */
+export function isSymmetricRelation(type: string): boolean {
+  return SYMMETRIC_RELATIONS.has(type);
 }
 
 /**
- * True when the label reads the same from both ends (competes_with,
- * contradicts, related_to and unknown types). Callers merge both directions
- * of such a relation into one item.
+ * Sort key for labels: the vocabulary order, other labels A-Z ("← Located
+ * in" right after "Located in"), "Related to" last.
  */
-export function isSymmetricRelation(type: string): boolean {
-  return relationLabel(type, 'out') === relationLabel(type, 'in');
-}
-
-/** Sort key for labels: the vocabulary order, other labels A-Z, "Related to" last. */
 export function compareRelationLabels(a: string, b: string): number {
   const rank = (label: string): number => {
     if (label === RELATED_TO) return ORDER.length + 1;
     const i = ORDER.indexOf(label);
     return i === -1 ? ORDER.length : i;
   };
-  return rank(a) - rank(b) || a.localeCompare(b);
+  const reversed = (label: string) => (label.startsWith(REVERSED) ? 1 : 0);
+  const words = (label: string) => label.slice(reversed(label) * REVERSED.length);
+  return rank(a) - rank(b) || words(a).localeCompare(words(b)) || reversed(a) - reversed(b);
 }

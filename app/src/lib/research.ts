@@ -1,8 +1,9 @@
 /**
  * A topic pack for MCP research_topic: the pages most relevant to a topic,
- * each with its summary and the lines that best match the topic, one source
- * list numbered across all of them, the disputes those pages record, and
- * gaps around the topic. One call instead of a search plus a read per page,
+ * each with its summary and the lines that best match the topic, how those
+ * pages connect (typed relations with their sources), one source list
+ * numbered across all of them, the disputes those pages record, and gaps
+ * around the topic. One call instead of a search plus a read per page,
  * built from what Kompl already holds: no LLM.
  */
 
@@ -15,6 +16,8 @@ import { hybridSearch } from './hybrid-search';
 import { findPageDisputes } from './page-disputes';
 import { displayPageBody, SYNTHESIZED_PAGE_TYPES } from './page-sections';
 import { getSourceTitleSet } from './page-sources';
+import { relationLabel } from './relation-labels';
+import { getRelationsAmong, type RelationEnd } from './relations';
 import { runHealthChecksCached } from './wiki-health';
 import { stripWikilinks } from './wikilink-syntax';
 
@@ -31,6 +34,9 @@ const MORE_PAGES = 5;
 const MISSING_SHOWN = 5;
 /** Quoted text per line; its citation markers come on top. */
 const MAX_LINE_CHARS = 380;
+/** Relations listed under "How these pages connect", and source numbers given per relation. */
+const CONNECTIONS_SHOWN = 12;
+const SOURCES_PER_CONNECTION = 3;
 
 export interface ResearchPage {
   page_id: string;
@@ -55,6 +61,19 @@ export interface ResearchSource {
   date_ingested: string | null;
 }
 
+/** A typed relation between two pages, at least one of them in the pack. */
+export interface ResearchConnection {
+  from: RelationEnd;
+  to: RelationEnd;
+  type: string;
+  /** Read from `from`: "Uses", "Part of", "Created by". */
+  label: string;
+  source_count: number;
+  /** Shared [n] numbers of up to 3 of its sources, the sentence's source first. */
+  sources: number[];
+  sentence: string | null;
+}
+
 export interface ResearchPack {
   topic: string;
   degraded: boolean;
@@ -62,6 +81,8 @@ export interface ResearchPack {
   sources: ResearchSource[];
   missing_pages: Array<{ name: string; mentions: number }>;
   more_pages: Array<{ page_id: string; title: string; page_type: string }>;
+  /** Strongest first: specific relations before "related to" (left out where a specific one joins the pair), then most sources. */
+  connections: ResearchConnection[];
 }
 
 export async function researchTopic(topic: string, detail: ResearchDetail): Promise<ResearchPack> {
@@ -114,6 +135,19 @@ export async function researchTopic(topic: string, detail: ResearchDetail): Prom
     .slice(0, MISSING_SHOWN)
     .map((m) => ({ name: m.entity_text, mentions: m.mention_count }));
 
+  // After the key lines, so their numbers stay; a relation's other sources join the shared list.
+  const connections = getRelationsAmong(chosen.map((p) => p.page_id), CONNECTIONS_SHOWN).map(
+    (r): ResearchConnection => ({
+      from: r.from,
+      to: r.to,
+      type: r.type,
+      label: relationLabel(r.type, 'out'),
+      source_count: r.source_ids.length,
+      sources: r.source_ids.slice(0, SOURCES_PER_CONNECTION).map((id) => sharedNumber(id, shared)),
+      sentence: r.sentence,
+    })
+  );
+
   return {
     topic,
     degraded,
@@ -121,6 +155,7 @@ export async function researchTopic(topic: string, detail: ResearchDetail): Prom
     sources: numberedSources(shared),
     missing_pages: missing,
     more_pages: items.slice(size.pages).map(({ page_id, title, page_type }) => ({ page_id, title, page_type })),
+    connections,
   };
 }
 
@@ -172,12 +207,17 @@ function withMarker(line: string, marker: string): string {
   return end ? `${line.slice(0, -1)}${marker}${end[0]}` : `${line}${marker}`;
 }
 
-/** "[n]" for a source in the shared list, adding it if new. */
-function sharedMarker(sourceId: string, shared: string[]): string {
+/** A source's number in the shared list, adding it if new. */
+function sharedNumber(sourceId: string, shared: string[]): number {
   const id = sourceId.toLowerCase();
   let i = shared.indexOf(id);
   if (i === -1) i = shared.push(id) - 1;
-  return `[${i + 1}]`;
+  return i + 1;
+}
+
+/** "[n]" for a source in the shared list, adding it if new. */
+function sharedMarker(sourceId: string, shared: string[]): string {
+  return `[${sharedNumber(sourceId, shared)}]`;
 }
 
 /** Distinct sources behind each page (provenance). */
