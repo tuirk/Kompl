@@ -33,7 +33,9 @@ function draw(nodes: ModelNode[], order: ModelNode[], ranks: Record<string, numb
   const frame = newFrameState('sans-serif', 'sans-serif');
   beginFrame(frame, ctx, 1);
   const buf = newLabelBuffer(nodes.length, 0);
-  const view: DrawView = { highlight: null, selectedId: null, hoveredId: null, labelRank: new Map(Object.entries(ranks)) };
+  const view: DrawView = {
+    highlight: null, selectedId: null, hoveredId: null, labelRank: new Map(Object.entries(ranks)), marked: null, bridges: new Set(),
+  };
   prepareLabels(buf, nodes, frame, null);
   drawLabels(ctx, order, null, frame, view, buf);
   return written;
@@ -64,5 +66,37 @@ describe('drawLabels order', () => {
     const ranks = Object.fromEntries(crowd.map((c) => [c.id, 5]));
     const written = draw([hub, ...crowd], [...crowd, hub], { ...ranks, hub: 0 });
     expect(written.some((w) => w.text === 'HUB')).toBe(true);
+  });
+});
+
+describe('bridge badge', () => {
+  it('widens the name by the badge, draws BRIDGE after it and restores the text style', () => {
+    const { ctx, written } = fakeCanvas();
+    const styled = ctx as unknown as { textAlign: string; fillStyle: string };
+    const frame = newFrameState('sans-serif', 'sans-serif');
+    beginFrame(frame, ctx, 1);
+    const bridge = page('eth', 500, 500);
+    const plain = page('btc', 500, 800);
+    const buf = newLabelBuffer(2, 0);
+    const view: DrawView = {
+      highlight: null, selectedId: null, hoveredId: null, labelRank: new Map([['eth', 0], ['btc', 0]]),
+      marked: null, bridges: new Set(['eth']),
+    };
+    prepareLabels(buf, [bridge, plain], frame, null);
+    drawLabels(ctx, [bridge, plain], null, frame, view, buf);
+    const name = written.find((w) => w.text === 'ETH');
+    const badge = written.find((w) => w.text === 'BRIDGE');
+    const other = written.find((w) => w.text === 'BTC');
+    expect(name && badge && other).toBeTruthy();
+    // The name shifts left so name + badge sit centred over the circle; the badge follows it.
+    // ETH is 18 px wide, the gap 5, BRIDGE 36: the whole 59 px is centred on x = 500.
+    expect((name?.x ?? 0) - 9 + 59 / 2).toBeCloseTo(500);
+    expect(badge?.x).toBeCloseTo((name?.x ?? 0) + 9 + 5);
+    expect(other?.x).toBe(500);
+    // Two boxes were placed; the bridge's is wider than its name alone (18 px + 5 px gap + 36 px badge).
+    const boxes = buf.space.boxes;
+    const widths = [boxes[2] - boxes[0], boxes[6] - boxes[4]].sort((a, b) => a - b);
+    expect(widths[1] - widths[0]).toBeCloseTo(5 + 6 * 'BRIDGE'.length, 0);
+    expect(styled.textAlign).toBe('center');
   });
 });

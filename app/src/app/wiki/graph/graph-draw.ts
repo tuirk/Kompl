@@ -1,6 +1,7 @@
 /**
- * Canvas painting for the knowledge graph: page circles (rings, selection)
- * and page names. A name never overlaps another name and, except for an
+ * Canvas painting for the knowledge graph: page circles (rings, selection,
+ * missing pages' dashed hollow circles) and names, a bridge page's with a
+ * "BRIDGE" badge. A name never overlaps another name and, except for an
  * island's top page or the page in focus when crowded, no other page's
  * circle (lib/graph-labels.ts); it has a dark halo so it reads over lines,
  * and a leader line when placed far out. These run for every page on every
@@ -13,8 +14,10 @@ import type { Highlight } from '../../../lib/graph-focus';
 import {
   addCircle, buildGrid, newLabelSpace, placeName, resetSpace, wantsName, OVERVIEW_NAMES, type LabelSpace,
 } from '../../../lib/graph-labels';
+import { isMissingNode, MISSING_HEX } from '../../../lib/graph-missing';
+import { LINE_LABELS_MAX } from '../../../lib/graph-line-style';
 import type { ModelNode } from '../../../lib/graph-model';
-import { ACCENT_HEX, CANVAS_BG } from '../../../lib/graph-palette';
+import { ACCENT_HEX, CANVAS_BG, withAlpha } from '../../../lib/graph-palette';
 
 export const LABEL_PX = 12;
 /** Most page names drawn in one frame. */
@@ -33,6 +36,18 @@ const HALO_PX = 3.5;
 const NAME_PAD_PX = 2;
 /** The leader line from a circle to its far-placed name. */
 const LEADER_COLOR = 'rgba(230,237,243,0.3)';
+const MISSING_FADED = withAlpha(MISSING_HEX, 0.15);
+/** A missing page's dashes, in screen pixels. */
+const MISSING_DASH_PX = [3, 2.5] as const;
+const NO_DASH: number[] = [];
+/** Names of missing pages read quieter than page names. */
+const MISSING_NAME_ALPHA = 0.75;
+const BADGE_TEXT = 'BRIDGE';
+/** Neutral, not the accent: on the canvas the accent only marks the selection, a clicked line or a path. */
+const BADGE_COLOR = 'rgba(230,237,243,0.72)';
+const BADGE_PX = 9;
+/** Gap between a name and its badge, in screen pixels. */
+const BADGE_GAP_PX = 5;
 
 /** Values worked out once per frame (onRenderFramePre) and read by every draw call. */
 export interface FrameState {
@@ -53,6 +68,12 @@ export interface FrameState {
   labelMaxX: number;
   bodyFamily: string;
   headingFamily: string;
+  /** The bridge badge's font at this zoom, its font for measuring, and its on-screen width (NaN until measured). */
+  badgeFont: string;
+  badgeMeasureFont: string;
+  badgeWidth: number;
+  /** A missing page's dash pattern at this zoom (graph units); reused, never reallocated. */
+  dash: number[];
 }
 
 export const CLUSTER_PX = 13;
@@ -63,6 +84,7 @@ export function newFrameState(bodyFamily: string, headingFamily: string): FrameS
     scale: 1, font: '', measureFont: `500 ${LABEL_PX}px ${bodyFamily}`, clusterFont: '',
     clusterMeasureFont: `700 ${CLUSTER_PX}px ${headingFamily}`, clusterSpacing: '0px',
     minX: 0, minY: 0, maxX: 0, maxY: 0, labelMinX: -Infinity, labelMaxX: Infinity, bodyFamily, headingFamily,
+    badgeFont: '', badgeMeasureFont: `700 ${BADGE_PX}px ${headingFamily}`, badgeWidth: NaN, dash: [...MISSING_DASH_PX],
   };
 }
 
@@ -79,6 +101,9 @@ export function beginFrame(
     frame.font = `500 ${LABEL_PX / scale}px ${frame.bodyFamily}`;
     frame.clusterFont = `700 ${CLUSTER_PX / scale}px ${frame.headingFamily}`;
     frame.clusterSpacing = `${CLUSTER_SPACING / scale}px`;
+    frame.badgeFont = `700 ${BADGE_PX / scale}px ${frame.headingFamily}`;
+    frame.dash[0] = MISSING_DASH_PX[0] / scale;
+    frame.dash[1] = MISSING_DASH_PX[1] / scale;
   }
   const m = ctx.getTransform();
   const margin = 120 / scale;
@@ -97,6 +122,10 @@ export interface DrawView {
   selectedId: string | null;
   hoveredId: string | null;
   labelRank: Map<string, number>;
+  /** Pages with the selection ring besides the selected one: a path's two ends, or the focused page. */
+  marked: ReadonlySet<string> | null;
+  /** Pages whose names carry the bridge badge. */
+  bridges: ReadonlySet<string>;
 }
 
 export function drawNode(ctx: CanvasRenderingContext2D, n: ModelNode, frame: FrameState, view: DrawView): void {
@@ -109,7 +138,13 @@ export function drawNode(ctx: CanvasRenderingContext2D, n: ModelNode, frame: Fra
   ctx.arc(n.x, n.y, n.radius, 0, 2 * Math.PI);
   ctx.fillStyle = lit ? n.fill : n.fillFaded;
   ctx.fill();
-  if (n.isSource) {
+  if (isMissingNode(n)) {
+    ctx.setLineDash(frame.dash);
+    ctx.strokeStyle = lit ? MISSING_HEX : MISSING_FADED;
+    ctx.lineWidth = 1.5 / k;
+    ctx.stroke();
+    ctx.setLineDash(NO_DASH);
+  } else if (n.isSource) {
     ctx.strokeStyle = lit ? n.color : n.fillFaded;
     ctx.lineWidth = 1 / k;
     ctx.stroke();
@@ -121,7 +156,7 @@ export function drawNode(ctx: CanvasRenderingContext2D, n: ModelNode, frame: Fra
     ctx.lineWidth = 1.5 / k;
     ctx.stroke();
   }
-  if (n.id === view.selectedId) {
+  if (n.id === view.selectedId || view.marked?.has(n.id) === true) {
     ctx.beginPath();
     ctx.arc(n.x, n.y, n.radius + 5 / k, 0, 2 * Math.PI);
     ctx.strokeStyle = ACCENT_HEX;
@@ -149,7 +184,7 @@ export function newLabelBuffer(nodeCount: number, categoryCount: number): LabelB
   return {
     widths: new Map(),
     islandWidths: new Float64Array(categoryCount).fill(NaN),
-    space: newLabelSpace(nodeCount, MAX_LABELS + categoryCount),
+    space: newLabelSpace(nodeCount, MAX_LABELS + LINE_LABELS_MAX + categoryCount),
   };
 }
 
@@ -219,20 +254,42 @@ export function drawLabels(
         width = ctx.measureText(n.shortLabel).width;
         buf.widths.set(n.id, width);
       }
-      const half = width / 2 / k + NAME_PAD_PX / k;
+      const badge = view.bridges.has(n.id);
+      if (badge && Number.isNaN(frame.badgeWidth)) {
+        ctx.font = frame.badgeMeasureFont;
+        frame.badgeWidth = ctx.measureText(BADGE_TEXT).width;
+      }
+      const extra = badge ? BADGE_GAP_PX + frame.badgeWidth : 0;
+      const half = (width + extra) / 2 / k + NAME_PAD_PX / k;
       if (placeName(space, n.x, n.y, clearRadius(n, k) + 1 / k, half, lineHeight, round === 0) < 0) continue;
       named += 1;
       const box = space.last;
-      ctx.globalAlpha = (pass === 1 ? FADED_NAME_ALPHA : 1) * (n.archived ? ARCHIVED_ALPHA : 1);
+      ctx.globalAlpha =
+        (pass === 1 ? FADED_NAME_ALPHA : 1) * (n.archived ? ARCHIVED_ALPHA : 1) * (isMissingNode(n) ? MISSING_NAME_ALPHA : 1);
       if (space.lastLeader) drawLeader(ctx, n, box, k);
+      // The name, then the badge, centred together in the box.
+      const x = (box[0] + box[2]) / 2 - extra / 2 / k;
       ctx.font = frame.font;
       ctx.lineWidth = HALO_PX / k;
       ctx.strokeStyle = CANVAS_BG;
-      ctx.strokeText(n.shortLabel, (box[0] + box[2]) / 2, box[1] + 1 / k);
-      ctx.fillText(n.shortLabel, (box[0] + box[2]) / 2, box[1] + 1 / k);
+      ctx.strokeText(n.shortLabel, x, box[1] + 1 / k);
+      ctx.fillText(n.shortLabel, x, box[1] + 1 / k);
+      if (badge) drawBadge(ctx, x + (width / 2 + BADGE_GAP_PX) / k, box[1] + 1 / k, frame);
     }
   }
   ctx.restore();
+}
+
+/** "BRIDGE" in small capitals, starting at x, vertically centred on a name drawn from y. */
+function drawBadge(ctx: CanvasRenderingContext2D, x: number, y: number, frame: FrameState): void {
+  const k = frame.scale;
+  ctx.font = frame.badgeFont;
+  ctx.textAlign = 'left';
+  ctx.strokeText(BADGE_TEXT, x, y + (LABEL_PX - BADGE_PX) / 2 / k);
+  ctx.fillStyle = BADGE_COLOR;
+  ctx.fillText(BADGE_TEXT, x, y + (LABEL_PX - BADGE_PX) / 2 / k);
+  ctx.fillStyle = LABEL_COLOR;
+  ctx.textAlign = 'center';
 }
 
 /** A faint line from the circle's edge to the nearest point of its far-placed name. */

@@ -210,3 +210,40 @@ export function fitView(
   const k = Math.min(maxZoom, free.w / Math.max(1, bbox.x[1] - bbox.x[0]), free.h / Math.max(1, bbox.y[1] - bbox.y[0]));
   return { k, ...centerFor((bbox.x[0] + bbox.x[1]) / 2, (bbox.y[0] + bbox.y[1]) / 2, k, width, height, insets) };
 }
+
+/** force-graph's default zoom limits. */
+export const ZOOM_MIN = 0.01;
+export const ZOOM_MAX = 1000;
+
+/** The current view: the graph point at the canvas centre (force-graph's centerAt()) and the zoom. */
+export interface GraphView {
+  x: number;
+  y: number;
+  k: number;
+}
+
+/**
+ * The graph point a zoom button zooms about: `about` (the selection) when it
+ * shows inside the free area, else the free area's middle.
+ */
+export function zoomAnchor(
+  view: GraphView, width: number, height: number, insets: ViewInsets, about: { x: number; y: number } | null = null
+): { x: number; y: number } {
+  const free = freeArea(width, height, insets);
+  if (about) {
+    const sx = width / 2 + (about.x - view.x) * view.k;
+    const sy = height / 2 + (about.y - view.y) * view.k;
+    if (sx >= insets.left && sx <= insets.left + free.w && sy >= insets.top && sy <= insets.top + free.h) return about;
+  }
+  return {
+    x: view.x + (insets.left + free.w / 2 - width / 2) / view.k,
+    y: view.y + (insets.top + free.h / 2 - height / 2) / view.k,
+  };
+}
+
+/** The view at zoom k (within force-graph's limits) that keeps graph point `p` where it is on screen. */
+export function zoomAround(view: GraphView, p: { x: number; y: number }, k: number): GraphView {
+  const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, k));
+  const keep = view.k / next;
+  return { x: p.x - (p.x - view.x) * keep, y: p.y - (p.y - view.y) * keep, k: next };
+}

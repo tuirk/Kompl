@@ -6,20 +6,22 @@
  * to" last, then "Also linked"), each connection opening to its evidence.
  * Connections come from /api/wiki/[page_id]/connections, as on the page's
  * own Connections card. Clicking a connected page that is on the map moves
- * the map to it.
+ * the map to it. A bridge page says which topics it joins; "Focus" shows the
+ * page with its neighbours only.
  */
 
 import Link from 'next/link';
 import { useState, type ReactNode, type RefObject } from 'react';
 import { ChevronDown } from 'lucide-react';
 import {
-  ALSO_LINKED_VISIBLE, connectionsCount, sourcesNote, splitRows, visibleRowCount,
+  ALSO_LINKED_VISIBLE, connectionsCount, hasConnections, sourcesNote, splitRows, visibleRowCount,
 } from '../../../lib/connections-view';
+import { topicList, type Bridge } from '../../../lib/graph-metrics';
 import type { ModelNode } from '../../../lib/graph-model';
 import { PAGE_TYPE_LABELS, PAGE_TYPE_VAR, type PageType } from '../../../lib/page-type-palette';
 import type { ConnectionItem, LinkedPage, PageConnections } from '../../../lib/relations';
 import {
-  BODY, DOT, EvidenceList, FooterLink, LINK_BUTTON, META, PanelNote, PanelSection, PanelShell,
+  BADGE, BODY, DOT, EvidenceList, FooterButton, FooterLink, LINK_BUTTON, META, PanelNote, PanelSection, PanelShell,
 } from './panel-parts';
 import { useConnections } from './useConnections';
 
@@ -32,6 +34,10 @@ interface Props {
   /** Select a page on the map and move to it. */
   onPick(pageId: string): void;
   returnFocusTo: RefObject<HTMLElement | null>;
+  /** Set when the page is one of the map's bridges. */
+  bridge?: Bridge | null;
+  /** Show the page with its neighbours only; absent when the map is already focused on it. */
+  onFocus?(pageId: string): void;
 }
 
 function typeBadge(pageType: string): { label: string; color: string } {
@@ -42,7 +48,7 @@ function typeBadge(pageType: string): { label: string; color: string } {
   };
 }
 
-export default function NodePanel({ node, isShown, cache, onClose, onPick, returnFocusTo }: Props) {
+export default function NodePanel({ node, isShown, cache, onClose, onPick, returnFocusTo, bridge = null, onFocus }: Props) {
   const state = useConnections(node.id, cache);
   const badge = typeBadge(node.pageType);
   const pageLink = (id: string, title: string, muted = false): ReactNode =>
@@ -68,7 +74,16 @@ export default function NodePanel({ node, isShown, cache, onClose, onPick, retur
       title={node.label}
       onClose={onClose}
       returnFocusTo={returnFocusTo}
-      footer={<FooterLink href={`/wiki/${node.id}`}>Open page →</FooterLink>}
+      footer={
+        <>
+          {onFocus && (
+            <FooterButton onClick={() => onFocus(node.id)} title="Show this page and its neighbours only">
+              Focus
+            </FooterButton>
+          )}
+          <FooterLink href={`/wiki/${node.id}`}>Open page →</FooterLink>
+        </>
+      }
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', ...META }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--fg-secondary)' }}>
@@ -80,15 +95,21 @@ export default function NodePanel({ node, isShown, cache, onClose, onPick, retur
           {node.sourceCount} source{node.sourceCount === 1 ? '' : 's'}
         </span>
       </div>
+      {bridge && (
+        <p style={{ ...META, margin: 0, color: 'var(--fg-secondary)' }}>
+          <span style={BADGE}>Bridge</span> Joins {topicList(bridge.topics)}: many of the shortest ways between pages on the map pass through it.
+        </p>
+      )}
       {node.summary && <p style={{ ...BODY, margin: 0 }}>{node.summary}</p>}
 
       {state.status === 'loading' && <PanelNote>Loading connections…</PanelNote>}
       {state.status === 'error' && <PanelNote>Could not load this page&apos;s connections.</PanelNote>}
       {state.status === 'ready' && (
-        <PanelSection label="Connections" count={connectionsCount(state.data)}>
-          {connectionsCount(state.data) === 0 && <PanelNote>No connections yet.</PanelNote>}
+        <PanelSection label="Connections" count={connectionsCount(state.data) || undefined}>
+          {!hasConnections(state.data) && <PanelNote>No connections yet.</PanelNote>}
           {state.data.groups.map((group) => {
             const { shown, rest } = splitRows(group.items, visibleRowCount(group));
+            // Every row keeps its evidence here (the page's own card renders the rest compact).
             const row = (item: ConnectionItem) => (
               <ItemRow key={`${item.page_id ?? `name:${item.title}`}\u0000${item.type}`} item={item} pageLink={pageLink} />
             );
@@ -158,7 +179,9 @@ function AlsoLinked({ pages, pageLink }: { pages: LinkedPage[]; pageLink: PageLi
   );
   return (
     <div>
-      <div style={{ ...META, fontWeight: 600, color: 'var(--fg-muted)', margin: '8px 0 2px' }}>Also linked</div>
+      <div style={{ ...META, fontWeight: 600, color: 'var(--fg-muted)', margin: '8px 0 2px' }}>
+        Also linked <span style={{ fontWeight: 400, color: 'var(--fg-dim)' }}>{pages.length}</span>
+      </div>
       {shown.map(row)}
       {rest.length > 0 && <MoreRows total={pages.length}>{rest.map(row)}</MoreRows>}
     </div>

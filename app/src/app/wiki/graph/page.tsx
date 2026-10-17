@@ -4,29 +4,38 @@
  * /wiki/graph — the knowledge graph as a topic map. CLIENT component.
  *
  * Loads /api/wiki/graph (pages, one line per page pair with its typed
- * relations, plain links), builds the model once per load
- * (lib/graph-model.ts) and filters it by the legend. Pages are coloured and
- * grouped into islands by category; lines are coloured by relation. Click a
- * page for its connections, a line for the evidence behind it. The side
- * panel lies over the canvas, so opening it never moves the map.
+ * relations, plain links, names with no page yet) and derives the views from
+ * it (useGraphView.ts). Pages are coloured and grouped into islands by
+ * category; lines are coloured by relation. Click a page for its
+ * connections, a line for the evidence behind it. ?focus=<page_id>&depth=1|2
+ * shows one page with its neighbours; "Connect two pages" finds the chain
+ * between two pages; the legend can add the missing pages; bridge pages carry
+ * a badge. The side panel lies over the canvas, so opening it never moves
+ * the map.
  */
 
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import WikiViewToggle from '../../../components/WikiViewToggle';
-import { closesPanelOnEscape, type GraphFocus } from '../../../lib/graph-focus';
+import { closesPanelOnEscape, limitsLinePointer, type GraphFocus } from '../../../lib/graph-focus';
 import type { ViewInsets } from '../../../lib/graph-layout';
-import { buildGraphModel, DEFAULT_FILTERS, filterGraph, plainLinksHint, type GraphFilters } from '../../../lib/graph-model';
+import { placeMissing } from '../../../lib/graph-missing';
+import { DEFAULT_FILTERS, type GraphFilters } from '../../../lib/graph-model';
 import { CANVAS_BG } from '../../../lib/graph-palette';
+import { fillPath, type PathQuery } from '../../../lib/graph-path';
+import { FULL_MAP, revealFilters, sameScope, type GraphScope } from '../../../lib/graph-scope';
 import type { PageConnections } from '../../../lib/relations';
 import type { WikiGraph } from '../../../lib/wiki-graph';
+import { CanvasHint } from './canvas-overlays';
 import EdgePanel from './EdgePanel';
 import GraphCanvas, { type GraphControls } from './GraphCanvas';
+import GraphHeader from './GraphHeader';
 import GraphLegend, { LEGEND_LEFT, LEGEND_WIDTH } from './GraphLegend';
 import NodePanel from './NodePanel';
 import { PANEL_WIDTH } from './panel-parts';
+import PathPanel from './PathPanel';
+import { readScope, writeScope } from './scope-url';
+import { useGraphView } from './useGraphView';
 
-const NO_DATA: WikiGraph = { nodes: [], links: [], missing: [] };
 const MESSAGE = { color: 'var(--fg-muted)', padding: '3rem', textAlign: 'center' } as const;
 /** Canvas edges kept clear when fitting: the legend (open or folded), an open panel, the zoom buttons. */
 const LEGEND_COVER = LEGEND_LEFT + LEGEND_WIDTH;
@@ -47,10 +56,17 @@ export default function WikiGraphPage() {
   const [archivedOnly, setArchivedOnly] = useState(false);
   const [filters, setFilters] = useState<GraphFilters>(DEFAULT_FILTERS);
   const [selected, setSelected] = useState<GraphFocus | null>(null);
+  const [scope, setScope] = useState<GraphScope>(FULL_MAP);
+  /** Non-null while "Connect two pages" is open. */
+  const [pathQuery, setPathQuery] = useState<PathQuery | null>(null);
+  const [showMissing, setShowMissing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [legendOpen, setLegendOpen] = useState(true);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const boxRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<GraphControls | null>(null);
+  const pathOpen = useRef(false);
+  pathOpen.current = pathQuery !== null;
 
   useEffect(() => {
     const abort = new AbortController();
@@ -82,23 +98,59 @@ export default function WikiGraphPage() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (closesPanelOnEscape(e)) setSelected(null);
+      if (!closesPanelOnEscape(e)) return;
+      setSelected(null);
+      setPathQuery(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const model = useMemo(() => buildGraphModel(data ?? NO_DATA), [data]);
-  const visible = useMemo(() => filterGraph(model, filters), [model, filters]);
+  const view = useGraphView(data, filters, scope, showMissing, pathQuery);
+  const { model, focusId, scoped, layer, visible, lookup, bridges, bridgeIds, path, pinned, marked } = view;
   // A fresh cache per load, so panels never show connections from before a reload.
   const connectionsCache = useMemo(() => new Map<string, PageConnections>(), [model]);
-  const showHint = useMemo(() => plainLinksHint(model, visible, filters), [model, visible, filters]);
+
+  const changeScope = useCallback((next: GraphScope) => {
+    setScope((prev) => (sameScope(prev, next) ? prev : next));
+    setNotice(null);
+    writeScope(next);
+  }, []);
+  // The address's ?focus= once, when the page opens.
+  // ...and again on Back / Forward between graph addresses, so the view follows the address.
+  useEffect(() => {
+    setScope(readScope());
+    const onPop = () => {
+      setScope(readScope());
+      setNotice(null);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  // Entering a focus: a page the filters hide is let through; a page not on the map says so.
+  useEffect(() => {
+    if (scope.focus === null || data === null) return;
+    const node = model.byId.get(scope.focus);
+    if (!node) {
+      changeScope(FULL_MAP);
+      setNotice('That page is not on the map.');
+      return;
+    }
+    setPathQuery(null);
+    setFilters((f) => revealFilters(f, node));
+  }, [scope.focus, model, data, changeScope]);
+
+  // A found path fits into view.
+  useEffect(() => {
+    if (path) controlsRef.current?.fitNodes(path.nodes);
+  }, [path]);
 
   const selectedNode =
     selected?.kind === 'node' && visible.neighbours.has(selected.id) ? (model.byId.get(selected.id) ?? null) : null;
   const selectedLink =
     selected?.kind === 'link' && visible.linksOf.get(selected.link.a)?.includes(selected.link) ? selected.link : null;
-  const panelOpen = selectedNode !== null || selectedLink !== null;
+  const panelOpen = pathQuery !== null || selectedNode !== null || selectedLink !== null;
   const insets: ViewInsets = useMemo(
     () => ({
       left: legendOpen ? LEGEND_INSET : 24,
@@ -109,16 +161,37 @@ export default function WikiGraphPage() {
     [legendOpen, panelOpen]
   );
 
-  const close = useCallback(() => setSelected(null), []);
+  const close = useCallback(() => {
+    setSelected(null);
+    setPathQuery(null);
+  }, []);
   const pick = useCallback((id: string) => {
-    setSelected({ kind: 'node', id });
+    if (!pathOpen.current) setSelected({ kind: 'node', id });
     controlsRef.current?.focusNode(id);
   }, []);
+  // While connecting two pages, a click on a page fills the pickers instead of opening its panel.
+  const select = useCallback((focus: GraphFocus | null) => {
+    if (!pathOpen.current) setSelected(focus);
+    else if (focus?.kind === 'node') setPathQuery((q) => (q ? fillPath(q, focus.id) : q));
+  }, []);
+  // Opening starts from the selected page and leaves any focus: a path runs over the whole map.
+  const togglePath = () => {
+    if (pathQuery !== null) {
+      setPathQuery(null);
+      return;
+    }
+    if (scope.focus !== null) changeScope(FULL_MAP);
+    setPathQuery({ from: selectedNode?.id ?? null, to: null });
+    setSelected(null);
+  };
+  const toggleMissing = (next: boolean) => {
+    if (next) placeMissing(layer, model.byId);
+    setShowMissing(next);
+  };
   const isShown = useCallback((id: string) => visible.neighbours.has(id), [visible]);
 
-  const pages = visible.nodes.length;
-  const lines = visible.links.length;
   const hasPages = data !== null && data.nodes.length > 0;
+  const allLines = filters.showPlain && filters.showRelated;
 
   return (
     <>
@@ -131,26 +204,17 @@ export default function WikiGraphPage() {
       */}
       <style>{`html { zoom: 1; }`}</style>
       <main style={{ height: 'calc(100dvh - 65px)', display: 'flex', flexDirection: 'column', background: CANVAS_BG, overflow: 'hidden' }}>
-        <header
-          style={{
-            display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.75rem 1.5rem', zIndex: 30,
-            borderBottom: '1px solid rgba(71,72,74,0.15)', background: 'rgba(36,38,41,0.6)', backdropFilter: 'blur(12px)',
-          }}
-        >
-          <h1 style={{ margin: 0, fontSize: '0.875rem', fontWeight: 700, fontFamily: 'var(--font-heading)', color: 'var(--fg)', letterSpacing: '-0.35px' }}>
-            Knowledge Graph
-          </h1>
-          <span style={{ width: 1, height: 16, background: 'rgba(71,72,74,0.3)', display: 'inline-block' }} />
-          <span
-            aria-live="polite"
-            style={{ fontSize: 10, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.6px', fontFamily: 'var(--font-body)' }}
-          >
-            {pages} page{pages === 1 ? '' : 's'} · {lines} connection{lines === 1 ? '' : 's'}
-          </span>
-          <div style={{ marginLeft: 'auto' }}>
-            <WikiViewToggle active="graph" />
-          </div>
-        </header>
+        <GraphHeader
+          pages={scoped.nodes.length}
+          lines={scoped.links.length}
+          focusTitle={scope.focus !== null ? (model.byId.get(scope.focus)?.label ?? null) : null}
+          depth={scope.depth}
+          onDepth={(depth) => changeScope({ ...scope, depth })}
+          onFullMap={() => changeScope(FULL_MAP)}
+          pathOpen={pathQuery !== null}
+          onPath={togglePath}
+          notice={notice ?? (scope.focus && !focusId && model.byId.has(scope.focus) ? 'The focused page is hidden by the legend’s filters.' : null)}
+        />
 
         {/* tabIndex -1: focus comes back here when a panel closes and its opener is gone. */}
         <div ref={boxRef} tabIndex={-1} style={{ flex: 1, position: 'relative', background: CANVAS_BG, overflow: 'hidden', outline: 'none' }}>
@@ -167,6 +231,7 @@ export default function WikiGraphPage() {
                 <GraphCanvas
                   model={model}
                   visible={visible}
+                  lookup={lookup}
                   width={size.width}
                   height={size.height}
                   insets={insets}
@@ -174,7 +239,12 @@ export default function WikiGraphPage() {
                   coveredRight={panelOpen ? PANEL_WIDTH : 0}
                   controlsRight={panelOpen ? PANEL_WIDTH + 16 : 16}
                   selected={selected}
-                  onSelect={setSelected}
+                  onSelect={select}
+                  pinned={pinned}
+                  marked={marked}
+                  bridges={bridgeIds}
+                  focusId={focusId}
+                  fitKey={focusId ? `${focusId}\u0000${scope.depth}` : ''}
                   controlsRef={controlsRef}
                 />
               )}
@@ -183,27 +253,37 @@ export default function WikiGraphPage() {
                   {includeArchived ? 'No pages to show.' : 'Every page is archived. Turn on “Show archived” in the legend to see them.'}
                 </div>
               )}
-              {hasPages && pages === 0 && (
+              {hasPages && scoped.nodes.length === 0 && (
                 <div style={{ ...MESSAGE, position: 'absolute', inset: 0, pointerEvents: 'none' }}>
                   Nothing to show with these filters.
                 </div>
               )}
-              {showHint && <PlainLinksHint onShow={() => setFilters({ ...filters, showPlain: true })} />}
+              <CanvasHint model={model} full={view.full} scoped={scoped} focusId={focusId} filters={filters} onFilters={setFilters} />
               <GraphLegend
                 model={model}
-                visible={visible}
+                visible={scoped}
                 filters={filters}
                 onFilters={setFilters}
                 includeArchived={includeArchived}
                 onIncludeArchived={setIncludeArchived}
+                missingCount={layer.nodes.length}
+                showMissing={showMissing}
+                onShowMissing={toggleMissing}
+                pointerLimited={limitsLinePointer(visible.links.length)}
                 open={legendOpen}
                 onOpen={setLegendOpen}
               />
-              {selectedNode && (
-                <NodePanel key={selectedNode.id} node={selectedNode} isShown={isShown} cache={connectionsCache}
-                  onClose={close} onPick={pick} returnFocusTo={boxRef} />
+              {pathQuery !== null && (
+                <PathPanel pages={view.pickable} model={model} query={pathQuery} onQuery={setPathQuery} path={path}
+                  onShowAllLines={allLines ? undefined : () => setFilters({ ...filters, showPlain: true, showRelated: true })}
+                  cache={connectionsCache} onClose={close} onPick={pick} returnFocusTo={boxRef} />
               )}
-              {selectedLink && (
+              {pathQuery === null && selectedNode && (
+                <NodePanel key={selectedNode.id} node={selectedNode} isShown={isShown} cache={connectionsCache}
+                  onClose={close} onPick={pick} returnFocusTo={boxRef} bridge={bridges.get(selectedNode.id) ?? null}
+                  onFocus={focusId === selectedNode.id ? undefined : (id) => changeScope({ focus: id, depth: scope.depth })} />
+              )}
+              {pathQuery === null && selectedLink && (
                 <EdgePanel key={`${selectedLink.a}\u0000${selectedLink.b}`} link={selectedLink} model={model}
                   cache={connectionsCache} onClose={close} onPick={pick} returnFocusTo={boxRef} />
               )}
@@ -215,25 +295,3 @@ export default function WikiGraphPage() {
   );
 }
 
-/** Shown when no line is drawn but plain links join the pages on screen. */
-function PlainLinksHint({ onShow }: { onShow(): void }) {
-  return (
-    <div
-      role="status"
-      style={{
-        position: 'absolute', left: '50%', bottom: 20, transform: 'translateX(-50%)', zIndex: 10,
-        padding: '8px 14px', background: 'rgba(18,19,22,0.9)', border: '1px solid rgba(71,72,74,0.3)',
-        fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--fg-muted)', whiteSpace: 'nowrap',
-      }}
-    >
-      No typed connections between these pages yet.{' '}
-      <button
-        type="button"
-        onClick={onShow}
-        style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', color: 'var(--accent)' }}
-      >
-        Show plain links
-      </button>
-    </div>
-  );
-}

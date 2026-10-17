@@ -5,6 +5,7 @@
  */
 
 import { isSymmetricRelation, relationLabel } from './relation-labels';
+import { isMissingLink, isMissingNode, missingDetail } from './graph-missing';
 import type { ModelLink, ModelNode, VisibleGraph } from './graph-model';
 import type { ConnectionItem, PageConnections } from './relations';
 
@@ -71,9 +72,10 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
  * The hover card's two lines. A page: its title, then category, type and
- * sources. A line: its summary, then a prompt with the source count of the
- * relation the summary names (not the line's weight, which may come from
- * another relation). Null when nothing is hovered.
+ * sources. A missing name: the name, then how many sources name it. A line:
+ * its summary, then a prompt with the source count of the relation the
+ * summary names (not the line's weight, which may come from another
+ * relation). Null when nothing is hovered.
  */
 export function hoverCardText(
   hovered: GraphFocus | null, byId: ReadonlyMap<string, ModelNode>
@@ -81,14 +83,32 @@ export function hoverCardText(
   if (hovered?.kind === 'node') {
     const n = byId.get(hovered.id);
     if (!n) return null;
+    if (isMissingNode(n)) return { title: n.label, detail: missingDetail(n.sourceCount) };
     return { title: n.label, detail: `${n.category} · ${n.pageType.replace(/-/g, ' ')} · ${plural(n.sourceCount, 'source')}` };
   }
-  if (hovered?.kind === 'link') {
+  if (hovered?.kind === 'link' && !isMissingLink(hovered.link)) {
     const named = namedRelation(hovered.link);
     const sources = named ? ` · ${plural(named.source_count, 'source')}` : '';
     return { title: linkSummary(hovered.link, byId), detail: `Click for the evidence${sources}` };
   }
   return null;
+}
+
+/**
+ * Above this many visible lines only typed lines answer the pointer.
+ * force-graph repaints every pointer-aware line on a hidden hit-test canvas
+ * after each redraw; with thousands of plain and "related to" lines that
+ * repaint stalls hover and zoom for most of a second.
+ */
+export const POINTER_LINES_MAX = 3000;
+
+export function limitsLinePointer(visibleLines: number): boolean {
+  return visibleLines > POINTER_LINES_MAX;
+}
+
+/** Whether a line can be hovered and clicked: never a missing name's line, and only typed ones when limited. */
+export function takesPointer(link: ModelLink, limited: boolean): boolean {
+  return !isMissingLink(link) && (!limited || link.kind === 'typed');
 }
 
 /** The bits of a keyboard event the Escape rule reads (a KeyboardEvent fits). */

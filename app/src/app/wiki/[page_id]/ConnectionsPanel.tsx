@@ -3,23 +3,27 @@
  * relations, grouped by label ("Uses", "Part of", ... "Related to" last),
  * then the pages it only shares a plain link with ("Also linked"). Each
  * relation opens to the sentences that explain it and the sources they came
- * from. Server component; the data comes from one getPageConnections() call
- * per request in page.tsx (lib/relations.ts; Saved Links gets no card), the
- * display rules from lib/connections-view.ts. Colours and hover live in
- * globals.css (.wiki-rp-*).
+ * from; long groups show their first few rows. The header counts the pages
+ * the page relates to, links to the graph focused on it ("See in graph"),
+ * and "Also linked" has its own count. Server component; the data comes from
+ * one getPageConnections() call per request in page.tsx (lib/relations.ts;
+ * Saved Links gets no card), the display rules from lib/connections-view.ts.
+ * Colours and hover live in globals.css (.wiki-rp-*).
  */
 
 import Link from 'next/link';
 import type { CSSProperties, ReactNode } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, Network } from 'lucide-react';
 import {
   ALSO_LINKED_VISIBLE,
   connectionsCount,
+  hasConnections,
   moreSourcesNote,
   sourcesNote,
   splitRows,
   visibleRowCount,
 } from '../../../lib/connections-view';
+import { seeInGraphHref } from '../../../lib/graph-scope';
 import type { ConnectionGroup, ConnectionItem, LinkedPage, PageConnections } from '../../../lib/relations';
 import { NOTE, PageRow, PanelSection, ROW, TRUNCATE } from './RightPanel';
 
@@ -27,6 +31,7 @@ import { NOTE, PageRow, PanelSection, ROW, TRUNCATE } from './RightPanel';
 const ROW_LINE: CSSProperties = { ...ROW, display: 'flex', alignItems: 'baseline', gap: 6 };
 const ROW_TITLE: CSSProperties = { ...TRUNCATE, minWidth: 0 };
 const ROW_NOTE: CSSProperties = { flexShrink: 0, fontSize: 12, color: 'var(--fg-dim)' };
+const GROUP_COUNT: CSSProperties = { marginLeft: 6, fontVariantNumeric: 'tabular-nums', opacity: 0.8 };
 const GROUP_LABEL: CSSProperties = {
   margin: '0.6rem 0 0.1rem',
   padding: '0 8px',
@@ -43,11 +48,16 @@ const TOGGLE_SIZE = 28;
 /** Room on the right of a row for its evidence toggle. */
 const TOGGLE_ROOM = 32;
 
-export default function ConnectionsPanel({ connections }: { connections: PageConnections }) {
+export default function ConnectionsPanel({ pageId, connections }: { pageId: string; connections: PageConnections }) {
   const count = connectionsCount(connections);
+  const any = hasConnections(connections);
   return (
-    <PanelSection label="Connections" count={count}>
-      {count === 0 ? (
+    <PanelSection
+      label="Connections"
+      count={count > 0 ? count : undefined}
+      action={any ? <SeeInGraph pageId={pageId} /> : undefined}
+    >
+      {!any ? (
         <p style={{ ...NOTE, margin: 0, padding: '0 8px' }}>No connections yet.</p>
       ) : (
         <>
@@ -61,17 +71,47 @@ export default function ConnectionsPanel({ connections }: { connections: PageCon
   );
 }
 
-/** One label's rows; "Related to" shows its first few, the rest behind "Show all". */
+/** The graph focused on this page, at the right of the card's header row. */
+function SeeInGraph({ pageId }: { pageId: string }) {
+  return (
+    <Link
+      href={seeInGraphHref(pageId)}
+      className="wiki-rp-item"
+      title="Show this page and its neighbours on the graph"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        flexShrink: 0,
+        padding: '2px 8px',
+        borderRadius: 6,
+        fontSize: 12,
+        lineHeight: '17px',
+        textDecoration: 'none',
+        color: 'var(--accent)',
+      }}
+    >
+      <Network size={12} aria-hidden />
+      See in graph
+    </Link>
+  );
+}
+
+/**
+ * One label's rows: the first 8 (3 for "Related to") in full, the rest behind
+ * "Show all" as compact rows (the page and its source count, without the
+ * evidence), so a hub page's card stays small while still listing every row.
+ */
 function RelationGroup({ group }: { group: ConnectionGroup }) {
   const { shown, rest } = splitRows(group.items, visibleRowCount(group));
-  const row = (item: ConnectionItem) => (
-    <ConnectionRow key={`${item.page_id ?? `name:${item.title}`}\u0000${item.type}`} label={group.label} item={item} />
+  const row = (compact: boolean) => (item: ConnectionItem) => (
+    <ConnectionRow key={`${item.page_id ?? `name:${item.title}`}\u0000${item.type}`} label={group.label} item={item} compact={compact} />
   );
   return (
     <div>
       <h3 style={GROUP_LABEL}>{group.label}</h3>
-      {shown.map(row)}
-      {rest.length > 0 && <MoreRows total={group.items.length}>{rest.map(row)}</MoreRows>}
+      {shown.map(row(false))}
+      {rest.length > 0 && <MoreRows total={group.items.length}>{rest.map(row(true))}</MoreRows>}
     </div>
   );
 }
@@ -81,9 +121,9 @@ function RelationGroup({ group }: { group: ConnectionGroup }) {
  * The chevron beside it opens the evidence; it sits outside the link so the
  * title stays one click away from its page.
  */
-function ConnectionRow({ label, item }: { label: string; item: ConnectionItem }) {
+function ConnectionRow({ label, item, compact = false }: { label: string; item: ConnectionItem; compact?: boolean }) {
   const note = sourcesNote(item);
-  const toggle = item.evidence.length > 0;
+  const toggle = !compact && item.evidence.length > 0;
   const lineStyle: CSSProperties = toggle ? { ...ROW_LINE, paddingRight: TOGGLE_ROOM } : ROW_LINE;
   const line = item.page_id ? (
     <Link href={`/wiki/${item.page_id}`} className="wiki-rp-item" title={item.title} style={lineStyle}>
@@ -161,7 +201,9 @@ function AlsoLinked({ pages }: { pages: ReadonlyArray<LinkedPage> }) {
   const row = (p: LinkedPage) => <PageRow key={p.page_id} href={`/wiki/${p.page_id}`} title={p.title} />;
   return (
     <div>
-      <h3 style={GROUP_LABEL}>Also linked</h3>
+      <h3 style={GROUP_LABEL}>
+        Also linked<span style={GROUP_COUNT}>{pages.length}</span>
+      </h3>
       {shown.map(row)}
       {rest.length > 0 && <MoreRows total={pages.length}>{rest.map(row)}</MoreRows>}
     </div>

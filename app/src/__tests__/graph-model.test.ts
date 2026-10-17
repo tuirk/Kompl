@@ -8,8 +8,9 @@ import { describe, expect, it } from 'vitest';
 import { buildGraphModel, DEFAULT_FILTERS, filterGraph, plainLinksHint, type GraphFilters } from '../lib/graph-model';
 import {
   categoryAnchors, centerFor, clusterRadius, edgeWidth, fitView, rankCategories, ringOrder, seedPosition, UNCATEGORIZED,
+  zoomAnchor, zoomAround, ZOOM_MAX,
 } from '../lib/graph-layout';
-import { CATEGORY_HEX, NEUTRAL_HEX, RELATION_HEX } from '../lib/graph-palette';
+import { CATEGORY_HEX, LINE_ALPHA, LINE_HEX, LINE_LIT_HEX, NEUTRAL_HEX, withAlpha } from '../lib/graph-palette';
 import type { RelationEdge } from '../lib/relation-edges';
 import type { WikiGraph, WikiGraphNode } from '../lib/wiki-graph';
 
@@ -53,11 +54,14 @@ describe('buildGraphModel', () => {
     expect(model.links).toHaveLength(6); // the line to an unknown page is dropped
     const byPair = new Map(model.links.map((l) => [`${l.a}-${l.b}`, l]));
     expect(byPair.get('bitcoin-pow')).toMatchObject({ kind: 'typed', colorType: 'uses', weight: 3, width: 3, sameCategory: true });
-    // A specific relation colours the line even when "related to" has more sources.
+    // A specific relation names the line even when "related to" has more sources.
     expect(byPair.get('bitcoin-eth')).toMatchObject({ kind: 'typed', colorType: 'competes_with' });
     expect(byPair.get('eth-pow')).toMatchObject({ kind: 'related', colorType: 'related_to', width: edgeWidth(2) });
     expect(byPair.get('bitcoin-btc-summary')).toMatchObject({ kind: 'plain', colorType: null, width: 1 });
-    expect(byPair.get('bitcoin-pow')?.bright).toBe(RELATION_HEX.uses);
+    // Lines are grey, never topic- or relation-coloured: brightness by kind, lit when in focus.
+    expect(byPair.get('bitcoin-pow')).toMatchObject({ color: withAlpha(LINE_HEX, LINE_ALPHA.typed), bright: LINE_LIT_HEX });
+    expect(byPair.get('eth-pow')?.color).toBe(withAlpha(LINE_HEX, LINE_ALPHA.related));
+    expect(byPair.get('bitcoin-btc-summary')?.color).toBe(withAlpha(LINE_HEX, LINE_ALPHA.plain));
     expect(model.missing).toEqual(DATA.missing);
   });
 
@@ -256,5 +260,40 @@ describe('fitting into the free area', () => {
     const at = centerFor(50, 20, 2, 1000, 800, { left: 0, right: 400, top: 0, bottom: 0 });
     expect(1000 / 2 + (50 - at.x) * 2).toBeCloseTo(300);
     expect(fitView({ x: [0, 1], y: [0, 1] }, 1000, 800, insets).k).toBe(4);
+  });
+});
+
+describe('zoom buttons', () => {
+  const insets = { left: 268, right: 384, top: 44, bottom: 40 };
+  const [W, H] = [1600, 900];
+  const view = { x: 10, y: -20, k: 1.5 };
+  const screen = (v: { x: number; y: number; k: number }, p: { x: number; y: number }) =>
+    ({ x: W / 2 + (p.x - v.x) * v.k, y: H / 2 + (p.y - v.y) * v.k });
+
+  it('zooms about the selection while it shows in the free area', () => {
+    const selected = { x: 60, y: 0 };
+    const about = zoomAnchor(view, W, H, insets, selected);
+    expect(about).toBe(selected);
+    const next = zoomAround(view, about, view.k * 1.3);
+    expect(next.k).toBeCloseTo(1.95);
+    const [before, after] = [screen(view, selected), screen(next, selected)];
+    expect(after.x).toBeCloseTo(before.x);
+    expect(after.y).toBeCloseTo(before.y);
+  });
+
+  it("zooms about the free area's middle with no selection, or one off in a covered edge", () => {
+    const middle = { x: insets.left + (W - insets.left - insets.right) / 2, y: insets.top + (H - insets.top - insets.bottom) / 2 };
+    for (const about of [null, { x: 10 + (1550 - W / 2) / 1.5, y: -20 }]) {
+      const p = zoomAnchor(view, W, H, insets, about);
+      expect(screen(view, p).x).toBeCloseTo(middle.x);
+      expect(screen(view, p).y).toBeCloseTo(middle.y);
+      const next = zoomAround(view, p, view.k * 0.77);
+      expect(screen(next, p).x).toBeCloseTo(middle.x);
+      expect(screen(next, p).y).toBeCloseTo(middle.y);
+    }
+  });
+
+  it("keeps to force-graph's zoom limits", () => {
+    expect(zoomAround(view, { x: 0, y: 0 }, 1e6).k).toBe(ZOOM_MAX);
   });
 });

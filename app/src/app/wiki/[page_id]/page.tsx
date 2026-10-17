@@ -420,7 +420,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
           <DisputesPanel pageId={page_id} disputes={disputes} sources={sourceList} />
         )}
 
-        {connections && <ConnectionsPanel connections={connections} />}
+        {connections && <ConnectionsPanel pageId={page_id} connections={connections} />}
 
         {page_id !== SAVED_LINKS_PAGE_ID && <RelatedPages pageId={page_id} />}
       </aside>

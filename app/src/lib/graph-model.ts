@@ -9,7 +9,7 @@
 
 import type { EdgeRelation, MissingPage } from './relation-edges';
 import type { WikiGraph } from './wiki-graph';
-import { PLAIN_LINK_HEX, relationHex, withAlpha } from './graph-palette';
+import { LINE_ALPHA, LINE_FADED, LINE_HEX, LINE_LIT_HEX, withAlpha } from './graph-palette';
 import {
   categoryAnchors, clusterRadius, edgeWidth, nodeRadius, rankCategories, ringOrder, seedPosition, UNCATEGORIZED,
 } from './graph-layout';
@@ -25,9 +25,7 @@ export const LABEL_MAX = 32;
 /** Alphas: the rest of the map fades while a page or line is hovered or selected. */
 const NODE_FADED = 0.14;
 const SOURCE_FILL = 0.45;
-const LINE_ALPHA: Record<EdgeKind, number> = { typed: 0.8, related: 0.5, plain: 0.5 };
-const LINE_FADED = 0.06;
-const PLAIN_BRIGHT_HEX = '#A3ACBA';
+const LINE_FADED_COLOR = withAlpha(LINE_HEX, LINE_FADED);
 
 /** typed: a specific relation; related: only "related to"; plain: only a wikilink. */
 export type EdgeKind = 'typed' | 'related' | 'plain';
@@ -69,7 +67,7 @@ export interface ModelLink {
   wikilink: boolean;
   weight: number;
   kind: EdgeKind;
-  /** The relation that colours the line: the strongest specific one, else related_to; null for a plain link. */
+  /** The relation that names the line: the strongest specific one, else related_to; null for a plain link. */
   colorType: string | null;
   sameCategory: boolean;
   width: number;
@@ -192,7 +190,6 @@ export function buildGraphModel(data: WikiGraph): GraphModel {
     if (!a || !b) continue;
     const kind = edgeKind(e.relations);
     const colorType = colorTypeOf(e.relations);
-    const hex = colorType === null ? PLAIN_LINK_HEX : relationHex(colorType);
     links.push({
       source: a.id,
       target: b.id,
@@ -205,9 +202,9 @@ export function buildGraphModel(data: WikiGraph): GraphModel {
       colorType,
       sameCategory: a.category === b.category,
       width: edgeWidth(e.weight),
-      color: withAlpha(hex, LINE_ALPHA[kind]),
-      faded: withAlpha(hex, LINE_FADED),
-      bright: kind === 'plain' ? PLAIN_BRIGHT_HEX : hex,
+      color: withAlpha(LINE_HEX, LINE_ALPHA[kind]),
+      faded: LINE_FADED_COLOR,
+      bright: LINE_LIT_HEX,
     });
   }
   links.sort((x, y) => KIND_ORDER[x.kind] - KIND_ORDER[y.kind] || x.weight - y.weight || compareIds(x.a, y.a) || compareIds(x.b, y.b));

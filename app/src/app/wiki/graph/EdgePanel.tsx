@@ -12,7 +12,6 @@
 import type { CSSProperties, RefObject } from 'react';
 import { readingOrder, relationsBetween } from '../../../lib/graph-focus';
 import type { GraphModel, ModelLink } from '../../../lib/graph-model';
-import { relationHex } from '../../../lib/graph-palette';
 import { relationLabel } from '../../../lib/relation-labels';
 import type { PageConnections } from '../../../lib/relations';
 import { BODY, EvidenceList, FooterLink, LINK_BUTTON, META, PanelNote, PanelShell } from './panel-parts';
@@ -70,7 +69,7 @@ export default function EdgePanel({ link, model, cache, onClose, onPick, returnF
           <div style={{ ...BODY, fontSize: 14, lineHeight: '21px', color: 'var(--fg)' }}>
             {name(fromId, from)}
             <span style={{ color: 'var(--fg-dim)' }}>{' — '}</span>
-            <span style={{ color: relationHex(item.type), fontWeight: 600 }}>{label}</span>
+            <span style={{ color: 'var(--fg)', fontWeight: 600 }}>{label}</span>
             <span style={{ color: 'var(--fg-dim)' }}>{' → '}</span>
             {name(toId, to)}
           </div>
@@ -88,7 +87,7 @@ export default function EdgePanel({ link, model, cache, onClose, onPick, returnF
           const direction = fromId === link.a ? r.direction : r.direction === 'out' ? 'in' : 'out';
           return (
             <div key={`${r.type}\u0000${r.direction}`} style={BODY}>
-              <span style={{ color: relationHex(r.type), fontWeight: 600 }}>{relationLabel(r.type, direction)}</span>
+              <span style={{ color: 'var(--fg)', fontWeight: 600 }}>{relationLabel(r.type, direction)}</span>
               <span style={META}>{` · ${r.source_count} source${r.source_count === 1 ? '' : 's'}`}</span>
             </div>
           );

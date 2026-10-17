@@ -5,8 +5,10 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  closesPanelOnEscape, focusHighlight, hoverCardText, linkSummary, nodeHighlight, readingOrder, relationsBetween,
+  closesPanelOnEscape, focusHighlight, hoverCardText, limitsLinePointer, linkSummary, nodeHighlight, POINTER_LINES_MAX,
+  readingOrder, relationsBetween, takesPointer,
 } from '../lib/graph-focus';
+import { buildMissingLayer } from '../lib/graph-missing';
 import { buildGraphModel, DEFAULT_FILTERS, filterGraph, type ModelLink } from '../lib/graph-model';
 import type { PageConnections } from '../lib/relations';
 import type { WikiGraph, WikiGraphNode } from '../lib/wiki-graph';
@@ -128,5 +130,26 @@ describe('closesPanelOnEscape', () => {
     expect(closesPanelOnEscape(key({ tagName: 'DIV', isContentEditable: true }))).toBe(false);
     expect(closesPanelOnEscape(key(null, { defaultPrevented: true }))).toBe(false);
     expect(closesPanelOnEscape(key(null, { key: 'Enter' }))).toBe(false);
+  });
+});
+
+describe('line pointer areas', () => {
+  it('limits pointer areas to typed lines past ~3,000 visible lines', () => {
+    expect(POINTER_LINES_MAX).toBe(3000);
+    expect(limitsLinePointer(3000)).toBe(false);
+    expect(limitsLinePointer(3001)).toBe(true);
+    const [typedLine, relatedLine, plainLine] = [lineOf('a-pow', 'b-bitcoin'), lineOf('b-bitcoin', 'c-eth'), lineOf('c-eth', 'd-vilnius')];
+    expect(typedLine.kind).toBe('typed');
+    expect(plainLine.kind).toBe('plain');
+    for (const l of [typedLine, relatedLine, plainLine]) expect(takesPointer(l, false)).toBe(true);
+    expect(takesPointer(typedLine, true)).toBe(true);
+    expect(takesPointer(plainLine, true)).toBe(false);
+  });
+
+  it("never gives a missing name's line a pointer area", () => {
+    const layer = buildMissingLayer({ missing: [{ name: 'Satoshi', source_count: 2, page_ids: ['b-bitcoin'] }], byId: model.byId });
+    const line = [...layer.linksOf.values()][0][0];
+    expect(takesPointer(line, false)).toBe(false);
+    expect(hoverCardText({ kind: 'link', link: line }, model.byId)).toBeNull();
   });
 });

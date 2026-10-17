@@ -134,22 +134,37 @@ export function EvidenceList({ item }: { item: Pick<ConnectionItem, 'evidence' |
   );
 }
 
-/** A full-width button in the panel footer. */
+const FOOTER_BUTTON: CSSProperties = {
+  flex: 1, padding: '12px 0', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8,
+  border: '1px solid rgba(var(--accent-rgb),0.3)', textDecoration: 'none', overflow: 'hidden',
+  fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 11, letterSpacing: '1px',
+  textTransform: 'uppercase', color: 'var(--accent)', whiteSpace: 'nowrap', background: 'none', cursor: 'pointer',
+};
+
+/** A full-width link in the panel footer. */
 export function FooterLink({ href, children }: { href: string; children: ReactNode }) {
   return (
-    <Link
-      href={href}
-      style={{
-        flex: 1, padding: '12px 0', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8,
-        border: '1px solid rgba(var(--accent-rgb),0.3)', textDecoration: 'none', overflow: 'hidden',
-        fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 11, letterSpacing: '1px',
-        textTransform: 'uppercase', color: 'var(--accent)', whiteSpace: 'nowrap',
-      }}
-    >
+    <Link href={href} style={FOOTER_BUTTON}>
       {children}
     </Link>
   );
 }
+
+/** A full-width button in the panel footer, styled as FooterLink. */
+export function FooterButton({ onClick, title, children }: { onClick(): void; title?: string; children: ReactNode }) {
+  return (
+    <button type="button" onClick={onClick} title={title} style={FOOTER_BUTTON}>
+      {children}
+    </button>
+  );
+}
+
+/** The small accent tag a bridge page carries ("BRIDGE"). */
+export const BADGE: CSSProperties = {
+  display: 'inline-block', padding: '0 5px', border: '1px solid rgba(var(--accent-rgb),0.45)', borderRadius: 3,
+  fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 9, lineHeight: '15px', letterSpacing: '1px',
+  textTransform: 'uppercase', color: 'var(--accent)', verticalAlign: '1px',
+};
 
 export function PanelNote({ children }: { children: ReactNode }) {
   return <p style={{ ...META, margin: 0 }}>{children}</p>;

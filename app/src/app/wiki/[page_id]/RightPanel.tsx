@@ -30,16 +30,29 @@ export const TRUNCATE: CSSProperties = { overflow: 'hidden', textOverflow: 'elli
 export const NOTE: CSSProperties = { display: 'block', fontSize: 12, lineHeight: '17px', color: 'var(--fg-dim)' };
 const ICON: CSSProperties = { flexShrink: 0, marginTop: 3 };
 
-export function PanelSection({ label, count, children }: { label: string; count?: number; children: ReactNode }) {
+/** A section with its label and count; `action` (e.g. a link) sits at the right end of the label's row, outside the heading. */
+export function PanelSection(
+  { label, count, action, children }: { label: string; count?: number; action?: ReactNode; children: ReactNode }
+) {
+  const heading = (
+    <h2
+      className="meta"
+      style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: action ? 0 : '0 0 0.4rem', padding: '0 8px', fontWeight: 400 }}
+    >
+      {label}
+      {count !== undefined && <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.8 }}>{count}</span>}
+    </h2>
+  );
   return (
     <section style={{ marginTop: '1.75rem' }}>
-      <h2
-        className="meta"
-        style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: '0 0 0.4rem', padding: '0 8px', fontWeight: 400 }}
-      >
-        {label}
-        {count !== undefined && <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.8 }}>{count}</span>}
-      </h2>
+      {action ? (
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: '0.4rem' }}>
+          {heading}
+          {action}
+        </div>
+      ) : (
+        heading
+      )}
       {children}
     </section>
   );

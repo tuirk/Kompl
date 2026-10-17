@@ -2,8 +2,9 @@
  * The wiki page's "Connections" card (app/wiki/[page_id]/ConnectionsPanel.tsx
  * and its display rules, lib/connections-view.ts): groups in the read
  * model's order, page links and plain names, evidence with source links and
- * archived sources marked, "Related to" and "Also linked" behind "Show all",
- * and the empty state.
+ * archived sources marked, long groups, "Related to" and "Also linked"
+ * behind "Show all", the header's count of related pages, "Also linked"'s
+ * own count, the "See in graph" link and the empty state.
  */
 
 import { createElement } from 'react';
@@ -12,8 +13,10 @@ import { describe, expect, it } from 'vitest';
 import ConnectionsPanel from '../app/wiki/[page_id]/ConnectionsPanel';
 import {
   ALSO_LINKED_VISIBLE,
+  GROUP_VISIBLE,
   RELATED_VISIBLE,
   connectionsCount,
+  hasConnections,
   moreSourcesNote,
   sourcesNote,
   splitRows,
@@ -64,7 +67,8 @@ const FULL: PageConnections = {
   linked_only: linked,
 };
 
-const render = (connections: PageConnections) => renderToString(createElement(ConnectionsPanel, { connections }));
+const render = (connections: PageConnections, pageId = 'bitcoin') =>
+  renderToString(createElement(ConnectionsPanel, { pageId, connections }));
 /** The markup before and inside the n-th "Show all" disclosure of a section. */
 function splitAtShowAll(html: string, from: string): { before: string; inside: string } {
   const start = html.indexOf(from);
@@ -74,14 +78,31 @@ function splitAtShowAll(html: string, from: string): { before: string; inside: s
 }
 
 describe('connections display rules', () => {
-  it('counts every connection and every plain link', () => {
-    expect(connectionsCount(FULL)).toBe(1 + 1 + related.length + linked.length);
+  it('counts the pages and names the page relates to, each once, leaving plain links out', () => {
+    expect(connectionsCount(FULL)).toBe(1 + 1 + related.length);
+    expect(connectionsCount({ groups: [], linked_only: linked })).toBe(0);
     expect(connectionsCount({ groups: [], linked_only: [] })).toBe(0);
+    // One page under two labels, and one name in two cases, count once each.
+    const twice: PageConnections = {
+      groups: [
+        { label: 'Uses', items: [item({ title: 'Proof of work' }), item({ page_id: null, title: 'Satoshi Nakamoto' })] },
+        { label: 'Related to', items: [item({ title: 'Proof of work', type: 'related_to' }), item({ page_id: null, title: 'satoshi nakamoto', type: 'related_to' })] },
+      ],
+      linked_only: [],
+    };
+    expect(connectionsCount(twice)).toBe(2);
   });
 
-  it('shows the first few "Related to" rows and every row of other groups', () => {
+  it('has something to list when there is a relation or an "Also linked" page', () => {
+    expect(hasConnections(FULL)).toBe(true);
+    expect(hasConnections({ groups: [], linked_only: linked.slice(0, 1) })).toBe(true);
+    expect(hasConnections({ groups: [], linked_only: [] })).toBe(false);
+  });
+
+  it('shows the first 3 "Related to" rows and the first 8 of any other group', () => {
     expect(visibleRowCount({ label: 'Related to', items: related })).toBe(RELATED_VISIBLE);
-    expect(visibleRowCount(FULL.groups[1])).toBe(1);
+    expect(visibleRowCount(FULL.groups[1])).toBe(GROUP_VISIBLE);
+    expect(GROUP_VISIBLE).toBe(8);
     expect(splitRows([1, 2, 3, 4], 3)).toEqual({ shown: [1, 2, 3], rest: [4] });
     expect(splitRows([1, 2], 3)).toEqual({ shown: [1, 2], rest: [] });
   });
@@ -96,18 +117,57 @@ describe('connections display rules', () => {
 });
 
 describe('ConnectionsPanel', () => {
-  it('says so when the page has no connections', () => {
+  it('says so when the page has no connections, with no graph link', () => {
     const html = render({ groups: [], linked_only: [] });
     expect(html).toContain('Connections');
     expect(html).toContain('No connections yet.');
     expect(html).not.toContain('Also linked');
+    expect(html).not.toContain('See in graph');
   });
 
-  it('lists the groups in order, then "Also linked", under one counted section', () => {
+  it('lists the groups in order, then "Also linked" with its own count, under one counted section', () => {
     const html = render(FULL);
-    const labels = [...html.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].map((m) => m[1]);
+    const labels = [...html.matchAll(/<h3[^>]*>([^<]+)</g)].map((m) => m[1]);
     expect(labels).toEqual(['Created by', 'Uses', 'Related to', 'Also linked']);
     expect(html).toMatch(new RegExp(`Connections<span[^>]*>${connectionsCount(FULL)}</span>`));
+    expect(html).toMatch(new RegExp(`Also linked<span[^>]*>${linked.length}</span></h3>`));
+  });
+
+  it('links the header to the graph focused on the page, outside the heading', () => {
+    const html = render(FULL, 'bitcoin-network-1c140c9e');
+    expect(html).toMatch(/<a [^>]*href="\/wiki\/graph\?focus=bitcoin-network-1c140c9e"[^>]*>.*?See in graph<\/a>/);
+    const heading = html.slice(html.indexOf('<h2'), html.indexOf('</h2>'));
+    expect(heading).not.toContain('See in graph');
+  });
+
+  it('leaves the header count out when only plain links are listed', () => {
+    const html = render({ groups: [], linked_only: linked.slice(0, 2) });
+    expect(html).toMatch(/>Connections<\/h2>/);
+    expect(html).toContain('See in graph');
+  });
+
+  it('lists every row of a long group, those past the first 8 as compact rows without evidence', () => {
+    const many = Array.from({ length: 11 }, (_, i) =>
+      item({ title: `Tool ${i}`, source_count: 2, evidence: [evidence(`src-${i}`, `Bitcoin uses tool ${i}.`)] }));
+    const html = render({ groups: [{ label: 'Uses', items: many }], linked_only: [] });
+    const { before, inside } = splitAtShowAll(html, '>Uses</h3>');
+    // Nothing lost: every row links to its page with its source count.
+    for (const r of many) expect(html).toMatch(new RegExp(`href="/wiki/${r.page_id}"[^>]*>.*?>${r.title}</span>.*?· 2 sources`));
+    // The first 8 keep their evidence toggle; the rest are compact.
+    expect(before.match(/class="wiki-rp-why"/g)).toHaveLength(GROUP_VISIBLE);
+    expect(inside).not.toContain('wiki-rp-why');
+    expect(inside).not.toContain('Bitcoin uses tool 9.');
+    expect(html).toContain('Bitcoin uses tool 7.');
+  });
+
+  it('keeps rows of a long group past the first 8 behind "Show all"', () => {
+    const many = Array.from({ length: 11 }, (_, i) => item({ title: `Tool ${i}` }));
+    const html = render({ groups: [{ label: 'Uses', items: many }], linked_only: [] });
+    const { before, inside } = splitAtShowAll(html, '>Uses</h3>');
+    for (const r of many.slice(0, GROUP_VISIBLE)) expect(before).toContain(`>${r.title}</span>`);
+    for (const r of many.slice(GROUP_VISIBLE)) expect(inside).toContain(`>${r.title}</span>`);
+    expect(before).not.toContain('>Tool 8</span>');
+    expect(inside).toMatch(/Show all (<!-- -->)?11/);
   });
 
   it('links a page with its source count, and shows a plain name as having no page yet', () => {
@@ -139,7 +199,7 @@ describe('ConnectionsPanel', () => {
   });
 
   it('keeps "Also linked" rows past the first 8 behind "Show all"', () => {
-    const { before, inside } = splitAtShowAll(render(FULL), '>Also linked</h3>');
+    const { before, inside } = splitAtShowAll(render(FULL), '>Also linked<');
     for (const p of linked.slice(0, ALSO_LINKED_VISIBLE)) expect(before).toContain(`href="/wiki/${p.page_id}"`);
     for (const p of linked.slice(ALSO_LINKED_VISIBLE)) expect(inside).toContain(`href="/wiki/${p.page_id}"`);
     expect(inside).toMatch(/Show all (<!-- -->)?10/);
@@ -171,7 +231,8 @@ describe('ConnectionsPanel', () => {
     expect(html.match(/class="wiki-rp-why"/g)).toHaveLength(1);
     expect(html).toContain('aria-label="Why: Created by Satoshi Nakamoto"');
     expect(html).toContain('href="/source/src-1"');
-    expect(html).not.toContain('href="/wiki/');
+    // The only wiki link is the header's "See in graph".
+    expect(html).not.toMatch(/href="\/wiki\/(?!graph\?)/);
   });
 
   it('needs no "Show all" for exactly 3 "Related to" rows and exactly 8 plain links', () => {

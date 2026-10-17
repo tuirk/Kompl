@@ -122,8 +122,7 @@ ship with a `migrate.py` step that runs at boot.
   by category, with each island's name over it when zoomed out; islands
   that share connections sit side by side, and the layout is the same on
   every visit. Lines show typed relations only, one per pair of pages,
-  coloured by relation (the legend has the key) and wider when more sources
-  say so. Hover a page to light up its neighbours. Click a page for its
+  wider when more sources say so. Hover a page to light up its neighbours. Click a page for its
   type, category, summary and connections grouped by relation, each opening
   to its evidence; click a line to see why the two pages connect: each
   relation, its source count and the sentences behind it, linked to their
@@ -136,6 +135,43 @@ ship with a `migrate.py` step that runs at boot.
   the Saved Links page no longer appears on the graph. `GET /api/wiki/graph`
   now returns one line per page pair (`relations`, `wikilink`, `weight`),
   each page's `degree`, and `missing`; only the graph page reads it.
+- **Explore the graph.** Focus on one page: `/wiki/graph?focus=<page_id>`
+  (also "Focus" in a page's panel and "See in graph" on its Connections
+  card) shows the page and the pages one line away; a header switch widens
+  it to two lines, and "Full map" (or the header's Graph tab) goes back. A
+  focused page with no typed relation says so and offers to show the plain
+  links or "related to" lines that join it. "Connect two pages" finds how
+  two pages are joined: type two titles, or click two pages on the map, and
+  the chain of lines between them lights up, preferring typed relations over
+  plain links and "related to", with each step's relation and the first
+  sentence behind it; it says so when nothing joins them. "Show missing
+  pages" in the legend (off by default) adds names that several sources
+  mention but that have no page yet, as dashed circles beside the pages they
+  are named with; this is a report, with no actions. Up to five pages that
+  lie on many of the shortest ways between others on the default view
+  (typed relations, no source pages), with neighbours in two or more
+  topics, carry a "bridge" badge on the map and in their panel; the badges
+  do not change with the legend. The zoom buttons zoom about the selected
+  page or line, else the focused page, else the middle of the free part of
+  the map. With more than 3,000 lines on screen, only typed lines respond to
+  the pointer, which keeps hover and zoom smooth.
+- **Lines read without colour.** Lines are never coloured by topic, and
+  each line feature means one thing: brightness is how specific the
+  connection is (typed, then "related to", both at least 3:1 against the
+  background, then plain links, deliberately faint and off by default),
+  width is how many sources say so, an arrow
+  shows which way a directed relation reads (part of, uses, created by), a
+  zigzag marks competes with or contradicts, dashes lead to a missing page,
+  and the accent marks the clicked line or a path. Relation names appear
+  along the lines of the hovered or selected page and the hovered line, and
+  on every long typed line when zoomed in, never over a page name. The
+  legend shows each of these as drawn.
+- **A shorter Connections card.** The header counts the related pages and
+  names with no page yet (each once), "Also linked" has its own count, and
+  every group shows its first 8 rows ("Related to" its first 3) in full; the
+  rest sit behind "Show all" as compact rows, so every connection is still
+  listed. The graph's page panel keeps every row in full, evidence
+  included, behind the same "Show all".
 
 ### Wiki readability
 

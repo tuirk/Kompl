@@ -644,3 +644,8 @@ article img {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* The graph header's and path panel's buttons (GraphHeader.tsx, PathPanel.tsx). */
+.graph-header-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

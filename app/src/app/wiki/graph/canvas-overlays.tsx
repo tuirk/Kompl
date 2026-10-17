@@ -2,11 +2,14 @@
 
 /**
  * What floats over the graph canvas: the hover card that follows the
- * pointer (kept inside the window, flipping left or up near an edge) and the
- * zoom buttons. Inline styles and CSS vars, as the rest of the app.
+ * pointer (kept inside the window, flipping left or up near an edge), the
+ * zoom buttons and the hint that offers hidden lines. Inline styles and CSS
+ * vars, as the rest of the app.
  */
 
 import type { RefObject } from 'react';
+import { plainLinksHint, type GraphFilters, type GraphModel, type VisibleGraph } from '../../../lib/graph-model';
+import { focusHint, focusHintAction } from '../../../lib/graph-scope';
 
 /** Gap between the pointer and the card, and the card and the window edge. */
 const CARD_OFFSET = 14;
@@ -78,5 +81,53 @@ export function ZoomButtons({ right, onZoom, onFit }: { right: number; onZoom(fa
         </button>
       ))}
     </div>
+  );
+}
+
+/**
+ * Shown when no line is drawn but hidden lines would join the pages on
+ * screen (the full map's plain links, or a focused page's plain or "related
+ * to" lines); the button turns those lines on.
+ */
+export function LinesHint({ message, action, onShow }: { message: string; action: string; onShow(): void }) {
+  return (
+    <div
+      role="status"
+      style={{
+        position: 'absolute', left: '50%', bottom: 20, transform: 'translateX(-50%)', zIndex: 10,
+        padding: '8px 14px', background: 'rgba(18,19,22,0.9)', border: '1px solid rgba(71,72,74,0.3)',
+        fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--fg-muted)', whiteSpace: 'nowrap',
+      }}
+    >
+      {message}{' '}
+      <button
+        type="button"
+        onClick={onShow}
+        style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', color: 'var(--accent)' }}
+      >
+        {action}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The hint under the canvas, if any: a focused page with no typed line
+ * (offering exactly the hidden lines that join it), else a map whose pages
+ * only plain links join.
+ */
+export function CanvasHint(props: {
+  model: GraphModel; full: VisibleGraph; scoped: VisibleGraph; focusId: string | null; filters: GraphFilters; onFilters(next: GraphFilters): void;
+}) {
+  const { model, full, scoped, focusId, filters, onFilters } = props;
+  const lonely = focusHint(model, full, scoped, focusId, filters);
+  if (lonely) {
+    const show = () => onFilters({ ...filters, showPlain: filters.showPlain || lonely.plain, showRelated: filters.showRelated || lonely.related });
+    return <LinesHint message="No typed connections for this page yet." action={focusHintAction(lonely)} onShow={show} />;
+  }
+  if (!plainLinksHint(model, scoped, filters)) return null;
+  return (
+    <LinesHint message="No typed connections between these pages yet." action="Show plain links"
+      onShow={() => onFilters({ ...filters, showPlain: true })} />
   );
 }

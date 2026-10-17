@@ -10,8 +10,14 @@
  * neighbouring islands still separate when hue does not. "Uncategorized" and
  * every category past the eighth share NEUTRAL_HEX.
  *
- * RELATION_HEX colours a line by its strongest relation type; "related to"
- * and plain links are greys, so the specific relations stand out.
+ * Lines never use topic colours, and each line channel means one thing:
+ * brightness is how specific the connection is (LINE_ALPHA: typed, then
+ * "related to", then a plain link), width is how many sources say so, an
+ * arrow or a zigzag is the kind of relation (graph-line-style.ts), and the
+ * accent marks the clicked line or a path, as the accent ring marks the
+ * selected page. Typed and "related to" lines and the accent reach 3:1
+ * against CANVAS_BG (WCAG 1.4.11); plain links are deliberately faint (an
+ * optional layer, off by default) and make no 3:1 claim.
  */
 
 /** The graph's canvas background (also the page background). */
@@ -31,28 +37,20 @@ export const CATEGORY_HEX = [
 /** Uncategorized pages and categories beyond the eighth. */
 export const NEUTRAL_HEX = '#8B9099';
 
-/** Line colour per relation type; Includes / Used by / Created share their type's colour. */
-export const RELATION_HEX: Record<string, string> = {
-  part_of: '#7DD3FC',
-  created_by: '#FCD34D',
-  uses: '#86EFAC',
-  competes_with: '#F87171',
-  contradicts: '#E879F9',
-  related_to: '#6B7280',
-};
+/** Every line's colour; the tiers differ in alpha only. */
+export const LINE_HEX = '#D6DBE2';
 
-/** Any other relation type the extractor emits. */
-export const OTHER_RELATION_HEX = '#C4B5FD';
+/** Line alpha by kind: typed, only "related to", only a wikilink. */
+export const LINE_ALPHA = { typed: 0.75, related: 0.55, plain: 0.4 } as const;
 
-/** Lines that are only a wikilink in the page text. */
-export const PLAIN_LINK_HEX = '#4B5361';
+/** Lines away from what is hovered or selected. */
+export const LINE_FADED = 0.06;
+
+/** The lines of the hovered or selected page, and the hovered line. */
+export const LINE_LIT_HEX = '#E6EDF3';
 
 /** The selection ring and other accents (the app's --accent). */
 export const ACCENT_HEX = '#98FFD9';
-
-export function relationHex(type: string): string {
-  return RELATION_HEX[type] ?? OTHER_RELATION_HEX;
-}
 
 /** "#56B4E9" + 0.3 -> "rgba(86,180,233,0.3)". Build-time only: callers cache the result. */
 export function withAlpha(hex: string, alpha: number): string {

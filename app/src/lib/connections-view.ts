@@ -11,19 +11,34 @@ import type { ConnectionGroup, ConnectionItem, PageConnections } from './relatio
 
 /** "Also linked" rows shown before "Show all", as the old "Linked from" list. */
 export const ALSO_LINKED_VISIBLE = 8;
+/** Rows of a relation group shown before "Show all", so a hub page's card stays short. */
+export const GROUP_VISIBLE = 8;
 /** "Related to" is the weakest relation: rows past this sit behind "Show all". */
 export const RELATED_VISIBLE = 3;
 
 const RELATED_LABEL = relationLabel('related_to', 'out');
 
-/** Rows the card lists: every connection plus every "Also linked" page. */
+/**
+ * The card's headline count: the pages (and names with no page) the page
+ * has a typed relation with, each counted once however many relations join
+ * them. "Also linked" pages are counted on their own (linked_only.length).
+ */
 export function connectionsCount(connections: PageConnections): number {
-  return connections.groups.reduce((n, g) => n + g.items.length, 0) + connections.linked_only.length;
+  const ends = new Set<string>();
+  for (const g of connections.groups) {
+    for (const i of g.items) ends.add(i.page_id ?? `name:${i.title.toLowerCase()}`);
+  }
+  return ends.size;
 }
 
-/** Rows of a group shown before "Show all": the first few of "Related to", all of any other. */
+/** True when the card has anything to list: a relation or an "Also linked" page. */
+export function hasConnections(connections: PageConnections): boolean {
+  return connections.groups.some((g) => g.items.length > 0) || connections.linked_only.length > 0;
+}
+
+/** Rows of a group shown before "Show all": the first 3 of "Related to", the first 8 of any other. */
 export function visibleRowCount(group: ConnectionGroup): number {
-  return group.label === RELATED_LABEL ? RELATED_VISIBLE : group.items.length;
+  return group.label === RELATED_LABEL ? RELATED_VISIBLE : GROUP_VISIBLE;
 }
 
 /** The rows shown at first and the rest, which go behind "Show all". */

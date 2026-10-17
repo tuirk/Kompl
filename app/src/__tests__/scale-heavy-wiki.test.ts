@@ -14,7 +14,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GET as getConnectionsRoute } from '../app/api/wiki/[page_id]/connections/route';
 import { GET as getDataRoute } from '../app/api/wiki/[page_id]/data/route';
 import { setSourceStatus } from '../lib/db';
+import { findBridges } from '../lib/graph-metrics';
+import { buildMissingLayer, withMissing } from '../lib/graph-missing';
 import { buildGraphModel, DEFAULT_FILTERS, filterGraph, type GraphFilters } from '../lib/graph-model';
+import { shortestPath } from '../lib/graph-path';
+import { focusGraph } from '../lib/graph-scope';
 import { backfillRelationDescriptions } from '../lib/relation-backfill';
 import { getPageConnections, getRelationEdges } from '../lib/relations';
 import { getWikiGraph } from '../lib/wiki-graph';
@@ -39,7 +43,11 @@ const BUDGET = {
   edgesP95: 1500, // ~130 / ~150
   modelP95: 500, // ~55 / ~21
   filterP95: 150, // <= ~12 / ~4
+  bridges: 3000, // ~340 alone: betweenness + bridges with every toggle on (1,490 pages, 8,782 lines)
+  explore: 300, // ~18 alone: a path across the map, a 2-hop focus on the busiest page, the missing names
 } as const;
+/** Warm runs for the slower explore measures (betweenness is O(pages x lines)). */
+const EXPLORE_RUNS = 5;
 const RUNS = 20;
 
 let handle: TestDbHandle;
@@ -190,5 +198,31 @@ describe('heavy wiki scale', { timeout: 60_000 }, () => {
         expect(run.p95, fmt(`filterGraph ${tag}/${name} p95`, run.p95, BUDGET.filterP95)).toBeLessThan(BUDGET.filterP95);
       }
     }
+  });
+
+  it('finds bridges, paths and focus views fast with every toggle on', () => {
+    const allOn: GraphFilters = { ...DEFAULT_FILTERS, showSources: true, showRelated: true, showPlain: true };
+    const model = buildGraphModel(JSON.parse(JSON.stringify(getWikiGraph(true))));
+    const visible = filterGraph(model, allOn);
+    const topicOf = (id: string) => model.byId.get(id)?.category ?? null;
+    const runs = (fn: () => unknown) => Array.from({ length: EXPLORE_RUNS }, () => timed(fn).ms);
+    const worst = (fn: () => unknown) => Math.max(...runs(fn));
+
+    const bridges = findBridges(visible.neighbours, topicOf);
+    expect(bridges.length).toBeGreaterThan(0);
+    const bridgeRuns = runs(() => findBridges(visible.neighbours, topicOf));
+    const bridgeMs = Math.max(...bridgeRuns);
+    summary.push(`bridges nodes=${visible.nodes.length} links=${visible.links.length} best=${Math.min(...bridgeRuns).toFixed(1)} worst=${bridgeMs.toFixed(1)}`);
+    expect(bridgeMs, fmt('findBridges all-on worst', bridgeMs, BUDGET.bridges)).toBeLessThan(BUDGET.bridges);
+
+    const busiest = [...visible.linksOf].sort((x, y) => y[1].length - x[1].length)[0][0];
+    const far = visible.nodes[visible.nodes.length - 1].id;
+    const layer = buildMissingLayer(model);
+    const exploreMs = worst(() => {
+      shortestPath(visible, busiest, far);
+      withMissing(focusGraph(model, allOn, visible, busiest, 2), layer);
+    });
+    summary.push(`explore busiest=${visible.linksOf.get(busiest)?.length}lines worst=${exploreMs.toFixed(1)}`);
+    expect(exploreMs, fmt('path + focus + missing worst', exploreMs, BUDGET.explore)).toBeLessThan(BUDGET.explore);
   });
 });
