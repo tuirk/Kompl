@@ -1,8 +1,10 @@
 /**
  * Relation names along the graph's lines: a dark pill turned along the
  * line, kept upright, drawn after the page names, which win any clash (a
- * label goes only where the label space is free). Per frame, nothing is
- * allocated per label. Client-only.
+ * label goes only where the label space is free). Labels grow with the zoom
+ * up to a cap (graph-zoom.ts), drawn in screen pixels so their font is
+ * rebuilt only when their size steps. Nothing is allocated per label.
+ * Client-only.
  */
 
 import { forcePlace, type LabelSpace } from '../../../lib/graph-labels';
@@ -77,8 +79,12 @@ function labelLine(
     width = ctx.measureText(style.label).width;
     lf.widths.set(style.label, width);
   }
-  const w = (width + 2 * LINE_PX.labelPadX) / k;
-  const h = LINE_PX.labelHeight / k;
+  // The label grows with the zoom (LineFrame.labelPx); widths were measured at LINE_PX.labelFont.
+  const grow = lf.labelPx / LINE_PX.labelFont;
+  const wPx = (width + 2 * LINE_PX.labelPadX) * grow;
+  const hPx = LINE_PX.labelHeight * grow;
+  const w = wPx / k;
+  const h = hPx / k;
   const zoomLabel = minPx > 0;
   if (zoomLabel && between < w + 4 / k) return;
   const ux = dx / len;
@@ -95,16 +101,18 @@ function labelLine(
     const cx = s.x + ux * along;
     const cy = s.y + uy * along;
     if (!placeTurned(space, cx, cy, ux, uy, w / 2, h / 2, hx, hy, s, t)) continue;
+    // Drawn in screen pixels, so the font string changes only when the label size steps.
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(angle);
+    ctx.scale(1 / k, 1 / k);
     ctx.beginPath();
-    ctx.roundRect(-w / 2, -h / 2, w, h, h / 2);
+    ctx.roundRect(-wPx / 2, -hPx / 2, wPx, hPx, hPx / 2);
     ctx.fillStyle = LABEL_PILL;
     ctx.fill();
     ctx.font = lf.font;
     ctx.fillStyle = LABEL_TEXT;
-    ctx.fillText(style.label, 0, 0.5 / k);
+    ctx.fillText(style.label, 0, 0.5);
     ctx.restore();
     lf.labelled += 1;
     return;

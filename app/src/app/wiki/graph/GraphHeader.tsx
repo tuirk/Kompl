@@ -103,17 +103,18 @@ export default function GraphHeader({ pages, lines, focusTitle, depth, onDepth, 
         <button
           type="button"
           className="graph-header-btn"
-          aria-pressed={pathOpen}
+          aria-expanded={pathOpen}
           onClick={onPath}
-          title="Find how two pages connect"
+          title={pathOpen ? 'Close the path finder' : 'Find how two pages connect'}
           style={{
             ...chip(pathOpen), height: 35, padding: '0 14px', gap: 8, border: '1px solid rgba(var(--accent-rgb),0.2)',
             background: pathOpen ? 'rgba(var(--accent-rgb),0.12)' : 'var(--bg-card-hover)', color: pathOpen ? 'var(--accent)' : 'var(--fg-secondary)',
             fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 10, lineHeight: '15px', letterSpacing: 1, textTransform: 'uppercase',
           }}
         >
-          <Route size={12} aria-hidden />
-          Connect two pages
+          {/* The label says what a click does now, so it changes once the finder is open. */}
+          {pathOpen ? <X size={12} aria-hidden /> : <Route size={12} aria-hidden />}
+          {pathOpen ? 'Close path finder' : 'Connect two pages'}
         </button>
         {/* The active Graph tab while focused leaves the focus in place (no navigation, no history entry). */}
         <div onClickCapture={(e) => leaveFocusOnGraphTab(e, focusTitle !== null, onFullMap)}>

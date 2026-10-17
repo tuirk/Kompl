@@ -119,6 +119,11 @@ export function shortestPath(visible: Pick<VisibleGraph, 'linksOf'>, from: strin
   return { nodes: nodes.reverse(), links: links.reverse(), cost: (best.get(to) as Entry).cost };
 }
 
+/** The pages of a chain as one string ('' for none): the same chain under other filters gives the same key. */
+export function pathKey(path: GraphPath | null): string {
+  return path ? path.nodes.join('\u0000') : '';
+}
+
 /** What stays lit while a chain is shown. */
 export function pathHighlight(path: GraphPath): Highlight {
   return { nodes: new Set(path.nodes), links: new Set(path.links) };

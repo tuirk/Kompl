@@ -64,12 +64,14 @@ export function drawClusterLabels(
   }
   ctx.save();
   ctx.globalAlpha = alpha;
+  // Screen space: true font sizes (a tiny graph-unit font scaled up stretches the letters).
+  ctx.scale(1 / k, 1 / k);
   ctx.font = frame.clusterFont;
-  ctx.letterSpacing = frame.clusterSpacing;
+  ctx.letterSpacing = CLUSTER_SPACING_PX;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'bottom';
   ctx.lineJoin = 'round';
-  ctx.lineWidth = 4 / k;
+  ctx.lineWidth = 4;
   ctx.strokeStyle = CANVAS_BG;
   for (let i = 0; i < categories.length; i++) {
     const count = buf.count[i];
@@ -79,19 +81,13 @@ export function drawClusterLabels(
     const spread = Math.sqrt(Math.max(0, buf.sumSq[i] / count - mx * mx - my * my));
     const y = Math.max(buf.top[i], my - 2 * spread) - 8 / k;
     if (claims) {
-      if (Number.isNaN(labels.islandWidths[i])) {
-        ctx.font = frame.clusterMeasureFont;
-        ctx.letterSpacing = CLUSTER_SPACING_PX;
-        labels.islandWidths[i] = ctx.measureText(categories[i].mapLabel).width;
-        ctx.font = frame.clusterFont;
-        ctx.letterSpacing = frame.clusterSpacing;
-      }
+      if (Number.isNaN(labels.islandWidths[i])) labels.islandWidths[i] = ctx.measureText(categories[i].mapLabel).width;
       const half = (labels.islandWidths[i] / 2 + 4) / k;
       forcePlace(labels.space, mx - half, y - (CLUSTER_PX + 2) / k, mx + half, y);
     }
     ctx.fillStyle = categories[i].color;
-    ctx.strokeText(categories[i].mapLabel, mx, y);
-    ctx.fillText(categories[i].mapLabel, mx, y);
+    ctx.strokeText(categories[i].mapLabel, mx * k, y * k);
+    ctx.fillText(categories[i].mapLabel, mx * k, y * k);
   }
   ctx.restore();
 }

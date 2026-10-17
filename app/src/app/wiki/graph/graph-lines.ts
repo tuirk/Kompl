@@ -22,6 +22,7 @@ import {
 } from '../../../lib/graph-line-style';
 import { isMissingLink } from '../../../lib/graph-missing';
 import type { ModelLink, ModelNode } from '../../../lib/graph-model';
+import { grownPx, LINE_LABEL_GROWTH, lineGrowth } from '../../../lib/graph-zoom';
 import type { FrameState } from './graph-draw';
 
 /** The outer edge of the selection and hover rings (graph-draw.ts drawNode), in screen pixels past the radius. */
@@ -29,10 +30,17 @@ const PICKED_RING_PX = 6.5;
 /** A missing page's line dashes, in screen pixels. */
 const DASH_PX = 3;
 
-/** Per-canvas line state: the dash pattern and label font at this zoom, label widths measured once. */
+/**
+ * Per-canvas line state: the dash pattern, the line growth factor and the
+ * label size at this zoom (graph-zoom.ts), label widths measured once.
+ */
 export interface LineFrame {
   scale: number;
   dash: number[];
+  /** Line widths, arrowheads and zigzags are multiplied by this. */
+  grow: number;
+  /** Labels' on-screen size; `font` is that size in screen pixels (labels are drawn in screen space). */
+  labelPx: number;
   font: string;
   measureFont: string;
   bodyFamily: string;
@@ -43,7 +51,7 @@ export interface LineFrame {
 
 export function newLineFrame(bodyFamily: string): LineFrame {
   return {
-    scale: 0, dash: [DASH_PX, DASH_PX], font: '', measureFont: `500 ${LINE_PX.labelFont}px ${bodyFamily}`, bodyFamily,
+    scale: 0, dash: [DASH_PX, DASH_PX], grow: 1, labelPx: 0, font: '', measureFont: `500 ${LINE_PX.labelFont}px ${bodyFamily}`, bodyFamily,
     widths: new Map(), labelled: 0,
   };
 }
@@ -55,7 +63,11 @@ export function beginLineFrame(lf: LineFrame, scale: number): void {
   lf.scale = scale;
   lf.dash[0] = DASH_PX / scale;
   lf.dash[1] = DASH_PX / scale;
-  lf.font = `500 ${LINE_PX.labelFont / scale}px ${lf.bodyFamily}`;
+  lf.grow = lineGrowth(scale);
+  const px = grownPx(LINE_LABEL_GROWTH, scale);
+  if (px === lf.labelPx) return;
+  lf.labelPx = px;
+  lf.font = `500 ${px}px ${lf.bodyFamily}`;
 }
 
 export type PointerAreaPaint = (link: object, color: string, ctx: CanvasRenderingContext2D, scale: number) => void;
@@ -78,7 +90,7 @@ export function pointerAreaFor(links: readonly ModelLink[], hoverPx: number): Po
     ctx.moveTo(s.x, s.y);
     ctx.lineTo(t.x, t.y);
     ctx.strokeStyle = color;
-    ctx.lineWidth = (l.width + hoverPx + 2) / scale;
+    ctx.lineWidth = (l.width * lineGrowth(scale) + hoverPx + 2) / scale;
     ctx.stroke();
   };
 }
@@ -122,12 +134,15 @@ export function paintLineShape(
   const rt = clearOf(t, k);
   const between = len - rs - rt;
   const long = between * k >= LINE_PX.minShape;
+  // Widths, arrowheads and zigzags grow together with the zoom (graph-zoom.ts).
+  const grow = lineGrowth(k);
+  const width = link.width * grow;
   if (style.shape === 'zigzag') {
     ctx.beginPath();
     ctx.moveTo(s.x, s.y);
     if (long) {
-      const steps = zigzagSteps(between * k, link.width);
-      const amp = zigzagAmplitude(link.width) / k;
+      const steps = zigzagSteps(between * k, width);
+      const amp = zigzagAmplitude(width) / k;
       const step = between / steps;
       const x0 = s.x + ux * rs;
       const y0 = s.y + uy * rs;
@@ -139,7 +154,7 @@ export function paintLineShape(
     }
     ctx.lineTo(t.x, t.y);
     ctx.strokeStyle = color;
-    ctx.lineWidth = link.width / k;
+    ctx.lineWidth = width / k;
     ctx.stroke();
     return;
   }
@@ -152,9 +167,9 @@ export function paintLineShape(
   const reach = edge + LINE_PX.arrowGap / k;
   const tx = dir === 1 ? t.x - ux * reach : s.x + ux * reach;
   const ty = dir === 1 ? t.y - uy * reach : s.y + uy * reach;
-  const lx = dir * ux * (LINE_PX.arrowLength / k);
-  const ly = dir * uy * (LINE_PX.arrowLength / k);
-  const half = LINE_PX.arrowHalfWidth / k;
+  const lx = dir * ux * ((LINE_PX.arrowLength * grow) / k);
+  const ly = dir * uy * ((LINE_PX.arrowLength * grow) / k);
+  const half = (LINE_PX.arrowHalfWidth * grow) / k;
   ctx.beginPath();
   ctx.moveTo(tx, ty);
   ctx.lineTo(tx - lx - uy * half, ty - ly + ux * half);

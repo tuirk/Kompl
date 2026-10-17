@@ -1,25 +1,31 @@
 'use client';
 
 /**
- * The graph's legend and filters, floating over the top left of the canvas.
- * "Dot colour = topic": the categories, with page counts (click to hide or
- * show one). "Lines": samples drawn as the canvas draws them (lines are
- * never coloured by topic: arrow, zigzag, brightness, dashes, width, accent)
- * with the "related to" and plain-link toggles. Then page types and the
- * source-page, missing-page and archived toggles. Folds away to its title.
+ * The graph's legend, a map-app style control over the top left of the
+ * canvas:
+ *  - collapsed (the default on a first visit): a small "Filters" button,
+ *    with a badge when filters differ from the default map ("3 changed");
+ *  - expanded: the filter panel. A header ("Filters", an ⓘ button whose
+ *    popover is the key "How to read the map", LegendKey.tsx, and
+ *    "Collapse filters" ×), then every filter as a checkbox (checked =
+ *    shown) with a noun label and a count: Topics, Pages (page types, source
+ *    pages, missing pages, archived pages) and Lines ("related to" lines,
+ *    plain links). Its bottom-right grip resizes it like a textarea.
+ * The page keeps the expanded state and the size (usePanelSizes.ts), so the
+ * map's fit leaves room for whichever is shown.
  */
 
-import { useMemo, type CSSProperties, type ReactNode } from 'react';
-import { MISSING_HEX } from '../../../lib/graph-missing';
+import { useEffect, useId, useMemo, useRef } from 'react';
+import { SlidersHorizontal, X } from 'lucide-react';
 import { RING_PAGE_TYPES, type GraphFilters, type GraphModel, type VisibleGraph } from '../../../lib/graph-model';
-import { NEUTRAL_HEX } from '../../../lib/graph-palette';
-import { UNCATEGORIZED } from '../../../lib/graph-layout';
+import { changedFilters, legendCategoryGroups, legendPageTypes, type CategoryGroup } from '../../../lib/graph-legend';
+import { MISSING_HEX } from '../../../lib/graph-missing';
+import { LEGEND_LEFT, LEGEND_TOP, type LegendSize } from '../../../lib/graph-panels';
 import { PAGE_TYPE_LABELS, type PageType } from '../../../lib/page-type-palette';
-import LineSample, { SAMPLE_W, type SampleKind } from './LineSamples';
-
-/** The legend's offset and width; the page uses them to keep the map clear of it. */
-export const LEGEND_LEFT = 16;
-export const LEGEND_WIDTH = 236;
+import { Dot, FilterRow, FiltersButton, ICON_BUTTON, LEGEND_HEADING } from './legend-parts';
+import LegendKey from './LegendKey';
+import LineSample, { SAMPLE_W } from './LineSamples';
+import ResizeGrip from './ResizeGrip';
 
 interface Props {
   model: GraphModel;
@@ -28,25 +34,23 @@ interface Props {
   onFilters(next: GraphFilters): void;
   includeArchived: boolean;
   onIncludeArchived(next: boolean): void;
-  /** Names with no page yet that the map can show; the toggle is offered only when there are some. */
+  /** Names with no page yet that the map can show; their filter is offered only when there are some. */
   missingCount: number;
   showMissing: boolean;
   onShowMissing(next: boolean): void;
   /** True when so many lines show that only typed ones answer the pointer. */
   pointerLimited: boolean;
-  /** Unfolded; the page keeps this, so the map's fit leaves room for it. */
+  /** Expanded; the page keeps this, so the map's fit leaves room for it. */
   open: boolean;
   onOpen(next: boolean): void;
+  /** The panel's size (the page keeps it) and how the grip changes it. */
+  size: LegendSize;
+  onSize(next: LegendSize): void;
+  onSizeDone(): void;
 }
 
-const HEADING: CSSProperties = {
-  margin: '0 0 4px', fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 10, lineHeight: '14px',
-  letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)',
-};
-const NOTE: CSSProperties = { margin: 0, fontSize: 11, lineHeight: '15px', color: 'var(--fg-dim)' };
-const HIDDEN_INPUT: CSSProperties = { position: 'absolute', opacity: 0, width: 1, height: 1, margin: 0, pointerEvents: 'none' };
-/** Page types offered as filters, in this order; source pages have their own toggle. */
-const TYPE_ORDER = ['entity', 'concept', 'overview', 'comparison'];
+const SUB_HEADING = { ...LEGEND_HEADING, fontSize: 9, margin: '8px 0 0', color: 'var(--fg-dim)' } as const;
+const NOTE = { fontFamily: 'var(--font-body)', fontSize: 11, lineHeight: '15px', color: 'var(--fg-dim)' } as const;
 
 function toggled<T>(set: ReadonlySet<T>, values: readonly T[]): Set<T> {
   const next = new Set(set);
@@ -58,147 +62,121 @@ function toggled<T>(set: ReadonlySet<T>, values: readonly T[]): Set<T> {
   return next;
 }
 
+/** "Entity pages", "Overviews"…: a page type as a noun. */
 function typeLabel(type: string): string {
   const label = type in PAGE_TYPE_LABELS ? PAGE_TYPE_LABELS[type as PageType] : type.replace(/-/g, ' ');
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-export default function GraphLegend({
-  model, visible, filters, onFilters, includeArchived, onIncludeArchived, missingCount, showMissing, onShowMissing,
-  pointerLimited, open, onOpen,
-}: Props) {
-  const named = model.categories.filter((c) => !c.overflow && c.name !== UNCATEGORIZED);
-  const overflow = model.categories.filter((c) => c.overflow).map((c) => c.name);
+export default function GraphLegend(props: Props) {
+  const { model, visible, filters, onFilters, includeArchived, onIncludeArchived, missingCount, showMissing, onShowMissing } = props;
+  const { pointerLimited, open, onOpen, size, onSize, onSizeDone } = props;
+  const panelRef = useRef<HTMLElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  /** Where focus goes after the viewer expands or collapses (the control they used is gone). */
+  const focusNext = useRef<'close' | 'button' | null>(null);
+  const panelId = useId();
+  const titleId = useId();
+  const start = useRef(size);
   const count = (name: string) => visible.categoryCounts.get(name) ?? 0;
   // Lists that depend on the data only, worked out once per load.
-  const types = useMemo(() => {
-    const present = new Set(model.nodes.filter((n) => !n.isSource).map((n) => n.pageType));
-    return [...TYPE_ORDER.filter((t) => present.has(t)), ...[...present].filter((t) => !TYPE_ORDER.includes(t)).sort()];
-  }, [model]);
+  const groups = useMemo(() => legendCategoryGroups(model), [model]);
+  const types = useMemo(() => legendPageTypes(model), [model]);
   const opposed = useMemo(() => model.links.some((l) => l.colorType === 'competes_with' || l.colorType === 'contradicts'), [model]);
   const sourceCount = useMemo(
     () => model.nodes.filter((n) => n.isSource && !filters.hiddenCategories.has(n.category)).length,
     [model, filters.hiddenCategories]
   );
+  const changed = changedFilters(model, filters, { includeArchived, showMissing, missingCount });
 
-  const categoryRow = (key: string, label: string, color: string, names: string[]) => {
+  useEffect(() => {
+    const target = focusNext.current === 'close' ? closeRef.current : focusNext.current === 'button' ? buttonRef.current : null;
+    focusNext.current = null;
+    target?.focus();
+  }, [open]);
+  const expand = () => {
+    focusNext.current = 'close';
+    onOpen(true);
+  };
+  const collapse = () => {
+    focusNext.current = 'button';
+    onOpen(false);
+  };
+
+  const categoryRow = ({ key, label, color, names }: CategoryGroup) => {
     const hidden = names.every((n) => filters.hiddenCategories.has(n));
     const n = names.reduce((s, name) => s + count(name), 0);
     if (n === 0 && !hidden) return null;
     return (
-      <Row key={key} on={!hidden} label={label} count={n} swatch={<Dot color={color} on={!hidden} />}
+      <FilterRow key={key} on={!hidden} label={label} count={n} swatch={<Dot color={color} />}
         onToggle={() => onFilters({ ...filters, hiddenCategories: toggled(filters.hiddenCategories, names) })} />
     );
   };
+  // The grip reports the change since the drag began; an unset height starts from the drawn height.
+  const resize = (dx: number, dy: number, begin: boolean) => {
+    if (begin) start.current = { width: size.width, height: size.height ?? panelRef.current?.offsetHeight ?? 400 };
+    else onSize({ width: start.current.width + dx, height: (start.current.height ?? 400) + dy });
+  };
 
   return (
-    <div
-      style={{
-        position: 'absolute', left: LEGEND_LEFT, top: 16, zIndex: 10, width: LEGEND_WIDTH, maxHeight: 'calc(100% - 32px)',
-        overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 14,
-        background: 'rgba(18,19,22,0.88)', border: '1px solid rgba(71,72,74,0.25)', backdropFilter: 'blur(6px)',
-      }}
-    >
-      <button
-        type="button"
-        onClick={() => onOpen(!open)}
-        aria-expanded={open}
-        style={{ ...HEADING, margin: 0, display: 'flex', justifyContent: 'space-between', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--fg-muted)' }}
+    <>
+      <FiltersButton open={open} controls={panelId} changed={changed} onExpand={expand} buttonRef={buttonRef} />
+      <section
+        ref={panelRef}
+        id={panelId}
+        aria-labelledby={titleId}
+        data-legend="filters"
+        hidden={!open}
+        style={{
+          position: 'absolute', left: LEGEND_LEFT, top: LEGEND_TOP, zIndex: 10, width: size.width,
+          height: open && size.height !== null ? size.height : undefined, maxHeight: `calc(100% - ${2 * LEGEND_TOP}px)`,
+          display: open ? 'flex' : 'none', flexDirection: 'column',
+          background: 'rgba(18,19,22,0.9)', border: '1px solid rgba(71,72,74,0.25)', backdropFilter: 'blur(6px)',
+        }}
       >
-        <span>Legend & filters</span>
-        <span aria-hidden>{open ? '−' : '+'}</span>
-      </button>
-      {open && (
-        <>
-          <Section title="Dot colour = topic">
-            {named.map((c) => categoryRow(c.name, c.name, c.color, [c.name]))}
-            {overflow.length > 0 && categoryRow('other', `Other (${overflow.length} topics)`, NEUTRAL_HEX, overflow)}
-            {model.categories.some((c) => c.name === UNCATEGORIZED) && categoryRow(UNCATEGORIZED, UNCATEGORIZED, NEUTRAL_HEX, [UNCATEGORIZED])}
-          </Section>
-          <Section title="Lines" aside="never coloured by topic">
-            <KeyRow kind="arrow" label="typed relation (arrow = how it reads)" />
-            {opposed && <KeyRow kind="zigzag" label="competes / contradicts" />}
-            <Row on={filters.showRelated} label="Show “related to”" swatch={<LineSample kind="related" on={filters.showRelated} />}
-              swatchWidth={SAMPLE_W} onToggle={() => onFilters({ ...filters, showRelated: !filters.showRelated })} />
-            <Row on={filters.showPlain} label="Show plain links" swatch={<LineSample kind="plain" on={filters.showPlain} />}
-              swatchWidth={SAMPLE_W} onToggle={() => onFilters({ ...filters, showPlain: !filters.showPlain })} />
-            {missingCount > 0 && <KeyRow kind="dashed" label="leads to a missing page" />}
-            <KeyRow kind="widths" label="thicker = more sources" />
-            <KeyRow kind="accent" label="selected line / path" />
-            <p style={NOTE}>Hover a line or zoom in to read relation names. Click a line to see why.</p>
-            {pointerLimited && <p style={NOTE}>Many lines on screen: only typed lines respond to the pointer.</p>}
-          </Section>
-          <Section title="Pages">
-            {types.map((t) => {
-              const on = !filters.hiddenTypes.has(t);
-              return (
-                <Row key={t} on={on} label={typeLabel(t)} count={visible.typeCounts.get(t) ?? 0}
-                  swatch={<Dot color="var(--fg-muted)" on={on} ring={RING_PAGE_TYPES.has(t)} />}
-                  onToggle={() => onFilters({ ...filters, hiddenTypes: toggled(filters.hiddenTypes, [t]) })} />
-              );
-            })}
-            <Row on={filters.showSources} label="Show source pages" count={sourceCount} swatch={<Dot color="var(--fg-muted)" on={filters.showSources} faint />}
-              onToggle={() => onFilters({ ...filters, showSources: !filters.showSources })} />
-            {missingCount > 0 && (
-              <Row on={showMissing} label="Show missing pages" count={missingCount} swatch={<Dot color={MISSING_HEX} on={showMissing} dashed />}
-                onToggle={() => onShowMissing(!showMissing)} />
-            )}
-            <Row on={includeArchived} label="Show archived" swatch={<Dot color="var(--fg-dim)" on={includeArchived} faint />}
-              onToggle={() => onIncludeArchived(!includeArchived)} />
-          </Section>
-        </>
-      )}
-    </div>
-  );
-}
-
-function Section({ title, aside, children }: { title: string; aside?: string; children: ReactNode }) {
-  return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <h3 style={HEADING}>
-        {title}
-        {aside && <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: 6 }}>({aside})</span>}
-      </h3>
-      {children}
-    </section>
-  );
-}
-
-const ROW: CSSProperties = {
-  position: 'relative', display: 'flex', alignItems: 'center', gap: 10, minHeight: 24, cursor: 'pointer',
-  userSelect: 'none', fontFamily: 'var(--font-body)', fontSize: 12, lineHeight: '16px',
-};
-
-function Row(props: { on: boolean; label: string; count?: number; swatch: ReactNode; swatchWidth?: number; onToggle(): void }) {
-  return (
-    <label className="graph-legend-row" style={{ ...ROW, color: props.on ? 'var(--fg-secondary)' : 'var(--fg-dim)' }}>
-      <input type="checkbox" checked={props.on} onChange={props.onToggle} style={HIDDEN_INPUT} />
-      <span style={{ width: props.swatchWidth ?? 18, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>{props.swatch}</span>
-      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{props.label}</span>
-      {props.count !== undefined && <span style={{ color: 'var(--fg-dim)', fontVariantNumeric: 'tabular-nums' }}>{props.count}</span>}
-    </label>
-  );
-}
-
-/** A line sample and what it means. */
-function KeyRow({ kind, label }: { kind: SampleKind; label: string }) {
-  return (
-    <div style={{ ...ROW, cursor: 'default', color: 'var(--fg-secondary)' }}>
-      <LineSample kind={kind} />
-      <span>{label}</span>
-    </div>
-  );
-}
-
-function Dot(props: { color: string; on: boolean; ring?: boolean; faint?: boolean; dashed?: boolean }) {
-  const { color, on, ring = false, faint = false, dashed = false } = props;
-  return (
-    <span
-      style={{
-        width: 9, height: 9, borderRadius: '50%', display: 'inline-block', border: `1.5px ${dashed ? 'dashed' : 'solid'} ${color}`,
-        background: on && !dashed ? color : 'transparent', opacity: faint ? (on ? 0.6 : 1) : dashed && !on ? 0.6 : 1,
-        boxShadow: ring ? '0 0 0 2px #121316, 0 0 0 3px rgba(236,236,240,0.55)' : undefined,
-      }}
-    />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 6px 6px 14px', borderBottom: '1px solid rgba(71,72,74,0.25)' }}>
+          <SlidersHorizontal size={14} aria-hidden style={{ color: 'var(--fg-muted)', flexShrink: 0, marginRight: 4 }} />
+          <h2 id={titleId} style={{ margin: 0, fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 10, lineHeight: '15px', letterSpacing: 1, textTransform: 'uppercase', color: 'var(--fg-secondary)' }}>
+            Filters
+          </h2>
+          {open && <LegendKey opposed={opposed} missing={missingCount > 0} frame={panelRef} />}
+          <span style={{ flex: 1 }} />
+          <button ref={closeRef} type="button" className="graph-icon-btn" aria-label="Collapse filters" title="Collapse filters"
+            aria-controls={panelId} onClick={collapse} style={ICON_BUTTON}>
+            <X size={16} aria-hidden />
+          </button>
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '8px 14px 12px', display: 'flex', flexDirection: 'column' }}>
+          <span style={NOTE}>Checked = shown on the map</span>
+          <h3 style={SUB_HEADING}>Topics</h3>
+          {groups.map(categoryRow)}
+          <h3 style={SUB_HEADING}>Pages</h3>
+          {types.map((t) => (
+            <FilterRow key={t} on={!filters.hiddenTypes.has(t)} label={typeLabel(t)} count={visible.typeCounts.get(t) ?? 0}
+              swatch={<Dot color="var(--fg-muted)" ring={RING_PAGE_TYPES.has(t)} />}
+              onToggle={() => onFilters({ ...filters, hiddenTypes: toggled(filters.hiddenTypes, [t]) })} />
+          ))}
+          <FilterRow on={filters.showSources} label="Source pages" count={sourceCount} swatch={<Dot color="var(--fg-muted)" faint />}
+            onToggle={() => onFilters({ ...filters, showSources: !filters.showSources })} />
+          {missingCount > 0 && (
+            <FilterRow on={showMissing} label="Missing pages" count={missingCount} swatch={<Dot color={MISSING_HEX} dashed />}
+              onToggle={() => onShowMissing(!showMissing)} />
+          )}
+          <FilterRow on={includeArchived} label="Archived pages" swatch={<Dot color="var(--fg-dim)" faint />}
+            onToggle={() => onIncludeArchived(!includeArchived)} />
+          <h3 style={SUB_HEADING}>Lines</h3>
+          <FilterRow on={filters.showRelated} label="“Related to” lines" swatch={<LineSample kind="related" />} swatchWidth={SAMPLE_W}
+            onToggle={() => onFilters({ ...filters, showRelated: !filters.showRelated })} />
+          <FilterRow on={filters.showPlain} label="Plain links" swatch={<LineSample kind="plain" />} swatchWidth={SAMPLE_W}
+            onToggle={() => onFilters({ ...filters, showPlain: !filters.showPlain })} />
+          <span style={{ ...NOTE, marginTop: 4 }}>
+            Typed relations always show.
+            {pointerLimited && ' Many lines on screen: only typed lines respond to the pointer.'}
+          </span>
+        </div>
+        {open && <ResizeGrip label="Resize filters" grip="legend" onResize={resize} onDone={onSizeDone} />}
+      </section>
+    </>
   );
 }

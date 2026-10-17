@@ -58,7 +58,7 @@ function fakeCtx() {
     calls, font: '', fillStyle: '', strokeStyle: '', lineWidth: 1, textAlign: 'left', textBaseline: 'top',
     beginPath: rec('beginPath'), moveTo: rec('moveTo'), lineTo: rec('lineTo'), closePath: rec('closePath'),
     fill: rec('fill'), stroke: rec('stroke'), save: rec('save'), restore: rec('restore'), translate: rec('translate'),
-    rotate: rec('rotate'), roundRect: rec('roundRect'), fillText: rec('fillText'), setLineDash: rec('setLineDash'),
+    rotate: rec('rotate'), scale: rec('scale'), roundRect: rec('roundRect'), fillText: rec('fillText'), setLineDash: rec('setLineDash'),
     measureText: (t: string) => ({ width: t.length * 6 }),
   };
   return ctx as unknown as CanvasRenderingContext2D & { calls: typeof calls };
@@ -310,4 +310,52 @@ it('ends an arrowhead outside the selection or hover ring of a picked page', () 
   expect(tipX(null)).toBeCloseTo(200 - pow.radius - 2);
   expect(tipX(new Set(['pow']))).toBeCloseTo(200 - pow.radius - 6.5 - 2);
   expect(tipX(new Set(['bitcoin']))).toBeCloseTo(200 - pow.radius - 2); // only the page it points at matters
+});
+
+describe('growing with zoom', () => {
+  const styles = buildLineStyles(model.links);
+
+  it('grows the arrowhead with the line growth factor, keeping its tip outside the circle', () => {
+    const l = place(lineOf('bitcoin', 'pow'), 0, 0, 400, 0);
+    const pow = model.byId.get('pow') as ModelNode;
+    const k = 3;
+    const ctx = fakeCtx();
+    paintLineShape(ctx, l, styles.get(l)!, '#fff', frameAt(k));
+    const tip = ctx.calls.find((c) => c[0] === 'moveTo') as [string, number, number];
+    const base = ctx.calls.find((c) => c[0] === 'lineTo') as [string, number, number];
+    expect(tip[1]).toBeCloseTo(400 - pow.radius - 2 / k);
+    expect(tip[1] - base[1]).toBeCloseTo((7 * Math.SQRT2) / k); // 7 px x sqrt(3 / 1.5)
+  });
+
+  it('grows a zigzag line and the pointer area with the zoom', () => {
+    const z = place(lineOf('bitcoin', 'eth'), 0, 0, 600, 0);
+    const ctx = fakeCtx() as ReturnType<typeof fakeCtx> & { lineWidth: number };
+    paintLineShape(ctx, z, styles.get(z)!, '#fff', frameAt(6));
+    expect(ctx.lineWidth).toBeCloseTo((z.width * 1.9) / 6);
+    const many = Array.from({ length: 3001 }, () => model.links).flat().slice(0, 3001);
+    const painter = pointerAreaFor(many, 8);
+    const typedLine = place(lineOf('bitcoin', 'pow'), 0, 0, 100, 0);
+    const hit = fakeCtx() as ReturnType<typeof fakeCtx> & { lineWidth: number };
+    painter?.(typedLine, '#010203', hit, 6);
+    expect(hit.lineWidth).toBeCloseTo((typedLine.width * 1.9 + 8 + 2) / 6);
+  });
+
+  it('draws a larger label pill when zoomed in, in screen pixels', () => {
+    const l = place(lineOf('bitcoin', 'pow'), 0, 0, 1000, 0);
+    const pill = (k: number) => {
+      const s = newLabelSpace(20, 20);
+      resetSpace(s, -2000, -2000, 2000, 2000, 64);
+      buildGrid(s);
+      const ctx = fakeCtx();
+      const lf = newLineFrame('sans-serif');
+      beginLineFrame(lf, k);
+      drawLineLabels(ctx, model.links, styles, new Set([l]), lf, frameAt(k), s);
+      return ctx.calls.find((c) => c[0] === 'roundRect') as [string, number, number, number, number];
+    };
+    const [, , , w1, h1] = pill(1);
+    const [, , , w4, h4] = pill(4);
+    expect([w1, h1]).toEqual(['uses'.length * 6 + 10, 14]); // 10 px text: width + padding, 14 px high
+    expect(w4).toBeCloseTo(w1 * 1.4); // 14 px at zoom 4
+    expect(h4).toBeCloseTo(h1 * 1.4);
+  });
 });

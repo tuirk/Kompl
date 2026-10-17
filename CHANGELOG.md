@@ -186,6 +186,32 @@ ship with a `migrate.py` step that runs at boot.
   along the lines of the hovered or selected page and the hovered line, and
   on every long typed line when zoomed in, never over a page name. The
   legend shows each of these as drawn.
+- **Easier to read up close.** The map is spread out: lines are about 1.5
+  times longer and the topic islands sit further apart, so pages and their
+  names have more room (the whole map still fits on screen at first). When
+  you zoom in, page names and relation names now grow with the map (page
+  names up to 20 px, relation names up to 16 px, names always the larger),
+  and lines, arrows and zigzags get thicker, up to about twice as thick,
+  instead of staying small while the pages grow.
+- **Filters as a map control, and a key on hover.** The legend starts as a
+  small "Filters" button in the top left, like a map app's layers button,
+  so the map gets the room. When any filter differs from the default map,
+  the button says how many ("3 changed"). Click it to open the filter panel:
+  every row is a checkbox that shows whether that thing is on the map
+  (checked = shown), named for what it is (each topic and page type,
+  "Source pages", "Missing pages", "Archived pages", "“Related to” lines",
+  "Plain links"), with counts; × collapses it again. The ⓘ next to the
+  "Filters" title shows "How to read the map", the key to the dots and
+  lines: on hover, on keyboard focus, or on a click or tap; Escape or a
+  click elsewhere closes it. The page remembers whether the filters are
+  open, on every screen. Until you zoom or pan the map yourself, opening,
+  closing or resizing the filters slides it sideways to stay centred in the
+  room left free; once you have moved it, it stays where you put it. The
+  filter panel and the details panel on the right have a corner grip, like
+  a text box: drag it, or focus it and use the arrow keys, to make the
+  filters wider or taller and the panel wider. The page remembers the
+  sizes, and the map keeps clear of them. The "Connect two pages" button
+  reads "Close path finder" while the finder is open.
 - **A shorter Connections card.** The header counts the related pages and
   names with no page yet (each once), "Also linked" has its own count, and
   every group shows its first 8 rows ("Related to" its first 3) in full; the

@@ -7,7 +7,7 @@
  */
 
 import { OVERVIEW_NAMES } from './graph-labels';
-import { nodeRadius } from './graph-layout';
+import { LAYOUT_SCALE, nodeRadius } from './graph-layout';
 import { clipLabel, type GraphModel, type ModelLink, type ModelNode, type VisibleGraph } from './graph-model';
 import { CANVAS_BG, LINE_ALPHA, LINE_FADED, LINE_HEX, LINE_LIT_HEX, withAlpha } from './graph-palette';
 
@@ -16,7 +16,7 @@ export const MISSING_HEX = '#AEB4BE';
 const MISSING_LINE = withAlpha(LINE_HEX, LINE_ALPHA.related);
 const MISSING_LINE_FADED = withAlpha(LINE_HEX, LINE_FADED);
 /** A missing name starts this far (graph units) from its first page, plus that page's radius. */
-const MISSING_OFFSET = 26;
+const MISSING_OFFSET = 26 * LAYOUT_SCALE;
 
 export interface MissingNode extends ModelNode {
   missing: true;

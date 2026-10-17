@@ -11,15 +11,28 @@ import {
 } from '../app/wiki/graph/graph-draw';
 import type { ModelNode } from '../lib/graph-model';
 
-/** Records the names written; text is 6 px wide per character. */
+/**
+ * Records the names written, at their graph position (tracking translate and
+ * scale, as names are drawn in screen space), with the font and the scale in
+ * force; text is 6 px wide per character.
+ */
 function fakeCanvas() {
-  const written: Array<{ text: string; x: number; y: number }> = [];
+  const written: Array<{ text: string; x: number; y: number; font: string; scale: number }> = [];
+  let m = { tx: 0, ty: 0, s: 1 };
+  const stack: Array<typeof m> = [];
   const ctx = {
     canvas: { width: 2000, height: 2000 },
+    font: '',
     getTransform: () => ({ a: 1, d: 1, e: 0, f: 0 }),
     measureText: (text: string) => ({ width: text.length * 6 }),
-    fillText: (text: string, x: number, y: number) => written.push({ text, x, y }),
-    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, strokeText() {},
+    fillText(text: string, x: number, y: number) {
+      written.push({ text, x: m.tx + x * m.s, y: m.ty + y * m.s, font: this.font, scale: m.s });
+    },
+    save() { stack.push({ ...m }); },
+    restore() { m = stack.pop() ?? { tx: 0, ty: 0, s: 1 }; },
+    translate(x: number, y: number) { m = { ...m, tx: m.tx + x * m.s, ty: m.ty + y * m.s }; },
+    scale(a: number) { m = { ...m, s: m.s * a }; },
+    beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, strokeText() {},
   };
   return { ctx: ctx as unknown as CanvasRenderingContext2D, written };
 }
@@ -98,5 +111,27 @@ describe('bridge badge', () => {
     const widths = [boxes[2] - boxes[0], boxes[6] - boxes[4]].sort((a, b) => a - b);
     expect(widths[1] - widths[0]).toBeCloseTo(5 + 6 * 'BRIDGE'.length, 0);
     expect(styled.textAlign).toBe('center');
+  });
+});
+
+describe('names in screen space', () => {
+  it('draws names under scale(1/k) with a true, at least 12 px font, at their graph position', () => {
+    const { ctx, written } = fakeCanvas();
+    (ctx as unknown as { getTransform(): object }).getTransform = () => ({ a: 4, d: 4, e: 0, f: 0 });
+    const frame = newFrameState('Inter', 'Grotesk');
+    beginFrame(frame, ctx, 4);
+    const hub = page('hub', 200, 200); // well inside the 500 x 500 graph units on screen at k = 4
+    const buf = newLabelBuffer(1, 0);
+    const view: DrawView = {
+      highlight: null, selectedId: null, hoveredId: null, labelRank: new Map([['hub', 0]]), marked: null, bridges: new Set(),
+    };
+    prepareLabels(buf, [hub], frame, null);
+    drawLabels(ctx, [hub], null, frame, view, buf);
+    const name = written.find((w) => w.text === 'HUB');
+    expect(name).toBeDefined();
+    expect(name?.scale).toBeCloseTo(1 / 4);
+    expect(name?.font).toBe('500 19px Inter');
+    expect(parseFloat((name?.font ?? '').split(' ')[1])).toBeGreaterThanOrEqual(12);
+    expect(name?.x).toBeCloseTo(200); // centred over the circle, in graph units
   });
 });

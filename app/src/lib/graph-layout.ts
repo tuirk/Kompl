@@ -15,17 +15,23 @@ export const UNCATEGORIZED = 'Uncategorized';
  * islands do not repel each other across the map) and kept from overlapping
  * by collide. Lines across categories are long and weak, so a few bridges do
  * not drag two islands into one. The simulation stops by alpha, not by time.
+ *
+ * Every length is LAYOUT_SCALE times the first layout's, and charge (which
+ * pushes with strength / distance) the square of it, so the map spreads out
+ * evenly: longer lines and wider islands, the same shapes. Circles keep
+ * their size, so pages and names get more room around them.
  */
+export const LAYOUT_SCALE = 1.5;
 export const LAYOUT = {
   clusterStrength: 0.08,
-  chargeBase: -30,
-  chargePerRadius: -2.5,
-  chargeDistanceMax: 280,
-  linkDistance: 34,
-  crossLinkDistance: 110,
+  chargeBase: -30 * LAYOUT_SCALE ** 2,
+  chargePerRadius: -2.5 * LAYOUT_SCALE ** 2,
+  chargeDistanceMax: 280 * LAYOUT_SCALE,
+  linkDistance: 34 * LAYOUT_SCALE,
+  crossLinkDistance: 110 * LAYOUT_SCALE,
   linkStrength: 0.5,
   crossLinkStrength: 0.04,
-  collidePadding: 10,
+  collidePadding: 10 * LAYOUT_SCALE,
   collideStrength: 1,
   collideIterations: 2,
   velocityDecay: 0.42,
@@ -36,9 +42,9 @@ export const LAYOUT = {
   warmupTicksLarge: 30,
   largeGraphNodes: 600,
   /** Island size: CLUSTER_SPACING * sqrt(pages); islands keep CLUSTER_GAP between them on the ring. */
-  clusterSpacing: 22,
-  clusterGap: 70,
-  minRingRadius: 140,
+  clusterSpacing: 22 * LAYOUT_SCALE,
+  clusterGap: 70 * LAYOUT_SCALE,
+  minRingRadius: 140 * LAYOUT_SCALE,
 } as const;
 
 /** 32-bit FNV-1a of a string, offset by `seed` so one id gives independent values. */
@@ -246,4 +252,32 @@ export function zoomAround(view: GraphView, p: { x: number; y: number }, k: numb
   const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, k));
   const keep = view.k / next;
   return { x: p.x - (p.x - view.x) * keep, y: p.y - (p.y - view.y) * keep, k: next };
+}
+
+/**
+ * How far to pan (screen pixels, positive = right) when the free area's left
+ * edge moves from `oldLeft` to `newLeft` (the filter panel expands,
+ * collapses or is resized): half the change, which keeps a fitted map centred
+ * in the new free area. Nothing once the viewer has zoomed, panned or dragged
+ * since the last fit: the map never moves on its own after that.
+ */
+export function recentrePan(oldLeft: number, newLeft: number, userMoved: boolean): number {
+  return userMoved ? 0 : (newLeft - oldLeft) / 2;
+}
+
+/** The view panned by `dx` screen pixels (the drawing moves right for dx > 0); the zoom stays. */
+export function panView(view: GraphView, dx: number): GraphView {
+  return { x: view.x - dx / view.k, y: view.y, k: view.k };
+}
+
+/**
+ * What to do with an armed automatic fit when the layout settles (or the
+ * early-fit timer fires): fit when it is armed and pages are drawn; drop it
+ * when the viewer has zoomed, panned or dragged since (their view wins);
+ * wait when nothing is drawn yet; nothing when no fit is armed.
+ */
+export function autoFit(pending: boolean, userMoved: boolean, nodes: number): 'fit' | 'drop' | 'wait' | 'none' {
+  if (!pending) return 'none';
+  if (userMoved) return 'drop';
+  return nodes > 0 ? 'fit' : 'wait';
 }

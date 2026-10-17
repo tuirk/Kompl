@@ -1,17 +1,24 @@
 'use client';
 
 /**
- * Pieces shared by the graph's side panels (NodePanel, EdgePanel): the
- * slide-in shell, section headings, the evidence list under a connection and
- * the small text styles. Inline styles and CSS vars, as the rest of the app.
+ * Pieces shared by the graph's side panels (NodePanel, EdgePanel,
+ * PathPanel): the shell on the right (its width comes from the page through
+ * PanelWidthContext; a grip in its bottom-left corner resizes it), section
+ * headings, the evidence list under a connection and the small text styles.
+ * Inline styles and CSS vars, as the rest of the app.
  */
 
 import Link from 'next/link';
-import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { createContext, useContext, useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { moreSourcesNote } from '../../../lib/connections-view';
+import { PANEL_DEFAULT_WIDTH } from '../../../lib/graph-panels';
 import type { ConnectionItem } from '../../../lib/relations';
+import ResizeGrip from './ResizeGrip';
 
-export const PANEL_WIDTH = 360;
+/** The details panel's width, and how its grip changes it (the page keeps the size). */
+export const PanelWidthContext = createContext<{ width: number; onWidth?(width: number): void; onDone?(): void }>({
+  width: PANEL_DEFAULT_WIDTH,
+});
 
 export const KICKER: CSSProperties = {
   fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 10, lineHeight: '14px',
@@ -41,6 +48,13 @@ export function PanelShell(props: {
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const { returnFocusTo } = props;
+  const { width, onWidth, onDone } = useContext(PanelWidthContext);
+  const start = useRef(width);
+  // The panel grows leftwards: a drag to the left (negative dx) widens it.
+  const resize = (dx: number, _dy: number, begin: boolean) => {
+    if (begin) start.current = width;
+    else onWidth?.(start.current - dx);
+  };
   // Opening moves focus to the heading, so keyboard users land in the panel;
   // closing (or switching to another page's panel) hands it back.
   useEffect(() => {
@@ -55,7 +69,7 @@ export function PanelShell(props: {
     <aside
       aria-label="Graph details"
       style={{
-        position: 'absolute', right: 0, top: 0, bottom: 0, width: PANEL_WIDTH, zIndex: 20,
+        position: 'absolute', right: 0, top: 0, bottom: 0, width, zIndex: 20,
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
         background: 'rgba(24,26,28,0.97)', borderLeft: '1px solid rgba(71,72,74,0.25)',
         boxShadow: '-20px 0 40px rgba(0,0,0,0.45)',
@@ -96,6 +110,7 @@ export function PanelShell(props: {
           {props.footer}
         </div>
       )}
+      {onWidth && <ResizeGrip label="Resize panel" grip="panel" onResize={resize} onDone={() => onDone?.()} />}
     </aside>
   );
 }

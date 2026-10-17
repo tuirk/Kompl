@@ -22,8 +22,6 @@ import { lineDash, lineMode, newLineFrame, paintLineShape, pointerAreaFor, type 
 /** Extra pixels around a line that still count as hovering it. */
 export const LINK_HOVER_PX = 8;
 
-/** Widths never change with the focus (width means sources only). */
-export const lineWidth = (link: object) => (link as ModelLink).width;
 
 export function useLinePaint(
   model: GraphModel, visible: VisibleGraph, highlight: Highlight | null, pinned: Highlight | null,
@@ -57,8 +55,10 @@ export function useLinePaint(
     [styles, linkColor, frame, picked]
   );
   const dash = useCallback((link: object) => lineDash(link, lines.current), []);
+  // Width means sources only: never changed by the focus, only grown with the zoom (LineFrame.grow).
+  const width = useCallback((link: object) => (link as ModelLink).width * lines.current.grow, []);
   // Many lines: only typed ones go on force-graph's hit-test canvas.
   const pointerArea = useMemo(() => pointerAreaFor(visible.links, LINK_HOVER_PX), [visible]);
 
-  return { styles, lines, linkColor, linkMode, linkObject, dash, pointerArea };
+  return { styles, lines, linkColor, width, linkMode, linkObject, dash, pointerArea };
 }

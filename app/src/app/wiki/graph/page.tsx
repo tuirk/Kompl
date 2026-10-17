@@ -17,11 +17,11 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { closesPanelOnEscape, limitsLinePointer, type GraphFocus } from '../../../lib/graph-focus';
-import type { ViewInsets } from '../../../lib/graph-layout';
+import { canvasInsets, LEGEND_LEFT } from '../../../lib/graph-panels';
 import { placeMissing } from '../../../lib/graph-missing';
 import { DEFAULT_FILTERS, type GraphFilters } from '../../../lib/graph-model';
 import { CANVAS_BG } from '../../../lib/graph-palette';
-import { fillPath, type PathQuery } from '../../../lib/graph-path';
+import { fillPath, pathKey, type PathQuery } from '../../../lib/graph-path';
 import { FULL_MAP, revealFilters, sameScope, type GraphScope } from '../../../lib/graph-scope';
 import type { PageConnections } from '../../../lib/relations';
 import type { WikiGraph } from '../../../lib/wiki-graph';
@@ -29,18 +29,15 @@ import { CanvasHint } from './canvas-overlays';
 import EdgePanel from './EdgePanel';
 import GraphCanvas, { type GraphControls } from './GraphCanvas';
 import GraphHeader from './GraphHeader';
-import GraphLegend, { LEGEND_LEFT, LEGEND_WIDTH } from './GraphLegend';
+import GraphLegend from './GraphLegend';
 import NodePanel from './NodePanel';
-import { PANEL_WIDTH } from './panel-parts';
+import { PanelWidthContext } from './panel-parts';
+import { usePanelSizes } from './usePanelSizes';
 import PathPanel from './PathPanel';
 import { readScope, writeScope } from './scope-url';
 import { useGraphView } from './useGraphView';
 
 const MESSAGE = { color: 'var(--fg-muted)', padding: '3rem', textAlign: 'center' } as const;
-/** Canvas edges kept clear when fitting: the legend (open or folded), an open panel, the zoom buttons. */
-const LEGEND_COVER = LEGEND_LEFT + LEGEND_WIDTH;
-const LEGEND_INSET = LEGEND_COVER + 16;
-const FOLDED_LEGEND_TOP = 64;
 
 async function loadGraph(includeArchived: boolean, signal: AbortSignal): Promise<WikiGraph> {
   const r = await fetch(includeArchived ? '/api/wiki/graph?include_archived=true' : '/api/wiki/graph', { signal });
@@ -61,7 +58,6 @@ export default function WikiGraphPage() {
   const [pathQuery, setPathQuery] = useState<PathQuery | null>(null);
   const [showMissing, setShowMissing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [legendOpen, setLegendOpen] = useState(true);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const boxRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<GraphControls | null>(null);
@@ -141,24 +137,24 @@ export default function WikiGraphPage() {
     setFilters((f) => revealFilters(f, node));
   }, [scope.focus, model, data, changeScope]);
 
-  // A found path fits into view.
+  // A found path fits into view once: a filter change recomputes `path` but not its pages.
+  const fitPath = pathKey(path);
   useEffect(() => {
-    if (path) controlsRef.current?.fitNodes(path.nodes);
-  }, [path]);
+    if (fitPath) controlsRef.current?.fitNodes(fitPath.split('\u0000'));
+  }, [fitPath]);
 
   const selectedNode =
     selected?.kind === 'node' && visible.neighbours.has(selected.id) ? (model.byId.get(selected.id) ?? null) : null;
   const selectedLink =
     selected?.kind === 'link' && visible.linksOf.get(selected.link.a)?.includes(selected.link) ? selected.link : null;
   const panelOpen = pathQuery !== null || selectedNode !== null || selectedLink !== null;
-  const insets: ViewInsets = useMemo(
-    () => ({
-      left: legendOpen ? LEGEND_INSET : 24,
-      top: legendOpen ? 44 : FOLDED_LEGEND_TOP,
-      right: panelOpen ? PANEL_WIDTH + 24 : 64,
-      bottom: 40,
-    }),
-    [legendOpen, panelOpen]
+  // The legend and the details panel can be resized; the map keeps clear of their current sizes.
+  const panels = usePanelSizes(size.width, size.height);
+  const { legendOpen, setLegendOpen } = panels;
+  const { legend: legendSize, panel: panelWidth } = panels.sizes;
+  const insets = useMemo(
+    () => canvasInsets(legendOpen, legendSize.width, panelOpen, panelWidth),
+    [legendOpen, legendSize.width, panelOpen, panelWidth]
   );
 
   const close = useCallback(() => {
@@ -235,9 +231,9 @@ export default function WikiGraphPage() {
                   width={size.width}
                   height={size.height}
                   insets={insets}
-                  coveredLeft={legendOpen ? LEGEND_COVER : 0}
-                  coveredRight={panelOpen ? PANEL_WIDTH : 0}
-                  controlsRight={panelOpen ? PANEL_WIDTH + 16 : 16}
+                  coveredLeft={legendOpen ? LEGEND_LEFT + legendSize.width : 0}
+                  coveredRight={panelOpen ? panelWidth : 0}
+                  controlsRight={panelOpen ? panelWidth + 16 : 16}
                   selected={selected}
                   onSelect={select}
                   pinned={pinned}
@@ -272,7 +268,11 @@ export default function WikiGraphPage() {
                 pointerLimited={limitsLinePointer(visible.links.length)}
                 open={legendOpen}
                 onOpen={setLegendOpen}
+                size={legendSize}
+                onSize={panels.setLegend}
+                onSizeDone={panels.save}
               />
+              <PanelWidthContext.Provider value={panels.panelContext}>
               {pathQuery !== null && (
                 <PathPanel pages={view.pickable} model={model} query={pathQuery} onQuery={setPathQuery} path={path}
                   onShowAllLines={allLines ? undefined : () => setFilters({ ...filters, showPlain: true, showRelated: true })}
@@ -287,6 +287,7 @@ export default function WikiGraphPage() {
                 <EdgePanel key={`${selectedLink.a}\u0000${selectedLink.b}`} link={selectedLink} model={model}
                   cache={connectionsCache} onClose={close} onPick={pick} returnFocusTo={boxRef} />
               )}
+              </PanelWidthContext.Provider>
             </>
           )}
         </div>

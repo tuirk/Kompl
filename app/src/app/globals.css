@@ -644,6 +644,41 @@ article img {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* The collapsed legend's "Filters" button (legend-parts.tsx FiltersButton), styled like the header's buttons. */
+.graph-filters-btn {
+  color: var(--fg-secondary);
+  background: rgba(18, 19, 22, 0.9);
+  border: 1px solid rgba(var(--accent-rgb), 0.2);
+}
+.graph-filters-btn:hover {
+  color: var(--fg);
+  background: var(--bg-card-hover);
+  border-color: rgba(var(--accent-rgb), 0.45);
+}
+.graph-filters-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The legend's icon buttons: the key's ⓘ (accent while its popover is open) and "Collapse filters". */
+.graph-icon-btn {
+  color: var(--fg-muted);
+  background: transparent;
+}
+.graph-icon-btn:hover {
+  color: var(--fg);
+  background: var(--bg-card-hover);
+}
+.graph-icon-btn[aria-expanded="true"] {
+  color: var(--accent);
+}
+.graph-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+/* Filter rows look clickable; the key's rows (LegendKey.tsx) have no hover on purpose. */
+.graph-legend-filter:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
 /* The graph header's and path panel's buttons (GraphHeader.tsx, PathPanel.tsx). */
 .graph-header-btn:focus-visible {
   outline: 2px solid var(--accent);
