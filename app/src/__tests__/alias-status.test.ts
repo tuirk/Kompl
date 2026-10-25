@@ -76,7 +76,8 @@ describe('schema v29', () => {
     const version = /^SCHEMA_VERSION = (\d+)/m.exec(migrate)?.[1];
     expect(Number(version)).toBeGreaterThanOrEqual(29);
     expect(schema).toContain(`VALUES ('schema_version', '${version}')`);
-    expect(migrate).toContain('if current < 29:');
+    // Part of the one upgrade step from the last release (scripts/migrate.py).
+    expect(migrate).toContain('if current < 30:');
     expect(migrate).toContain('PRAGMA table_info(aliases)');
     expect(migrate).toContain(`"status TEXT DEFAULT 'active'"`);
   });
