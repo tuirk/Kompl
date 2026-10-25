@@ -1,8 +1,10 @@
 /**
  * The disagreements record (lib/disagreements.ts) as the page panel and MCP
  * read_page show it. Plain functions over rows already read; no writes.
+ * Both show one finding per disagreement (lib/disagreement-duplicates.ts).
  */
 
+import { hiddenDuplicates } from './disagreement-duplicates';
 import type { Disagreement, DisagreementFinder, DisagreementKind, DisagreementStatus } from './disagreements';
 import type { PageDispute } from './page-disputes';
 
@@ -31,8 +33,8 @@ function sameSources(a: readonly string[], b: readonly string[]): boolean {
 /**
  * The panel's rows: the disputes the shown page text records (their anchors
  * come from the page view), each with its finding's id and status, then the
- * checks' findings. Matched like the commit's sync: same topic or same
- * sources.
+ * checks' findings, duplicates left out. Matched like the commit's sync:
+ * same topic or same sources.
  */
 export function panelDisagreements(disputes: readonly PageDispute[], records: readonly Disagreement[]): PanelDisagreement[] {
   const textRecords = records.filter((r) => r.found_by === 'page_text');
@@ -57,8 +59,9 @@ export function panelDisagreements(disputes: readonly PageDispute[], records: re
       found_at: record?.created_at ?? null,
     };
   });
+  const hidden = hiddenDuplicates(records);
   for (const r of records) {
-    if (r.found_by === 'page_text') continue;
+    if (r.found_by === 'page_text' || hidden.has(r.disagreement_id)) continue;
     rows.push({
       key: r.disagreement_id,
       disagreement_id: r.disagreement_id,
@@ -90,14 +93,17 @@ export interface PageDisagreementOut {
   found_at: string;
 }
 
-/** The findings an agent should know about: the owner's dismissals are left out. */
+/** The findings an agent should know about: duplicates and the owner's dismissals are left out. */
 export function pageDisagreementsOut(
   records: readonly Disagreement[],
   numbered: ReadonlyArray<{ n: number; source_id: string; title: string | null }>,
   titleOf: (sourceId: string) => string | null,
 ): PageDisagreementOut[] {
   const byId = new Map(numbered.map((s) => [s.source_id.toLowerCase(), s]));
+  // Duplicates first: a twin the owner dismissed hides the undecided ones too.
+  const hidden = hiddenDuplicates(records);
   return records
+    .filter((r) => !hidden.has(r.disagreement_id))
     .filter((r): r is Disagreement & { status: 'possible' | 'confirmed' } => r.status !== 'dismissed')
     .map((r) => ({
       kind: r.kind,

@@ -62,7 +62,9 @@ export interface Disagreement {
   cleared_at: string | null;
 }
 
-type Row = Omit<Disagreement, 'source_ids'> & { source_ids: string };
+/** A row as stored: source_ids still JSON. */
+export type DisagreementRow = Omit<Disagreement, 'source_ids'> & { source_ids: string };
+type Row = DisagreementRow;
 
 function parseIds(raw: string | null): string[] {
   try {
@@ -73,7 +75,7 @@ function parseIds(raw: string | null): string[] {
   }
 }
 
-function fromRow(row: Row): Disagreement {
+export function fromRow(row: Row): Disagreement {
   return { ...row, source_ids: parseIds(row.source_ids) };
 }
 
@@ -85,9 +87,9 @@ export interface DisagreementFinding {
   /**
    * One finding per (page, found_by, key): recording the same key again
    * updates that finding. Defaults to the new source for a triage verdict
-   * and to the two sides ("a|b") otherwise (defaultFindingKey). Pass one
-   * when a pair of sources can disagree more than once, e.g. the two
-   * claims' ids.
+   * and to the two sides ("a|b") otherwise (defaultFindingKey). The claim
+   * check passes its own: kind and the two sources in either order
+   * (lib/claim-check/record-finding.ts).
    */
   key?: string;
   topic?: string;
@@ -125,8 +127,9 @@ export function defaultFindingKey(finding: Pick<DisagreementFinding, 'found_by' 
 /**
  * Record a disagreement a check found, or refresh the same finding (same
  * page, finder and key): kind, topic, reason, sides and quotes are updated
- * (a quote or reason left out keeps the stored one); status and the
- * owner's verdict never change here. Synchronous; safe inside a
+ * (a quote or reason left out keeps the stored one; with `replaceQuotes`
+ * both quotes are set as given, so they always belong to the sides given);
+ * status and the owner's verdict never change here. Synchronous; safe inside a
  * transaction. Throws on an unknown kind or finder, or a page that does not
  * exist.
  *
@@ -140,7 +143,7 @@ export function defaultFindingKey(finding: Pick<DisagreementFinding, 'found_by' 
 export function recordDisagreement(
   db: Database.Database,
   finding: DisagreementFinding,
-  options: { insertOnly?: boolean } = {},
+  options: { insertOnly?: boolean; replaceQuotes?: boolean } = {},
 ): { disagreement_id: string; created: boolean } {
   if (!(DISAGREEMENT_KINDS as readonly string[]).includes(finding.kind)) {
     throw new Error(`unknown disagreement kind: ${finding.kind}`);
@@ -161,10 +164,12 @@ export function recordDisagreement(
     .get(finding.page_id, finding.found_by, key) as { disagreement_id: string } | undefined;
   if (existing) {
     if (!options.insertOnly) {
+      const keepA = options.replaceQuotes ? 'NULL' : 'quote_a';
+      const keepB = options.replaceQuotes ? 'NULL' : 'quote_b';
       db.prepare(
         `UPDATE disagreements
             SET kind = ?, topic = COALESCE(NULLIF(?, ''), topic), reason = COALESCE(?, reason),
-                source_a = ?, quote_a = COALESCE(?, quote_a), source_b = ?, quote_b = COALESCE(?, quote_b),
+                source_a = ?, quote_a = COALESCE(?, ${keepA}), source_b = ?, quote_b = COALESCE(?, ${keepB}),
                 source_ids = ?, session_id = COALESCE(?, session_id),
                 updated_at = datetime('now'), cleared_at = NULL
           WHERE disagreement_id = ?`,

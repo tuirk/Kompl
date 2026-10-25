@@ -8,6 +8,7 @@
  */
 
 import { getAllArchivedPageIds, getCompileProgress, getDb } from './db';
+import { hiddenDuplicatesOnPages } from './disagreement-duplicates';
 
 const SAVED_LINKS_PAGE_ID = 'saved-links';
 /** Sources listed per changed page; the rest are counted. */
@@ -215,32 +216,41 @@ function pageChanges(
 
 /**
  * Disagreements recorded since `since`, newest first, from the record:
- * page text, triage and the checks alike. The owner's dismissals and
- * archived pages are left out.
+ * page text, triage and the checks alike. Duplicates of one disagreement
+ * (lib/disagreement-duplicates.ts), the owner's dismissals and archived
+ * pages are left out. A page-text finding names no source: its sides, when
+ * a check lent it some, are not who flagged it.
  */
 function disagreementsSince(since: string): DisagreementEvent[] {
   const db = getDb();
-  const rows = db
+  const all = db
     .prepare(
-      `SELECT datetime(d.created_at) AS at, d.kind, d.found_by, d.status, d.page_id, p.title AS page_title,
-              s.title AS source_title, d.topic, d.reason
+      `SELECT d.disagreement_id, datetime(d.created_at) AS at, d.kind, d.found_by, d.status, d.page_id,
+              p.title AS page_title, s.title AS source_title, d.topic, d.reason
          FROM disagreements d
          JOIN pages p ON p.page_id = d.page_id
-         LEFT JOIN sources s ON s.source_id = d.source_b
-        WHERE datetime(d.created_at) >= datetime(?) AND d.status != 'dismissed' AND p.page_type != 'archived'
+         LEFT JOIN sources s ON s.source_id = d.source_b AND d.found_by != 'page_text'
+        WHERE datetime(d.created_at) >= datetime(?) AND p.page_type != 'archived'
         ORDER BY d.created_at DESC, d.rowid DESC`
     )
     .all(since) as Array<{
+    disagreement_id: string;
     at: string;
     kind: string;
     found_by: string;
-    status: 'possible' | 'confirmed';
+    status: 'possible' | 'confirmed' | 'dismissed';
     page_id: string;
     page_title: string;
     source_title: string | null;
     topic: string;
     reason: string | null;
   }>;
+  // Duplicates are judged on every finding of the page, not only the window's.
+  const hidden = hiddenDuplicatesOnPages(db, all.map((r) => r.page_id));
+  const rows = all.filter(
+    (r): r is (typeof all)[number] & { status: 'possible' | 'confirmed' } =>
+      r.status !== 'dismissed' && !hidden.has(r.disagreement_id),
+  );
   return rows.map((r) => ({
     at: r.at,
     kind: r.kind,

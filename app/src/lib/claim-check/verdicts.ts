@@ -12,6 +12,8 @@
 
 import type Database from 'better-sqlite3';
 
+import { hiddenDuplicatesOnPages } from '../disagreement-duplicates';
+
 export const CLAIM_VERDICTS = ['disputed', 'outdated', 'scope', 'opinion', 'none'] as const;
 export type ClaimVerdict = (typeof CLAIM_VERDICTS)[number];
 export type ClaimCheckFinder = 'claim_check' | 'wiki_check';
@@ -78,11 +80,12 @@ export function saveClaimVerdict(db: Database.Database, v: SavedClaimVerdict): b
  * The whole-wiki check's open findings (not dismissed), newest first, as
  * GET /api/wiki/status lists the last health check's contradictions for
  * MCP wiki_status: the two sources, and the page with what they disagree on.
+ * One per disagreement (lib/disagreement-duplicates.ts).
  */
 export function wikiCheckFindings(db: Database.Database): Array<{ page_a: string; page_b: string; claim: string }> {
-  const rows = db
+  const all = db
     .prepare(
-      `SELECT p.title AS page_title, d.topic, d.reason,
+      `SELECT d.disagreement_id, d.page_id, p.title AS page_title, d.topic, d.reason,
               COALESCE(sa.title, 'A source no longer in the wiki') AS title_a,
               COALESCE(sb.title, 'A source no longer in the wiki') AS title_b
          FROM disagreements d
@@ -92,8 +95,17 @@ export function wikiCheckFindings(db: Database.Database): Array<{ page_a: string
         WHERE d.found_by = 'wiki_check' AND d.status != 'dismissed'
         ORDER BY d.created_at DESC, d.rowid DESC`,
     )
-    .all() as Array<{ page_title: string; topic: string; reason: string | null; title_a: string; title_b: string }>;
-  return rows.map((r) => ({
+    .all() as Array<{
+    disagreement_id: string;
+    page_id: string;
+    page_title: string;
+    topic: string;
+    reason: string | null;
+    title_a: string;
+    title_b: string;
+  }>;
+  const hidden = hiddenDuplicatesOnPages(db, all.map((r) => r.page_id));
+  return all.filter((r) => !hidden.has(r.disagreement_id)).map((r) => ({
     page_a: r.title_a,
     page_b: r.title_b,
     claim: `${r.page_title}: ${r.topic}${r.reason ? `. ${r.reason}` : ''}`,

@@ -10,8 +10,9 @@
  *   3. each answered batch is saved at once, in one transaction: every
  *      verdict in claim_verdicts (./verdicts.ts), and every disputed or
  *      outdated verdict as a possible disagreement on the subject's page
- *      (lib/disagreements.ts recordDisagreement, keyed by the pair, so it
- *      never doubles and never touches the owner's verdict);
+ *      (./record-finding.ts: one per page, kind and pair of sources, none
+ *      when the page's own text already records it; it never touches the
+ *      owner's verdict);
  *   4. one claim_check_run activity row sums the run up.
  *
  * Findings (owner's choice, 2026-10-24): disputed → disputed, outdated →
@@ -27,11 +28,12 @@
 import type Database from 'better-sqlite3';
 
 import { getDb, logActivity } from '../db';
-import { recordDisagreement, type DisagreementKind } from '../disagreements';
+import type { DisagreementKind } from '../disagreements';
 import { sourceDates, type SourceDate } from '../source-dates';
 import { findCandidatePairs, type CandidatePair } from './candidates';
 import { loadWikiClaims, subjectPages, type WikiClaim } from './claims';
 import { judgeClaimPairs, type JudgePair, type JudgeStop, type JudgedPair, type JudgeSide } from './judge';
+import { recordClaimFinding, type ClaimFindingOutcome } from './record-finding';
 import { judgedPairKeys, saveClaimVerdict, type ClaimCheckFinder, type ClaimVerdict } from './verdicts';
 
 /** The verdicts that become possible disagreements, and their kind in the record. */
@@ -63,7 +65,7 @@ export interface ClaimCheckSummary {
   selected: number;
   /** Pairs that got a verdict. */
   judged: number;
-  /** Verdicts recorded as possible disagreements. */
+  /** Possible disagreements recorded or refreshed (one per page, kind and pair of sources). */
   findings: number;
   by_kind: Partial<Record<DisagreementKind, number>>;
   calls: number;
@@ -149,6 +151,7 @@ export async function runClaimCheck(options: ClaimCheckOptions): Promise<ClaimCh
     examples: [],
   };
   const pageTitle = db.prepare('SELECT title FROM pages WHERE page_id = ?');
+  const counted = new Set<string>();
 
   const save = db.transaction((verdicts: JudgedPair[]) => {
     for (const v of verdicts) {
@@ -176,14 +179,14 @@ export async function runClaimCheck(options: ClaimCheckOptions): Promise<ClaimCh
       const page = pageTitle.get(p.pair.page_id) as { title: string } | undefined;
       if (!page) continue;
       const [sa, sb] = findingSides(p, v, options.newSourceIds);
+      let recorded: ClaimFindingOutcome;
       try {
         // Its own savepoint: a finding that cannot be recorded never loses the batch's verdicts.
-        db.transaction(() =>
-          recordDisagreement(db, {
+        recorded = db.transaction(() =>
+          recordClaimFinding(db, {
             page_id: p.pair.page_id,
             found_by: options.found_by,
             kind,
-            key: `claims:${p.pair.pair_key}`,
             topic: v.topic || p.pair.subject,
             reason: v.reason || null,
             source_a: sa.source_id,
@@ -197,6 +200,9 @@ export async function runClaimCheck(options: ClaimCheckOptions): Promise<ClaimCh
         console.error('[claim-check] finding not recorded', p.pair.page_id, err instanceof Error ? err.message : err);
         continue;
       }
+      // Counted once per finding; the page's own text already shows a covered one, and a kept one is unchanged.
+      if (recorded.outcome !== 'recorded' || counted.has(recorded.disagreement_id)) continue;
+      counted.add(recorded.disagreement_id);
       summary.findings++;
       summary.by_kind[kind] = (summary.by_kind[kind] ?? 0) + 1;
       if (summary.examples.length < MAX_EXAMPLES) {

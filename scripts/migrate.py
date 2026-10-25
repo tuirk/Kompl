@@ -508,8 +508,9 @@ def _ensure_plan_used_source_ids(conn: sqlite3.Connection) -> bool:
 #                the two sides of a paired finding, each with its exact
 #                quote when known (triage: source_b is the new source, the
 #                page is side a); NULL for page text, whose sources are in
-#                source_ids. Deleting either side's source removes the
-#                finding.
+#                source_ids, until a claim-check verdict on two of them
+#                lends it its sides and quotes. Deleting either side's
+#                source removes the finding.
 #   source_ids   JSON list of every source involved
 #   match_key    one finding per (page, found_by, match_key): finding it
 #                again updates it

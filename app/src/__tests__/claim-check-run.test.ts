@@ -121,7 +121,7 @@ describe('runClaimCheck', () => {
       quote_a: 'It launched in 2008.',
       source_b: 'new-b',
       quote_b: null,
-      match_key: `claims:${KEY()}`,
+      match_key: 'sources:disputed:new-b|old-a',
       session_id: 'sess-new',
     });
     const saved = handle!.db.prepare('SELECT * FROM claim_verdicts').all();
