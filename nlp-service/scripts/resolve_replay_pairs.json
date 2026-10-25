@@ -250,6 +250,21 @@
       "aliases": [{"alias": "Colour-blindness", "canonical": "Color Vision Deficiency"}],
       "expected": "different",
       "why": "A type of colour vision deficiency, named in its own context as one; a type is never the page that defines the whole."
+    },
+    {
+      "id": "colorblindness-vs-cvd-entity-page-parenthetical",
+      "a": {"name": "Colorblindness", "type": "CONCEPT", "source": "dw", "context": "Color vision deficiency, discussed here as the condition affecting readers who must still be able to tell apart differently colored chart elements; red-green blindness is named as the most common type."},
+      "b": {"name": "Color Vision Deficiency (CVD)", "page": true, "page_type": "entity", "summary": "Color Vision Deficiency (CVD) is a visual condition affecting about 5% of the world’s population, in which one or more cone types are missing or not working as they should. Common deutan and protan types share standard luminance-contrast needs, with red-on-black pairings problematic for protan forms."},
+      "aliases": [{"alias": "Color vision deficiency", "canonical": "Color Vision Deficiency (CVD)"}],
+      "expected": "same",
+      "why": "Film run 2026-10-25 batch B, real title, page kind, summary and alias: never reached Layer 3 (name sim 0.5392, cross-kind)."
+    },
+    {
+      "id": "color-oracle-vs-colorblindness-simulation-page",
+      "a": {"name": "Color Oracle", "type": "PRODUCT", "source": "co", "context": "Free colour blindness simulator for Windows, Mac and Linux that shows the screen as people with common colour vision deficiencies see it."},
+      "b": {"name": "Color blindness simulation", "page": true, "page_type": "concept", "summary": "Color blindness simulation previews an image or interface as people with a colour vision deficiency would see it, so designers can check that colours stay distinguishable. Several free tools offer it."},
+      "expected": "different",
+      "why": "A tool that simulates colour blindness, not the technique the page defines. Across kinds, asked on context (0.45 by name, 0.77 with it, real MiniLM); contexts written for the replay."
     }
   ]
 }

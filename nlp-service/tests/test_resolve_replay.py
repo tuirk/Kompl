@@ -30,7 +30,7 @@ def _load_replay():
 
 
 def test_the_pair_set_is_labelled():
-    assert 20 <= len(ITEMS) <= 35
+    assert 20 <= len(ITEMS) <= 40
     assert len({i["id"] for i in ITEMS}) == len(ITEMS)
     for item in ITEMS:
         assert item["expected"] in {"same", "different"}, item["id"]
@@ -234,6 +234,67 @@ def test_a_side_bound_to_a_page_reaches_the_model_as_that_page(replay, monkeypat
     seen.clear()
     module.judge(_item("deuteranopia-vs-cvd-page"), "http://x", "deepseek-flash")
     assert [s["known_names"] for p in seen for s in (p["entity_a"], p["entity_b"]) if "known_names" in s] ==         [["Colour-blindness"]]
+
+
+class _Measured:
+    """The item's name on axis 0, its "name: context" at cosine 0.6 with it,
+    and each page title at the (name, context) cosines real MiniLM gave."""
+
+    def __init__(self, name: str, context: str, titles: dict[str, tuple[float, float]]):
+        self.vectors = {name: [1.0, 0.0, 0.0, 0.0, 0.0], f"{name}: {context}": [0.6, 0.8, 0.0, 0.0, 0.0]}
+        for k, (title, (ns, cs)) in enumerate(titles.items()):
+            v = [ns, (cs - 0.6 * ns) / 0.8, 0.0, 0.0, 0.0]
+            v[2 + k] = (1 - v[0] ** 2 - v[1] ** 2) ** 0.5
+            self.vectors[title] = v
+
+    def encode(self, texts, convert_to_numpy=True, normalize_embeddings=False):  # noqa: ARG002
+        return np.array([self.vectors.get(t, [0.0, 0.0, 0.0, 0.0, 1.0]) for t in texts], dtype=np.float32)
+
+
+def test_a_concept_is_asked_about_the_entity_page_with_its_abbreviation_in_brackets(replay, monkeypatch):
+    """Film run 2026-10-25: "Colorblindness" scored 0.5392 by name against
+    the entity page "Color Vision Deficiency (CVD)" and only the name
+    counted across kinds, so it was never asked. Without the bracket it
+    scores 0.6829 by name and 0.7741 with context; the context asks."""
+    from routers import resolution  # noqa: PLC0415
+    from services import llm_client as llm_client_mod  # noqa: PLC0415
+    from services.llm_client import DisambiguationResponse, DisambiguationResult  # noqa: PLC0415
+
+    module, _calls = replay
+    item = _item("colorblindness-vs-cvd-entity-page-parenthetical")
+    monkeypatch.setattr(resolution, "_get_embed_model", lambda: _Measured(item["a"]["name"], item["a"]["context"], {
+        "Color Vision Deficiency": (0.6829, 0.7741), "Color Vision Deficiency (CVD)": (0.5392, 0.6355)}))
+    assert module.judge(item, "http://x", None) == {"got": "different", "by": "asked (no LLM run)", "answer": None}
+
+    seen: list[dict[str, Any]] = []
+
+    def model(pairs, model, pair_kind="entity"):  # noqa: ARG001
+        seen.extend(pairs)
+        return DisambiguationResponse(results=[
+            DisambiguationResult(entity_a=p["entity_a"]["name"], entity_b=p["entity_b"]["name"], decision="same",
+                                 canonical="Color Vision Deficiency (CVD)", reason="fake") for p in pairs])
+
+    monkeypatch.setattr(llm_client_mod, "disambiguate_entities", model)
+    result = module.judge(item, "http://x", "deepseek-flash")
+    assert (result["got"], result["by"]) == ("same", "layer 3")
+    [page_side] = [s for p in seen for s in (p["entity_a"], p["entity_b"]) if "known_names" in s]
+    assert page_side == {"name": "Color Vision Deficiency (CVD)", "type": "OTHER", "context": item["b"]["summary"],
+                         "known_names": ["Color vision deficiency"]}
+
+
+def test_a_product_asked_about_a_concept_page_on_context_stays_apart(replay, monkeypatch):
+    """"Color Oracle" / the page "Color blindness simulation": 0.4523 by
+    name, 0.7658 with context. Asked, never merged in Layer 2; the fake
+    model says different."""
+    from routers import resolution  # noqa: PLC0415
+
+    module, _calls = replay
+    item = _item("color-oracle-vs-colorblindness-simulation-page")
+    monkeypatch.setattr(resolution, "_get_embed_model", lambda: _Measured(item["a"]["name"], item["a"]["context"], {
+        "Color blindness simulation": (0.4523, 0.7658)}))
+    assert module.judge(item, "http://x", None)["by"] == "asked (no LLM run)"
+    result = module.judge(item, "http://x", "deepseek-flash")
+    assert (result["got"], result["by"], result["answer"]["decision"]) == ("different", "layer 3", "different")
 
 
 def test_scores_and_the_input_order_check(replay):
