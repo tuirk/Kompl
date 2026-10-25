@@ -1,40 +1,19 @@
 export const dynamic = 'force-dynamic';
 
 import JSZip from 'jszip';
-import fs from 'fs/promises';
-import path from 'path';
 import { NextResponse } from 'next/server';
 
 import {
-  getAllActivityLog,
-  getAllAliases,
-  getAllChatMessages,
-  getAllCompileProgress,
-  getAllDrafts,
-  getAllEntityMentions,
-  getAllExtractions,
-  getAllPageLinks,
-  getAllPagePlans,
   getAllPages,
   getAllProvenance,
-  getAllRelationshipMentions,
   getAllSources,
-  getDb,
-  getExportableSettings,
-  getSchemaVersion,
-  pagesFilePath,
-  rawFilePath,
-  DATA_ROOT,
   readPageMarkdown,
   setLastBackupAt,
 } from '@/lib/db';
 import { yamlDoubleQuote } from '@/lib/yaml-escape';
-import { getPageDraftRulesMap } from '@/lib/draft-rules';
+import { buildKomplBackup } from '@/lib/kompl-backup';
 import { exportPageBody } from '@/lib/page-export';
-import { isBackedUpSetting } from '@/lib/backup-settings';
 import { getSourceTitleSet } from '@/lib/page-sources';
-import { getAllDisagreements } from '@/lib/disagreement-backfill';
-import { getAllClaimVerdicts } from '@/lib/claim-check/verdicts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -221,112 +200,10 @@ export async function GET(request: Request) {
   }
 
   if (format === 'kompl') {
-    const includeVectors = searchParams.get('include_vectors') === 'true';
-    const zip = new JSZip();
-    const sources = getAllSources();
-    const pages = getAllPages();
-
-    // Fetch vectors from nlp-service if requested (before building zip)
-    let vectorCount = 0;
-    if (includeVectors) {
-      try {
-        const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
-        const vRes = await fetch(`${NLP_SERVICE_URL}/vectors/export`, {
-          signal: AbortSignal.timeout(60_000),
-        });
-        if (vRes.ok) {
-          const vData = await vRes.json() as { count: number; items: unknown[] };
-          vectorCount = vData.count;
-          zip.file('vectors.json', JSON.stringify(vData, null, 2));
-        } else {
-          console.warn(`[export] vectors/export returned ${vRes.status}, skipping vectors`);
-        }
-      } catch (e) {
-        console.warn('[export] could not fetch vectors:', e instanceof Error ? e.message : e);
-      }
-    }
-
-    zip.file(
-      'manifest.json',
-      JSON.stringify(
-        {
-          format: 'kompl',
-          version: 1,
-          exported_at: new Date().toISOString(),
-          schema_version: getSchemaVersion(),
-          source_count: sources.length,
-          page_count: pages.length,
-          vector_count: vectorCount,
-          app_version: '2.0.0',
-        },
-        null,
-        2
-      )
-    );
-
-    const dbFolder = zip.folder('db')!;
-    dbFolder.file('sources.json', JSON.stringify(sources, null, 2));
-    // draft_rules (v27) says which writing rules each page follows, so a
-    // restored wiki offers the same pages for an update. Older releases'
-    // imports ignore the extra field.
-    const draftRules = getPageDraftRulesMap();
-    dbFolder.file(
-      'pages.json',
-      JSON.stringify(pages.map((p) => ({ ...p, draft_rules: draftRules.get(p.page_id) ?? null })), null, 2),
-    );
-    dbFolder.file('provenance.json', JSON.stringify(getAllProvenance(), null, 2));
-    // Every alias row, set aside or not, with how it was made and its status
-    // (v29), so a restore keeps them. Older releases' imports ignore them.
-    dbFolder.file('aliases.json', JSON.stringify(getAllAliases(), null, 2));
-    // The disagreements record (v30) with the owner's verdicts, so a restore
-    // keeps them. Older releases' imports ignore the file.
-    dbFolder.file('disagreements.json', JSON.stringify(getAllDisagreements(getDb()), null, 2));
-    // The claim check's saved verdicts (v30), so a restored wiki never pays
-    // to judge the same claim pair again. Older releases' imports ignore it.
-    dbFolder.file('claim_verdicts.json', JSON.stringify(getAllClaimVerdicts(getDb()), null, 2));
-    dbFolder.file('extractions.json', JSON.stringify(getAllExtractions(), null, 2));
-    dbFolder.file('page_links.json', JSON.stringify(getAllPageLinks(), null, 2));
-    dbFolder.file('entity_mentions.json', JSON.stringify(getAllEntityMentions(), null, 2));
-    dbFolder.file('relationship_mentions.json', JSON.stringify(getAllRelationshipMentions(), null, 2));
-    dbFolder.file('drafts.json', JSON.stringify(getAllDrafts(), null, 2));
-    dbFolder.file('activity_log.json', JSON.stringify(getAllActivityLog(), null, 2));
-    dbFolder.file('compile_progress.json', JSON.stringify(getAllCompileProgress(), null, 2));
-    dbFolder.file('chat_messages.json', JSON.stringify(getAllChatMessages(), null, 2));
-    dbFolder.file('page_plans.json', JSON.stringify(getAllPagePlans(), null, 2));
-    // The schema version travels in manifest.json. Older Kompl releases copy
-    // every settings row on import, so a schema_version row here would
-    // overwrite an older install's own version and leave it "degraded".
-    // Install-only rows are left out (lib/backup-settings.ts).
-    dbFolder.file(
-      'settings.json',
-      JSON.stringify(
-        getExportableSettings().filter((s) => isBackedUpSetting(s.key)),
-        null,
-        2,
-      ),
-    );
-
-    const rawFolder = zip.folder('raw')!;
-    for (const s of sources) {
-      try {
-        rawFolder.file(`${s.source_id}.md.gz`, await fs.readFile(rawFilePath(s.source_id)));
-      } catch { /* skip missing source file */ }
-    }
-
-    const pagesFolder = zip.folder('pages')!;
-    for (const p of pages) {
-      try {
-        pagesFolder.file(`${p.page_id}.md.gz`, await fs.readFile(pagesFilePath(p.page_id)));
-      } catch { /* skip missing page file */ }
-    }
-
-    try {
-      zip.file('schema.md', await fs.readFile(path.join(DATA_ROOT, 'schema.md'), 'utf-8'));
-    } catch { /* no schema.md yet */ }
-
-    const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+    const buffer = await buildKomplBackup({ includeVectors: searchParams.get('include_vectors') === 'true' });
     setLastBackupAt(new Date().toISOString());
-    return new NextResponse(new Uint8Array(buffer), {
+    // A view of the zip, not a copy: a large wiki's backup is held once.
+    return new NextResponse(new Uint8Array(buffer.buffer as ArrayBuffer, buffer.byteOffset, buffer.byteLength), {
       headers: {
         'Content-Type': 'application/zip',
         'Content-Disposition': 'attachment; filename="kompl-export.kompl.zip"',

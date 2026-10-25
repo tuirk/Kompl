@@ -523,9 +523,12 @@ function renderWikiImported(row: FeedActivityRow): RowContent {
   const { num } = makeGetters(row);
   const sources = num('source_count');
   const pages = num('page_count');
+  // Rows an old backup held for sources or pages it lacked (api/import).
+  const skipped = num('skipped_rows');
   const parts = [
     sources !== null && `${sources} source${sources !== 1 ? 's' : ''}`,
     pages !== null && `${pages} page${pages !== 1 ? 's' : ''}`,
+    skipped !== null && skipped > 0 && `${skipped} row${skipped !== 1 ? 's' : ''} left out: the backup lacked their sources or pages`,
   ].filter(Boolean);
   const secondary = parts.length > 0
     ? <span style={MONO_DIM}>{parts.join(' · ')}</span>

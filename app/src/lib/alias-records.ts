@@ -20,6 +20,8 @@ export interface ImportedAliasRecord {
   status: string;
   status_reason: string | null;
   status_at: string | null;
+  /** When the alias was made; null in backups that left it out (stamped at import). */
+  created_at: string | null;
 }
 
 export function aliasRecordFromBackup(a: Record<string, unknown>): ImportedAliasRecord {
@@ -33,5 +35,6 @@ export function aliasRecordFromBackup(a: Record<string, unknown>): ImportedAlias
     status: typeof a.status === 'string' && STATUSES.has(a.status) ? a.status : 'active',
     status_reason: text(a.status_reason),
     status_at: text(a.status_at),
+    created_at: text(a.created_at),
   };
 }

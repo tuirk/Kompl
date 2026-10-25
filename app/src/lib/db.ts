@@ -185,6 +185,8 @@ export interface SourceRow {
   metadata: string | null; // JSON TEXT; caller parses if needed
   compile_status: string | null;
   compile_attempts: number | null;
+  /** Read by getAllSources only, so a backup carries it. */
+  compile_next_eligible_at?: string | null;
   onboarding_session_id: string | null;
   /** Which cascade step produced `title` at ingest time. Drives the
    *  /api/compile/extract rescue trigger. NULL for rows ingested before
@@ -1427,6 +1429,7 @@ export interface AliasRecord {
   status: string | null;
   status_reason: string | null;
   status_at: string | null;
+  created_at: string | null;
 }
 
 /** All alias rows, whatever their status, oldest first — used for kompl backup export. */
@@ -1434,7 +1437,7 @@ export function getAllAliases(): AliasRecord[] {
   return openDb()
     .prepare(
       `SELECT alias, canonical_name, canonical_page_id, method, score, session_id,
-              status, status_reason, status_at
+              status, status_reason, status_at, created_at
          FROM aliases ORDER BY id`
     )
     .all() as AliasRecord[];
@@ -2620,7 +2623,9 @@ export function getAllSources(options?: {
     .prepare(
       `SELECT source_id, title, source_type, source_url, content_hash,
               file_path, status, date_ingested, metadata, compile_status,
-              compile_attempts, onboarding_session_id, published_at, published_at_source
+              compile_attempts, compile_next_eligible_at, onboarding_session_id,
+              title_source, title_rescued_at,
+              published_at, published_at_source
          FROM sources
          ${where}
          ORDER BY ${sortCol} ${sortDir}
@@ -4071,14 +4076,18 @@ export interface ActivityLogRow {
   action_type: string;
   source_id: string | null;
   details: string | null;
+  /** v23: the compile session and step the event belongs to. */
+  session_id: string | null;
+  step_key: string | null;
 }
 
+/** In the order they were logged, so a restore keeps events that share a timestamp in order. */
 export function getAllActivityLog(): ActivityLogRow[] {
   return openDb()
     .prepare(
-      `SELECT timestamp, action_type, source_id, details
+      `SELECT timestamp, action_type, source_id, details, session_id, step_key
          FROM activity_log
-        ORDER BY timestamp`
+        ORDER BY id`
     )
     .all() as ActivityLogRow[];
 }
@@ -4093,17 +4102,44 @@ export interface CompileProgressExportRow {
   completed_at: string | null;
   created_at: string;
   source_count: number;
+  /** v20: the model the session was locked to; null for older sessions. */
+  compile_model: string | null;
 }
 
 export function getAllCompileProgress(): CompileProgressExportRow[] {
   return openDb()
     .prepare(
       `SELECT session_id, status, current_step, steps, error,
-              started_at, completed_at, created_at, source_count
+              started_at, completed_at, created_at, source_count, compile_model
          FROM compile_progress
         ORDER BY created_at`
     )
     .all() as CompileProgressExportRow[];
+}
+
+export interface IngestFailureExportRow {
+  failure_id: string;
+  source_url: string | null;
+  title_hint: string | null;
+  date_saved: string | null;
+  date_attempted: string;
+  error: string;
+  source_type: string;
+  resolved_source_id: string | null;
+  metadata: string | null;
+  session_id: string | null;
+}
+
+/** The links saved but not fetched (the Saved Links page), resolved ones too. */
+export function getAllIngestFailures(): IngestFailureExportRow[] {
+  return openDb()
+    .prepare(
+      `SELECT failure_id, source_url, title_hint, date_saved, date_attempted, error,
+              source_type, resolved_source_id, metadata, session_id
+         FROM ingest_failures
+        ORDER BY date_attempted, failure_id`
+    )
+    .all() as IngestFailureExportRow[];
 }
 
 // chat_messages is legacy: the in-app chat was retired in favour of MCP, but
@@ -4143,6 +4179,10 @@ export interface PagePlanExportRow {
   created_at: string;
   /** v27: writing rules the draft was made under; null for pre-v0.4 drafts. */
   draft_rules: string | null;
+  /** v24: why the draft failed. */
+  draft_error: string | null;
+  /** v30: JSON list of the sources the draft's prompt carried; null credits every plan source. */
+  used_source_ids: string | null;
 }
 
 /**
@@ -4155,7 +4195,8 @@ export function getAllPagePlans(): PagePlanExportRow[] {
     .prepare(
       `SELECT plan_id, session_id, title, page_type, action,
               source_ids, existing_page_id, related_plan_ids,
-              draft_content, draft_status, created_at, draft_rules
+              draft_content, draft_status, created_at, draft_rules,
+              draft_error, used_source_ids
          FROM page_plans
         ORDER BY created_at`
     )

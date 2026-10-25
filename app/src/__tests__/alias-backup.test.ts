@@ -80,11 +80,13 @@ describe('alias records in backups', () => {
         alias: 'Ethereum', canonical_name: 'Ethereum Foundation', canonical_page_id: null,
         method: null, score: null, session_id: null,
         status: 'suspended', status_reason: 'token_extension', status_at: '2026-10-23 10:00:00',
+        created_at: expect.any(String),
       },
       {
         alias: 'GPT 4', canonical_name: 'GPT-4', canonical_page_id: null,
         method: 'skeleton', score: 0.97, session_id: 's1',
         status: 'active', status_reason: null, status_at: null,
+        created_at: expect.any(String),
       },
     ]);
   });
@@ -112,11 +114,13 @@ describe('alias records in backups', () => {
         alias: 'English', canonical_name: 'programming language', canonical_page_id: null,
         method: null, score: null, session_id: null,
         status: 'retired', status_reason: 'owner', status_at: '2026-10-20 09:00:00',
+        created_at: expect.any(String),
       },
       {
         alias: 'Bitcoin network', canonical_name: 'Bitcoin', canonical_page_id: null,
         method: 'embedding', score: 0.93, session_id: 'sess-9',
         status: 'active', status_reason: null, status_at: null,
+        created_at: expect.any(String),
       },
     ]);
   });
@@ -132,6 +136,7 @@ describe('alias records in backups', () => {
         alias: 'ETH', canonical_name: 'Ethereum', canonical_page_id: null,
         method: null, score: null, session_id: null,
         status: 'active', status_reason: null, status_at: null,
+        created_at: expect.any(String),
       },
     ]);
   });

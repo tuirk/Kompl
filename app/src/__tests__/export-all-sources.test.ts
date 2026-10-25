@@ -5,9 +5,10 @@
  */
 
 import JSZip from 'jszip';
-import { afterEach, describe, expect, it } from 'vitest';
+import { rmSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GET as exportGET } from '../app/api/export/route';
-import { getAllSources } from '../lib/db';
+import { getAllSources, rawFilePath } from '../lib/db';
 import { seedSource, setupTestDb, type TestDbHandle } from './helpers/test-db';
 
 let handle: TestDbHandle | null = null;
@@ -64,5 +65,17 @@ describe('exports carry every source', () => {
     const body = JSON.parse(await res.text()) as { source_count: number; sources: unknown[] };
     expect(body.source_count).toBe(COUNT);
     expect(body.sources).toHaveLength(COUNT);
+  });
+
+  it('the backup manifest names a source file missing on disk', async () => {
+    seedMany();
+    rmSync(rawFilePath('src-007'), { force: true });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await exportGET(new Request('http://test/api/export?format=kompl'));
+    const zip = await JSZip.loadAsync(Buffer.from(await res.arrayBuffer()));
+    const manifest = JSON.parse(await zip.file('manifest.json')!.async('string')) as { missing_files: string[] };
+    expect(manifest.missing_files).toEqual(['raw/src-007.md.gz']);
+    expect(zip.file('raw/src-007.md.gz')).toBeNull();
+    vi.restoreAllMocks();
   });
 });

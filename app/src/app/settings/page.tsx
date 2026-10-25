@@ -65,11 +65,14 @@ export default function SettingsPage() {
   const [relatedSaved, setRelatedSaved] = useState(false);
 
   const [exportLoading, setExportLoading] = useState<'markdown' | 'obsidian' | 'json' | 'kompl' | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importLoading, setImportLoading] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState(false);
+  // A partial restore: what an older backup lacked, shown instead of redirecting.
+  const [importLeftOut, setImportLeftOut] = useState<string | null>(null);
 
   const [staleThreshold, setStaleThreshold] = useState<number | null>(null);
   const [staleSaving, setStaleSaving] = useState(false);
@@ -204,8 +207,14 @@ export default function SettingsPage() {
 
   async function handleExport(format: 'markdown' | 'obsidian' | 'json' | 'kompl') {
     setExportLoading(format);
+    setExportError(null);
     try {
       const res = await fetch(`/api/export?format=${format}`);
+      // A failed export must not download its error as if it were the file.
+      if (!res.ok) {
+        setExportError(`Export failed (HTTP ${res.status}). Nothing was downloaded.`);
+        return;
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -229,6 +238,7 @@ export default function SettingsPage() {
     if (!importFile) return;
     setImportLoading(true);
     setImportError(null);
+    setImportLeftOut(null);
     try {
       const fd = new FormData();
       fd.append('file', importFile);
@@ -238,8 +248,19 @@ export default function SettingsPage() {
         return;
       }
       if (!res.ok) {
-        const body = await res.json() as { error?: string };
-        setImportError(body.error ?? 'Import failed');
+        // A server error may not answer with JSON; still say the import failed.
+        const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+        setImportError(body.message ?? body.error ?? `Import failed (HTTP ${res.status})`);
+        return;
+      }
+      const done = (await res.json().catch(() => ({}))) as { skipped?: { total: number; missing: string[] } };
+      if (done.skipped && done.skipped.total > 0) {
+        const rows = done.skipped.total;
+        setImportLeftOut(
+          `Restored, with ${rows} row${rows === 1 ? '' : 's'} left out: they belong to sources or pages ` +
+            `this backup does not hold (e.g. ${done.skipped.missing.join(', ')}). ` +
+            'Backups made by older versions of Kompl can lack some sources.',
+        );
         return;
       }
       setImportSuccess(true);
@@ -791,6 +812,11 @@ export default function SettingsPage() {
                         : '↓ JSON'}
                     </button>
                   ))}
+                  {exportError && (
+                    <div style={{ color: 'var(--danger)', fontSize: '0.85rem', width: '100%' }}>
+                      {exportError}
+                    </div>
+                  )}
                 </div>
               }
             />
@@ -852,6 +878,12 @@ export default function SettingsPage() {
                       }}
                     >
                       Imported — redirecting…
+                    </div>
+                  )}
+                  {importLeftOut && (
+                    <div style={{ marginTop: '0.75rem', color: 'var(--warning)', fontSize: '0.85rem' }}>
+                      {importLeftOut}{' '}
+                      <Link href="/wiki" style={{ color: 'inherit' }}>Open the wiki</Link>
                     </div>
                   )}
                 </>
