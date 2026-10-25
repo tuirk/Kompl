@@ -44,7 +44,8 @@ def test_the_layer_3_prompts_hold_no_replay_pair():
     """Examples in the prompts would teach the replay its answers."""
     from services import llm_client  # noqa: PLC0415
 
-    for prompt in (llm_client._DISAMBIGUATION_SYSTEM_PROMPT, llm_client._DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT):
+    for prompt in (llm_client._DISAMBIGUATION_SYSTEM_PROMPT, llm_client._DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT,
+                   llm_client._DISAMBIGUATION_PAGE_SYSTEM_PROMPT, llm_client._DISAMBIGUATION_CONCEPT_PAGE_SYSTEM_PROMPT):
         for item in ITEMS:
             assert not (f'"{item["a"]["name"]}"' in prompt and f'"{item["b"]["name"]}"' in prompt), item["id"]
 

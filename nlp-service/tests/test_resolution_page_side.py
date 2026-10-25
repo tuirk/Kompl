@@ -79,9 +79,57 @@ def test_known_names_must_be_a_list_of_names(client, captured):
     assert captured == []
 
 
-@pytest.mark.parametrize("name", ["_DISAMBIGUATION_SYSTEM_PROMPT", "_DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT"])
+@pytest.mark.parametrize("name", ["_DISAMBIGUATION_PAGE_SYSTEM_PROMPT", "_DISAMBIGUATION_CONCEPT_PAGE_SYSTEM_PROMPT"])
 def test_both_prompts_read_a_page_side_by_its_own_definition(name):
     prompt = getattr(llm_client, name)
     for rule in ("known_names", "page's own summary", "one source's wording", "weigh it",
-                 "type, form, part or sub-topic"):
+                 "type, form, part or sub-topic", "token, coin or ticker",
+                 "product and its maker", "Judge the names first"):
         assert rule in prompt, rule
+
+
+def _plain(a: str, b: str) -> dict[str, Any]:
+    return {"entity_a": {"name": a, "type": "CONCEPT", "source_id": "s1", "context": "a"},
+            "entity_b": {"name": b, "type": "CONCEPT", "source_id": "s2", "context": "b"},
+            "similarity": 0.8, "name_similarity": 0.8}
+
+
+def test_pairs_with_a_page_side_go_in_batches_of_their_own(client, captured):
+    """The page rules leaked into every batch and turned an asset and its
+    platform into "same"; a pair with no page side never shares a batch, and
+    so never a prompt, with one that has."""
+    pairs = [_plain("Alpha", "Beta"), _pair({"known_names": []}), _plain("Gamma", "Delta")]
+    resp = client.post("/resolve/disambiguate", json={"pairs": pairs})
+    assert resp.status_code == 200
+    batches = [[p["entity_a"]["name"] for p in c["pairs"]] for c in captured]
+    assert batches == [["Alpha", "Gamma"], ["colour blindness"]]
+    assert [any("known_names" in s for p in c["pairs"] for s in (p["entity_a"], p["entity_b"])) for c in captured] \
+        == [False, True]
+
+
+def test_the_page_block_is_absent_from_a_batch_with_no_page_side(monkeypatch):
+    """disambiguate_entities picks the prompt per batch: the prompts without
+    the page rules for a batch with no known_names side."""
+    from services.providers import LLMResult  # noqa: PLC0415
+
+    sent: list[str] = []
+
+    class _Provider:
+        def complete(self, req):
+            sent.append(req.messages[0]["content"])
+            return LLMResult(text='{"results": []}', parsed=llm_client.DisambiguationResponse(results=[]),
+                             parse_error=None, usage={}, finish_reason="STOP")
+
+    monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
+    plain = {"entity_a": {"name": "A", "type": "ORG", "context": "a"},
+             "entity_b": {"name": "B", "type": "ORG", "context": "b"}, "same_source": False}
+    page = {**plain, "entity_b": {**plain["entity_b"], "known_names": ["Bee"]}}
+    for kind in ("entity", "concept"):
+        llm_client.disambiguate_entities([plain], model="deepseek-flash", pair_kind=kind)
+        llm_client.disambiguate_entities([page], model="deepseek-flash", pair_kind=kind)
+    assert sent == [llm_client._DISAMBIGUATION_SYSTEM_PROMPT, llm_client._DISAMBIGUATION_PAGE_SYSTEM_PROMPT,
+                    llm_client._DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT, llm_client._DISAMBIGUATION_CONCEPT_PAGE_SYSTEM_PROMPT]
+    for prompt in (sent[0], sent[2]):
+        assert "known_names" not in prompt and llm_client._DISAMBIGUATION_WIKI_PAGE not in prompt
+    for prompt in (sent[1], sent[3]):
+        assert llm_client._DISAMBIGUATION_WIKI_PAGE in prompt

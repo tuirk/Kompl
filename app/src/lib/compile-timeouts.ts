@@ -38,17 +38,18 @@ function withSlack(rawMs: number, floorMs: number): number {
 }
 
 // Inner Layer 3 call in resolve/route.ts: nlp-service asks the LLM about 10
-// pairs per call, entity and concept pairs in separate batches. 120s per
-// call covers a slow DeepSeek batch (~30s is typical); the floor is the
-// fixed 10 min this formula replaced, which two slow batches could exceed.
+// pairs per call, entity and concept pairs, with or without a page side, in
+// separate batches. 120s per call covers a slow DeepSeek batch (~30s is
+// typical); the floor is the fixed 10 min this formula replaced, which two
+// slow batches could exceed.
 const DISAMBIGUATE_FLOOR_MS     = 600_000;
 const DISAMBIGUATE_PER_BATCH_MS = 120_000;
 const DISAMBIGUATE_BATCH_SIZE   = 10; // nlp-service resolve_disambiguate
 
-// disambiguate = one LLM call per batch; the kind split adds at most one
-// partial batch.
+// disambiguate = one LLM call per batch; the split into four groups (kind,
+// page side or not) adds at most three partial batches, and no batch is empty.
 export function computeDisambiguateMs(pairCount: number): number {
-  const batches = Math.ceil(pairCount / DISAMBIGUATE_BATCH_SIZE) + 1;
+  const batches = Math.min(pairCount, Math.ceil(pairCount / DISAMBIGUATE_BATCH_SIZE) + 3);
   return withSlack(batches * DISAMBIGUATE_PER_BATCH_MS, DISAMBIGUATE_FLOOR_MS);
 }
 

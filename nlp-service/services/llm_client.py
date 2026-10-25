@@ -1085,31 +1085,35 @@ full name and its abbreviation.
 """
 
 
-# Shared by both disambiguation prompts: how to read a side that is a page
-# the wiki already holds (routers/resolution.py DisambiguateSide).
+# Shared by both disambiguation prompts, only for a batch whose pairs have a
+# side that is a page the wiki already holds (routers/resolution.py
+# DisambiguateSide). Batches without one get the prompts as they were: the
+# block in every batch turned an asset and its platform into "same".
 _DISAMBIGUATION_WIKI_PAGE = """\
-A side that carries known_names is a page the wiki already holds. Its
-context is then the page's own summary, not a sentence from one source, and
-known_names lists the other names the wiki already files under that page
-(the list may be empty). Judge that side by the page's own definition:
-  - the other name is that page when it is one of the known names, a
-    spelling of one, or another common name for exactly what the summary
-    defines;
-  - when the other side's context calls the page's topic broader, a related
-    term or an umbrella for it, that is one source's wording: weigh it
-    against the page's own summary, and return "same" when the summary and
-    the other side describe one thing;
-  - the rules for "different" still hold: a type, form, part or sub-topic
-    of what the page defines is a different thing.
+In these pairs one side carries known_names: that side is a page the wiki
+already holds. Its context is the page's own summary, not a sentence from
+one source, and known_names lists the other names the wiki already files
+under that page (the list may be empty). Judge the names first:
+  - the other side is that page when its name is one of the known names or
+    a spelling of one (case, spacing, hyphens, British or American
+    spelling), or another name for the very same thing the summary defines;
+  - when the other side's context calls the page's topic broader, narrower
+    or related, that is one source's wording: weigh it against the page's
+    own summary rather than taking it as the answer;
+  - the rules for "different" still hold whatever either side's wording: a
+    different thing that only relates to what the page defines stays
+    different. That covers a type, form, part or sub-topic of it; an asset,
+    token, coin or ticker and the platform or network it belongs to; a
+    product and its maker; a part and its whole.
 """
 
 
-_DISAMBIGUATION_SYSTEM_PROMPT = """\
+def _entity_disambiguation_prompt(pages: bool) -> str:
+    return """\
 You are an entity resolution assistant. For each pair of entities, decide
 whether they refer to the same real-world entity or concept.
 
-""" + _DISAMBIGUATION_SAME_SOURCE + """
-""" + _DISAMBIGUATION_WIKI_PAGE + """
+""" + _DISAMBIGUATION_SAME_SOURCE + ("\n" + _DISAMBIGUATION_WIKI_PAGE if pages else "") + """
 For each pair return:
   entity_a   — name of the first entity (copy from input)
   entity_b   — name of the second entity (copy from input)
@@ -1138,7 +1142,12 @@ over a wrong "same" call. Do not hallucinate.
 """ + _JSON_TRAILER
 
 
-_DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = """\
+def _concept_disambiguation_prompt(pages: bool) -> str:
+    known_name = """\
+      * one of a page's known_names or a spelling of one, or another name
+        for the very same thing the page's summary defines
+""" if pages else ""
+    return """\
 You are a concept resolution assistant. For each pair of concepts, decide
 whether they refer to the same concept or merely related concepts.
 
@@ -1148,8 +1157,7 @@ vocabulary even when they are different concepts — "Transformer Architecture"
 and "Self-Attention" both talk about transformers, but attention is one
 mechanism inside the architecture, not the architecture itself.
 
-""" + _DISAMBIGUATION_SAME_SOURCE + """
-""" + _DISAMBIGUATION_WIKI_PAGE + """
+""" + _DISAMBIGUATION_SAME_SOURCE + ("\n" + _DISAMBIGUATION_WIKI_PAGE if pages else "") + """
 For each pair return:
   entity_a   — name of the first concept (copy from input)
   entity_b   — name of the second concept (copy from input)
@@ -1166,14 +1174,19 @@ STRICTNESS RULES for this task:
       * paraphrases (e.g. "Chain of Thought Prompting" ≡ "CoT reasoning")
       * acronym/expansion pairs (e.g. "NLP" ≡ "Natural Language Processing")
       * historical rename of exactly the same concept
-      * a wiki page's known name, a spelling of one, or another common name
-        for exactly what the page's summary defines
+""" + known_name + """\
   - Return "different" whenever one concept is a sub-topic, mechanism, component,
     application, or technique of the other — even when they appear together often.
   - When in doubt, prefer "different" over "same". Wrong merges are costly to
     undo and permanently lose the ability to have a page about the narrower
     concept. Duplicate pages self-heal as more sources arrive.
 """ + _JSON_TRAILER
+
+
+_DISAMBIGUATION_SYSTEM_PROMPT = _entity_disambiguation_prompt(pages=False)
+_DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = _concept_disambiguation_prompt(pages=False)
+_DISAMBIGUATION_PAGE_SYSTEM_PROMPT = _entity_disambiguation_prompt(pages=True)
+_DISAMBIGUATION_CONCEPT_PAGE_SYSTEM_PROMPT = _concept_disambiguation_prompt(pages=True)
 
 
 # Sized for the 10-pair batch of routers/resolution.py. Each decision is
@@ -1197,7 +1210,9 @@ def disambiguate_entities(
     Each pair is a dict with keys entity_a and entity_b, each a dict with
     at least: name (str), type (str), context (str), and on a side that is
     a wiki page known_names (list[str]); and same_source (bool), which both
-    prompts read as a hint.
+    prompts read as a hint. A batch with a known_names side gets the prompt
+    with the page rules (_DISAMBIGUATION_WIKI_PAGE); the caller keeps such
+    pairs in batches of their own.
 
     Raises:
         LLMRateLimitedError  — bucket exhausted after 60s wait
@@ -1211,11 +1226,12 @@ def disambiguate_entities(
         return DisambiguationResponse(results=[])
 
     pairs_json = _json.dumps(pairs, ensure_ascii=False, indent=2)
-    system_prompt = (
-        _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT
-        if pair_kind == "concept"
-        else _DISAMBIGUATION_SYSTEM_PROMPT
-    )
+    # The page rules go only to a batch with a side bound to a page.
+    pages = any("known_names" in p[side] for p in pairs for side in ("entity_a", "entity_b"))
+    if pair_kind == "concept":
+        system_prompt = _DISAMBIGUATION_CONCEPT_PAGE_SYSTEM_PROMPT if pages else _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT
+    else:
+        system_prompt = _DISAMBIGUATION_PAGE_SYSTEM_PROMPT if pages else _DISAMBIGUATION_SYSTEM_PROMPT
     user_payload = f"Pairs to resolve:\n{pairs_json}"
 
     provider = get_provider(model)
@@ -2323,6 +2339,10 @@ _LINT_SYSTEM_PROMPT = _LINT_SYSTEM_PROMPT + _format_response_contract(LintScanRe
 _EXTRACTION_SYSTEM_PROMPT = _EXTRACTION_SYSTEM_PROMPT + _format_response_contract(LLMExtractionResponse)
 _DISAMBIGUATION_SYSTEM_PROMPT = _DISAMBIGUATION_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
 _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
+_DISAMBIGUATION_PAGE_SYSTEM_PROMPT = _DISAMBIGUATION_PAGE_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
+_DISAMBIGUATION_CONCEPT_PAGE_SYSTEM_PROMPT = (
+    _DISAMBIGUATION_CONCEPT_PAGE_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
+)
 _CROSSREF_SYSTEM_PROMPT = _CROSSREF_SYSTEM_PROMPT + _format_response_contract(CrossrefResponse)
 _LABEL_MERGE_SYSTEM_PROMPT = _LABEL_MERGE_SYSTEM_PROMPT + _format_response_contract(LabelMergeResponse)
 _CLAIM_JUDGE_SYSTEM_PROMPT = _CLAIM_JUDGE_SYSTEM_PROMPT + _format_response_contract(ClaimJudgeResponse)

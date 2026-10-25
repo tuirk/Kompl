@@ -46,12 +46,13 @@ const expected = (rawMs: number, floorMs: number): number =>
   Math.max(floorMs, Math.ceil(rawMs * OVERHEAD) + HEADROOM_MS);
 
 describe('computeDisambiguateMs', () => {
-  // One LLM call per 10 pairs, plus one partial batch for the entity/concept split.
-  const batches = (pairs: number) => Math.ceil(pairs / 10) + 1;
+  // One LLM call per 10 pairs, plus three partial batches for the split by
+  // kind and by page side.
+  const batches = (pairs: number) => Math.min(pairs, Math.ceil(pairs / 10) + 3);
 
   it('keeps the fixed 10 min it replaced as its floor', () => {
     expect(computeDisambiguateMs(0)).toBe(DISAMBIGUATE_FLOOR_MS);
-    expect(computeDisambiguateMs(10)).toBe(DISAMBIGUATE_FLOOR_MS);
+    expect(computeDisambiguateMs(2)).toBe(DISAMBIGUATE_FLOOR_MS);
   });
 
   it('grows with the number of LLM batches', () => {

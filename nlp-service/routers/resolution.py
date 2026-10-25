@@ -1667,8 +1667,9 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 
 
 # LLM iteration cap (CLAUDE.md rule #7): hard bound on pairs per
-# /resolve/disambiguate request. At 10 pairs per LLM call this caps a single
-# request at 12 batched calls. Excess pairs come back decision='ambiguous'
+# /resolve/disambiguate request. At 10 pairs per LLM call in four groups
+# (entity or concept, with or without a page side) this caps a single request
+# at 15 batched calls. Excess pairs come back decision='ambiguous'
 # (the app keeps ambiguous entities separate — safe degradation, never an
 # over-merge). Rule #7's default-off feature flag targets expansion loops;
 # disambiguation is a core resolve layer, so a hard cap bounds spend without
@@ -1823,9 +1824,12 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
     # stricter concept-disambiguation prompt; the rest use the entity prompt.
     # Concepts have fuzzier boundaries — share vocabulary across distinct
     # ideas — so the concept prompt errs toward "different" in the gray band.
+    # Pairs with a side bound to a page go in batches of their own: only
+    # those batches get the page rules (llm_client._DISAMBIGUATION_WIKI_PAGE),
+    # which in every batch turned an asset and its platform into "same".
     is_concept = {k: "CONCEPT" in (req.pairs[k].entity_a.type, req.pairs[k].entity_b.type) for k in capped_pairs}
-    concept_pairs = [k for k in capped_pairs if is_concept[k]]
-    entity_pairs = [k for k in capped_pairs if not is_concept[k]]
+    has_page = {k: req.pairs[k].entity_a.known_names is not None or req.pairs[k].entity_b.known_names is not None
+                for k in capped_pairs}
     failed = 0
 
     def _call_in_batches(indices: list[int], pair_kind: str) -> None:
@@ -1865,10 +1869,11 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
                 else:
                     answer(k, r.decision, r.reason, r.canonical)
 
-    if entity_pairs:
-        _call_in_batches(entity_pairs, "entity")
-    if concept_pairs:
-        _call_in_batches(concept_pairs, "concept")
+    for pair_kind, concept in (("entity", False), ("concept", True)):
+        for page in (False, True):
+            indices = [k for k in capped_pairs if is_concept[k] == concept and has_page[k] == page]
+            if indices:
+                _call_in_batches(indices, pair_kind)
 
     results = [a for a in answers if a is not None]
     assert len(results) == len(req.pairs)
