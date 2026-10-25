@@ -245,6 +245,12 @@ class CostCeilingError(Exception):
     """Raised before a call is sent once today's recorded spend has reached the daily cap."""
 
 
+class ProviderOutOfCreditError(CostCeilingError):
+    """The provider account has no credit left (DeepSeek HTTP 402). Stops
+    the request like the daily cap, so a compile stops instead of failing
+    every remaining page one by one."""
+
+
 class LLMCompileError(Exception):
     """Raised when the LLM call succeeds but the response cannot be parsed."""
 

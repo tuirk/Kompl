@@ -696,3 +696,26 @@ def test_deepseek_extract_attempt_waits_less_so_a_retry_fits(monkeypatch):
         p.complete(LLMRequest(model="deepseek-v4-pro", messages=[{"role": "user", "content": "x"}],
                               response_model=None, thinking_budget=0, max_output_tokens=64, step=step))
     assert timeouts == [420.0, 600.0]
+
+
+def test_deepseek_draft_waits_out_a_429_and_stops_on_an_empty_account(monkeypatch):
+    _ensure_clean_deepseek_singleton(monkeypatch)
+    from services import llm_client
+    from services.providers import get_provider
+    from services.providers.base import LLMRequest
+
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    req = LLMRequest(model="deepseek-v4-pro", messages=[{"role": "user", "content": "x"}], response_model=None,
+                     thinking_budget=0, max_output_tokens=64, step="draft_page", extra={"retry": False})
+    captured = _stub_deepseek_post(monkeypatch, [429, 429, 200])
+    get_provider("deepseek-v4-pro").complete(req)
+    assert len(captured) == 3
+
+    captured = _stub_deepseek_post(monkeypatch, [500])
+    with pytest.raises(RuntimeError):
+        get_provider("deepseek-v4-pro").complete(req)
+    assert len(captured) == 1  # no retry for other errors on such a step
+
+    _stub_deepseek_post(monkeypatch, [402])
+    with pytest.raises(llm_client.CostCeilingError, match="provider_out_of_credit"):
+        get_provider("deepseek-v4-pro").complete(req)

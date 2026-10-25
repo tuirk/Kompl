@@ -109,6 +109,8 @@ def _get_model_prices(model: str) -> dict[str, float]:
 _RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 
 _DEFAULT_TIMEOUT_S = 600.0
+# Tries for a 429 on a step that does not otherwise retry (waits 2, 4, 8 s).
+_CONCURRENCY_ATTEMPTS = 4
 # One extract attempt waits less than the default, so a retry still fits the
 # app's 900 s extract window (app/src/app/api/compile/extract/route.ts):
 # at 600 s one stalled attempt used the whole window and the retries never
@@ -221,7 +223,11 @@ class DeepSeekProvider:
         limiter = _get_limiter()
         last_exc: Exception | None = None
 
-        max_attempts = 3 if req.extra.get("retry", True) else 1
+        retry = req.extra.get("retry", True)
+        # A 429 (DeepSeek's concurrency limit) sends nothing to the model, so
+        # it is waited out even for steps that never retry otherwise (drafts):
+        # two compiles at once failed 46 drafts on it (2026-10-25).
+        max_attempts = 3 if retry else _CONCURRENCY_ATTEMPTS
         # Daily cap: refused here, before anything is sent, once today's
         # recorded spend has reached it; the place is held across retries
         # until _unpack records the cost.
@@ -248,7 +254,11 @@ class DeepSeekProvider:
                 else:
                     if response.status_code == 200:
                         return self._unpack(req, response)
-                    if response.status_code not in _RETRYABLE_STATUSES:
+                    if response.status_code == 402:
+                        raise llm_client.ProviderOutOfCreditError(
+                            "provider_out_of_credit: the DeepSeek account has no credit left; top it up and retry"
+                        )
+                    if response.status_code not in _RETRYABLE_STATUSES or (not retry and response.status_code != 429):
                         raise RuntimeError(
                             f"deepseek http {response.status_code}: "
                             f"{response.text[:500]}"
@@ -258,8 +268,10 @@ class DeepSeekProvider:
                     )
                     err_class = f"HTTP{response.status_code}"
 
+                if not retry and err_class != "HTTP429":
+                    break
                 if attempt < max_attempts - 1:
-                    delay = 0.5 * (2 ** attempt)
+                    delay = 2.0 * (2 ** attempt) if err_class == "HTTP429" else 0.5 * (2 ** attempt)
                     print(
                         f"[llm-retry] deepseek {req.step} attempt {attempt + 1}/"
                         f"{max_attempts} after {err_class}: "
