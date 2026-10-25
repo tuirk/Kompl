@@ -668,6 +668,15 @@ def _page_date(session: _KeepBodySession) -> PublishedDate | None:
     return from_html(session.body.decode("utf-8", errors="replace"))
 
 
+def _clean_title(title: str | None) -> str:
+    """A page title on one line: a <title> can carry the page's own
+    indentation ("
+		On automatically generating contrasting text
+    colors with CSS", film run 2026-10-25), which reached the source title,
+    the draft step's detail and MCP list_sources."""
+    return " ".join((title or "").split())
+
+
 def _is_bot_check(title: str | None, markdown: str) -> bool:
     """A short page whose title or text is a bot check, not the article."""
     if len(markdown) > _BOT_CHECK_MAX_CHARS:
@@ -729,12 +738,13 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     if len(markdown) < _MARKITDOWN_MIN_CHARS or _is_bot_check(result.title, markdown):
         return None
 
-    title = result.title or url
+    page_title = _clean_title(result.title)
+    title = page_title or url
     # title_source: "markitdown" when MarkItDown extracted a real title from
     # the page; "firecrawl_url_fallback" name reused here for the URL-as-title
     # case (contract value covers any URL-fallback path, regardless of which
     # converter produced it). Keeps the Literal small.
-    title_source = "markitdown" if result.title else "firecrawl_url_fallback"
+    title_source = "markitdown" if page_title else "firecrawl_url_fallback"
     content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
     return ConvertResponse(
@@ -897,7 +907,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
         raise HTTPException(status_code=422, detail="bot_check_page: the site served a bot check instead of the page")
 
     # Flatten per docs/research/2026-04-08-conversion-deps.md section 1.
-    fc_title = fc_metadata.get("title")
+    fc_title = _clean_title(fc_metadata.get("title"))
     # The contract (2a) permits falling back to the request URL when Firecrawl
     # does not surface a title. This is the only allowed `or` fallback.
     title = fc_title if fc_title else req.url
@@ -998,7 +1008,7 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
     #   3.   p.stem — last resort; will include the UUID prefix if title_hint
     #        was omitted, which is the bug we're preventing.
     # Discard obviously-junk titles from MarkItDown (Word's default filenames).
-    markitdown_title = result.title or ""
+    markitdown_title = _clean_title(result.title)
     if any(frag in markitdown_title.lower() for frag in _JUNK_TITLE_FRAGMENTS):
         markitdown_title = ""
     body_result = _extract_title_from_markdown_body(markdown)

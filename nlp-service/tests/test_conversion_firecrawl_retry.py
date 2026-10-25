@@ -97,3 +97,12 @@ def test_a_long_article_about_bot_checks_is_kept():
     article = "Why sites show 'Checking your browser' screens. " + "Cloudflare explains its checks. " * 100
     assert not conv._is_bot_check("Bot checks explained", article)
     assert conv._is_bot_check("Just a moment...", "Enable JavaScript and cookies to continue")
+
+
+def test_a_title_with_the_page_indentation_is_one_line(firecrawl):
+    firecrawl["replies"] = [{
+        "success": True,
+        "data": {"markdown": OK["data"]["markdown"],
+                 "metadata": {"title": "\n\t\tOn automatically generating contrasting text colors with CSS \u2022 Lea Verou\n"}},
+    }]
+    assert convert().title == "On automatically generating contrasting text colors with CSS \u2022 Lea Verou"
