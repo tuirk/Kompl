@@ -233,9 +233,9 @@ describe('read_page', () => {
         '',
         '---',
         '**Sources** (the [n] markers above refer to these):',
-        '  [1] Bitcoin paper',
+        '  [1] Bitcoin paper — source_id `s1`',
         '',
-        'To check what a source says, call read_source with this page_id and n.',
+        'To check what a source says, call read_source with its source_id (or this page_id and n).',
       ].join('\n'),
       isError: false,
     });
@@ -247,7 +247,7 @@ describe('read_page', () => {
       sources: [{ source_id: 's1', title: 'Bitcoin paper', contribution_type: 'primary' }],
     });
     const res = await call(await connect(fetchImpl), 'read_page', { page_id: 'proof-of-work-1' });
-    expect(res.text).toContain('\n  - Bitcoin paper (primary)');
+    expect(res.text).toContain('\n  - Bitcoin paper (primary) · source_id `s1`');
   });
 
   it('marks empty content and no sources', async () => {

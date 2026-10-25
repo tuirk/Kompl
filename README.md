@@ -194,7 +194,9 @@ Not using MCP? The same data is on plain HTTP: `/api/pages/search?mode=hybrid`,
 `/api/wiki/index`.
 
 > ⚠ **Single-tenant.** There is no multi-user auth. Don't expose your instance to
-> the internet without putting your own auth in front of it.
+> the internet without putting your own auth in front of it. If your proxy serves
+> Kompl under its own host name, list that name in `KOMPL_ALLOWED_HOSTS` in `.env`,
+> or Kompl refuses to let agents add sources from it.
 
 ## Everyday use
 

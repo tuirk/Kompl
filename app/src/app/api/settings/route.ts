@@ -7,7 +7,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { isCrossSiteRequest } from '@/lib/same-origin';
+import { CROSS_SITE_MESSAGE, isCrossSiteRequest } from '@/lib/same-origin';
 import {
   getAutoApprove, setAutoApprove,
   getRelatedPagesMinSources, setRelatedPagesMinSources,
@@ -82,7 +82,7 @@ export async function POST(request: Request) {
   if (body.agent_add_sources_enabled !== undefined) {
     // Turning this on lets agents start paid compiles: never from another site.
     if (isCrossSiteRequest(request)) {
-      return NextResponse.json({ error: 'cross_site' }, { status: 403 });
+      return NextResponse.json({ error: 'cross_site', message: CROSS_SITE_MESSAGE }, { status: 403 });
     }
     if (typeof body.agent_add_sources_enabled !== 'boolean') {
       return NextResponse.json({ error: 'agent_add_sources_enabled must be a boolean' }, { status: 422 });

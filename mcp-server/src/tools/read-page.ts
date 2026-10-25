@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ApiResult, KomplClient } from '../kompl-client.js';
 import { clip } from '../format.js';
+import { pageIdInput } from '../ids.js';
 import { failure, READ_ONLY, text } from '../result.js';
 import type { ConnectionEvidence, ConnectionItem, PageConnections, PageData, PageLink, PageSource, RelatedPages } from '../types.js';
 
@@ -26,7 +27,7 @@ export function registerReadPage(server: McpServer, client: KomplClient): void {
         'sources they refer to (with address and date), how the page connects to others (each relation, such as ' +
         'uses or part of, with the source that says so), and the pages it links to and from.',
       inputSchema: {
-        page_id: z.string().describe('The page_id from search results'),
+        page_id: pageIdInput().describe('The page_id from search results'),
         include_related: z
           .boolean()
           .default(false)
@@ -66,7 +67,7 @@ export function registerReadPage(server: McpServer, client: KomplClient): void {
       }
       if (related) lines.push(relatedLine(related));
       if (page.sources.some((s) => s.n)) {
-        lines.push('', 'To check what a source says, call read_source with this page_id and n.');
+        lines.push('', 'To check what a source says, call read_source with its source_id (or this page_id and n).');
       }
       return text(lines.join('\n'));
     }
@@ -75,10 +76,12 @@ export function registerReadPage(server: McpServer, client: KomplClient): void {
 
 /** Newer apps number the sources to match the [n] markers; older ones send an unnumbered list. */
 function sourceLine(s: PageSource): string {
-  if (!s.n) return `  - ${s.title} (${s.contribution_type})`;
+  // The id stays right if the page is recompiled (and renumbered) before read_source.
+  const id = `source_id \`${s.source_id}\``;
+  if (!s.n) return `  - ${s.title} (${s.contribution_type}) · ${id}`;
   // The date is when the page was last compiled from this source, not when it was published.
-  const details = [s.source_url, s.date ? `compiled ${s.date.slice(0, 10)}` : null].filter(Boolean).join(' · ');
-  return `  [${s.n}] ${s.title}${details ? ` — ${details}` : ''}`;
+  const details = [s.source_url, s.date ? `compiled ${s.date.slice(0, 10)}` : null, id].filter(Boolean).join(' · ');
+  return `  [${s.n}] ${s.title} — ${details}`;
 }
 
 /**

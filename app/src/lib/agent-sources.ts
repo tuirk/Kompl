@@ -22,6 +22,7 @@ import { MAX_PER_CALL, MAX_PER_DAY } from './agent-sources-limits';
 import { finalizeSession } from './finalize-session';
 import { pageUpgradeBlock } from './page-upgrade-state';
 import { isBlockedHost } from './url-blocklist';
+import { urlKey, urlKeyCandidates } from './url-key';
 
 const MAX_TEXT_CHARS = 100_000;
 const MAX_URL_CHARS = 2_048;
@@ -145,21 +146,21 @@ function parseItems(
   const staged: StagedItem[] = [];
   const alreadyInWiki: Array<{ url: string; source_id: string }> = [];
   const blocked: string[] = [];
-  // The same page written differently ("EX.org/a", " ex.org/a ") is one link:
+  // The same page written differently ("EX.org/a", " ex.org/a/ ") is one link:
   // each copy would otherwise be fetched and compiled.
   const seen = new Set<string>();
   for (const raw of req.urls) {
     const url = typeof raw === 'string' ? raw.trim() : '';
     if (url.length > MAX_URL_CHARS) return { error: `Links can be at most ${MAX_URL_CHARS} characters.` };
     if (!isHttpUrl(url)) return { error: `Not an http(s) link: ${String(raw).slice(0, 200)}` };
-    const href = new URL(url).href;
-    if (seen.has(href)) continue;
-    seen.add(href);
+    const key = urlKey(url)!;
+    if (seen.has(key)) continue;
+    seen.add(key);
     if (isBlockedHost(url)) {
       blocked.push(url);
       continue;
     }
-    const existing = findSourceByUrl(url) ?? findSourceByUrl(href) ?? findSourceByUrl(href.replace(/\/$/, ''));
+    const existing = findSourceByUrl(url) ?? findSavedLink(key);
     if (existing) {
       alreadyInWiki.push({ url, source_id: existing.source_id });
       continue;
@@ -167,6 +168,24 @@ function parseItems(
     staged.push({ connector: 'url', payload: { url, metadata_hint: provenance }, label: url });
   }
   return { staged, alreadyInWiki, blocked };
+}
+
+/**
+ * A source saved from the same page however it was written: host case or a
+ * trailing slash. The lower-cased pass finds the candidates; urlKey decides,
+ * so a path differing only in case is not taken for the same page.
+ */
+function findSavedLink(key: string): { source_id: string } | null {
+  const candidates = urlKeyCandidates(key);
+  const rows = getDb()
+    .prepare(
+      `SELECT source_id, source_url FROM sources
+        WHERE lower(source_url) IN (${candidates.map(() => '?').join(', ')})
+          AND compile_status != 'collected'`
+    )
+    .all(...candidates) as Array<{ source_id: string; source_url: string }>;
+  const match = rows.find((r) => urlKey(r.source_url) === key);
+  return match ? { source_id: match.source_id } : null;
 }
 
 /** Items agents added in the last 24 hours, from their activity rows. */

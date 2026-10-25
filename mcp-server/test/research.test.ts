@@ -50,8 +50,8 @@ describe('research_topic', () => {
     expect(res.text).toContain('- Mining uses a lot of energy[2].');
     expect(res.text).toContain('Disputed here: Energy figures');
     expect(res.text).toContain(`${BASE_URL}/wiki/btc · rests on one source`);
-    expect(res.text).toContain('[1] Bitcoin paper — https://bitcoin.org/bitcoin.pdf · added 2026-10-01');
-    expect(res.text).toContain(`[2] Mining blog — ${BASE_URL}/source/s2 · added 2026-10-02`);
+    expect(res.text).toContain('[1] Bitcoin paper — https://bitcoin.org/bitcoin.pdf · added 2026-10-01 · source_id `s1`\n');
+    expect(res.text).toContain(`[2] Mining blog — ${BASE_URL}/source/s2 · added 2026-10-02 · source_id \`s2\`\n`);
     expect(res.text).toContain('**Gaps:** named in several sources but no page: Satoshi Nakamoto (4); resting on one source: Bitcoin.');
     expect(res.text).toContain('**Also relevant:** SHA-256 (`sha`)');
     // An app from before connections: no connections section.
@@ -118,5 +118,74 @@ describe('research_topic connections', () => {
       `- Bitcoin related to Proof of work — ${long.slice(0, 159)}… [1]`,
     ]);
     expect(res.text).toContain('[3] Third — http://kompl.test/source/s3');
+  });
+});
+
+describe('research_topic numbers can be checked with read_source', () => {
+  // The pack numbers sources across pages: pow cites the blog first, so the
+  // pack's [1] is the blog and [2] the paper. btc numbers its own sources the
+  // other way round (paper [1], blog [2]); asking read_source for btc's n=2
+  // would return the blog, not the paper the pack's [2] means.
+  const pack = {
+    ...PACK,
+    pages: [
+      { ...PACK.pages[0], key_lines: ['Mining uses a lot of energy[1].'] },
+      { ...PACK.pages[1], key_lines: ['Bitcoin rewards mining[2].'] },
+    ],
+    sources: [
+      { n: 1, source_id: 'blog', title: 'Mining blog', source_url: null, date_ingested: '2026-10-02 08:00:00', path: '/source/blog' },
+      { n: 2, source_id: 'paper', title: 'Bitcoin paper', source_url: 'https://bitcoin.org/bitcoin.pdf', date_ingested: '2026-10-01 08:00:00', path: '/source/paper' },
+    ],
+  };
+  const content = (source_id: string, title: string) => ({
+    source_id,
+    title,
+    source_type: 'url',
+    source_url: null,
+    status: 'active',
+    date_ingested: '2026-10-01 08:00:00',
+    total_chars: 5,
+    mode: 'text',
+    offset: 0,
+    text: `${title} text`,
+    next_offset: null,
+  });
+
+  it('lists each source_id and says to pass it, so the number reaches the right source', async () => {
+    const kompl = fakeKompl({
+      '/api/wiki/research': pack,
+      '/api/wiki/btc/data': {
+        page_id: 'btc',
+        title: 'Bitcoin',
+        page_type: 'entity',
+        category: null,
+        summary: null,
+        source_count: 2,
+        last_updated: '2026-10-10 09:00:00',
+        content: 'Bitcoin rewards mining[1]. Mining uses energy[2].',
+        sources: [
+          { n: 1, source_id: 'paper', title: 'Bitcoin paper', contribution_type: 'created' },
+          { n: 2, source_id: 'blog', title: 'Mining blog', contribution_type: 'updated' },
+        ],
+      },
+      '/api/sources/paper/content': content('paper', 'Bitcoin paper'),
+      '/api/sources/blog/content': content('blog', 'Mining blog'),
+    });
+    const client = await connect(kompl.fetchImpl);
+    const brief = await call(client, 'research_topic', { topic: 'bitcoin mining' });
+    expect(brief.text).toContain('- Bitcoin rewards mining[2].');
+    expect(brief.text).toContain('[2] Bitcoin paper — https://bitcoin.org/bitcoin.pdf · added 2026-10-01 · source_id `paper`');
+    expect(brief.text).toContain('read_source with the source_id');
+
+    // What an agent does: look up [2] in the brief's list and pass its source_id.
+    const id = /^\[2\] .* · source_id `([^`]+)`$/m.exec(brief.text)?.[1];
+    expect(id).toBe('paper');
+    const checked = await call(client, 'read_source', { source_id: id });
+    expect(checked.isError).toBe(false);
+    expect(checked.text.split('\n')[0]).toBe('# Bitcoin paper');
+    expect(checked.text).toContain('Bitcoin paper text');
+    // The page's own [n] still works for read_page citations.
+    const viaPage = await call(client, 'read_source', { page_id: 'btc', n: 1 });
+    expect(viaPage.text).toContain('Bitcoin paper text');
   });
 });

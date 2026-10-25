@@ -21,7 +21,8 @@ export type QueryValue = string | number | boolean | undefined;
 
 export type ApiResult<T> =
   | { ok: true; data: T }
-  | { ok: false; status: number | null; message: string };
+  /** timedOut: no full answer in time, whether or not the headers had arrived. */
+  | { ok: false; status: number | null; message: string; timedOut?: boolean };
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 /** Longer than the app's own wait for n8n (two 10 s attempts). */
@@ -79,12 +80,11 @@ export class KomplClient {
     try {
       res = await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
     } catch (err) {
+      if (isTimeout(err)) return { ok: false, status: null, message: timeoutMessage(path, timeoutMs), timedOut: true };
       return {
         ok: false,
         status: null,
-        message: isTimeout(err)
-          ? timeoutMessage(path, timeoutMs)
-          : `Kompl isn't reachable at ${this.baseUrl}. Is it running? Start it with \`kompl start\`.`,
+        message: `Kompl isn't reachable at ${this.baseUrl}. Is it running? Start it with \`kompl start\`.`,
       };
     }
 
@@ -94,13 +94,9 @@ export class KomplClient {
     try {
       return { ok: true, data: (await res.json()) as T };
     } catch (err) {
-      return {
-        ok: false,
-        status: res.status,
-        message: isTimeout(err)
-          ? timeoutMessage(path, timeoutMs)
-          : `Kompl sent a response to ${path} that isn't valid JSON.`,
-      };
+      // The headers came but the body didn't finish: still a timeout.
+      if (isTimeout(err)) return { ok: false, status: res.status, message: timeoutMessage(path, timeoutMs), timedOut: true };
+      return { ok: false, status: res.status, message: `Kompl sent a response to ${path} that isn't valid JSON.` };
     }
   }
 }

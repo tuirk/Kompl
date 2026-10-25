@@ -61,6 +61,11 @@ services:
       # parallel NLP calls, comfortable on the new cap. Raise to 4 only if
       # nlp-service memory stays well under limit on a real PDF batch.
       EXTRACT_CONCURRENCY: ${EXTRACT_CONCURRENCY:-2}
+      # Extra host names (comma-separated) a browser may reach Kompl by, e.g.
+      # your own authenticating reverse proxy. localhost and IP addresses
+      # always work. Read by lib/same-origin.ts (DNS rebinding guard on the
+      # routes that start paid compiles).
+      KOMPL_ALLOWED_HOSTS: ${KOMPL_ALLOWED_HOSTS:-}
     volumes:
       - kompl-data:/data
     depends_on:

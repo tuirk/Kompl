@@ -5,18 +5,18 @@
  *          client (the agent's name, for the activity feed).
  * Response 200: { session_id, queued, added, already_in_wiki, blocked }
  * Errors: 403 agent_sources_disabled (off in Settings) / cross_site (sent
- *         by another web page), 422 invalid_request,
+ *         by another web page, or to a host name Kompl doesn't know), 422 invalid_request,
  *         409 compile_running / page_upgrade_in_progress, 429 daily_limit,
  *         503 when the compile trigger fails (the session stays queued).
  */
 
 import { NextResponse } from 'next/server';
 import { addAgentSources } from '@/lib/agent-sources';
-import { isCrossSiteRequest } from '@/lib/same-origin';
+import { CROSS_SITE_MESSAGE, isCrossSiteRequest } from '@/lib/same-origin';
 
 export async function POST(request: Request) {
   if (isCrossSiteRequest(request)) {
-    return NextResponse.json({ error: 'cross_site', message: 'Requests from other sites are refused.' }, { status: 403 });
+    return NextResponse.json({ error: 'cross_site', message: CROSS_SITE_MESSAGE }, { status: 403 });
   }
   let body: unknown;
   try {

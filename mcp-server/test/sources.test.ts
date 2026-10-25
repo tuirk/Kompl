@@ -154,3 +154,35 @@ describe('list_sources', () => {
     expect((await call(await connect(past), 'list_sources', { offset: 10 })).text).toBe('No more sources: there are 4.');
   });
 });
+
+describe('id checks', () => {
+  // `new URL()` folds dot segments, so '..' once reached /api/content and came
+  // back as "Run `kompl update`". Ids are refused before any request.
+  it.each([
+    ['read_source', { source_id: '..' }, 'source_id'],
+    ['read_source', { source_id: 's1/../../wiki' }, 'source_id'],
+    ['read_source', { page_id: '.', n: 1 }, 'page_id'],
+    ['read_page', { page_id: '..' }, 'page_id'],
+    ['read_page', { page_id: 'a/b' }, 'page_id'],
+    ['read_page', { page_id: 'Proof of work' }, 'page_id'],
+  ])('%s refuses %j with a clear error', async (tool, args, field) => {
+    const kompl = fakeKompl({});
+    const res = await call(await connect(kompl.fetchImpl), tool, args);
+    expect(res.isError).toBe(true);
+    expect(res.text).toContain(field);
+    expect(res.text).toContain('lower-case letters, digits, - and _');
+    expect(res.text).not.toContain('kompl update');
+    expect(kompl.requested).toEqual([]);
+  });
+
+  it('still takes real ids: page slugs and source UUIDs', async () => {
+    const id = '0b9f1c2e-4a5d-4e6f-8a7b-9c0d1e2f3a4b';
+    const kompl = fakeKompl({
+      '/api/wiki/proof_of-work-2/data': { ...PAGE, page_id: 'proof_of-work-2' },
+      [`/api/sources/${id}/content`]: { ...SOURCE, source_id: id, mode: 'text', offset: 0, text: 'x', next_offset: null },
+    });
+    const client = await connect(kompl.fetchImpl);
+    expect((await call(client, 'read_page', { page_id: 'proof_of-work-2' })).isError).toBe(false);
+    expect((await call(client, 'read_source', { source_id: id })).isError).toBe(false);
+  });
+});

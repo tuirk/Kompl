@@ -25,7 +25,7 @@ export const SERVER_INSTRUCTIONS = [
   '- For a specific lookup, find pages with search_wiki (ask in plain language; leave the query out to browse) and read them with read_page.',
   '- When you answer from Kompl, name the pages you used and keep the [n] source references so the user can check each claim.',
   '- read_page and research_topic also show how pages connect: each relation (uses, part of, created by...) with the source that says so.',
-  '- To check what a source actually says, use read_source with the page_id and n (add a query to get the matching passages).',
+  "- To check what a source actually says, use read_source with the source_id from the source list (add a query to get the matching passages). research_topic's [n] numbers are its own, so always use its source_id; for read_page, page_id and n also work.",
   '- list_sources shows what the user has saved, e.g. whether a link is already in Kompl.',
   '- recent_changes answers "what is new / what changed"; wiki_status gives the overview and the gaps worth filling.',
   '- add_source saves links or notes the user asks you to keep. It starts a compile that costs the user money, so never add on your own initiative.',

@@ -2409,9 +2409,11 @@ except Exception:
 #
 # Builds mcp-server/, launches dist/index.js over stdio the way an AI agent
 # does, and calls every tool against the running app through
-# scripts/mcp-smoke.mjs: the eight tools are listed, the read tools answer,
-# an unknown page or source is an error, and add_source refuses an address
-# that isn't a link, so nothing is staged or compiled.
+# scripts/mcp-smoke.mjs: the eight tools are listed, the routes behind them
+# have the fields of the MCP contract fixture, the read tools answer with the
+# app's own pages and sources, an unknown page or source is an error, and
+# add_source refuses an address that isn't a link, so nothing is staged or
+# compiled.
 # ---------------------------------------------------------------------------
 stage_28_mcp_server() {
     echo "--- stage 28: MCP server tools over stdio ---"

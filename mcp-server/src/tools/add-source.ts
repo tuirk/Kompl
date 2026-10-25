@@ -2,13 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KomplClient } from '../kompl-client.js';
 import { failure, text } from '../result.js';
-
-interface AddSourceAnswer {
-  session_id: string | null;
-  added: number;
-  already_in_wiki: Array<{ url: string; source_id: string }>;
-  blocked: string[];
-}
+import type { AddSourceAnswer } from '../types.js';
 
 // POST /api/agent/sources. The app enforces every rule (switch, limits, a
 // running compile); this tool only explains its answers.
@@ -39,8 +33,8 @@ export function registerAddSource(server: McpServer, client: KomplClient): void 
         { slow: true }
       );
       if (!res.ok) {
-        if (res.status === null && res.message.startsWith('Kompl took longer')) {
-          // No answer in time: Kompl may have saved them anyway, and a resend would be a duplicate.
+        if (res.timedOut) {
+          // No full answer in time (even after a 200): Kompl may have saved them anyway, and a resend would be a duplicate.
           return failure(
             'Kompl did not answer in time. The sources may have been saved anyway: check recent_changes or list_sources before sending them again.'
           );

@@ -126,6 +126,30 @@ describe('add_source', () => {
     expect(staged()).toHaveLength(1);
   });
 
+  it('finds a saved link whatever its trailing slash or host case, but keeps the path case', async () => {
+    setAgentAddSourcesEnabled(true);
+    const slash = seedSource(handle.db, { source_url: 'https://example.org/a/' });
+    const host = seedSource(handle.db, { source_url: 'https://Example.ORG/b?x=1' });
+    seedSource(handle.db, { source_url: 'https://example.org/C' });
+    const res = await add({ urls: ['https://example.org/a', 'https://example.org/b/?x=1', 'https://example.org/c'] });
+    expect(res.body).toMatchObject({
+      added: 1,
+      already_in_wiki: [
+        { url: 'https://example.org/a', source_id: slash },
+        { url: 'https://example.org/b/?x=1', source_id: host },
+      ],
+    });
+    // /C and /c can be different pages: the lower-case one is new.
+    expect(staged().map((r) => JSON.parse(r.payload).url)).toEqual(['https://example.org/c']);
+  });
+
+  it('treats a link sent with and without its trailing slash as one', async () => {
+    setAgentAddSourcesEnabled(true);
+    const res = await add({ urls: ['https://example.org/a', 'https://example.org/a/'] });
+    expect(res.body.added).toBe(1);
+    expect(staged()).toHaveLength(1);
+  });
+
   it('reports links already in the wiki even while a compile runs', async () => {
     setAgentAddSourcesEnabled(true);
     seedSource(handle.db, { source_url: 'https://example.org/old' });
@@ -142,7 +166,13 @@ describe('add_source', () => {
     const res = await add({ urls: ['https://example.org/a'] }, { origin: 'http://evil.test', host: 'localhost:3000' });
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('cross_site');
+    // DNS rebinding: the page's own name, pointed at this machine.
+    const rebound = await add({ urls: ['https://example.org/a'] }, { origin: 'http://evil.test:3000', host: 'evil.test:3000' });
+    expect(rebound.status).toBe(403);
     expect(staged()).toHaveLength(0);
+    // Kompl's own page on localhost still adds.
+    const own = await add({ urls: ['https://example.org/a'] }, { origin: 'http://localhost:3000', host: 'localhost:3000' });
+    expect(own.status).toBe(200);
   });
 
   it('keeps and counts items whose compile could not start', async () => {
@@ -189,15 +219,19 @@ describe('the add_source switch', () => {
   });
 
   it('can only be switched on from Kompl itself, not from another site', async () => {
-    const res = await settingsPOST(
-      new Request('http://test/api/settings', {
-        method: 'POST',
-        headers: { origin: 'http://evil.test', host: 'localhost:3000' },
-        body: JSON.stringify({ agent_add_sources_enabled: true }),
-      })
-    );
-    expect(res.status).toBe(403);
+    const switchOn = (headers: Record<string, string>) =>
+      settingsPOST(
+        new Request('http://test/api/settings', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ agent_add_sources_enabled: true }),
+        })
+      );
+    expect((await switchOn({ origin: 'http://evil.test', host: 'localhost:3000' })).status).toBe(403);
+    expect((await switchOn({ origin: 'http://evil.test:3000', host: 'evil.test:3000' })).status).toBe(403);
     expect(getAgentAddSourcesEnabled()).toBe(false);
+    expect((await switchOn({ origin: 'http://localhost:3000', host: 'localhost:3000' })).status).toBe(200);
+    expect(getAgentAddSourcesEnabled()).toBe(true);
   });
 
   it('is never restored from a backup', () => {

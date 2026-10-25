@@ -28,7 +28,7 @@ describe('read_page sources and links (apps from before connections)', () => {
   it('shows each source with its address and date, and the page links both ways', async () => {
     const kompl = fakeKompl({ '/api/wiki/pow/data': PAGE });
     const res = await call(await connect(kompl.fetchImpl), 'read_page', { page_id: 'pow' });
-    expect(res.text).toContain('  [1] Bitcoin paper — https://bitcoin.org/bitcoin.pdf · compiled 2026-09-30');
+    expect(res.text).toContain('  [1] Bitcoin paper — https://bitcoin.org/bitcoin.pdf · compiled 2026-09-30 · source_id `s1`\n');
     expect(res.text).toContain('**Links to:** Bitcoin (`bitcoin`)');
     expect(res.text).toContain('**Linked from:** Satoshi Nakamoto (`satoshi`)');
     expect(res.text).not.toContain('**Related:**');

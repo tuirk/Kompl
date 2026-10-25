@@ -82,3 +82,25 @@ describe('add_source', () => {
     );
   });
 });
+
+describe('add_source timeouts', () => {
+  it('warns against resending when the answer stalls after the headers', async () => {
+    // Kompl answered 200 but the body never finished: it may well have saved them.
+    const stalled = ((_url: unknown, init?: RequestInit) =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason));
+            },
+          }),
+          { status: 200 }
+        )
+      )) as typeof fetch;
+    const res = await call(await connect(stalled, 50), 'add_source', { urls: ['https://a.test/'] });
+    expect(res).toEqual({
+      text: 'Kompl did not answer in time. The sources may have been saved anyway: check recent_changes or list_sources before sending them again.',
+      isError: true,
+    });
+  });
+});

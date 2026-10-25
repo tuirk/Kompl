@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KomplClient } from '../kompl-client.js';
+import { pageIdInput, sourceIdInput } from '../ids.js';
 import { failure, READ_ONLY, text } from '../result.js';
 import type { PageData, SourceContent } from '../types.js';
 
@@ -13,13 +14,21 @@ export function registerReadSource(server: McpServer, client: KomplClient): void
       title: 'Read source',
       description:
         'Read the original text of a source Kompl compiled from, to check what a citation actually says. ' +
-        'Identify it by source_id, or by page_id and n for citation [n] on that page. With a query (e.g. the ' +
-        'claim to check) it returns the best-matching passages; otherwise the text from offset, about 8,000 ' +
-        'characters at a time.',
+        'Identify it by the source_id shown in every source list, or by page_id and n for citation [n] in ' +
+        "read_page's text (research_topic numbers its sources across pages, so use its source_id). With a query " +
+        '(e.g. the claim to check) it returns the best-matching passages; otherwise the text from offset, about ' +
+        '8,000 characters at a time.',
       inputSchema: {
-        source_id: z.string().optional().describe('Source id from list_sources (or use page_id and n)'),
-        page_id: z.string().optional().describe('With n: the page whose citation to follow'),
-        n: z.number().int().min(1).optional().describe('With page_id: the citation number [n] on that page'),
+        source_id: sourceIdInput()
+          .optional()
+          .describe('Source id from a source list (read_page, research_topic, list_sources), or use page_id and n'),
+        page_id: pageIdInput().optional().describe('With n: the page whose citation to follow'),
+        n: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("With page_id: the citation number [n] in read_page's text (not research_topic's numbers)"),
         query: z.string().optional().describe('Return the passages that best match this instead of the text'),
         offset: z
           .number()

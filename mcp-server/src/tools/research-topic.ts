@@ -75,8 +75,9 @@ function format(pack: ResearchPack, baseUrl: string): string {
     for (const s of pack.sources) {
       // Notes and files have no web address: link to the source in the app.
       const address = s.source_url ?? `${baseUrl}${s.path}`;
-      const details = [address, s.date_ingested ? `added ${s.date_ingested.slice(0, 10)}` : null].filter(Boolean);
-      out.push(`[${s.n}] ${s.title}${details.length ? ` — ${details.join(' · ')}` : ''}`);
+      // The pack's [n] is not the page's own [n]: read_source needs the id.
+      const details = [address, s.date_ingested ? `added ${s.date_ingested.slice(0, 10)}` : null, `source_id \`${s.source_id}\``];
+      out.push(`[${s.n}] ${s.title} — ${details.filter(Boolean).join(' · ')}`);
     }
   }
 
@@ -91,7 +92,10 @@ function format(pack: ResearchPack, baseUrl: string): string {
   if (pack.more_pages.length) {
     out.push('', `**Also relevant:** ${pack.more_pages.map((p) => `${p.title} (\`${p.page_id}\`)`).join(', ')}`);
   }
-  out.push('', 'Read a page in full with read_page; check a source with read_source.');
+  out.push(
+    '',
+    "Read a page in full with read_page. Check a source with read_source with the source_id listed above: these [n] numbers are this brief's own, not the pages'."
+  );
   return out.join('\n');
 }
 

@@ -1,0 +1,336 @@
+{
+  "_about": "One response per app route the MCP tools read, holding exactly the fields they read (mcp-server/src/types.ts). Checked against those types and run through every tool by test/contract.test.ts; app/src/__tests__/mcp-contract.test.ts holds the real routes to this shape (json-shape.mjs). Values are examples: only keys and JSON types are compared with the app.",
+  "add_source": {
+    "route": "/api/agent/sources",
+    "body": {
+      "session_id": "5ad86953-b8fe-4774-b612-92288b7af480",
+      "added": 1,
+      "already_in_wiki": [{ "url": "https://bitcoin.org/bitcoin.pdf", "source_id": "src-paper" }],
+      "blocked": ["https://x.com/someone/status/1"]
+    }
+  },
+  "page_data": {
+    "route": "/api/wiki/btc/data",
+    "body": {
+      "page_id": "btc",
+      "title": "Bitcoin",
+      "page_type": "entity",
+      "category": "Cryptocurrency",
+      "summary": "Bitcoin in brief.",
+      "source_count": 2,
+      "last_updated": "2026-10-23 18:37:49",
+      "content": "Bitcoin is digital cash[1]. Bitcoin mining uses [[Proof of work]][2].",
+      "sources": [
+        {
+          "n": 1,
+          "source_id": "src-paper",
+          "title": "Bitcoin paper",
+          "contribution_type": "created",
+          "source_url": "https://bitcoin.org/bitcoin.pdf",
+          "date": "2026-10-23 18:37:49"
+        }
+      ],
+      "connections": {
+        "groups": [
+          {
+            "label": "Uses",
+            "items": [
+              {
+                "page_id": "pow",
+                "title": "Proof of work",
+                "type": "uses",
+                "direction": "out",
+                "source_count": 2,
+                "evidence": [
+                  { "source_id": "src-paper", "source_title": "Bitcoin paper", "source_archived": false, "sentence": "Bitcoin uses proof of work." }
+                ]
+              }
+            ]
+          }
+        ],
+        "linked_only": [{ "page_id": "ln", "title": "Lightning Network" }]
+      },
+      "links": [{ "page_id": "pow", "title": "Proof of work" }],
+      "backlinks": [{ "page_id": "sat", "title": "Satoshi Nakamoto" }]
+    }
+  },
+  "related": {
+    "route": "/api/wiki/btc/related",
+    "body": {
+      "items": [{ "page_id": "pow", "title": "Proof of work", "page_type": "concept" }],
+      "count": 1,
+      "enabled": true
+    }
+  },
+  "research": {
+    "route": "/api/wiki/research",
+    "body": {
+      "topic": "bitcoin",
+      "detail": "brief",
+      "degraded": false,
+      "pages": [
+        {
+          "page_id": "btc",
+          "title": "Bitcoin",
+          "page_type": "entity",
+          "category": "Cryptocurrency",
+          "summary": "Bitcoin in brief.",
+          "last_updated": "2026-10-23 18:37:49",
+          "key_lines": ["Bitcoin is digital cash[1]."],
+          "disputes": ["Launch date"],
+          "thin": false,
+          "path": "/wiki/btc"
+        }
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "source_id": "src-paper",
+          "title": "Bitcoin paper",
+          "source_url": "https://bitcoin.org/bitcoin.pdf",
+          "date_ingested": "2026-10-23 18:37:49",
+          "path": "/source/src-paper"
+        }
+      ],
+      "missing_pages": [{ "name": "Bitcoin Core", "mentions": 3 }],
+      "more_pages": [{ "page_id": "ln", "title": "Lightning Network", "page_type": "concept" }],
+      "connections": [
+        {
+          "from": { "page_id": "btc", "title": "Bitcoin" },
+          "to": { "page_id": "pow", "title": "Proof of work" },
+          "type": "uses",
+          "label": "Uses",
+          "source_count": 2,
+          "sources": [1],
+          "sentence": "Bitcoin uses proof of work."
+        }
+      ]
+    }
+  },
+  "search": {
+    "route": "/api/pages/search",
+    "body": {
+      "items": [
+        {
+          "page_id": "btc",
+          "title": "Bitcoin",
+          "page_type": "entity",
+          "category": "Cryptocurrency",
+          "summary": "Bitcoin in brief.",
+          "source_count": 2,
+          "last_updated": "2026-10-23 18:37:49"
+        }
+      ],
+      "count": 1,
+      "degraded": false
+    }
+  },
+  "wiki_index": {
+    "route": "/api/wiki/index",
+    "body": {
+      "total_pages": 1,
+      "categories": { "Cryptocurrency": ["btc"] },
+      "pages": [
+        {
+          "page_id": "btc",
+          "title": "Bitcoin",
+          "page_type": "entity",
+          "category": "Cryptocurrency",
+          "summary": "Bitcoin in brief.",
+          "source_count": 2,
+          "last_updated": "2026-10-23 18:37:49"
+        }
+      ]
+    }
+  },
+  "source_text": {
+    "route": "/api/sources/src-paper/content",
+    "body": {
+      "source_id": "src-paper",
+      "title": "Bitcoin paper",
+      "source_type": "url",
+      "source_url": "https://bitcoin.org/bitcoin.pdf",
+      "status": "active",
+      "date_ingested": "2026-10-23 18:37:49",
+      "total_chars": 89,
+      "mode": "text",
+      "offset": 0,
+      "text": "# Bitcoin\n\nA peer-to-peer electronic cash system.\n\n## Mining\n\nMining secures the network.",
+      "next_offset": 89
+    }
+  },
+  "source_passages": {
+    "route": "/api/sources/src-paper/content",
+    "body": {
+      "source_id": "src-paper",
+      "title": "Bitcoin paper",
+      "source_type": "url",
+      "source_url": "https://bitcoin.org/bitcoin.pdf",
+      "status": "active",
+      "date_ingested": "2026-10-23 18:37:49",
+      "total_chars": 89,
+      "mode": "passages",
+      "query": "mining",
+      "passages": [{ "text": "Mining secures the network.", "heading": "Mining", "start": 62 }]
+    }
+  },
+  "source_list": {
+    "route": "/api/sources",
+    "body": {
+      "sources": [
+        {
+          "source_id": "src-paper",
+          "title": "Bitcoin paper",
+          "source_type": "url",
+          "source_url": "https://bitcoin.org/bitcoin.pdf",
+          "status": "active",
+          "date_ingested": "2026-10-23 18:37:49",
+          "page_count": 2,
+          "compile_status": "compiled"
+        }
+      ],
+      "total": 1,
+      "returned": 1
+    }
+  },
+  "status": {
+    "route": "/api/wiki/status",
+    "body": {
+      "stats": {
+        "source_count": 6,
+        "page_count": 6,
+        "entity_count": 3,
+        "concept_count": 3,
+        "last_ingested": "2026-10-23 18:37:49",
+        "last_compiled": "2026-10-23 18:37:49"
+      },
+      "compile_running": { "session_id": "5ad86953-b8fe-4774-b612-92288b7af480", "started_at": "2026-10-23 18:37:49", "source_count": 1 },
+      "pending_drafts": 0,
+      "failed_links": {
+        "count": 1,
+        "top": [{ "url": "https://bad.test/", "title": "Bad page", "error": "dns", "date_attempted": "2026-10-23 18:37:49" }]
+      },
+      "vector_backlog": 0,
+      "stale_sources": {
+        "threshold_days": 90,
+        "count": 1,
+        "top": [{ "source_id": "src-old", "title": "Old note", "date_ingested": "2025-09-18 18:37:49" }]
+      },
+      "gaps": {
+        "missing_pages": { "count": 1, "top": [{ "name": "Bitcoin Core", "mentions": 3 }], "capped": false },
+        "thin_pages": { "count": 1, "top": [{ "page_id": "pow", "title": "Proof of work", "page_type": "concept", "backlinks": 1 }] },
+        "orphan_pages": { "count": 1, "top": [{ "page_id": "etf", "title": "Bitcoin ETF" }] },
+        "dead_provenance": { "count": 0 }
+      },
+      "last_health_check": {
+        "at": "2026-10-23T18:37:49.663Z",
+        "contradictions": { "count": 1, "top": [{ "page_a": "Bitcoin", "page_b": "Satoshi Nakamoto", "claim": "Launch year" }] }
+      },
+      "clusters": { "count": 1, "top": [{ "name": "Cryptocurrency", "pages": 6, "connections": 2 }] },
+      "bridges": [{ "page_id": "btc", "title": "Bitcoin", "category": "Cryptocurrency", "joins": ["Cryptocurrency", "Economics"] }]
+    }
+  },
+  "changes_since": {
+    "route": "/api/wiki/changes",
+    "body": {
+      "mode": "since",
+      "since": "2026-10-16 18:37:49",
+      "sources_added": {
+        "items": [
+          {
+            "source_id": "src-paper",
+            "title": "Bitcoin paper",
+            "source_type": "url",
+            "source_url": "https://bitcoin.org/bitcoin.pdf",
+            "date_ingested": "2026-10-23 18:37:49",
+            "page_count": 2,
+            "onboarding_session_id": "s1"
+          }
+        ],
+        "total": 1
+      },
+      "pages": {
+        "items": [
+          {
+            "page_id": "btc",
+            "title": "Bitcoin",
+            "page_type": "entity",
+            "change": "created",
+            "at": "2026-10-23 18:37:49",
+            "sources": [{ "source_id": "src-paper", "title": "Bitcoin paper" }],
+            "source_total": 1
+          }
+        ],
+        "total": 1
+      },
+      "disputes": {
+        "items": [
+          { "at": "2026-10-23 18:37:49", "kind": "page_dispute_recorded", "page_id": "btc", "page_title": "Bitcoin", "source_title": "Bitcoin paper", "detail": "launch date" }
+        ],
+        "total": 1
+      },
+      "failures": {
+        "items": [{ "at": "2026-10-23 18:37:49", "kind": "ingest_url_failed", "page_id": null, "page_title": null, "source_title": null, "detail": "dns" }],
+        "total": 1
+      }
+    }
+  },
+  "changes_session": {
+    "route": "/api/wiki/changes",
+    "body": {
+      "mode": "session",
+      "session_id": "s1",
+      "status": "completed",
+      "current_step": "commit",
+      "error": "One link could not be read.",
+      "started_at": "2026-10-23 18:36:49",
+      "completed_at": "2026-10-23 18:37:49",
+      "staged": { "items": [{ "item": "https://bad.test/", "status": "failed", "error": "Could not fetch the page" }], "total": 1 },
+      "sources_added": {
+        "items": [
+          {
+            "source_id": "src-paper",
+            "title": "Bitcoin paper",
+            "source_type": "url",
+            "source_url": "https://bitcoin.org/bitcoin.pdf",
+            "date_ingested": "2026-10-23 18:37:49",
+            "page_count": 2,
+            "onboarding_session_id": "s1"
+          }
+        ],
+        "total": 1
+      },
+      "pages": {
+        "items": [
+          {
+            "page_id": "btc",
+            "title": "Bitcoin",
+            "page_type": "entity",
+            "change": "created",
+            "at": "2026-10-23 18:37:49",
+            "sources": [{ "source_id": "src-paper", "title": "Bitcoin paper" }],
+            "source_total": 1
+          }
+        ],
+        "total": 1
+      },
+      "failures": {
+        "items": [{ "at": "2026-10-23 18:37:49", "kind": "ingest_url_failed", "page_id": null, "page_title": null, "source_title": null, "detail": "dns" }],
+        "total": 1
+      }
+    }
+  },
+  "changes_page": {
+    "route": "/api/wiki/changes",
+    "body": {
+      "mode": "page",
+      "page": { "page_id": "btc", "title": "Bitcoin", "page_type": "entity", "created_at": "2026-10-23 18:37:49", "last_updated": "2026-10-23 18:37:49" },
+      "compiles": {
+        "items": [{ "source_id": "src-paper", "source_title": "Bitcoin paper", "contribution_type": "created", "at": "2026-10-23 18:37:49" }],
+        "total": 1
+      },
+      "events": { "items": [{ "at": "2026-10-23 18:37:49", "kind": "page_dispute_recorded", "detail": "launch date" }], "total": 1 },
+      "previous_version": { "sections_added": ["Disputed: Launch date"], "sections_removed": ["History"], "sections_changed": ["(opening)"] }
+    }
+  }
+}

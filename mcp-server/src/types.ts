@@ -1,4 +1,8 @@
-/** Response shapes of the Kompl app routes the MCP tools read. */
+/**
+ * Response shapes of the Kompl app routes the MCP tools read. Keep
+ * test/contract/app-responses.json in step: it is checked against these
+ * types, and the app's contract test holds the real routes to it.
+ */
 
 export interface PageMeta {
   page_id: string;
@@ -254,3 +258,11 @@ export type Changes =
       events: Listed<{ at: string; kind: string; detail: string | null }>;
       previous_version: { sections_added: string[]; sections_removed: string[]; sections_changed: string[] } | null;
     };
+
+/** POST /api/agent/sources (add_source). */
+export interface AddSourceAnswer {
+  session_id: string | null;
+  added: number;
+  already_in_wiki: Array<{ url: string; source_id: string }>;
+  blocked: string[];
+}
