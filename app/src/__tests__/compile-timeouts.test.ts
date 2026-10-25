@@ -36,7 +36,8 @@ const COMMIT_FLOOR_MS   = 120_000;
 const RESOLVE_PER_SOURCE_MS = 60_000;
 const DISAMBIGUATE_FLOOR_MS     = 600_000;
 const DISAMBIGUATE_PER_BATCH_MS = 120_000;
-const MAX_DISAMBIGUATE_PAIRS    = 120;
+// lib/resolve-ranking.ts disambiguatePairCap: 10 pairs per source, 120 to 600.
+const pairCap = (sources: number) => Math.min(600, Math.max(120, sources * 10));
 const MATCH_PER_PAIR_MS     = 60_000;
 const DRAFT_PER_BATCH_MS    = 600_000;
 const CROSSREF_PER_PLAN_MS  = 30_000;
@@ -63,32 +64,32 @@ describe('computeDisambiguateMs', () => {
 
   it('leaves room for two batches at the slowest DeepSeek time seen (400s) at the cap', () => {
     const typical = 11 * 30_000;
-    expect(computeDisambiguateMs(MAX_DISAMBIGUATE_PAIRS)).toBeGreaterThan(typical + 2 * 400_000);
+    expect(computeDisambiguateMs(pairCap(0))).toBeGreaterThan(typical + 2 * 400_000);
   });
 });
 
 describe('computeResolveMs', () => {
-  // Layer 3 can fill its cap from a single source, so resolve always allows
-  // the 120s prelude plus the disambiguate ceiling at the cap.
-  const atCap = () => 120_000 + computeDisambiguateMs(MAX_DISAMBIGUATE_PAIRS) + HEADROOM_MS;
+  // Layer 3 can fill the session's cap from a single source, so resolve
+  // always allows the 120s prelude plus the disambiguate ceiling at that cap.
+  const atCap = (n: number) => 120_000 + computeDisambiguateMs(pairCap(n)) + HEADROOM_MS;
 
   it('covers a full Layer 3 at N=0 and N=1', () => {
-    expect(computeResolveMs(0)).toBe(atCap());
-    expect(computeResolveMs(1)).toBe(atCap());
+    expect(computeResolveMs(0)).toBe(atCap(0));
+    expect(computeResolveMs(1)).toBe(atCap(1));
     expect(computeResolveMs(0)).toBeGreaterThanOrEqual(RESOLVE_FLOOR_MS);
   });
 
   it('never lets the outer call abort the inner disambiguate call', () => {
-    for (const n of [0, 1, 5, 10, 38]) {
-      expect(computeResolveMs(n)).toBeGreaterThan(120_000 + computeDisambiguateMs(MAX_DISAMBIGUATE_PAIRS));
+    for (const n of [0, 1, 5, 10, 24, 38, 60, 100]) {
+      expect(computeResolveMs(n)).toBeGreaterThan(120_000 + computeDisambiguateMs(pairCap(n)));
     }
   });
 
   it('scales linearly with sources once that passes the cap ceiling', () => {
-    const raw = 120_000 + 100 * RESOLVE_PER_SOURCE_MS;
-    expect(computeResolveMs(100)).toBe(expected(raw, RESOLVE_FLOOR_MS));
-    const raw200 = 120_000 + 200 * RESOLVE_PER_SOURCE_MS;
-    expect(computeResolveMs(200)).toBe(expected(raw200, RESOLVE_FLOOR_MS));
+    const raw = 120_000 + 300 * RESOLVE_PER_SOURCE_MS;
+    expect(computeResolveMs(300)).toBe(expected(raw, RESOLVE_FLOOR_MS));
+    const raw400 = 120_000 + 400 * RESOLVE_PER_SOURCE_MS;
+    expect(computeResolveMs(400)).toBe(expected(raw400, RESOLVE_FLOOR_MS));
   });
 });
 

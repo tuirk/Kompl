@@ -13,7 +13,7 @@
 // each route. If a wrapper still fires legitimately, change the rate
 // constant in this file (one place); do not retune at the call site.
 
-import { MAX_DISAMBIGUATE_PAIRS } from './resolve-ranking';
+import { disambiguatePairCap } from './resolve-ranking';
 
 const OVERHEAD = 1.2;          // 20% relative slack for per-call variance
 const HEADROOM_MS = 180_000;   // 3 min absolute headroom for I/O blips
@@ -53,14 +53,13 @@ export function computeDisambiguateMs(pairCount: number): number {
   return withSlack(batches * DISAMBIGUATE_PER_BATCH_MS, DISAMBIGUATE_FLOOR_MS);
 }
 
-// resolve = fuzzy 60s + embedding 60s + disambiguate. Layer 3 is capped at
-// MAX_DISAMBIGUATE_PAIRS pairs whatever the source count (one list article
-// can fill it), so the step always allows the prelude plus the disambiguate
-// ceiling at the cap; the per-source term only takes over for very large
-// sessions.
+// resolve = fuzzy 60s + embedding 60s + disambiguate. Layer 3 asks up to
+// disambiguatePairCap(sourceCount) pairs (one list article can fill it), so
+// the step always allows the prelude plus the disambiguate ceiling at that
+// cap; the per-source term only takes over for very large sessions.
 export function computeResolveMs(sourceCount: number): number {
   const raw = 120_000 + sourceCount * RESOLVE_PER_SOURCE_MS;
-  const atCap = 120_000 + computeDisambiguateMs(MAX_DISAMBIGUATE_PAIRS) + HEADROOM_MS;
+  const atCap = 120_000 + computeDisambiguateMs(disambiguatePairCap(sourceCount)) + HEADROOM_MS;
   return Math.max(withSlack(raw, RESOLVE_FLOOR_MS), atCap);
 }
 

@@ -9,7 +9,20 @@
 // Must match nlp-service/routers/resolution.py DISAMBIGUATE_MAX_PAIRS.
 // Hard bound on Layer-3 LLM pairs per resolve (CLAUDE.md rule #7); overflow
 // pairs are kept as separate singletons instead of being sent to the LLM.
-export const MAX_DISAMBIGUATE_PAIRS = 120;
+export const MAX_DISAMBIGUATE_PAIRS = 600;
+// A session's own bound grows with the sources it adds (owner decision
+// 2026-10-25): the film's 24-source batch had 175 pairs and the flat 120
+// left 55 unasked, one of them a duplicate page.
+export const MIN_DISAMBIGUATE_PAIRS = 120;
+export const DISAMBIGUATE_PAIRS_PER_SOURCE = 10;
+
+/** Layer 3's pair budget for a session adding `sourceCount` sources. */
+export function disambiguatePairCap(sourceCount: number): number {
+  return Math.min(
+    MAX_DISAMBIGUATE_PAIRS,
+    Math.max(MIN_DISAMBIGUATE_PAIRS, Math.max(0, sourceCount) * DISAMBIGUATE_PAIRS_PER_SOURCE),
+  );
+}
 
 export interface RankedPair {
   entity_a: { name: string };

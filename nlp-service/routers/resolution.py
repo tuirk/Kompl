@@ -1698,12 +1698,14 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 # LLM iteration cap (CLAUDE.md rule #7): hard bound on pairs per
 # /resolve/disambiguate request. At 10 pairs per LLM call in four groups
 # (entity or concept, with or without a page side) this caps a single request
-# at 15 batched calls. Excess pairs come back decision='ambiguous'
+# at 63 batched calls. The app sends a session's own, smaller budget: 10 pairs
+# per source it adds, at least 120 (app/src/lib/resolve-ranking.ts
+# disambiguatePairCap). Excess pairs come back decision='ambiguous'
 # (the app keeps ambiguous entities separate — safe degradation, never an
 # over-merge). Rule #7's default-off feature flag targets expansion loops;
 # disambiguation is a core resolve layer, so a hard cap bounds spend without
 # silently disabling every compile.
-DISAMBIGUATE_MAX_PAIRS = 120
+DISAMBIGUATE_MAX_PAIRS = 600
 
 
 class DisambiguateSide(EntityInput):

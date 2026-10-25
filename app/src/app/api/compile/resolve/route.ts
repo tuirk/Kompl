@@ -60,7 +60,7 @@ import { buildMentionPin, KIND_FAMILIES } from '../../../../lib/mention-pin';
 import { sessionMentionRows } from '../../../../lib/mention-rows';
 import { numericConflict } from '../../../../lib/name-guard';
 import { pageSide } from '../../../../lib/resolve-page-sides';
-import { MAX_DISAMBIGUATE_PAIRS, rankForLayer3 } from '../../../../lib/resolve-ranking';
+import { disambiguatePairCap, rankForLayer3 } from '../../../../lib/resolve-ranking';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -507,9 +507,9 @@ export async function POST(request: Request) {
       return true;
     };
 
-    // App-side mirror of the nlp-service DISAMBIGUATE_MAX_PAIRS cap
-    // (CLAUDE.md rule #7): never ask for more LLM pairs than the service
-    // will process. Overflow pairs take the same path as an 'ambiguous' LLM
+    // Layer 3's pair budget (CLAUDE.md rule #7): 10 per source this session
+    // adds, at least 120, never above the nlp-service DISAMBIGUATE_MAX_PAIRS
+    // ceiling (lib/resolve-ranking.ts disambiguatePairCap). Overflow pairs take the same path as an 'ambiguous' LLM
     // verdict — entities stay separate singletons, a safe degradation —
     // and are reported in stats and the activity log.
     // Who gets a slot is ranked as in nlp-service (lib/resolve-ranking.ts):
@@ -534,12 +534,13 @@ export async function POST(request: Request) {
       return sourcesOf(pair.entity_b).some((s) => a.has(s));
     };
     const ranked = rankForLayer3(ambiguous2, oneSource);
-    const cappedAmbiguous = ranked.slice(0, MAX_DISAMBIGUATE_PAIRS);
-    const overflowAmbiguous = ranked.slice(MAX_DISAMBIGUATE_PAIRS);
+    const pairCap = disambiguatePairCap(new Set(extractions.map((x) => x.source_id)).size);
+    const cappedAmbiguous = ranked.slice(0, pairCap);
+    const overflowAmbiguous = ranked.slice(pairCap);
     let llmFailed = 0;
     if (overflowAmbiguous.length > 0) {
       console.warn(
-        `[resolve] ${ambiguous2.length} ambiguous pairs exceed cap ${MAX_DISAMBIGUATE_PAIRS}; ` +
+        `[resolve] ${ambiguous2.length} ambiguous pairs exceed cap ${pairCap}; ` +
           `${overflowAmbiguous.length} pairs kept separate without LLM disambiguation`
       );
       for (const pair of overflowAmbiguous) ambiguousRemaining.push(...loneSides(pair));
@@ -667,7 +668,7 @@ export async function POST(request: Request) {
           session_id,
           over_cap:   overflowAmbiguous.length,
           llm_failed: llmFailed,
-          cap:        MAX_DISAMBIGUATE_PAIRS,
+          cap:        pairCap,
         },
       });
     }

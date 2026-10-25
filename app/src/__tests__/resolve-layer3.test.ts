@@ -13,7 +13,7 @@ import { it, expect, afterEach, vi } from 'vitest';
 import { POST as resolvePOST } from '../app/api/compile/resolve/route';
 import { getEventDef, type FeedActivityRow } from '../lib/activity-events';
 import { computeDisambiguateMs } from '../lib/compile-timeouts';
-import { MAX_DISAMBIGUATE_PAIRS } from '../lib/resolve-ranking';
+import { disambiguatePairCap, MIN_DISAMBIGUATE_PAIRS } from '../lib/resolve-ranking';
 import { setupTestDb, seedSource, seedExtraction, type TestDbHandle } from './helpers/test-db';
 
 let handle: TestDbHandle | null = null;
@@ -44,11 +44,15 @@ async function resolveWith(args: {
   decide?: (p: Pair) => { decision: string; canonical: string | null; pair_id?: string | null };
   failedPairs?: number;
   rerouted?: number;
+  /** Sources the session adds, all extracted (default 1). */
+  sources?: number;
 }) {
   handle = setupTestDb();
   const session_id = 'sess-layer3';
-  const sid = seedSource(handle.db, { onboarding_session_id: session_id, compile_status: 'extracted' });
-  seedExtraction(handle.db, { source_id: sid, llm_output: { entities: [], concepts: [{ name: 'Seed' }], relationships: [] } });
+  for (let i = 0; i < (args.sources ?? 1); i++) {
+    const sid = seedSource(handle.db, { onboarding_session_id: session_id, compile_status: 'extracted' });
+    seedExtraction(handle.db, { source_id: sid, llm_output: { entities: [], concepts: [{ name: 'Seed' }], relationships: [] } });
+  }
   const sent: Pair[] = [];
 
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -99,12 +103,23 @@ it('gives pairs across sources and against pages their slots before a list artic
     ],
   });
   const names = sent.map((p) => p.entity_a.name);
-  expect(names).toHaveLength(MAX_DISAMBIGUATE_PAIRS);
+  expect(names).toHaveLength(MIN_DISAMBIGUATE_PAIRS);
   expect(names.slice(0, 3)).toEqual(['Gas fee', 'Echo', 'JS']);
   expect(stats).toMatchObject({ llm_pairs: 120, llm_pairs_over_cap: 13, llm_pairs_failed: 0 });
   expect(activity).toHaveLength(1);
   expect(activity[0].step_key).toBe('resolve');
-  expect(JSON.parse(activity[0].details)).toMatchObject({ over_cap: 13, llm_failed: 0, cap: MAX_DISAMBIGUATE_PAIRS });
+  expect(JSON.parse(activity[0].details)).toMatchObject({ over_cap: 13, llm_failed: 0, cap: MIN_DISAMBIGUATE_PAIRS });
+});
+
+it('gives a session 10 pairs per source it adds, up to the 600 ceiling', async () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) => pair(ent(`Castle ${i}`, 'a'), ent(`Fort ${i}`, 'b'), 0.8));
+  const film = await resolveWith({ sources: 24, ambiguous: many(250) });
+  expect(film.sent).toHaveLength(240);
+  expect(JSON.parse(film.activity[0].details)).toMatchObject({ over_cap: 10, cap: 240 });
+  handle?.cleanup();
+  const big = await resolveWith({ sources: 80, ambiguous: many(700) });
+  expect(big.sent).toHaveLength(600);
+  expect(disambiguatePairCap(0)).toBe(MIN_DISAMBIGUATE_PAIRS);
 });
 
 it('asks a flagged acronym pair first and hands every pair\'s hints on to Layer 3', async () => {
