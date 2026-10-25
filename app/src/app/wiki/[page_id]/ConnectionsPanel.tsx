@@ -2,8 +2,9 @@
  * The wiki article's "Connections" card in the right panel: the page's typed
  * relations, grouped by label ("Uses", "Part of", ... "Related to" last),
  * then the pages it only shares a plain link with ("Also linked"). Each
- * relation opens to the sentences that explain it and the sources they came
- * from; long groups show their first few rows. The header counts the pages
+ * relation opens to its sources, each with Kompl's one-line summary of the
+ * relation (labelled as Kompl's: it is not a quote from the source); long
+ * groups show their first few rows. The header counts the pages
  * the page relates to, links to the graph focused on it ("See in graph"),
  * and "Also linked" has its own count. Server component; the data comes from
  * one getPageConnections() call per request in page.tsx (lib/relations.ts;
@@ -165,7 +166,11 @@ function ConnectionRow({ label, item, compact = false }: { label: string; item: 
   );
 }
 
-/** The sentences behind a connection, each with the source it came from. */
+/**
+ * The sources behind a connection, each with Kompl's one-line summary of the
+ * relation when one was kept. The summary is what the extraction model wrote
+ * on reading that source, not a quote from it, so it is labelled as Kompl's.
+ */
 function Evidence({ item }: { item: ConnectionItem }) {
   const more = moreSourcesNote(item);
   return (
@@ -185,6 +190,7 @@ function Evidence({ item }: { item: ConnectionItem }) {
             </span>
           )}
           <span style={NOTE}>
+            {e.sentence && "Kompl's summary, from "}
             <Link href={`/source/${e.source_id}`}>{e.source_title}</Link>
             {e.source_archived && <span title="This source is archived">{' (archived)'}</span>}
           </span>

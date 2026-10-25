@@ -35,12 +35,14 @@ describe('read_source', () => {
     const res = await call(await connect(kompl.fetchImpl), 'read_source', { source_id: 's1', query: 'mining energy' });
     expect(res).toEqual({
       text: [
+        '<wiki-data>',
         '# Bitcoin explained',
         'url · added 2026-09-30 · https://example.com/btc',
         '',
         'Passages matching "mining energy" (of 9000 characters):',
         '',
         '--- Mining (at character 120)\nMining consumes significant energy.',
+        '</wiki-data>',
       ].join('\n'),
       isError: false,
     });
@@ -88,7 +90,7 @@ describe('read_source', () => {
     expect((await call(client, 'read_source', { page_id: 'pow' })).isError).toBe(true);
     const noSuchCitation = await call(client, 'read_source', { page_id: 'pow', n: 4 });
     expect(noSuchCitation).toEqual({
-      text: '"Proof of work" has no source [4]; its sources are numbered 1–1.',
+      text: 'Page `pow` has no source [4]; its sources are numbered 1–1.',
       isError: true,
     });
     const unknown = await call(client, 'read_source', { source_id: 'nope' });
@@ -102,7 +104,7 @@ describe('read_source', () => {
     });
     const client = await connect(kompl.fetchImpl);
     expect(await call(client, 'read_source', { page_id: 'empty', n: 1 })).toEqual({
-      text: '"Empty" has no sources.',
+      text: 'Page `empty` has no sources.',
       isError: true,
     });
     const past = await call(client, 'read_source', { source_id: 's1', offset: 9000 });
@@ -126,7 +128,9 @@ describe('list_sources', () => {
       text: [
         'Sources 1–1 of 1 matching "example.com", newest first:',
         '',
+        '<wiki-data>',
         '• **Bitcoin explained** (url, added 2026-09-30, in 3 page(s))\n  https://example.com/btc\n  ID: `s1`',
+        '</wiki-data>',
       ].join('\n'),
       isError: false,
     });

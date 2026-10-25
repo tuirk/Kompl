@@ -6,7 +6,9 @@
  * Response 200: { session_id, queued, added, already_in_wiki, blocked }
  * Errors: 403 agent_sources_disabled (off in Settings) / cross_site (sent
  *         by another web page, or to a host name Kompl doesn't know), 422 invalid_request,
- *         409 compile_running / page_upgrade_in_progress, 429 daily_limit,
+ *         409 compile_running (with active_session_id and started_at; a
+ *         compile left queued that nothing will start doesn't count) /
+ *         page_upgrade_in_progress, 429 daily_limit,
  *         503 when the compile trigger fails (the session stays queued).
  */
 

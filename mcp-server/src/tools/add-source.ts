@@ -15,8 +15,10 @@ export function registerAddSource(server: McpServer, client: KomplClient): void 
         "Save links or a note to the user's Kompl wiki. Kompl fetches each link and compiles it into cited wiki " +
         "pages. Each addition starts a compile that uses the user's AI model and counts toward their daily spend " +
         'cap, so add only what the user asked for. Off unless the user turned it on in Kompl (Settings → Connect ' +
-        'your AI); up to 5 links per call. Check list_sources first if a link may already be saved. Follow the ' +
-        'compile with recent_changes and the session_id this returns.',
+        'your AI); up to 5 links per call. Kompl runs one compile at a time and each call starts one, so send ' +
+        'what the user wants added in one call; while a compile runs, the call is refused with when that ' +
+        'compile started: try again after it finishes. Check list_sources first if a link may ' +
+        'already be saved. Follow the compile with recent_changes and the session_id this returns.',
       inputSchema: {
         urls: z.array(z.string()).min(1).max(5).optional().describe('Links to add (http or https), up to 5'),
         text: z.string().optional().describe('Or: a note to keep as a source, such as a decision or summary'),

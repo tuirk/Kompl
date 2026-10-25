@@ -542,18 +542,20 @@ export function pagesFilePath(pageId: string): string {
  * Read and decompress a compiled wiki page. Used by /wiki/[page_id] server
  * component. Returns null if both the file and pending_content are missing.
  *
- * Falls back to pages.pending_content (raw TEXT) when the gzip file has not yet
- * been flushed to disk — covers the Phase 2→3a window and boot-reconciler lag.
+ * pages.pending_content (raw TEXT) wins while it is set: a commit sets it in
+ * its transaction and clears it only after the file write lands, so it is
+ * newer than any file on disk — the Phase 2→3a window, a failed write and
+ * boot-reconciler lag. Read-only: flushing it is the reconciler's job.
  */
 export function readPageMarkdown(pageId: string): string | null {
   const filePath = pagesFilePath(pageId);
+  const pending = getPage(pageId)?.pending_content;
+  if (pending != null) return pending;
   if (fs.existsSync(filePath)) {
     const gzipped = fs.readFileSync(filePath);
     return zlib.gunzipSync(gzipped).toString('utf-8');
   }
-  // File not yet flushed — return in-flight content if available.
-  const page = getPage(pageId);
-  return page?.pending_content ?? null;
+  return null;
 }
 
 // ============================================================================

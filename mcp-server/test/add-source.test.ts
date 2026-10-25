@@ -10,6 +10,13 @@ describe('add_source', () => {
     expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: true });
   });
 
+  it('says that one compile runs at a time, each call starting one, and to try again after it', async () => {
+    const { tools } = await (await connect(fakeKompl({}).fetchImpl)).listTools();
+    const description = tools.find((t) => t.name === 'add_source')!.description!;
+    expect(description).toMatch(/one compile at a time and each call starts one/);
+    expect(description).toMatch(/try again after it finishes/);
+  });
+
   it('posts the links with the agent name and reports the session to follow', async () => {
     const kompl = fakeKompl({
       [ROUTE]: { session_id: 's1', queued: 1, added: 1, already_in_wiki: [{ url: 'https://old.test/', source_id: 'src-1' }], blocked: ['https://x.com/a'] },
@@ -59,7 +66,13 @@ describe('add_source', () => {
   it("passes the app's reason through when it refuses", async () => {
     const answers: Array<[number, string]> = [
       [403, 'Adding sources from AI agents is turned off. The user can turn it on in Kompl: Settings → Connect your AI.'],
+      // An older app's wording, then the current one with the running compile's start.
       [409, 'A compile is already running. Try again when it has finished.'],
+      [
+        409,
+        'A compile is already running: session `s9`, started 2026-10-23 09:15:00 UTC. Kompl runs one compile at a time and ' +
+          'each add_source call starts one, so try again after it finishes (recent_changes with that session_id shows its progress).',
+      ],
       [429, 'AI agents can add 20 sources a day; 2 left now.'],
     ];
     for (const [status, message] of answers) {

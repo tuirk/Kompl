@@ -34,7 +34,10 @@ export interface ConnectionEvidence {
   source_id: string;
   source_title: string;
   source_archived: boolean;
-  /** The sentence the source gives for the relation, when one was kept. */
+  /**
+   * Kompl's one-line summary of the relation, written by the extraction model
+   * when it read this source; not a quote from the source. null when none was kept.
+   */
   sentence: string | null;
 }
 
@@ -46,7 +49,7 @@ export interface ConnectionItem {
   type: string;
   direction: 'out' | 'in';
   source_count: number;
-  /** At most 3, sentences first, newest first. */
+  /** At most 3, those with a summary first, newest first. */
   evidence: ConnectionEvidence[];
 }
 
@@ -188,8 +191,9 @@ export interface ResearchConnection {
   /** Read from `from`: "Uses", "Part of", "Created by". */
   label: string;
   source_count: number;
-  /** Numbers in the pack's shared source list; the sentence's source first. */
+  /** Numbers in the pack's shared source list; the summary's source first. */
   sources: number[];
+  /** Kompl's one-line summary of the relation (as ConnectionEvidence.sentence): not a quote. */
   sentence: string | null;
 }
 

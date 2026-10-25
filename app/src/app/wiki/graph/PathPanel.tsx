@@ -192,9 +192,10 @@ function StepRow({ step, cache }: { step: PathStep; cache: Map<string, PageConne
       <span style={{ ...META, fontWeight: 600, color: 'var(--fg)' }}>{step.label}</span>
       {item && item.source_count > 1 && <span style={META}>{` · ${item.source_count} sources`}</span>}
       {state.status === 'loading' && <div style={META}>Loading the evidence…</div>}
-      {evidence?.sentence && <div style={{ ...BODY, fontSize: 12, lineHeight: '18px', marginTop: 2 }}>“{evidence.sentence}”</div>}
+      {evidence?.sentence && <div style={{ ...BODY, fontSize: 12, lineHeight: '18px', marginTop: 2 }}>{evidence.sentence}</div>}
       {evidence && (
         <div style={META}>
+          {evidence.sentence && "Kompl's summary, from "}
           <Link href={`/source/${evidence.source_id}`} style={{ color: 'var(--accent)' }}>
             {evidence.source_title}
           </Link>

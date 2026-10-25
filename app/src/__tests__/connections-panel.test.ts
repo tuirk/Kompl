@@ -191,6 +191,17 @@ describe('ConnectionsPanel', () => {
     expect(html.match(/class="wiki-rp-why"/g)).toHaveLength(1);
   });
 
+  it("labels each sentence as Kompl's summary, never as the source's words", () => {
+    const why = render(FULL).slice(render(FULL).indexOf('<details class="wiki-rp-why">'));
+    // The two sentences are each followed by the label and their source; the source without one is just linked.
+    expect(why).toMatch(/Bitcoin uses proof of work\.<\/span><span[^>]*>Kompl&#x27;s summary, from <a href="\/source\/src-1"/);
+    expect(why).toMatch(/Miners run proof of work\.<\/span><span[^>]*>Kompl&#x27;s summary, from <a href="\/source\/src-2"/);
+    expect(why).toMatch(/<li[^>]*><span[^>]*><a href="\/source\/src-3"/);
+    expect(why.match(/Kompl&#x27;s summary/g)).toHaveLength(2);
+    expect(why).not.toMatch(/[“”"]Bitcoin uses proof of work/);
+    expect(why).not.toMatch(/says|quote/i);
+  });
+
   it('keeps "Related to" rows past the first few behind "Show all"', () => {
     const { before, inside } = splitAtShowAll(render(FULL), '>Related to</h3>');
     for (const r of related.slice(0, RELATED_VISIBLE)) expect(before).toContain(`>${r.title}</span>`);

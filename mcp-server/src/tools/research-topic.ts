@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KomplClient } from '../kompl-client.js';
+import { fence } from '../fence.js';
 import { clip } from '../format.js';
 import { failure, READ_ONLY, text } from '../result.js';
 import type { PageLink, ResearchConnection, ResearchPack } from '../types.js';
 
-/** Characters of a connection's evidence sentence (as in read_page). */
+/** Characters of Kompl's one-line summary of a connection (as in read_page). */
 const MAX_SENTENCE = 160;
 
 // GET /api/wiki/research?topic=&detail= → one topic pack, sources numbered across pages
@@ -16,7 +17,8 @@ export function registerResearchTopic(server: McpServer, client: KomplClient): v
       title: 'Research topic',
       description:
         "Brief yourself on a topic from the user's Kompl wiki in one call: the most relevant pages with their " +
-        'summaries and key cited lines, how those pages connect (each relation with its sources), ONE numbered ' +
+        "summaries and key cited lines, how those pages connect (each relation with its sources and Kompl's " +
+        'one-line summary of it), ONE numbered ' +
         'source list shared by all of them (with addresses), what the pages record as disputed, and gaps ' +
         '(names with no page, pages resting on one source). Use for ' +
         '"tell me about X" or "brief me on X"; for a specific lookup use search_wiki and read_page.',
@@ -48,13 +50,15 @@ function format(pack: ResearchPack, baseUrl: string): string {
       ? `Keyword search found no pages on "${pack.topic}", and meaning-based search is unavailable right now, so Kompl may still have something. Try search_wiki with other words, or again later.`
       : `Kompl has no pages on "${pack.topic}". Say so rather than answering from general knowledge.`;
   }
-  const out = [`# Topic: ${pack.topic}`];
-  if (pack.degraded) out.push('(Meaning-based search is unavailable right now; pages were found by keywords only.)');
+  const head = [`# Topic: ${pack.topic}`];
+  if (pack.degraded) head.push('(Meaning-based search is unavailable right now; pages were found by keywords only.)');
 
+  // Everything read from the wiki goes inside the fence (fence.ts).
+  const out: string[] = [];
   pack.pages.forEach((p, i) => {
     const flags = [p.thin ? 'rests on one source' : null].filter(Boolean);
     out.push(
-      '',
+      ...(i > 0 ? [''] : []),
       `## ${i + 1}. ${p.title} (${p.page_type}${p.category ? `, ${p.category}` : ''}) — \`${p.page_id}\``,
       `${baseUrl}${p.path}${flags.length ? ` · ${flags.join(', ')}` : ''}`
     );
@@ -92,23 +96,27 @@ function format(pack: ResearchPack, baseUrl: string): string {
   if (pack.more_pages.length) {
     out.push('', `**Also relevant:** ${pack.more_pages.map((p) => `${p.title} (\`${p.page_id}\`)`).join(', ')}`);
   }
-  out.push(
+  return [
+    ...head,
     '',
-    "Read a page in full with read_page. Check a source with read_source with the source_id listed above: these [n] numbers are this brief's own, not the pages'."
-  );
-  return out.join('\n');
+    fence(out.join('\n')),
+    '',
+    "Read a page in full with read_page. Check a source with read_source with the source_id listed above: these [n] numbers are this brief's own, not the pages'.",
+  ].join('\n');
 }
 
 /**
- * "- Bitcoin uses Proof of work — Bitcoin uses proof of work. [1][3] · 4 sources".
+ * "- Bitcoin uses Proof of work [1][3] · 4 sources · Kompl's summary: Bitcoin uses proof of work."
  * The label reads from `from`; a page outside the pack carries its page_id.
+ * The sentence is Kompl's own summary of the relation, written from the
+ * first source listed, not a quote from it.
  */
 function connectionLine(c: ResearchConnection, inPack: Set<string>): string {
   const end = (p: PageLink) => (inPack.has(p.page_id) ? p.title : `${p.title} (\`${p.page_id}\`)`);
   const relation = c.label.charAt(0).toLowerCase() + c.label.slice(1);
   const parts = [`- ${end(c.from)} ${relation} ${end(c.to)}`];
-  if (c.sentence) parts.push(`— ${clip(c.sentence, MAX_SENTENCE)}`);
   if (c.sources.length) parts.push(c.sources.map((n) => `[${n}]`).join(''));
   if (c.source_count > 1) parts.push(`· ${c.source_count} sources`);
+  if (c.sentence) parts.push(`· Kompl's summary: ${clip(c.sentence, MAX_SENTENCE)}`);
   return parts.join(' ');
 }

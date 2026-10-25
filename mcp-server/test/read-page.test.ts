@@ -97,7 +97,7 @@ const CONNECTIONS = {
           'SHA-256',
           'sha',
           'uses',
-          // The newest sentence comes from a source the page does not cite: the cited one is quoted instead.
+          // The newest sentence comes from a source the page does not cite: the cited one is shown instead.
           [ev('s9', 'Old blog', 'Proof of work leans on SHA-256.'), ev('S1', 'Bitcoin paper', 'Proof of work uses SHA-256.')],
           3
         ),
@@ -129,13 +129,14 @@ describe('read_page connections', () => {
     const lines = text.split('\n');
     const start = lines.indexOf('**Connections:**');
     expect(start).toBeGreaterThan(lines.indexOf('  [1] Bitcoin paper — https://bitcoin.org/bitcoin.pdf · compiled 2026-09-30'));
+    // The sentence is Kompl's summary of the relation, labelled so, after the source it was read from.
     expect(lines.slice(start + 1, start + 7)).toEqual([
-      '- Part of: Consensus (`consensus`) — Proof of work is one way to reach consensus. [1]',
-      '- Uses: SHA-256 (`sha`) — Proof of work uses SHA-256. [1] · 3 sources',
+      "- Part of: Consensus (`consensus`) [1] · Kompl's summary: Proof of work is one way to reach consensus.",
+      "- Uses: SHA-256 (`sha`) [1] · 3 sources · Kompl's summary: Proof of work uses SHA-256.",
       // A source the page does not cite: named, with the id read_source takes.
-      '- Used by: Mining pools (no page) — Mining pools use proof of work. (source: Old blog, `s9`, archived)',
+      "- Used by: Mining pools (no page) (source: Old blog, `s9`, archived) · Kompl's summary: Mining pools use proof of work.",
       '- Related to: Energy use (`energy`) [1]',
-      '- Related to: Hashcash (`hashcash`) — Hashcash came first. [1] (archived source)',
+      "- Related to: Hashcash (`hashcash`) [1] (archived source) · Kompl's summary: Hashcash came first.",
       '**Also linked:** Satoshi Nakamoto (`satoshi`)',
     ]);
     expect(text).not.toContain('**Links to:**');
@@ -150,7 +151,7 @@ describe('read_page connections', () => {
     const text = await read({ groups: [{ label: 'Related to', items: many }], linked_only: linked });
     const rows = text.split('\n').filter((l) => l.startsWith('- Related to: '));
     expect(rows).toHaveLength(15);
-    expect(rows[0]).toBe(`- Related to: Page 0 (\`p0\`) — ${long.slice(0, 159)}… [1] · 2 sources`);
+    expect(rows[0]).toBe(`- Related to: Page 0 (\`p0\`) [1] · 2 sources · Kompl's summary: ${long.slice(0, 159)}…`);
     expect(text).not.toContain('Second.');
     expect(text).toContain('\n+3 more, among them Page 15 (`p15`), Page 16 (`p16`), Page 17 (`p17`)\n');
     expect(text).toContain('Linked 19 (`l19`), and 3 more');

@@ -67,15 +67,12 @@ export async function addAgentSources(req: AgentSourcesRequest): Promise<AgentSo
   }
 
   // Nothing is staged while a compile or a page update runs: the new one
-  // couldn't start, and staged rows would sit unseen.
+  // couldn't start, and staged rows would sit unseen. A compile left queued
+  // that nothing will start doesn't count: finalizeSession supersedes it.
   const upgrading = pageUpgradeBlock();
   if (upgrading) return fail(409, 'page_upgrade_in_progress', upgrading.error);
   const running = getRunningCompileSession();
-  if (running) {
-    return fail(409, 'compile_running', 'A compile is already running. Try again when it has finished.', {
-      active_session_id: running.session_id,
-    });
-  }
+  if (running && !isLeftoverQueued(running.session_id)) return compileRunning(running);
 
   const usedToday = addedInLastDay();
   if (usedToday + items.staged.length > MAX_PER_DAY) {
@@ -110,6 +107,57 @@ export async function addAgentSources(req: AgentSourcesRequest): Promise<AgentSo
       blocked: items.blocked,
     },
   };
+}
+
+/** The refusal while a compile holds the gate: when it started, and to add after it. */
+function compileRunning(active: { session_id: string; started_at: string | null }): AgentSourcesResult {
+  const which = active.started_at
+    ? `A compile is already running: session \`${active.session_id}\`, started ${active.started_at} UTC.`
+    : `A compile is starting now: session \`${active.session_id}\`.`;
+  return fail(
+    409,
+    'compile_running',
+    `${which} Kompl runs one compile at a time and each add_source call starts one, so try again after it ` +
+      'finishes (recent_changes with that session_id shows its progress).',
+    { active_session_id: active.session_id, started_at: active.started_at }
+  );
+}
+
+/** How long a queued compile may wait to start: the /api/health reconciler fails it after this. */
+const QUEUED_LEFTOVER_MINUTES = 5;
+
+/**
+ * A compile queued but never started that nothing will start any more: the
+ * last attempt to start it could not reach n8n (finalize and recompile log
+ * compile_trigger_failed), or that attempt is older than the reconciler's
+ * wait. It holds the gate until /api/health fails it; the app's own Add
+ * sources supersedes it at once (finalizeSession), and so may an agent's
+ * add. A compile whose start may still be on its way is not left over.
+ */
+function isLeftoverQueued(session_id: string): boolean {
+  const ago = `-${QUEUED_LEFTOVER_MINUTES} minutes`;
+  const row = getDb()
+    .prepare(
+      `SELECT status, started_at, datetime(created_at) < datetime('now', ?) AS old
+         FROM compile_progress WHERE session_id = ?`
+    )
+    .get(ago, session_id) as { status: string; started_at: string | null; old: number } | undefined;
+  if (!row || row.status !== 'queued' || row.started_at !== null) return false;
+  // The newest attempt to start the session, or its failure. A recompile
+  // logs both by source; finalize logs both with the session id.
+  const last = getDb()
+    .prepare(
+      `SELECT action_type, datetime(timestamp) < datetime('now', ?) AS old
+         FROM activity_log
+        WHERE action_type IN ('onboarding_confirmed', 'source_recompile_triggered', 'compile_trigger_failed')
+          AND (CASE WHEN json_valid(details) THEN json_extract(details, '$.session_id') END = ?
+               OR source_id IN (SELECT source_id FROM sources WHERE onboarding_session_id = ?))
+        ORDER BY id DESC
+        LIMIT 1`
+    )
+    .get(ago, session_id, session_id) as { action_type: string; old: number } | undefined;
+  if (!last) return row.old === 1;
+  return last.action_type === 'compile_trigger_failed' || last.old === 1;
 }
 
 interface StagedItem {

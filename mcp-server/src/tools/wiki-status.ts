@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KomplClient } from '../kompl-client.js';
+import { fence } from '../fence.js';
 import { clip } from '../format.js';
 import { failure, READ_ONLY, text } from '../result.js';
 import type { Summary, WikiStats, WikiStatus } from '../types.js';
@@ -45,9 +46,10 @@ function format(s: WikiStatus): string {
   ];
   if (s.vector_backlog) lines.push(`• ${s.vector_backlog} page(s) waiting to be added to meaning search`);
 
+  // From here on the lines name pages, sources and claims: wiki text, inside the fence (fence.ts).
   const g = s.gaps;
-  lines.push('', '**Gaps** (read from the wiki; nothing was changed)');
-  lines.push(
+  const wiki = ['**Gaps** (read from the wiki; nothing was changed)'];
+  wiki.push(
     gap(
       'Named in 3+ sources but no page',
       g.missing_pages,
@@ -55,14 +57,14 @@ function format(s: WikiStatus): string {
       g.missing_pages.capped ? '+' : ''
     )
   );
-  lines.push(gap('Pages resting on one source', g.thin_pages, (p) => `${p.title} (\`${p.page_id}\`, linked from ${p.backlinks})`));
-  lines.push(gap('Pages with no links in or out', g.orphan_pages, (p) => `${p.title} (\`${p.page_id}\`)`));
-  lines.push(
+  wiki.push(gap('Pages resting on one source', g.thin_pages, (p) => `${p.title} (\`${p.page_id}\`, linked from ${p.backlinks})`));
+  wiki.push(gap('Pages with no links in or out', g.orphan_pages, (p) => `${p.title} (\`${p.page_id}\`)`));
+  wiki.push(
     gap(`Sources older than ${s.stale_sources.threshold_days} days`, s.stale_sources, (x) => `${x.title} (added ${x.date_ingested.slice(0, 10)})`)
   );
-  lines.push(gap('Failed imports', s.failed_links, (l) => `${l.url} — ${clip(l.error, 120)}`));
-  if (g.dead_provenance.count) lines.push(`• Citations to deleted sources: ${g.dead_provenance.count}`);
-  lines.push(
+  wiki.push(gap('Failed imports', s.failed_links, (l) => `${l.url} — ${clip(l.error, 120)}`));
+  if (g.dead_provenance.count) wiki.push(`• Citations to deleted sources: ${g.dead_provenance.count}`);
+  wiki.push(
     s.last_health_check
       ? gap(
           `Contradictions found by the last health check (${s.last_health_check.at ?? 'date unknown'})`,
@@ -72,9 +74,9 @@ function format(s: WikiStatus): string {
       : '• No health check has been run yet. The user can run one in Settings → Wiki health (it uses the LLM).'
   );
   // Older apps send neither.
-  if (s.clusters) lines.push('', ...clusterLines(s.clusters));
-  if (s.bridges) lines.push(...bridgeLines(s.bridges));
-  return lines.join('\n');
+  if (s.clusters) wiki.push('', ...clusterLines(s.clusters));
+  if (s.bridges) wiki.push(...bridgeLines(s.bridges));
+  return [...lines, '', fence(wiki.join('\n'))].join('\n');
 }
 
 function clusterLines(clusters: NonNullable<WikiStatus['clusters']>): string[] {

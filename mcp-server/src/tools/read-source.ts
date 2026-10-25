@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KomplClient } from '../kompl-client.js';
+import { fence } from '../fence.js';
 import { pageIdInput, sourceIdInput } from '../ids.js';
 import { failure, READ_ONLY, text } from '../result.js';
 import type { PageData, SourceContent } from '../types.js';
@@ -52,11 +53,12 @@ export function registerReadSource(server: McpServer, client: KomplClient): void
         }
         const cited = page.data.sources.find((s) => s.n === n);
         if (!cited) {
+          // Named by its id, not its title: an error result has no fence for wiki text.
           const count = page.data.sources.length;
           return failure(
             count
-              ? `"${page.data.title}" has no source [${n}]; its sources are numbered 1–${count}.`
-              : `"${page.data.title}" has no sources.`
+              ? `Page \`${page_id}\` has no source [${n}]; its sources are numbered 1–${count}.`
+              : `Page \`${page_id}\` has no sources.`
           );
         }
         id = cited.source_id;
@@ -81,29 +83,30 @@ function sourceError(id: string, status: number | null, message: string): string
   return status === 404 ? `${message} Use list_sources to find source ids.` : `Failed to read source ${id}: ${message}`;
 }
 
+/** The source's title and text go inside the fence (fence.ts); what to call next stays outside. */
 function format(src: SourceContent, citedBy: string): string {
   const facts = [src.source_type, `added ${src.date_ingested.slice(0, 10)}`];
   if (src.status !== 'active') facts.push(src.status);
   if (src.source_url) facts.push(src.source_url);
-  const head = [`# ${src.title}`, facts.join(' · '), ...(citedBy ? [citedBy] : []), ''];
+  const head = [`# ${src.title}`, facts.join(' · '), ...(citedBy ? [citedBy] : [])];
 
   if (src.mode === 'passages') {
     const passages = src.passages ?? [];
     if (!passages.length) {
-      return [...head, `No passage of this ${src.total_chars}-character source matches "${src.query}". Read the text without a query instead.`].join('\n');
+      return [fence(head.join('\n')), `No passage of this ${src.total_chars}-character source matches "${src.query}". Read the text without a query instead.`].join('\n');
     }
     const body = passages.map(
       (p) => `--- ${p.heading ? `${p.heading} ` : ''}(at character ${p.start})\n${p.text}`
     );
-    return [...head, `Passages matching "${src.query}" (of ${src.total_chars} characters):`, '', body.join('\n\n')].join('\n');
+    return fence([...head, '', `Passages matching "${src.query}" (of ${src.total_chars} characters):`, '', body.join('\n\n')].join('\n'));
   }
 
   const start = src.offset ?? 0;
   const chunk = src.text ?? '';
   if (!chunk && start > 0) {
-    return [...head, `No text past character ${start}: the source has ${src.total_chars} characters.`].join('\n');
+    return [fence(head.join('\n')), `No text past character ${start}: the source has ${src.total_chars} characters.`].join('\n');
   }
   const range = `Characters ${start + 1}–${start + chunk.length} of ${src.total_chars}:`;
   const next = src.next_offset != null ? ['', `More: call again with offset=${src.next_offset}.`] : [];
-  return [...head, range, '', chunk || '(empty)', ...next].join('\n');
+  return [fence([...head, '', range, '', chunk || '(empty)'].join('\n')), ...next].join('\n');
 }

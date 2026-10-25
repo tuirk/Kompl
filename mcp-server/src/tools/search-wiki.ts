@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KomplClient } from '../kompl-client.js';
+import { fence } from '../fence.js';
 import { failure, READ_ONLY, text } from '../result.js';
 import type { PageMeta, WikiIndex } from '../types.js';
 
@@ -86,7 +87,8 @@ async function search(client: KomplClient, query: string, f: Filters) {
   if (res.data.count === wanted && wanted < MAX_RESULTS) {
     notes.push(`More may match: call again with offset=${f.offset + items.length}.`);
   }
-  return text([`${items.length} result(s):`, '', lines.join('\n\n'), ...(notes.length ? ['', ...notes] : [])].join('\n'));
+  // Titles and summaries are wiki text (fence.ts); the notes are Kompl's.
+  return text([`${items.length} result(s):`, '', fence(lines.join('\n\n')), ...(notes.length ? ['', ...notes] : [])].join('\n'));
 }
 
 // GET /api/wiki/index → every non-archived page, newest first; filtered here.
@@ -106,7 +108,7 @@ async function browse(client: KomplClient, f: Filters) {
   const end = f.offset + shown.length;
   const header = `Pages ${f.offset + 1}–${end} of ${pages.length}, newest first:`;
   const next = end < pages.length ? ['', `More: call again with offset=${end}.`] : [];
-  return text([header, '', lines.join('\n\n'), ...next].join('\n'));
+  return text([header, '', fence(lines.join('\n\n')), ...next].join('\n'));
 }
 
 function matchesFilters(page: PageMeta, f: Filters): boolean {

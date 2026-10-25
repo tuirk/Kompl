@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KomplClient } from '../kompl-client.js';
+import { fence } from '../fence.js';
 import { failure, READ_ONLY, text } from '../result.js';
 import type { SourceList, SourceListItem } from '../types.js';
 
@@ -32,7 +33,8 @@ export function registerListSources(server: McpServer, client: KomplClient): voi
       const end = offset + sources.length;
       const header = `Sources ${offset + 1}–${end} of ${total}${q ? ` matching "${q}"` : ''}, newest first:`;
       const next = end < total ? ['', `More: call again with offset=${end}.`] : [];
-      return text([header, '', sources.map(sourceLine).join('\n\n'), ...next].join('\n'));
+      // Titles are wiki text (fence.ts); the header and next step are Kompl's.
+      return text([header, '', fence(sources.map(sourceLine).join('\n\n')), ...next].join('\n'));
     }
   );
 }

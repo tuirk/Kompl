@@ -92,6 +92,7 @@ describe('wiki_status', () => {
       '**Bridge pages** (on many of the shortest ways between pages of different topics)',
       '• Bitcoin network (`btc`, Crypto) joins Crypto, AI and Travel',
       '• Claude (`claude`, AI) joins AI and Crypto',
+      '</wiki-data>',
     ]);
 
     const empty = { ...STATUS, clusters: { count: 0, top: [] }, bridges: [] };

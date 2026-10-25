@@ -140,7 +140,7 @@ export function PanelSection({ label, count, children }: { label: string; count?
   );
 }
 
-/** The sentences behind a connection, each with the source it came from (archived ones marked). */
+/** Kompl's one-line summaries behind a connection, each with the source it came from (archived ones marked). */
 export function EvidenceList({ item }: { item: Pick<ConnectionItem, 'evidence' | 'source_count'> }) {
   const more = moreSourcesNote(item);
   return (
@@ -149,6 +149,7 @@ export function EvidenceList({ item }: { item: Pick<ConnectionItem, 'evidence' |
         <li key={e.source_id} style={{ padding: '4px 0' }}>
           {e.sentence && <span style={{ ...BODY, display: 'block' }}>{e.sentence}</span>}
           <span style={META}>
+            {e.sentence && "Kompl's summary, from "}
             <Link href={`/source/${e.source_id}`} style={{ color: 'var(--accent)' }}>
               {e.source_title}
             </Link>

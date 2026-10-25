@@ -42,6 +42,15 @@ describe('tool catalogue', () => {
     expect(client.getInstructions()).toMatch(/\[n\]/);
     expect(client.getInstructions()!.length).toBeLessThan(2000);
   });
+
+  it("calls a relation's sentence Kompl's summary, never the source's words", async () => {
+    const client = await connect(fakeKompl({}).fetchImpl);
+    const { tools } = await client.listTools();
+    const texts = [client.getInstructions()!, ...tools.map((t) => t.description ?? '')];
+    for (const t of texts) expect(t).not.toMatch(/says so|source says|quoted|the sentence the source/i);
+    expect(client.getInstructions()).toMatch(/summary Kompl wrote \(not a quote/);
+    expect(tools.find((t) => t.name === 'read_page')!.description).toMatch(/Kompl's one-line summary/);
+  });
 });
 
 describe('kompl client failures', () => {
@@ -100,8 +109,8 @@ describe('search_wiki with a query', () => {
     });
     expect(res).toEqual({
       text:
-        '1 result(s):\n\n' +
-        '**Proof of work** (concept) [Cryptocurrency] — A consensus mechanism.\n  ID: `proof-of-work-1`',
+        '1 result(s):\n\n<wiki-data>\n' +
+        '**Proof of work** (concept) [Cryptocurrency] — A consensus mechanism.\n  ID: `proof-of-work-1`\n</wiki-data>',
       isError: false,
     });
     expect(Object.fromEntries(kompl.requested[0].searchParams)).toEqual({
@@ -173,9 +182,11 @@ describe('search_wiki without a query (browse)', () => {
       text: [
         'Pages 1–2 of 2, newest first:',
         '',
+        '<wiki-data>',
         '• **Proof of work** (concept) [Cryptocurrency] — 2 source(s)\n  ID: `proof-of-work-1`',
         '',
         '• **Python** (entity) [Programming] — 2 source(s)\n  ID: `p2`',
+        '</wiki-data>',
       ].join('\n'),
       isError: false,
     });
@@ -225,6 +236,7 @@ describe('read_page', () => {
     const res = await call(await connect(fetchImpl), 'read_page', { page_id: 'proof-of-work-1' });
     expect(res).toEqual({
       text: [
+        '<wiki-data>',
         '# Proof of work',
         'Type: concept | Category: Cryptocurrency | Sources: 2',
         'Last updated: 2026-10-01 10:00:00',
@@ -234,6 +246,7 @@ describe('read_page', () => {
         '---',
         '**Sources** (the [n] markers above refer to these):',
         '  [1] Bitcoin paper — source_id `s1`',
+        '</wiki-data>',
         '',
         'To check what a source says, call read_source with its source_id (or this page_id and n).',
       ].join('\n'),
@@ -255,7 +268,7 @@ describe('read_page', () => {
       page_id: 'proof-of-work-1',
     });
     expect(res.text).toContain('\n(no content)\n');
-    expect(res.text.endsWith('\n  (none)')).toBe(true);
+    expect(res.text.endsWith('\n  (none)\n</wiki-data>')).toBe(true);
   });
 
   it('flags an unknown page as an error with a next step', async () => {

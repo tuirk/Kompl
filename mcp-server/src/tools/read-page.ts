@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ApiResult, KomplClient } from '../kompl-client.js';
+import { fence } from '../fence.js';
 import { clip } from '../format.js';
 import { pageIdInput } from '../ids.js';
 import { failure, READ_ONLY, text } from '../result.js';
@@ -12,7 +13,7 @@ const MAX_LINKS = 20;
 const MAX_CONNECTIONS = 15;
 /** The weak relation: listed in full only after every specific one. */
 const RELATED_TO = 'related_to';
-/** Characters of a connection's evidence sentence. */
+/** Characters of Kompl's one-line summary of a connection. */
 const MAX_SENTENCE = 160;
 
 // GET /api/wiki/{page_id}/data → page metadata, markdown body, numbered
@@ -25,7 +26,8 @@ export function registerReadPage(server: McpServer, client: KomplClient): void {
       description:
         'Read a Kompl wiki page by its page_id (from search_wiki): the full text with [n] citations, the numbered ' +
         'sources they refer to (with address and date), how the page connects to others (each relation, such as ' +
-        'uses or part of, with the source that says so), and the pages it links to and from.',
+        "uses or part of, with the source it was read from and Kompl's one-line summary of it, which is not a " +
+        'quote), and the pages it links to and from.',
       inputSchema: {
         page_id: pageIdInput().describe('The page_id from search results'),
         include_related: z
@@ -66,10 +68,12 @@ export function registerReadPage(server: McpServer, client: KomplClient): void {
         if (page.backlinks?.length) lines.push(`**Linked from:** ${linkList(page.backlinks)}`);
       }
       if (related) lines.push(relatedLine(related));
+      // The whole page is wiki text (fence.ts); the next step is Kompl's own line.
+      const out = [fence(lines.join('\n'))];
       if (page.sources.some((s) => s.n)) {
-        lines.push('', 'To check what a source says, call read_source with its source_id (or this page_id and n).');
+        out.push('', 'To check what a source says, call read_source with its source_id (or this page_id and n).');
       }
-      return text(lines.join('\n'));
+      return text(out.join('\n'));
     }
   );
 }
@@ -125,17 +129,21 @@ function moreLine(rest: ConnectionItem[], full: Set<ConnectionItem>): string {
   return `+${rest.length} more${pages.size ? `, among them ${linkList([...pages.values()])}` : ''}`;
 }
 
-/** "- Uses: Proof of work (`pow`) — Bitcoin uses proof of work. [2] · 3 sources" */
+/**
+ * "- Uses: Proof of work (`pow`) [2] · 3 sources · Kompl's summary: Bitcoin uses proof of work."
+ * The sentence is what the extraction model wrote about the relation when it
+ * read source [2], not a quote from it, so it is labelled as Kompl's.
+ */
 function connectionLine(label: string, item: ConnectionItem, numbered: Map<string, number>): string {
   const parts = [`- ${label}: ${item.title} ${item.page_id ? `(\`${item.page_id}\`)` : '(no page)'}`];
   const evidence = pickEvidence(item.evidence, numbered);
-  if (evidence?.sentence) parts.push(`— ${clip(evidence.sentence, MAX_SENTENCE)}`);
   if (evidence) parts.push(sourceRef(evidence, numbered));
   if (item.source_count > 1) parts.push(`· ${item.source_count} sources`);
+  if (evidence?.sentence) parts.push(`· Kompl's summary: ${clip(evidence.sentence, MAX_SENTENCE)}`);
   return parts.join(' ');
 }
 
-/** A sentence from a source the page cites (so read_source can check it), else any sentence, else the first source. */
+/** A summary from a source the page cites (so read_source can check it), else any summary, else the first source. */
 function pickEvidence(evidence: ConnectionEvidence[], numbered: Map<string, number>): ConnectionEvidence | undefined {
   return (
     evidence.find((e) => e.sentence && numbered.has(e.source_id.toLowerCase())) ??

@@ -47,7 +47,8 @@ export async function connect(
   return client;
 }
 
-export async function call(
+/** A tool's text exactly as the agent gets it, fence codes included. */
+export async function callRaw(
   client: Client,
   name: string,
   args: Record<string, unknown> = {}
@@ -57,4 +58,18 @@ export async function call(
     .map((c) => (c.type === 'text' ? c.text : ''))
     .join('\n');
   return { text, isError: result.isError === true };
+}
+
+/**
+ * A tool's text with each fence's random code taken out ("<wiki-data>",
+ * "</wiki-data>"), so a test can state the whole format. fence.test.ts
+ * checks the codes themselves.
+ */
+export async function call(
+  client: Client,
+  name: string,
+  args: Record<string, unknown> = {}
+): Promise<{ text: string; isError: boolean }> {
+  const res = await callRaw(client, name, args);
+  return { ...res, text: res.text.replace(/<(\/?)wiki-data-[0-9a-f]{8}>/g, '<$1wiki-data>') };
 }

@@ -112,10 +112,10 @@ describe('research_topic connections', () => {
     expect(at).toBeGreaterThan(lines.indexOf('- Bitcoin rewards mining[1].'));
     expect(at).toBeLessThan(lines.indexOf('**Sources** (numbers are shared by all pages above):'));
     expect(lines.slice(at + 1, at + 4)).toEqual([
-      '- Bitcoin uses Proof of work — Bitcoin uses proof of work. [1][3] · 4 sources',
+      "- Bitcoin uses Proof of work [1][3] · 4 sources · Kompl's summary: Bitcoin uses proof of work.",
       // A page outside the pack carries its page_id so it can be read.
       '- Proof of work part of SHA-256 (`sha`) [2]',
-      `- Bitcoin related to Proof of work — ${long.slice(0, 159)}… [1]`,
+      `- Bitcoin related to Proof of work [1] · Kompl's summary: ${long.slice(0, 159)}…`,
     ]);
     expect(res.text).toContain('[3] Third — http://kompl.test/source/s3');
   });
@@ -182,7 +182,7 @@ describe('research_topic numbers can be checked with read_source', () => {
     expect(id).toBe('paper');
     const checked = await call(client, 'read_source', { source_id: id });
     expect(checked.isError).toBe(false);
-    expect(checked.text.split('\n')[0]).toBe('# Bitcoin paper');
+    expect(checked.text.split('\n').slice(0, 2)).toEqual(['<wiki-data>', '# Bitcoin paper']);
     expect(checked.text).toContain('Bitcoin paper text');
     // The page's own [n] still works for read_page citations.
     const viaPage = await call(client, 'read_source', { page_id: 'btc', n: 1 });
