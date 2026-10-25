@@ -56,6 +56,7 @@ from routers.resolution_rules import (
     ticker_initials,
     ticker_prefixes,
 )
+from routers.resolution_spelling import us_spelling
 from services.llm_models import LLMModel
 
 logger = logging.getLogger(__name__)
@@ -665,6 +666,14 @@ def _title_key(name: str) -> str:
     return unicodedata.normalize("NFC", name).strip().lower()
 
 
+def _alias_key(name: str) -> str:
+    """How a name meets a stored alias when the lower case differs: the
+    skeleton page titles use, read after British -our / -ise spellings
+    are written the American way (routers/resolution_spelling.py):
+    "Colour-blindness", "colour blindness" and "colorblindness" meet."""
+    return _skeleton(us_spelling(unicodedata.normalize("NFKC", name)))
+
+
 def _canonical_name(
     names: list[str],
     source_counts: dict[str, int] | None = None,
@@ -803,8 +812,9 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
     """Layer 1 fuzzy resolution.
 
     Binds names that are existing page titles first, then existing aliases
-    (instant resolution for returning sessions), then near-spellings of page
-    titles, then pairwise spelling criteria (exact, skeleton, plural,
+    in any spelling (instant resolution for returning sessions), then
+    near-spellings of page titles, then pairwise spelling criteria (exact,
+    skeleton, plural,
     near-spelling, acronym, "Full Name (ABBR)", and for people
     surname/initial matches) grouped by a union that refuses to chain
     different versions, pages or people.
@@ -821,9 +831,13 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
     titles = sorted(req.existing_page_titles, key=lambda pt: (pt.title, pt.page_type))
     n = len(entities)
 
-    # Build existing alias lookup: alias_lower → canonical
+    # Stored aliases by exact lower case, then by spelling (_alias_key):
+    # "colorblindness" is the alias "Colour-blindness". The newest row wins.
     alias_lookup: dict[str, str] = {
         ea.alias.lower(): ea.canonical for ea in req.existing_aliases
+    }
+    alias_spellings: dict[str, ExistingAlias] = {
+        key: ea for ea in req.existing_aliases if (key := _alias_key(ea.alias))
     }
 
     # Track which entities were resolved via existing alias or existing page title.
@@ -849,6 +863,10 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
         if i in alias_canonical:
             continue
         canon = alias_lookup.get(e.name.lower())
+        if not canon:
+            spelt = alias_spellings.get(_alias_key(e.name))
+            if spelt is not None and not _numeric_conflict(e.name, spelt.alias):
+                canon = spelt.canonical
         if canon:
             alias_canonical[i] = canon
             alias_method[i] = "existing_alias"
