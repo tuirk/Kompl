@@ -4,7 +4,8 @@
  *
  * Exposes: auto_approve (boolean),
  *          lint_enabled (boolean), lint_last_result (details from last lint_complete | null),
- *          triage_recheck_enabled (boolean; lib/triage-rechecks.ts)
+ *          triage_recheck_enabled (boolean; lib/triage-rechecks.ts),
+ *          claim_check_enabled (boolean; lib/claim-check/flag.ts)
  */
 
 import { NextResponse } from 'next/server';
@@ -24,6 +25,7 @@ import {
   getCompileModel, setCompileModel, isLlmModel, LLM_MODELS,
   getAgentAddSourcesEnabled, setAgentAddSourcesEnabled,
 } from '../../../lib/db';
+import { getClaimCheckEnabled, setClaimCheckEnabled } from '../../../lib/claim-check/flag';
 import { getTriageRecheckEnabled, setTriageRecheckEnabled } from '../../../lib/triage-rechecks';
 
 function buildResponse() {
@@ -44,6 +46,7 @@ function buildResponse() {
     compile_model: getCompileModel(),
     agent_add_sources_enabled: getAgentAddSourcesEnabled(),
     triage_recheck_enabled: getTriageRecheckEnabled(),
+    claim_check_enabled: getClaimCheckEnabled(),
   };
 }
 
@@ -66,6 +69,7 @@ export async function POST(request: Request) {
     compile_model?: string;
     agent_add_sources_enabled?: boolean;
     triage_recheck_enabled?: boolean;
+    claim_check_enabled?: boolean;
   };
 
   const knownFields = [
@@ -79,6 +83,7 @@ export async function POST(request: Request) {
     'compile_model',
     'agent_add_sources_enabled',
     'triage_recheck_enabled',
+    'claim_check_enabled',
   ];
   if (!knownFields.some((f) => f in body)) {
     return NextResponse.json({ error: 'no recognized setting field in request body' }, { status: 422 });
@@ -103,6 +108,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'triage_recheck_enabled must be a boolean' }, { status: 422 });
     }
     setTriageRecheckEnabled(body.triage_recheck_enabled);
+  }
+  if (body.claim_check_enabled !== undefined) {
+    // The claim check spends AI calls on every compile: never switched from another site.
+    if (isCrossSiteRequest(request)) {
+      return NextResponse.json({ error: 'cross_site', message: CROSS_SITE_MESSAGE }, { status: 403 });
+    }
+    if (typeof body.claim_check_enabled !== 'boolean') {
+      return NextResponse.json({ error: 'claim_check_enabled must be a boolean' }, { status: 422 });
+    }
+    setClaimCheckEnabled(body.claim_check_enabled);
   }
   if (body.auto_approve !== undefined) {
     if (typeof body.auto_approve !== 'boolean') {

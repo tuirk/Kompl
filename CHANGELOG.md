@@ -372,6 +372,32 @@ ship with a `migrate.py` step that runs at boot.
 - Backups carry the new columns. Restoring an older backup brings its
   matches back active and then checks them the same way.
 
+### Disagreements
+
+- **One format for disagreements.** Every page Kompl writes from several
+  sources records a live disagreement under "Disputed: <topic>", each side
+  cited, and a claim a later source superseded under "Changed: <topic>",
+  with each source's date. The draft prompts list the sources' dates (the
+  publication date when known, else the day the source was saved) and
+  their format wins over a wiki's `schema.md`. Concept pages now get the
+  contradictions the extraction found, as entity pages did.
+- **Headings are read wherever the word sits.** "Founding date (disputed)",
+  "#### Contradictions" and other headings older pages use count too, at
+  any level.
+- **One record of disagreements.** Schema v30 adds a `disagreements` table:
+  the page's own Disputed/Changed sections (synced in each page commit) and
+  the sources a compile flagged as contradicting a page, with room for the
+  claim check and the whole-wiki check to come. The page's right panel
+  lists them under Disagreements with Confirm and Dismiss; your verdict is
+  never overwritten by a later compile, and Undo takes it back. MCP
+  `read_page` lists a page's disagreements and `recent_changes` the new
+  ones, each marked confirmed or not.
+- After upgrading, Kompl fills the record once from every page's text and
+  the contradictions already logged (no AI calls), including disputes on
+  pages written before they reached the activity feed. Backups carry the
+  record with your verdicts; restoring an older backup fills it the same
+  way.
+
 ### Added
 
 - **Disputes in the right panel and the activity feed.** When a page's

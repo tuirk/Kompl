@@ -128,6 +128,55 @@ async function backfillRelationsOnce(): Promise<void> {
 }
 
 /**
+ * Fill the disagreements record (plan 3.4) once from what the wiki already
+ * holds: the Disputed/Changed sections in every page's text (pages
+ * committed before 1ff33db3 never logged theirs) and the triage verdicts in
+ * the activity log. No LLM calls (lib/disagreement-backfill.ts).
+ */
+async function backfillDisagreementsOnce(): Promise<void> {
+  if (process.env.NEXT_RUNTIME === 'edge') return;
+
+  const { getDb, getSetting, setSetting } = await import('./lib/db');
+  const { backfillDisagreements, DISAGREEMENTS_BACKFILL_KEY, DISAGREEMENTS_BACKFILL_VERSION } = await import(
+    './lib/disagreement-backfill'
+  );
+  if (getSetting(DISAGREEMENTS_BACKFILL_KEY) === DISAGREEMENTS_BACKFILL_VERSION) return;
+
+  const result = backfillDisagreements(getDb());
+  setSetting(DISAGREEMENTS_BACKFILL_KEY, DISAGREEMENTS_BACKFILL_VERSION);
+  console.log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      event: 'disagreements_backfill_done',
+      version: DISAGREEMENTS_BACKFILL_VERSION,
+      ...result,
+    })
+  );
+}
+
+/**
+ * Date the sources added before Kompl kept publication dates (plan 3.2),
+ * once, from their stored text and metadata; no LLM calls, no fetches
+ * (lib/source-date-backfill.ts). A date already set is never overwritten.
+ */
+async function backfillSourceDatesAtBoot(): Promise<void> {
+  if (process.env.NEXT_RUNTIME === 'edge') return;
+
+  const { getDb } = await import('./lib/db');
+  const { backfillSourceDatesOnce, SOURCE_DATES_BACKFILL_VERSION } = await import('./lib/source-date-backfill');
+  const result = backfillSourceDatesOnce(getDb());
+  if (!result) return;
+  console.log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      event: 'source_dates_backfill_done',
+      version: SOURCE_DATES_BACKFILL_VERSION,
+      ...result,
+    })
+  );
+}
+
+/**
  * Set aside stored aliases with a clearly wrong shape (lib/alias-screen.ts).
  * Runs here when it needs no nlp-service call; otherwise in the background
  * once nlp-service answers, so a slow model load never delays boot.
@@ -210,6 +259,37 @@ export async function register(): Promise<void> {
       JSON.stringify({
         ts: new Date().toISOString(),
         event: 'relation_descriptions_backfill_failed',
+        error: msg,
+      })
+    );
+  }
+
+  try {
+    // After the reconciler, so pages flushed from pending_content are read
+    // from their final files.
+    await backfillDisagreementsOnce();
+  } catch (err) {
+    // Non-fatal: the panel still reads each page's text; the next boot retries.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: 'disagreements_backfill_failed',
+        error: msg,
+      })
+    );
+  }
+
+  try {
+    await backfillSourceDatesAtBoot();
+  } catch (err) {
+    // Non-fatal: undated sources read as the day they were added; the next
+    // boot retries.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: 'source_dates_backfill_failed',
         error: msg,
       })
     );

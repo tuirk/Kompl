@@ -41,6 +41,7 @@ import { LONG_HTTP_AGENT } from './long-http-agent';
 import { stripFrontmatter } from './markdown';
 import { removeEmptyContradictionSections } from './page-sections';
 import { commitPageRewrite, pageVersionToken } from './page-rewrite';
+import { sourceDates, withSourceDate } from './source-dates';
 import { injectWikilinks, type WikilinkTarget } from './wikilink-injector';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -233,12 +234,16 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
       .filter((c): c is string => c !== null && c !== 'Uncategorized' && c !== 'General');
 
     const labels = assignCitationLabels(sources.map((s) => s.source_id));
+    // Dates tell a claim that changed over time from a disagreement (plan 3.1).
+    const dates = sourceDates(getDb(), sources.map((s) => s.source_id));
     let drafted: string;
     try {
       drafted = await draftPage({
         page_type: page.page_type,
         title: page.title,
-        source_contents: sources.map((s) => ({ ...s, citation_label: labels.get(s.source_id.toLowerCase()) })),
+        source_contents: sources.map((s) =>
+          withSourceDate({ ...s, citation_label: labels.get(s.source_id.toLowerCase()) }, dates),
+        ),
         related_pages: [],
         existing_content: null,
         schema: await readSchema(),

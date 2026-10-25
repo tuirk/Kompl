@@ -60,6 +60,8 @@ import { normalizeFrontmatter, SOURCE_PAGE_TYPES, sourceOnlyTitles } from '../..
 import { CURRENT_DRAFT_RULES } from '../../../../lib/draft-rules';
 import { pageTextVersionToken } from '../../../../lib/page-rewrite';
 import { removeEmptyContradictionSections } from '../../../../lib/page-sections';
+import { COMPARISON_RELATIONS, normalizeRelationType } from '../../../../lib/relation-rows';
+import { sourceDates, withSourceDate } from '../../../../lib/source-dates';
 import { DraftLabels, wikiLabelCounts } from '../../../../lib/compile/draft-labels';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -94,6 +96,9 @@ interface SourceContent {
   citation_label?: string;
   /** This session's source: the prompt takes it first and whole (lib/compile/draft-sources.ts). */
   is_new?: boolean;
+  /** Publication date, else the day it was saved (lib/source-dates.ts). */
+  date?: string;
+  date_kind?: 'published' | 'saved';
 }
 
 interface DraftPageReply {
@@ -106,6 +111,8 @@ interface DraftPageReply {
 interface EarlierSource {
   citation_label: string;
   title: string;
+  date?: string;
+  date_kind?: 'published' | 'saved';
 }
 
 interface RelatedPage {
@@ -401,6 +408,28 @@ export function buildDossier(
   const pushSourceBlock = (sid: string, subject: string[] | null, extra: string[]) => {
     if (subject || extra.length > 0) parts.push([`From source ${sid}:`, ...(subject ?? []), ...extra].join('\n'));
   };
+  // Pydantic ExtractionContradiction emits { claim, against }: what this
+  // source says, and the view it disputes ("" when the source doesn't name
+  // one). The drafter treats the dossier as its primary reference, so each
+  // line says which side is the source's own. Entity and concept pages both
+  // get them, so either can record the disagreement (plan 3.1).
+  const contradictionLines = (ext: Item): string[] => {
+    const out: string[] = [];
+    const contras = ((ext.contradictions as Item[] | undefined) ?? []).filter(
+      (c) => matchesSubstring(c.claim) || matchesSubstring(c.against)
+    );
+    for (const contra of contras) {
+      const claim = typeof contra.claim === 'string' ? contra.claim.trim() : '';
+      const against = typeof contra.against === 'string' ? contra.against.trim() : '';
+      if (!claim) continue;
+      out.push(
+        against
+          ? `  This source disputes "${against}" and says instead "${claim}"`
+          : `  This source contradicts other accounts by saying "${claim}"`
+      );
+    }
+    return out;
+  };
 
   if (plan.page_type === 'entity') {
     for (const sid of sourceIds) {
@@ -424,24 +453,7 @@ export function buildDossier(
       for (const claim of claims) {
         lines.push(`  Claim: ${claim.claim}`);
       }
-
-      // Pydantic ExtractionContradiction emits { claim, against }: what this
-      // source says, and the view it disputes ("" when the source doesn't
-      // name one). The drafter treats the dossier as its primary reference,
-      // so each line says which side is the source's own.
-      const contras = ((ext.contradictions as Array<Record<string, unknown>>) ?? []).filter(
-        (c) => matchesSubstring(c.claim) || matchesSubstring(c.against)
-      );
-      for (const contra of contras) {
-        const claim = typeof contra.claim === 'string' ? contra.claim.trim() : '';
-        const against = typeof contra.against === 'string' ? contra.against.trim() : '';
-        if (!claim) continue;
-        lines.push(
-          against
-            ? `  This source disputes "${against}" and says instead "${claim}"`
-            : `  This source contradicts other accounts by saying "${claim}"`
-        );
-      }
+      lines.push(...contradictionLines(ext));
 
       pushSourceBlock(sid, subject, lines);
     }
@@ -460,6 +472,7 @@ export function buildDossier(
       for (const claim of claims) {
         lines.push(`  Claim: ${claim.claim}`);
       }
+      lines.push(...contradictionLines(ext));
 
       pushSourceBlock(sid, subject, lines);
     }
@@ -493,7 +506,8 @@ export function buildDossier(
       if (!ext) continue;
 
       const rels = ((ext.relationships as Array<Record<string, unknown>>) ?? []).filter((r) => {
-        if (r.type !== 'competes_with' && r.type !== 'contradicts') return false;
+        // The types Rule 4 counted for this page, however the LLM spelled them.
+        if (typeof r.type !== 'string' || !COMPARISON_RELATIONS.has(normalizeRelationType(r.type))) return false;
         if (!aliasSetA || !aliasSetB) return true;
         if (typeof r.from_entity !== 'string' || typeof r.to !== 'string') return false;
         const from = r.from_entity.toLowerCase();
@@ -843,15 +857,20 @@ export async function POST(request: Request) {
       const labelledExisting = existingContent
         ? citationsToLabels(normalizeFrontmatter(existingContent), labels, (t) => sourceTitles.has(t.toLowerCase()))
         : null;
-      const earlierSources: EarlierSource[] = (labelledExisting?.added ?? []).map((id) => ({
+      // Each source's date, so the draft can tell a claim that changed over
+      // time from a live disagreement (plan 3.1, lib/source-dates.ts).
+      const earlierIds = labelledExisting?.added ?? [];
+      const dates = sourceDates(db, [...sourceContents.map((sc) => sc.source_id), ...earlierIds]);
+      const earlierSources: EarlierSource[] = earlierIds.map((id) => ({
         citation_label: labels.get(id) ?? '',
         title: titleOf(id),
+        ...dates.get(id.toLowerCase()),
       }));
 
       const reply = await callDraftPage(
         plan.page_type,
         plan.title,
-        sourceContents.map((sc) => ({ ...sc, citation_label: labels.get(sc.source_id.toLowerCase()) })),
+        sourceContents.map((sc) => withSourceDate({ ...sc, citation_label: labels.get(sc.source_id.toLowerCase()) }, dates)),
         relatedPages.length > 0 ? relatedPages : undefined,
         labelledExisting?.markdown,
         schema,

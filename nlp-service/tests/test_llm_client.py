@@ -245,3 +245,196 @@ def test_consolidate_labels_unparsed_response_is_a_compile_error(monkeypatch):
     monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
     with pytest.raises(llm_client.LLMCompileError, match="consolidate_labels_parse_failed"):
         llm_client.consolidate_labels([], ["Crypto"], model="deepseek-flash")
+
+
+# ---------------------------------------------------------------------------
+# Source extraction: quotes and relation directions (plan 3.2, D4, 3b)
+# ---------------------------------------------------------------------------
+
+
+# The types the extract prompt offers, in its order. The app normalises
+# stored types to the same set (app/src/lib/relation-rows.ts PROMPT_RELATIONS).
+_RELATION_TYPES = ("uses", "part_of", "created_by", "competes_with", "contradicts", "related_to")
+
+
+def test_extraction_prompt_defines_each_relation_type_with_its_direction():
+    prompt = llm_client._EXTRACTION_SYSTEM_PROMPT
+    assert 'read as "from_entity <type> to"' in prompt
+    for line in (
+        'part_of        from is a part, member or component of to, the whole',
+        'created_by     from was created, founded, written or built by to, the maker',
+        '(from_entity "Linux", to "Linus Torvalds")',
+        '(from_entity "Chrome DevTools", to "Google Chrome")',
+        'related_to     only when none of the types above fits',
+        'swap the names to fit the type; never invent an inverse type',
+        'names copied exactly from your entities or concepts',
+    ):
+        assert line in prompt, line
+    # One example per type, in the order the types are listed.
+    block = prompt[prompt.index("5. relationships"):prompt.index("6. contradictions")]
+    positions = [block.index(f"\n       {t} ") for t in _RELATION_TYPES]
+    assert positions == sorted(positions)
+    assert block.count("(from_entity ") == len(_RELATION_TYPES) - 1  # related_to has none
+
+
+def test_extraction_prompt_types_match_the_apps_type_list():
+    from pathlib import Path  # noqa: PLC0415
+    import re  # noqa: PLC0415
+
+    ts = Path(__file__).resolve().parents[2] / "app" / "src" / "lib" / "relation-rows.ts"
+    if not ts.exists():
+        pytest.skip("app sources not present (nlp-service image)")
+    listed = re.search(r"PROMPT_RELATIONS[^\[]*\[([^\]]*)\]", ts.read_text(encoding="utf-8")).group(1)
+    assert set(re.findall(r"'([a-z_]+)'", listed)) == set(_RELATION_TYPES)
+
+
+def test_extraction_prompt_asks_for_exact_quotes():
+    prompt = llm_client._EXTRACTION_SYSTEM_PROMPT
+    assert "copied exactly as written: same words, same order" in prompt
+    assert "no paraphrase, no ellipsis" in prompt
+    assert "quote: the source sentence that states this relationship" in prompt
+    # The contract block shows quote as nullable on claims and relationships.
+    contract = prompt[prompt.index("Schema:"):]
+    assert contract.count('"quote": <string> or null') == 2
+    assert "quote_verified" not in prompt and "ends_listed" not in prompt
+
+
+def test_extract_source_call_parameters_and_quote_check(monkeypatch):
+    """Call parameters unchanged by the quote revision; the reply is
+    checked against the whole source, not the capped prompt text."""
+    import json  # noqa: PLC0415
+
+    from services.providers import LLMResult  # noqa: PLC0415
+
+    captured = {}
+    source = "Intro.\n\n" + "Filler text. " * 10 + "\n\nKompl compiles saved sources into a wiki."
+    reply = json.dumps({
+        "title": "T", "entities": [{"name": "Kompl", "type": "PRODUCT", "mentions": ["Kompl"], "context": "c"}],
+        "concepts": [{"name": "Wiki", "description": "d"}],
+        "claims": [{"claim": "Kompl builds wikis.", "confidence": "stated", "entities_involved": ["Kompl"],
+                    "quote": "Kompl compiles saved sources into a wiki."}],
+        "relationships": [{"from_entity": "Kompl", "to": "wiki", "type": "uses", "description": "d", "quote": None}],
+        "contradictions": [], "summary": "s",
+    })
+
+    class _Provider:
+        def complete(self, req):
+            captured["req"] = req
+            parsed = req.response_model.model_validate_json(reply)
+            return LLMResult(text=reply, parsed=parsed, parse_error=None, usage={}, finish_reason="STOP")
+
+    monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
+    monkeypatch.setattr(llm_client, "_extract_input_cap_for", lambda model: 40)
+    result = llm_client.extract_source("s1", source, {"entities": []}, None, None, model="deepseek-flash")
+
+    req = captured["req"]
+    assert req.model == "deepseek-flash"
+    assert req.response_model is llm_client.LLMExtractionResponse
+    assert req.temperature == 0.0
+    assert req.max_output_tokens == 32768
+    assert req.thinking_budget == 512
+    assert req.step == "extract"
+    assert req.messages[0] == {"role": "system", "content": llm_client._EXTRACTION_SYSTEM_PROMPT}
+    assert "Kompl compiles" not in req.messages[1]["content"]  # cut by the input cap
+    assert result.claims[0].quote_verified is True
+    assert result.relationships[0].quote_verified is None
+    assert result.relationships[0].ends_listed is True
+    assert set(llm_client.ExtractionClaim.model_fields) == {
+        "claim", "confidence", "entities_involved", "quote", "quote_verified"}
+    assert set(llm_client.ExtractionRelationship.model_fields) == {
+        "from_entity", "to", "type", "description", "quote", "quote_verified", "ends_listed"}
+
+
+@pytest.mark.parametrize("bad", [None, "", "   ", 42, ["a"], {"q": 1}])
+def test_a_bad_quote_never_fails_the_extraction(bad):
+    claim = {"claim": "c", "confidence": "stated", "entities_involved": []}
+    if bad is not None:
+        claim["quote"] = bad
+    parsed = llm_client.LLMExtractionResponse.model_validate({
+        "title": "", "entities": [], "concepts": [], "claims": [claim],
+        "relationships": [{"from_entity": "a", "to": "b", "type": "Competes with", "description": "d", "quote": bad}],
+        "contradictions": [], "summary": "s",
+    })
+    assert parsed.claims[0].quote is None
+    assert parsed.relationships[0].quote is None
+    assert parsed.relationships[0].type == "Competes with"  # the app normalises it
+
+
+# ---------------------------------------------------------------------------
+# Claim check: one call judges a batch of claim pairs (plan 3.3 and 3.6)
+# ---------------------------------------------------------------------------
+
+
+_PAIR = {
+    "pair_id": "p1",
+    "subject": "Bitcoin",
+    "a": {"claim": "Bitcoin launched in 2008.", "quote": "It launched in 2008.", "source_title": "Early Bitcoin",
+          "date": "2020-01-05", "date_kind": "published"},
+    "b": {"claim": "Bitcoin launched in 2009.", "quote": None, "date": "2024-03-01", "date_kind": "saved"},
+}
+
+
+def test_claim_judge_prompt_uses_the_disputed_and_changed_definitions():
+    """Same definitions as the draft prompt's DISAGREEMENTS rules (plan 3.1):
+    outdated only when the later-dated source shows the change (D5)."""
+    prompt = llm_client._CLAIM_JUDGE_SYSTEM_PROMPT
+    for verdict in llm_client.CLAIM_VERDICTS:
+        assert f'"{verdict}"' in prompt, verdict
+    for rule in ("cannot both be true", "only when the later-dated source shows the change",
+                 "use \"disputed\"", "different milestones", "announced vs shipped", "published on or before that day",
+                 "Answer every pair exactly once", "judgements"):
+        assert rule in prompt, rule
+
+
+def test_judge_claim_pairs_call_and_payload(monkeypatch):
+    from services.providers import LLMResult  # noqa: PLC0415
+
+    captured = {}
+
+    class _Provider:
+        def complete(self, req):
+            captured["req"] = req
+            parsed = llm_client.ClaimJudgeResponse(judgements=[
+                llm_client.ClaimJudgement(pair_id="p1", topic="launch year", reason="A gives 2008; B gives 2009.", verdict="disputed"),
+            ])
+            return LLMResult(text='{"judgements": []}', parsed=parsed, parse_error=None, usage={}, finish_reason="STOP")
+
+    monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
+    result = llm_client.judge_claim_pairs([_PAIR], model="deepseek-flash")
+
+    req = captured["req"]
+    assert req.model == "deepseek-flash"
+    assert req.response_model is llm_client.ClaimJudgeResponse
+    assert req.temperature == 0.0
+    assert req.max_output_tokens == 8192
+    assert req.thinking_budget == 512
+    assert req.step == "claims"
+    assert req.messages[0] == {"role": "system", "content": llm_client._CLAIM_JUDGE_SYSTEM_PROMPT}
+    assert req.messages[1]["content"] == (
+        "PAIR p1 (subject: Bitcoin)\n"
+        '  A ("Early Bitcoin", published 2020-01-05): Bitcoin launched in 2008.\n'
+        '     Source sentence: "It launched in 2008."\n'
+        "  B (saved 2024-03-01, publication date unknown): Bitcoin launched in 2009."
+    )
+    assert [(j.pair_id, j.verdict) for j in result.judgements] == [("p1", "disputed")]
+    assert list(llm_client.ClaimJudgement.model_fields) == ["pair_id", "topic", "reason", "verdict"]
+
+
+def test_judge_claim_pairs_sends_nothing_without_pairs(monkeypatch):
+    def _no_provider(model):
+        raise AssertionError("no call expected")
+
+    monkeypatch.setattr(llm_client, "get_provider", _no_provider)
+    assert llm_client.judge_claim_pairs([], model="deepseek-flash").judgements == []
+
+
+def test_judge_claim_pairs_unparsed_response_is_a_compile_error(monkeypatch):
+    from services.providers import LLMResult  # noqa: PLC0415
+
+    class _Provider:
+        def complete(self, req):
+            return LLMResult(text='[]', parsed=None, parse_error=ValueError("bare list"), usage={}, finish_reason="STOP")
+
+    monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
+    with pytest.raises(llm_client.LLMCompileError, match="judge_claim_pairs_parse_failed"):
+        llm_client.judge_claim_pairs([_PAIR], model="deepseek-flash")

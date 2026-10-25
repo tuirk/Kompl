@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from services.llm_client import (
     Contradiction,
@@ -131,6 +131,12 @@ class SourceContent(BaseModel):
     # This session's source: it goes into the prompt first and whole; older
     # sources share what the prompt budget leaves (services/draft_budget.py).
     is_new: bool = False
+    # The source's date (YYYY-MM-DD), so a draft can tell a claim that
+    # changed over time from a live disagreement (plan 3.1, D5): the
+    # publication date when the app knows it, else the day it was saved.
+    # Older apps send neither.
+    date: str | None = Field(default=None, max_length=40)
+    date_kind: Literal["published", "saved"] | None = None
 
 
 class EarlierSource(BaseModel):
@@ -139,6 +145,8 @@ class EarlierSource(BaseModel):
 
     citation_label: str
     title: str
+    date: str | None = Field(default=None, max_length=40)
+    date_kind: Literal["published", "saved"] | None = None
 
 
 class RelatedPage(BaseModel):
@@ -286,9 +294,13 @@ class GenerateSchemaResponse(BaseModel):
 class TriageRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
+    # The source's claims about the page's subject (evidence='claims'), or
+    # its text when its extraction has none (evidence='source_text').
     source_claims: str
     existing_page_summary: str
     page_title: str
+    page_section: str = ""
+    evidence: Literal['claims', 'source_text'] = 'source_text'
     compile_model: LLMModel = "gemini-2.5-flash"
 
 
@@ -315,6 +327,8 @@ def pipeline_triage(req: TriageRequest) -> TriageResponse:
             req.existing_page_summary,
             req.page_title,
             model=req.compile_model,
+            page_section=req.page_section,
+            evidence=req.evidence,
         )
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e

@@ -28,6 +28,7 @@ Commit 7 additions (vector store):
   - POST /storage/read-page     — read a compiled wiki page by page_id
 
   GET /llm/usage               — today's LLM spend vs daily cap (from /data/llm-cap.json)
+  POST /pipeline/judge-claims  — claim check: do two sources' claims disagree?
   GET /llm/pricing             — a model's per-1M-token prices + draft_page limits
                                  (page-update estimate in Settings > Wiki health)
 
@@ -52,6 +53,7 @@ import threading
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
+from routers.claims import router as claims_router
 from routers.conversion import router as conversion_router
 from routers.extraction import router as extraction_router
 from routers.labels import router as labels_router
@@ -85,6 +87,7 @@ class HealthResponse(BaseModel):
 
 app = FastAPI(title="kompl-nlp-service", version="0.7.0")
 
+app.include_router(claims_router)
 app.include_router(conversion_router)
 app.include_router(extraction_router)
 app.include_router(labels_router)

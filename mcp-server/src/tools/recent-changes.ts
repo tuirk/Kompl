@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KomplClient } from '../kompl-client.js';
 import { fence } from '../fence.js';
 import { failure, READ_ONLY, text } from '../result.js';
-import type { AddedSource, ChangedPage, Changes, WikiEvent } from '../types.js';
+import type { AddedSource, ChangedPage, Changes, DisputeEvent, WikiEvent } from '../types.js';
 
 // GET /api/wiki/changes?days|since|session_id|page_id&limit
 export function registerRecentChanges(server: McpServer, client: KomplClient): void {
@@ -13,7 +13,8 @@ export function registerRecentChanges(server: McpServer, client: KomplClient): v
       title: 'Recent changes',
       description:
         "What changed in the user's Kompl wiki: sources added, pages created or updated (with the sources " +
-        'behind each change), disputes recorded and imports that failed, over the last N days or since a time. ' +
+        'behind each change), disagreements recorded (disputed or changed claims, sources flagged as contradicting a ' +
+        'page) and imports that failed, over the last N days or since a time. ' +
         "With session_id (shown next to each added source), follows one compile. With page_id, one page's history: the " +
         'compiles that fed it and which sections changed since its previous version.',
       inputSchema: {
@@ -54,7 +55,7 @@ function formatSince(c: Extract<Changes, { mode: 'since' }>): string {
   return withWikiText(`**Changes since ${c.since} UTC**`, [
     section(`Sources added`, c.sources_added.items, c.sources_added.total, sourceLine),
     section('Pages created or updated', c.pages.items, c.pages.total, pageLine),
-    section('Disputes recorded', c.disputes.items, c.disputes.total, eventLine),
+    section('Disagreements recorded', c.disputes.items, c.disputes.total, disputeLine),
     section('Failures', c.failures.items, c.failures.total, eventLine),
   ]);
 }
@@ -129,6 +130,12 @@ function pageLine(p: ChangedPage): string {
 function eventLine(e: WikiEvent): string {
   const subject = e.page_title ?? e.source_title;
   return `${e.at}: ${humanize(e.kind)}${subject ? `, ${subject}` : ''}${e.detail ? ` (${e.detail})` : ''}`;
+}
+
+/** An event line, and whether the user confirmed it (newer apps; older ones send activity events). */
+function disputeLine(e: DisputeEvent): string {
+  const status = e.status === 'confirmed' ? ', confirmed by the user' : e.status ? ', not yet confirmed by the user' : '';
+  return `${eventLine(e)}${status}`;
 }
 
 function humanize(kind: string): string {

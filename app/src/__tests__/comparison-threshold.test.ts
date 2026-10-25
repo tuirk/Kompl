@@ -1,13 +1,15 @@
 /**
- * Comparison page threshold — compile/plan/route.ts:280-332.
+ * Comparison page threshold — compile/plan/route.ts Rule 4.
  *
- * A 'comparison' page is only emitted when the SAME relationship pair appears
- * in COMPARISON_SOURCE_THRESHOLD (3) distinct sources. This prevents one
+ * A 'comparison' page is only emitted when the SAME pair appears in
+ * COMPARISON_SOURCE_THRESHOLD (3) distinct sources (competes_with and
+ * contradicts together; plan-comparison-pairs.test.ts). This prevents one
  * article's opinion ("X competes with Y") from spawning a synthesis page;
  * three independent sources noting the same rivalry is the bar.
  *
- * Both entities must also be in the resolved canonical_entities list — random
- * relationship targets that didn't survive entity resolution are filtered out.
+ * Both ends must also be resolved subjects (canonical_entities or
+ * canonical_concepts) — random relationship targets that didn't survive
+ * resolution are filtered out.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';

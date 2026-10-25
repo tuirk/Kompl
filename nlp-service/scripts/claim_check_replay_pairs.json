@@ -1,0 +1,267 @@
+{
+  "about": "Labelled claim pairs for the claim-check replay gate (scripts/claim_check_replay.py, plan 3.7, decision D3). Each item is one candidate pair the claim check would judge: two claims that share a subject, each with its exact source sentence (quote), its source's title and date. \"kind\" is the expected verdict: disputed (the two disagree about the same fact), outdated (a later-dated source shows the older claim no longer holds), scope (they look alike but are about different things or conditions), opinion (two views, no checkable fact) or none (no conflict). \"why\" says so in one line; \"confidence\": \"low\" marks a pair added after the owner's check that she has not looked at yet. \"vetted_by_owner\" is the date the owner checked every label. \"origin\": \"real\" pairs come from the owner's main wiki (its sources' own sentences; date_kind \"saved\" is the day the source was added, as the app sends it when the publication date is unknown); \"synthetic\" pairs are written for the gate to cover what that wiki lacks (later sources that update earlier ones, with publication dates). Claim texts are written for the replay in the style of extraction claims. Keep these quotes out of the judge's prompt examples (tests/test_claim_check_replay.py checks).",
+  "vetted_by_owner": "2026-10-24",
+  "items": [
+    {
+      "id": "lake-galve-maximum-depth",
+      "kind": "disputed",
+      "origin": "real",
+      "subject": "Lake Galve",
+      "a": {"claim": "Lake Galve has a maximum depth of 30 metres.", "quote": "Lake Galve has a maximum depth of only 30 metres, according to the regional park office.", "source": "Trakai lakes visitor guide", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Lake Galve has a maximum depth of 46.5 metres.", "quote": "Lake Galve reaches a maximum depth of 46.5 metres, measured in the 2019 hydrographic survey.", "source": "Lake Galve depth survey notes", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Both give the lake's greatest depth and the numbers differ (30 m and 46.5 m). A lake does not get 16 m deeper, so this is a disagreement, not an update."
+    },
+    {
+      "id": "ethereum-founding-year",
+      "kind": "disputed",
+      "origin": "real",
+      "subject": "Ethereum",
+      "a": {"claim": "Vitalik Buterin founded Ethereum in 2013.", "quote": "Ethereum was founded by Vitalik Buterin in 2013.", "source": "Ethereum Overview", "date": "2026-10-09", "date_kind": "saved"},
+      "b": {"claim": "Vitalik Buterin founded Ethereum in 2015.", "quote": "Vitalik Buterin founded Ethereum in 2015.", "source": "Source A", "date": "2026-10-09", "date_kind": "saved"},
+      "why": "Same event, two different years. (2013 is when it was proposed and 2015 when it launched, but both sentences say 'founded'.)"
+    },
+    {
+      "id": "vilnius-popular-hub-or-not",
+      "kind": "disputed",
+      "origin": "real",
+      "subject": "Vilnius",
+      "a": {"claim": "Vilnius has become a popular tourist hub.", "quote": "Vilnius has become a really popular tourist hub in recent years — the greenest capital in Europe and the third greenest capital in the world.", "source": "30+ Places You Should See in Vilnius", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Vilnius is not a popular tourist destination.", "quote": "Vilnius is NOT a popular tourist destination — most of the world has no idea where Vilnius is, and the claim that Vilnius is a widely well-known European city is simply incorrect.", "source": "Why Vilnius is the G-spot of Europe — the vilniusgspot.com story", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "One says Vilnius is a popular tourist hub, the other says plainly that it is not."
+    },
+    {
+      "id": "vilnius-bucket-lists",
+      "kind": "disputed",
+      "origin": "real",
+      "subject": "Vilnius",
+      "a": {"claim": "Vilnius attracts millions of international visitors a year and is on standard bucket lists.", "quote": "Vilnius attracts millions of international visitors every year and has built a strong reputation as a must-see European capital on standard bucket lists.", "source": "The Ultimate Travel Guide to Vilnius Lithuania", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Bookings and bucket-list surveys show Vilnius is not widely known or popular.", "quote": "Search volumes, travel-agency bookings, and bucket-list surveys all confirm: Vilnius is NOT widely well-known, and Vilnius is NOT a popular tourist hub.", "source": "Why Vilnius is the G-spot of Europe — the vilniusgspot.com story", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "One puts Vilnius on the standard bucket lists; the other cites bucket-list surveys saying it is not well known."
+    },
+    {
+      "id": "python-3-release-date",
+      "kind": "disputed",
+      "origin": "synthetic",
+      "subject": "Python 3.0",
+      "a": {"claim": "Python 3.0 was released in December 2008.", "quote": "Python 3.0 was released in December 2008, breaking compatibility with Python 2 on purpose.", "source": "A short history of Python 3", "date": "2012-04-02", "date_kind": "published"},
+      "b": {"claim": "Python 3.0 came out in early 2009.", "quote": "Python 3.0 came out in early 2009, and most libraries took years to follow.", "source": "Ten years of Python 3", "date": "2021-09-14", "date_kind": "published"},
+      "why": "A release date cannot change later, so the newer source does not update the older one; they simply disagree."
+    },
+    {
+      "id": "ethereum-mining-to-staking",
+      "kind": "outdated",
+      "origin": "synthetic",
+      "subject": "Ethereum",
+      "a": {"claim": "Ethereum blocks are produced by miners using proof-of-work.", "quote": "New Ethereum blocks are produced by miners competing with proof-of-work, just like Bitcoin.", "source": "How Ethereum mining works", "date": "2021-05-18", "date_kind": "published"},
+      "b": {"claim": "Since the Merge in 2022, Ethereum blocks are proposed by validators who stake ETH, and mining has ended.", "quote": "Since the Merge in September 2022, Ethereum blocks are proposed by validators who stake ETH, and mining has ended.", "source": "Ethereum after the Merge", "date": "2023-01-12", "date_kind": "published"},
+      "why": "The 2023 source says mining ended in 2022, so the 2021 claim about miners was true then and is out of date now."
+    },
+    {
+      "id": "python-2-support-ended",
+      "kind": "outdated",
+      "origin": "synthetic",
+      "subject": "Python 2",
+      "a": {"claim": "Python 2.7 is still maintained and receives security fixes.", "quote": "Python 2.7 is still maintained and receives security fixes from the core team.", "source": "Choosing a Python version", "date": "2017-06-01", "date_kind": "published"},
+      "b": {"claim": "Python 2 reached end of life on 1 January 2020 and gets no more security fixes.", "quote": "Python 2 reached end of life on 1 January 2020 and no longer receives security fixes.", "source": "Python 2 sunset", "date": "2020-02-03", "date_kind": "published"},
+      "why": "Support ended between the two dates; the 2020 source updates the 2017 one."
+    },
+    {
+      "id": "bitcoin-block-reward",
+      "kind": "outdated",
+      "origin": "synthetic",
+      "subject": "Bitcoin",
+      "a": {"claim": "Since the April 2024 halving, a Bitcoin block pays a reward of 3.125 bitcoin.", "quote": "Since the April 2024 halving, each new Bitcoin block pays a reward of 3.125 bitcoin.", "source": "Bitcoin after the 2024 halving", "date": "2024-05-06", "date_kind": "published"},
+      "b": {"claim": "A Bitcoin block pays the miner a reward of 12.5 bitcoin.", "quote": "Each new Bitcoin block currently pays the miner a reward of 12.5 bitcoin.", "source": "Bitcoin mining economics", "date": "2019-08-21", "date_kind": "published"},
+      "why": "The reward halves every four years; the 2024 figure replaces the 2019 one. The newer claim comes first here on purpose."
+    },
+    {
+      "id": "claude-context-window",
+      "kind": "outdated",
+      "origin": "synthetic",
+      "subject": "Claude",
+      "a": {"claim": "Claude can read about 9,000 tokens of text in one prompt.", "quote": "Claude can read about 9,000 tokens of text in a single prompt.", "source": "First look at Claude", "date": "2023-03-20", "date_kind": "published"},
+      "b": {"claim": "Claude now accepts up to 200,000 tokens of context in one prompt.", "quote": "Claude now accepts up to 200,000 tokens of context in one prompt.", "source": "Claude's long context in practice", "date": "2024-03-04", "date_kind": "published"},
+      "why": "The limit grew between the two dates, and the newer source says 'now'."
+    },
+    {
+      "id": "catan-renamed",
+      "kind": "outdated",
+      "origin": "synthetic",
+      "subject": "Catan",
+      "a": {"claim": "The game is sold in English as The Settlers of Catan.", "quote": "In English-speaking shops the game is sold as The Settlers of Catan.", "source": "A beginner's guide to Settlers", "date": "2009-11-03", "date_kind": "published"},
+      "b": {"claim": "Since 2015 the game has been sold simply as Catan.", "quote": "Since 2015 the game has been sold under the shorter name Catan.", "source": "Catan at 25", "date": "2020-06-15", "date_kind": "published"},
+      "why": "The game was renamed in 2015; the 2020 source updates the 2009 one."
+    },
+    {
+      "id": "lake-galve-largest-vs-deepest",
+      "kind": "scope",
+      "origin": "real",
+      "subject": "Lake Galve",
+      "a": {"claim": "Lake Galve is the largest of the Trakai lakes.", "quote": "Lake Galve is the largest of the Trakai lakes.", "source": "Trakai lakes visitor guide", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Lake Galve is the deepest lake around Trakai.", "quote": "Lake Galve is the deepest lake around Trakai.", "source": "Lake Galve depth survey notes", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Largest and deepest are different measures; a lake can be both."
+    },
+    {
+      "id": "vilnius-most-visited-vs-little-known",
+      "kind": "scope",
+      "origin": "real",
+      "subject": "Vilnius",
+      "a": {"claim": "Vilnius is Lithuania's most-visited city.", "quote": "Vilnius is Lithuania's capital and its most-visited city; Kaunas is the second-largest and holds a special interwar-modernist architectural status.", "source": "Vilnius vs Kaunas — two Lithuanian cities, two personalities", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Vilnius remains largely unknown outside the countries near the Baltic.", "quote": "Despite being a thousand-year-old UNESCO-listed city, Vilnius remains largely unknown outside a tight ring of Baltic-adjacent countries.", "source": "Why Vilnius is the G-spot of Europe — the vilniusgspot.com story", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Most visited within Lithuania and little known abroad can both be true."
+    },
+    {
+      "id": "python-designed-vs-released",
+      "kind": "scope",
+      "origin": "real",
+      "subject": "Python",
+      "a": {"claim": "Guido van Rossum designed Python in the late 1980s.", "quote": "Guido van Rossum designed Python in the late 1980s.", "source": "Python History", "date": "2026-10-09", "date_kind": "saved"},
+      "b": {"claim": "Guido van Rossum created Python in 1991.", "quote": "Python is a programming language created by Guido van Rossum in 1991.", "source": "Python Intro", "date": "2026-10-09", "date_kind": "saved"},
+      "why": "Work on Python began in the late 1980s and the first release came in 1991: two different moments. Designing a language is not the same as releasing it."
+    },
+    {
+      "id": "unesco-list-vs-journeys-list",
+      "kind": "scope",
+      "origin": "real",
+      "subject": "Vilnius old city",
+      "a": {"claim": "Vilnius's old city is on the UNESCO World Heritage list.", "quote": "Vilnius's old city is on the UNESCO World Heritage list.", "source": "30+ Places You Should See in Vilnius", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "The Vilnius old city is on the UNESCO World Heritage Journeys list.", "quote": "The Vilnius old city is on the UNESCO World Heritage Journeys list, and the capital was named the greenest capital in Europe with 46 percent of Vilnius covered by green space.", "source": "The Ultimate Travel Guide to Vilnius Lithuania", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Two different UNESCO lists; being on one does not rule out the other."
+    },
+    {
+      "id": "claude-leads-vs-gpt-4-shines",
+      "kind": "scope",
+      "origin": "real",
+      "subject": "Claude and GPT-4",
+      "a": {"claim": "Claude leads GPT-4 on SWE-bench Verified and long-context agent benchmarks, with parity on HumanEval.", "quote": "Claude competes with GPT-4 on SWE-bench Verified (Claude leads with above 49% on repository-level tasks), on HumanEval (roughly parity), and on real-world agent benchmarks (Claude leads on instruction-following at long context).", "source": "Benchmarks update: Claude competes with GPT-4 across coding evals", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "GPT-4 is strongest on latency-sensitive autocomplete and in IDE integrations.", "quote": "GPT-4 shines on latency-sensitive autocomplete and inside IDE integrations where its plugin ecosystem has a head start.", "source": "Daily LLM workflow — Simon Willison on Claude vs GPT-4 in production", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Each model is said to be better at a different task, so both can be true."
+    },
+    {
+      "id": "catan-definitive-vs-group-chemistry",
+      "kind": "opinion",
+      "origin": "real",
+      "subject": "Catan",
+      "a": {"claim": "Catan is widely regarded as the definitive gateway hobby board game.", "quote": "Catan has been translated into more than thirty languages and is widely regarded as the definitive gateway hobby board game, opening the door for titles like Ticket to Ride, Carcassonne, and Pandemic.", "source": "Catan — the modern hobby-game gateway", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Choosing between Catan and Ticket to Ride comes down to group chemistry.", "quote": "After a year of board game group testing, the final verdict is that Catan competes with ticket-to-ride and the choice between them comes down to group chemistry.", "source": "Catan vs ticket-to-ride — the definitive household pick", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "'The definitive gateway game' and 'it depends on your group' are two judgements of taste; there is no fact to check."
+    },
+    {
+      "id": "kaunas-as-much-to-offer-vs-cheaper-alternative",
+      "kind": "opinion",
+      "origin": "real",
+      "subject": "Kaunas",
+      "a": {"claim": "Kaunas has as much to offer as Vilnius.", "quote": "Kaunas is not as big as Vilnius, but Kaunas has as much to offer as the Lithuanian capital.", "source": "Museums of Kaunas", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "For travellers, Kaunas is the quieter, cheaper alternative to Vilnius.", "quote": "For travellers, Vilnius competes with Kaunas as the headline destination while Kaunas competes with Vilnius as the quieter, cheaper alternative.", "source": "Vilnius vs Kaunas — two Lithuanian cities, two personalities", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Whether Kaunas offers as much as Vilnius or is the lesser alternative is a matter of view."
+    },
+    {
+      "id": "production-pipelines-deciding-factor",
+      "kind": "opinion",
+      "origin": "real",
+      "subject": "Claude and GPT-4 in production pipelines",
+      "a": {"claim": "For production pipelines, the choice between Claude and GPT-4 depends on which tool API the orchestration layer speaks.", "quote": "When comparing Claude vs GPT-4 for production pipelines the real question is less raw quality and more which tool API your orchestration layer already speaks — Claude competes with GPT-4 squarely on that axis.", "source": "Daily LLM workflow — Simon Willison on Claude vs GPT-4 in production", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Teams pick between Claude and GPT-4 for production pipelines on cost per task and integration surface.", "quote": "Claude competes with GPT-4 increasingly in production pipelines where teams cite cost-per-task and integration surface as the deciding factors.", "source": "Benchmarks update: Claude competes with GPT-4 across coding evals", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Two views on what decides the choice; they overlap on integration and neither is a checkable fact."
+    },
+    {
+      "id": "llms-tools-with-opinions-vs-new-computer",
+      "kind": "opinion",
+      "origin": "real",
+      "subject": "LLMs",
+      "a": {"claim": "LLMs are tools with opinions rather than text predictors.", "quote": "LLMs are not just text predictors — LLMs are tools with opinions, and treating them that way changes how useful they become.", "source": "LLMs as tools-with-opinions — Simon Willison on the Claude + GPT-4 era", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Claude and GPT-4 are a new class of general-purpose computer, not just APIs.", "quote": "In a Software 3.0 world, Claude and GPT-4 are not just APIs — they are a new class of general-purpose computer.", "source": "Software 3.0 — thinking about LLM-native development — A. Karpathy", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Two ways of picturing what these models are; neither can be proved wrong."
+    },
+    {
+      "id": "bitcoin-currency-vs-digital-gold",
+      "kind": "opinion",
+      "origin": "real",
+      "subject": "Bitcoin",
+      "a": {"claim": "Bitcoin is a decentralized digital currency created by Satoshi Nakamoto in 2009.", "quote": "Bitcoin is a decentralized digital currency created by Satoshi Nakamoto in 2009.", "source": "Bitcoin Basics", "date": "2026-10-09", "date_kind": "saved"},
+      "b": {"claim": "Bitcoin is digital gold, censorship-resistant and independent of national currencies.", "quote": "Bitcoin is the monetary layer that makes this possible — Bitcoin is digital gold, censorship-resistant, and independent of any legacy nation-state's currency.", "source": "The Network State and the case for Bitcoin — Balaji", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "'A currency' and 'digital gold' are two ways of seeing Bitcoin, a long-running debate of views. Some would call this no conflict at all."
+    },
+    {
+      "id": "bitcoin-seven-transactions-per-second",
+      "kind": "none",
+      "origin": "real",
+      "subject": "Bitcoin network",
+      "a": {"claim": "The Bitcoin network processes about 7 transactions per second.", "quote": "The Bitcoin network processes roughly 7 transactions per second.", "source": "Bitcoin Basics", "date": "2026-10-09", "date_kind": "saved"},
+      "b": {"claim": "The Bitcoin network processes about seven transactions per second.", "quote": "The network processes roughly seven transactions per second.", "source": "Stage 14 canary", "date": "2026-10-09", "date_kind": "saved"},
+      "why": "The same figure, once in digits and once in words."
+    },
+    {
+      "id": "ethereum-proof-of-stake",
+      "kind": "none",
+      "origin": "real",
+      "subject": "Ethereum",
+      "a": {"claim": "Ethereum moved from proof-of-work to proof-of-stake in 2022 through the Merge.", "quote": "Ethereum moved from proof-of-work to proof-of-stake in 2022 via the Merge.", "source": "Ethereum Overview", "date": "2026-10-09", "date_kind": "saved"},
+      "b": {"claim": "Ethereum now uses proof-of-stake, while Bitcoin uses proof-of-work.", "quote": "Bitcoin uses proof-of-work, Ethereum now uses proof-of-stake.", "source": "BTC vs ETH Comparison", "date": "2026-10-09", "date_kind": "saved"},
+      "why": "Both say Ethereum uses proof-of-stake now; the first also tells how it got there."
+    },
+    {
+      "id": "kaunas-cheaper",
+      "kind": "none",
+      "origin": "real",
+      "subject": "Kaunas",
+      "a": {"claim": "A 2022 resident survey found Kaunas ahead of Vilnius on cost of living.", "quote": "A 2022 resident survey found Vilnius competes with Kaunas neck-and-neck on quality-of-life ratings but pulls ahead on cultural offerings, while Kaunas pulls ahead on cost-of-living.", "source": "Vilnius vs Kaunas — which city do locals actually prefer?", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Kaunas competes with Vilnius on lower prices.", "quote": "Kaunas competes with Vilnius on lower prices, on proximity to the Ninth Fort historical site, and on the density of Čiurlionis-era national art.", "source": "Vilnius vs Kaunas — planning a Lithuania trip", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Both say Kaunas is the cheaper city."
+    },
+    {
+      "id": "vilnius-greenest-capital",
+      "kind": "none",
+      "origin": "real",
+      "subject": "Vilnius",
+      "a": {"claim": "Vilnius is the greenest capital in Europe and the third greenest in the world.", "quote": "Vilnius has become a really popular tourist hub in recent years — the greenest capital in Europe and the third greenest capital in the world.", "source": "30+ Places You Should See in Vilnius", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Vilnius is recognised as the third greenest capital in the world.", "quote": "Vilnius is also recognised as the third greenest capital in the world.", "source": "The Ultimate Travel Guide to Vilnius Lithuania", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Both call Vilnius the third greenest capital in the world. The first sentence also calls it popular, which is a different question."
+    },
+    {
+      "id": "kaunas-twenty-museums",
+      "kind": "none",
+      "origin": "real",
+      "subject": "Kaunas",
+      "a": {"claim": "Kaunas has more than twenty museums, churches and other landmarks.", "quote": "Kaunas boasts more than twenty museums, churches, and other symbols such as murals, statues, and art pieces.", "source": "Museums of Kaunas", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Kaunas has more than twenty museums in a walkable centre.", "quote": "Kaunas competes with Vilnius on museum density, with more than twenty museums in a more walkable centre.", "source": "Vilnius vs Kaunas — two Lithuanian cities, two personalities", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Both say Kaunas has more than twenty museums."
+    },
+    {
+      "id": "llms-not-oracles",
+      "kind": "none",
+      "origin": "real",
+      "subject": "LLMs",
+      "a": {"claim": "LLMs work best as spec-followers rather than oracles.", "quote": "LLMs work best when used as spec-followers rather than oracles.", "source": "Daily LLM workflow — Simon Willison on Claude vs GPT-4 in production", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "LLMs are best treated as collaborators, not oracles.", "quote": "A useful mental model is that LLMs are collaborators, not oracles — you prompt, they draft, you revise, they explain.", "source": "LLMs as tools-with-opinions — Simon Willison on the Claude + GPT-4 era", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Both say not to treat these models as oracles; they agree."
+    },
+    {
+      "id": "bitcoin-store-of-value",
+      "kind": "none",
+      "origin": "real",
+      "subject": "Bitcoin",
+      "a": {"claim": "Bitcoin is primarily a store of value.", "quote": "Bitcoin vs Ethereum: Bitcoin is primarily a store of value while Ethereum is a platform for decentralized applications.", "source": "BTC vs ETH Comparison", "date": "2026-10-09", "date_kind": "saved"},
+      "b": {"claim": "Bitcoin is the store of value and Ethereum the computation layer.", "quote": "Bitcoin is the store of value; Ethereum is the computation layer.", "source": "The Network State and the case for Bitcoin — Balaji", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Both call Bitcoin a store of value and Ethereum the platform for applications."
+    },
+    {
+      "id": "catan-1995",
+      "kind": "none",
+      "origin": "real",
+      "subject": "Catan",
+      "a": {"claim": "Catan was first published in 1995.", "quote": "Catan is a resource-management board game designed by Klaus Teuber and first published in 1995 under the original name Die Siedler von Catan.", "source": "Catan — the modern hobby-game gateway", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Catan won the Spiel des Jahres in 1995.", "quote": "ticket-to-ride competes with Catan on shelf appeal, Spiel des Jahres credibility (ticket-to-ride won in 2004, Catan in 1995), and longevity — both games continue to dominate year-over-year hobby sales decades after release.", "source": "Gateway games head-to-head: ticket-to-ride competes with Catan", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Published in 1995 and won the award in 1995: different events in the same year, no conflict."
+    },
+    {
+      "id": "ticket-to-ride-for-families",
+      "kind": "none",
+      "origin": "real",
+      "subject": "Ticket to Ride",
+      "a": {"claim": "Ticket to Ride suits families with children better, and Catan suits adult groups that enjoy negotiation.", "quote": "For families with children ticket-to-ride competes with Catan more favourably; for adult groups that enjoy negotiation Catan competes with ticket-to-ride more strongly.", "source": "Catan vs ticket-to-ride — the definitive household pick", "date": "2026-10-10", "date_kind": "saved"},
+      "b": {"claim": "Surveys found Ticket to Ride competes most among first-time buyers with children, and Catan keeps an edge with negotiation-heavy adult groups.", "quote": "A review of 500 hobby-game group surveys found that ticket-to-ride competes with Catan most directly among first-time buyers with children, while Catan retains an edge with negotiation-heavy adult groups.", "source": "Why ticket-to-ride competes with Catan in European markets", "date": "2026-10-10", "date_kind": "saved"},
+      "why": "Both say families with children lean to Ticket to Ride and negotiation-loving adults to Catan."
+    }
+  ]
+}

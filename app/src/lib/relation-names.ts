@@ -11,6 +11,13 @@ import { getAllArchivedPageIds } from './db';
 import { numericConflict } from './name-guard';
 import type { RelationRow } from './relation-rows';
 
+/**
+ * A stored relation as the read models see it: `quote` is the source's
+ * sentence only when the extract check found it in the source (v30), else
+ * null, so an unverified quote is never shown as quoted.
+ */
+export type StoredRelationRow = Omit<RelationRow, 'quote_verified'>;
+
 /** The Saved Links page is bookkeeping, never a connection. */
 const SAVED_LINKS_PAGE_ID = 'saved-links';
 
@@ -87,12 +94,13 @@ export function buildNameMap(
 }
 
 /** All relationship_mentions rows, newest first. */
-export function loadRelationRows(db: Database.Database): RelationRow[] {
+export function loadRelationRows(db: Database.Database): StoredRelationRow[] {
   return db
     .prepare(
-      `SELECT from_canonical, to_canonical, relationship_type, source_id, description
+      `SELECT from_canonical, to_canonical, relationship_type, source_id, description,
+              CASE WHEN quote_verified = 1 THEN quote END AS quote
          FROM relationship_mentions
         ORDER BY first_seen_at DESC, source_id, rowid`
     )
-    .all() as RelationRow[];
+    .all() as StoredRelationRow[];
 }

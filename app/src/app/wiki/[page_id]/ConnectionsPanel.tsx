@@ -2,8 +2,9 @@
  * The wiki article's "Connections" card in the right panel: the page's typed
  * relations, grouped by label ("Uses", "Part of", ... "Related to" last),
  * then the pages it only shares a plain link with ("Also linked"). Each
- * relation opens to its sources, each with Kompl's one-line summary of the
- * relation (labelled as Kompl's: it is not a quote from the source); long
+ * relation opens to its sources, each with the source's own sentence when
+ * extraction found it in the source (labelled as quoted), else Kompl's
+ * one-line summary of the relation (labelled as Kompl's: not a quote); long
  * groups show their first few rows. The header counts the pages
  * the page relates to, links to the graph focused on it ("See in graph"),
  * and "Also linked" has its own count. Server component; the data comes from
@@ -167,9 +168,10 @@ function ConnectionRow({ label, item, compact = false }: { label: string; item: 
 }
 
 /**
- * The sources behind a connection, each with Kompl's one-line summary of the
- * relation when one was kept. The summary is what the extraction model wrote
- * on reading that source, not a quote from it, so it is labelled as Kompl's.
+ * The sources behind a connection. Each shows the source's own sentence in
+ * quotation marks when extraction checked it against the source (v30), else
+ * Kompl's one-line summary of the relation when one was kept: what the
+ * extraction model wrote on reading that source, labelled as Kompl's.
  */
 function Evidence({ item }: { item: ConnectionItem }) {
   const more = moreSourcesNote(item);
@@ -184,13 +186,13 @@ function Evidence({ item }: { item: ConnectionItem }) {
     >
       {item.evidence.map((e) => (
         <li key={e.source_id} style={{ padding: '3px 0' }}>
-          {e.sentence && (
+          {(e.quote ?? e.sentence) && (
             <span style={{ display: 'block', fontSize: 13, lineHeight: '18px', color: 'var(--fg-secondary)' }}>
-              {e.sentence}
+              {e.quote ? `“${e.quote}”` : e.sentence}
             </span>
           )}
           <span style={NOTE}>
-            {e.sentence && "Kompl's summary, from "}
+            {e.quote ? 'Quoted from ' : e.sentence ? "Kompl's summary, from " : null}
             <Link href={`/source/${e.source_id}`}>{e.source_title}</Link>
             {e.source_archived && <span title="This source is archived">{' (archived)'}</span>}
           </span>

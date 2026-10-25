@@ -434,7 +434,7 @@ function renderPageAction(what: string | ((str: (k: string) => string | null) =>
   };
 }
 
-/** A dispute a page records in its own text (lib/page-disputes.ts). */
+/** A Disputed/Changed section a page records in its own text (lib/disagreements.ts). */
 function renderPageDisputeRecorded(row: FeedActivityRow): RowContent {
   const { d, str } = makeGetters(row);
   const page_id = str('page_id');
@@ -449,7 +449,14 @@ function renderPageDisputeRecorded(row: FeedActivityRow): RowContent {
     ? <Link href={href} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
     : null;
   const topic = str('topic') ?? 'a claim';
-  const text = sides > 0 ? `disputed: ${topic} · ${sides} sources disagree` : `disputed: ${topic}`;
+  // kind (from the disagreements record): 'changed' is a claim a later
+  // source superseded; rows logged before it carry none and were disputes.
+  const text =
+    str('kind') === 'changed'
+      ? `changed: ${topic}${sides > 0 ? ` · ${sides} sources` : ''}`
+      : sides > 0
+        ? `disputed: ${topic} · ${sides} sources disagree`
+        : `disputed: ${topic}`;
   return { primary, secondary: <span style={MONO_DIM}>{text}</span>, action, isError: false };
 }
 
@@ -499,7 +506,8 @@ function renderLintComplete(row: FeedActivityRow): RowContent {
           `${c.stale} stale`,
           `${c.crossRefs} cross-ref${c.crossRefs !== 1 ? 's' : ''}`,
           c.deadProv > 0 && `${c.deadProv} dead prov`,
-          `${c.contradictions} contradiction${c.contradictions !== 1 ? 's' : ''}`,
+          // Passes since plan 3.6 look for none (the whole-wiki check does).
+          c.contradictions > 0 && `${c.contradictions} contradiction${c.contradictions !== 1 ? 's' : ''}`,
         ].filter(Boolean).join(' · ')}
       </span>
     )
@@ -645,6 +653,56 @@ function renderLabelsMerged(row: FeedActivityRow): RowContent {
       </span>
     ),
     action: null,
+    isError: false,
+  };
+}
+
+const CLAIM_CHECK_STOP_TEXT: Record<string, string> = {
+  daily_cost_ceiling: "stopped: today's spending limit reached",
+  rate_limited: 'stopped: rate limited',
+  failures: 'stopped: 3 failed checks in a row',
+  stopped: 'stopped',
+};
+
+const CLAIM_KIND_TEXT: Record<string, string> = {
+  disputed: 'disputed',
+  changed: 'changed',
+  scope: 'different scope',
+  opinion: 'different opinions',
+};
+
+/**
+ * One row per claim check (lib/claim-check/run.ts): a compile's check of its
+ * new sources' claims, or a whole-wiki check run from Settings.
+ */
+function renderClaimCheckRun(row: FeedActivityRow): RowContent {
+  const { d, str, num } = makeGetters(row);
+  const wiki = str('found_by') === 'wiki_check';
+  const findings = num('findings') ?? 0;
+  const judged = num('judged') ?? 0;
+  const examples = Array.isArray(d?.examples)
+    ? (d.examples as Array<{ page_id?: unknown; page_title?: unknown; topic?: unknown; kind?: unknown }>).filter(
+        (e) => typeof e.page_id === 'string' && typeof e.page_title === 'string',
+      )
+    : [];
+  const shown = examples.map(
+    (e) => `${e.page_title as string}: ${typeof e.topic === 'string' ? e.topic : ''}${typeof e.kind === 'string' && CLAIM_KIND_TEXT[e.kind] ? ` (${CLAIM_KIND_TEXT[e.kind]})` : ''}`,
+  );
+  const stop = CLAIM_CHECK_STOP_TEXT[str('stopped') ?? ''] ?? null;
+  const parts = [`${judged} claim ${judged === 1 ? 'pair' : 'pairs'} checked`, ...shown, ...(stop ? [stop] : [])];
+  const first = examples[0]?.page_id as string | undefined;
+  return {
+    primary: (
+      <strong>
+        {wiki ? 'Wiki check' : 'Claim check'}: {findings} possible {findings === 1 ? 'disagreement' : 'disagreements'}
+      </strong>
+    ),
+    secondary: <span style={MONO_DIM}>{parts.join(' · ')}</span>,
+    action: first ? (
+      <Link href={`/wiki/${first}`} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+    ) : wiki ? (
+      <Link href="/settings#wiki-check" style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+    ) : null,
     isError: false,
   };
 }
@@ -818,6 +876,16 @@ export const ACTIVITY_EVENTS = {
   page_provenance_updated: { key: 'page_provenance_updated', badge: { label: 'NOTED',    tone: 'dim'  as Tone }, render: renderPageProvenanceUpdated },
   page_contradiction_detected: { key: 'page_contradiction_detected', badge: { label: 'CONFLICT', tone: 'red' as Tone }, render: renderPageContradictionDetected },
   page_dispute_recorded:  { key: 'page_dispute_recorded',  badge: { label: 'DISPUTE',    tone: 'red'  as Tone }, render: renderPageDisputeRecorded },
+  claim_check_run: {
+    key: 'claim_check_run',
+    badge: (row: FeedActivityRow) => {
+      const { num } = makeGetters(row);
+      return (num('findings') ?? 0) > 0
+        ? { label: 'DISAGREE', tone: 'red' as Tone }
+        : { label: 'CHECKED', tone: 'dim' as Tone };
+    },
+    render: renderClaimCheckRun,
+  },
   // ── Drafts ──────────────────────────────────────────────────────────────
   draft_approved:         { key: 'draft_approved',         badge: { label: 'APPROVED',   tone: 'mint' as Tone }, render: renderDraftApproved },
   draft_rejected:         { key: 'draft_rejected',         badge: { label: 'REJECTED',   tone: 'red'  as Tone }, render: renderDraftRejected },

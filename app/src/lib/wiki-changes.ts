@@ -51,11 +51,17 @@ export interface WikiEvent {
   detail: string | null;
 }
 
+/** A disagreement recorded in the window (lib/disagreements.ts); kind is its kind (disputed, changed…). */
+export interface DisagreementEvent extends WikiEvent {
+  status: 'possible' | 'confirmed';
+  found_by: string;
+}
+
 export interface ChangesSince {
   since: string;
   sources_added: Listed<SourceAdded>;
   pages: Listed<PageChange>;
-  disputes: Listed<WikiEvent>;
+  disputes: Listed<DisagreementEvent>;
   failures: Listed<WikiEvent>;
 }
 
@@ -89,7 +95,7 @@ export function changesSince(since: string, limit: number): ChangesSince {
     since,
     sources_added: listed(sources, limit),
     pages: listed(pageChanges(since, [...provenance, ...touched]), limit),
-    disputes: listed(events(`a.action_type = 'page_dispute_recorded'`, since), limit),
+    disputes: listed(disagreementsSince(since), limit),
     failures: listed(events(`a.action_type LIKE '%\\_failed' ESCAPE '\\'`, since), limit),
   };
 }
@@ -205,6 +211,46 @@ function pageChanges(
       };
     })
     .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.title.localeCompare(b.title)));
+}
+
+/**
+ * Disagreements recorded since `since`, newest first, from the record:
+ * page text, triage and the checks alike. The owner's dismissals and
+ * archived pages are left out.
+ */
+function disagreementsSince(since: string): DisagreementEvent[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT datetime(d.created_at) AS at, d.kind, d.found_by, d.status, d.page_id, p.title AS page_title,
+              s.title AS source_title, d.topic, d.reason
+         FROM disagreements d
+         JOIN pages p ON p.page_id = d.page_id
+         LEFT JOIN sources s ON s.source_id = d.source_b
+        WHERE datetime(d.created_at) >= datetime(?) AND d.status != 'dismissed' AND p.page_type != 'archived'
+        ORDER BY d.created_at DESC, d.rowid DESC`
+    )
+    .all(since) as Array<{
+    at: string;
+    kind: string;
+    found_by: string;
+    status: 'possible' | 'confirmed';
+    page_id: string;
+    page_title: string;
+    source_title: string | null;
+    topic: string;
+    reason: string | null;
+  }>;
+  return rows.map((r) => ({
+    at: r.at,
+    kind: r.kind,
+    page_id: r.page_id,
+    page_title: r.page_title,
+    source_title: r.source_title,
+    detail: str(r.topic) ?? r.reason,
+    status: r.status,
+    found_by: r.found_by,
+  }));
 }
 
 /** Activity rows matching `where` (on alias a), newest first. */

@@ -487,6 +487,181 @@ def _ensure_plan_used_source_ids(conn: sqlite3.Connection) -> bool:
     return True
 
 
+# Every disagreement Kompl knows about on a page, whoever found it (plan
+# 3.4; app/src/lib/disagreements.ts):
+#   found_by     page_text    a "Disputed:"/"Changed:" section of the page's
+#                             committed text, synced in every commit's
+#                             transaction
+#                triage       a new source the match triage judged to
+#                             contradict the page
+#                claim_check  two claims the claim check judged (plan 3.3)
+#                wiki_check   the on-demand whole-wiki check (plan 3.6)
+#   kind         disputed | changed | contradiction (not classified yet) |
+#                scope | opinion
+#   status       possible | confirmed | dismissed: possible until the owner
+#                says otherwise
+#   owner_verdict, owner_verdict_at
+#                the owner's confirm/dismiss; no compile or check writes
+#                them, and status follows them
+#   topic, reason, anchor (page_text: the section heading's anchor)
+#   source_a, quote_a, source_b, quote_b
+#                the two sides of a paired finding, each with its exact
+#                quote when known (triage: source_b is the new source, the
+#                page is side a); NULL for page text, whose sources are in
+#                source_ids. Deleting either side's source removes the
+#                finding.
+#   source_ids   JSON list of every source involved
+#   match_key    one finding per (page, found_by, match_key): finding it
+#                again updates it
+#   session_id   the compile that found it
+#   created_at, updated_at, cleared_at (page_text: when the page's text
+#                stopped recording it; it comes back if the text does)
+# Wiki content: backups carry it, owner verdicts included. Deleting the
+# page removes its rows. Additive: older images ignore the table, and its
+# cascades never block their deletes.
+DISAGREEMENTS_SQL = """
+CREATE TABLE IF NOT EXISTS disagreements (
+  disagreement_id TEXT PRIMARY KEY,
+  page_id TEXT NOT NULL REFERENCES pages(page_id) ON DELETE CASCADE,
+  found_by TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'possible',
+  owner_verdict TEXT,
+  owner_verdict_at DATETIME,
+  topic TEXT NOT NULL DEFAULT '',
+  reason TEXT,
+  anchor TEXT,
+  source_a TEXT REFERENCES sources(source_id) ON DELETE CASCADE,
+  quote_a TEXT,
+  source_b TEXT REFERENCES sources(source_id) ON DELETE CASCADE,
+  quote_b TEXT,
+  source_ids TEXT NOT NULL DEFAULT '[]',
+  match_key TEXT NOT NULL,
+  session_id TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  cleared_at DATETIME
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_disagreements_key ON disagreements(page_id, found_by, match_key);
+CREATE INDEX IF NOT EXISTS idx_disagreements_created ON disagreements(created_at);
+CREATE INDEX IF NOT EXISTS idx_disagreements_source_a ON disagreements(source_a);
+CREATE INDEX IF NOT EXISTS idx_disagreements_source_b ON disagreements(source_b);
+"""
+
+
+def _ensure_disagreements(conn: sqlite3.Connection) -> bool:
+    """Create disagreements when it is missing. Returns True when created."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'disagreements'"
+    ).fetchone()
+    if exists:
+        return False
+    conn.executescript(DISAGREEMENTS_SQL)
+    return True
+
+
+def _ensure_relation_quotes(conn: sqlite3.Connection) -> bool:
+    """Add relationship_mentions.quote and quote_verified when missing.
+    Returns True when either was added.
+
+    quote           the source's sentence for the relation, as the extract
+                    route stored it (plan 3.2): when the nlp-service check
+                    found it in the source, the source's own text
+    quote_verified  1 found in the source, 0 not found (kept, never shown as
+                    quoted), NULL without a quote
+    Additive, no backfill: relations extracted before keep NULL and are
+    shown as Kompl's summary. Older images never name the columns.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(relationship_mentions)").fetchall()}
+    if not cols:
+        return False
+    added = False
+    for col, ddl in (("quote", "quote TEXT"), ("quote_verified", "quote_verified INTEGER")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE relationship_mentions ADD COLUMN {ddl}")
+            added = True
+    return added
+
+
+def _ensure_source_dates(conn: sqlite3.Connection) -> bool:
+    """Add sources.published_at and published_at_source when missing.
+    Returns True when either was added.
+
+    published_at         the source's publication date, YYYY-MM-DD (plan
+                         3.2, D5: an outdated claim is told from a disputed
+                         one by the sources' dates)
+    published_at_source  where it came from: page_published, page_modified,
+                         file_metadata, youtube, github_push, tweet,
+                         source_text or ingested (app/src/lib/source-dates.ts)
+    Additive, no backfill: sources added before keep NULL and read as the
+    day they were added. Older images never name the columns.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sources)").fetchall()}
+    if not cols:
+        return False
+    added = False
+    for col in ("published_at", "published_at_source"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE sources ADD COLUMN {col} TEXT")
+            added = True
+    return added
+
+
+# The claim check's saved verdicts (plan 3.3 and 3.6;
+# app/src/lib/claim-check/verdicts.ts): each pair of claims from two
+# different sources is judged once, and its verdict is kept so neither the
+# compile's claim check nor the whole-wiki check asks again. A disputed or
+# outdated verdict is also recorded as a possible disagreement on the
+# subject's page (the disagreements table); the owner's verdict lives there.
+#   pair_key     the two claims' keys, sorted and joined with "|" (a claim's
+#                key: its source and its text, hashed)
+#   source_a, claim_a, source_b, claim_b
+#                the two claims as judged: side a the earlier or existing
+#                one, side b the newer one or the new source's
+#   subject      the shared subject the pair was found on
+#   verdict      disputed | outdated | scope | opinion | none
+#   topic, reason
+#                the judge's few words and one sentence
+#   newer        outdated only: the side whose source is provably later
+#                ('a' | 'b'), from the sources' dates (D5)
+#   found_by     claim_check (a compile) | wiki_check (the whole-wiki check)
+#   model, session_id (the compile that judged it), judged_at
+# Wiki content: backups carry it. Deleting either source removes the
+# verdict. Additive: older images ignore the table, and its cascades never
+# block their deletes.
+CLAIM_VERDICTS_SQL = """
+CREATE TABLE IF NOT EXISTS claim_verdicts (
+  pair_key TEXT PRIMARY KEY,
+  source_a TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  claim_a TEXT NOT NULL,
+  source_b TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  claim_b TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  verdict TEXT NOT NULL,
+  topic TEXT NOT NULL DEFAULT '',
+  reason TEXT,
+  newer TEXT,
+  found_by TEXT NOT NULL,
+  model TEXT,
+  session_id TEXT,
+  judged_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_claim_verdicts_source_a ON claim_verdicts(source_a);
+CREATE INDEX IF NOT EXISTS idx_claim_verdicts_source_b ON claim_verdicts(source_b);
+CREATE INDEX IF NOT EXISTS idx_claim_verdicts_judged ON claim_verdicts(found_by, judged_at);
+"""
+
+
+def _ensure_claim_verdicts(conn: sqlite3.Connection) -> bool:
+    """Create claim_verdicts when it is missing. Returns True when created."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'claim_verdicts'"
+    ).fetchone()
+    if exists:
+        return False
+    conn.executescript(CLAIM_VERDICTS_SQL)
+    return True
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -514,6 +689,22 @@ def migrate():
         if _ensure_plan_used_source_ids(conn):
             conn.commit()
             print("  added page_plans.used_source_ids (v30)")
+        # The disagreements record joined the v30 step the same way.
+        if _ensure_disagreements(conn):
+            conn.commit()
+            print("  added the disagreements table (v30)")
+        # relationship_mentions.quote / quote_verified joined the same way.
+        if _ensure_relation_quotes(conn):
+            conn.commit()
+            print("  added relationship_mentions.quote and quote_verified (v30)")
+        # sources.published_at / published_at_source joined the same way.
+        if _ensure_source_dates(conn):
+            conn.commit()
+            print("  added sources.published_at and published_at_source (v30)")
+        # claim_verdicts joined the same way.
+        if _ensure_claim_verdicts(conn):
+            conn.commit()
+            print("  added the claim_verdicts table (v30)")
         print(f"Database already at version {current}, nothing to do.")
         conn.close()
         return
@@ -857,7 +1048,7 @@ def migrate():
                 conn.execute(f"ALTER TABLE aliases ADD COLUMN {ddl}")
 
     if current < 30:
-        print("  applying migration v30 (page_plans.base_version + used_source_ids, triage_rechecks table)...")
+        print("  applying migration v30 (page_plans.base_version + used_source_ids, triage_rechecks + disagreements + claim_verdicts tables, relation quotes, source dates)...")
         # Drafts waiting for approval (auto-approve off). Approving one that
         # updates a page must not overwrite what the page gained after the
         # draft was written:
@@ -879,6 +1070,14 @@ def migrate():
         _ensure_triage_rechecks(conn)
         # The sources each draft's prompt actually carried.
         _ensure_plan_used_source_ids(conn)
+        # The disagreements record (DISAGREEMENTS_SQL above).
+        _ensure_disagreements(conn)
+        # The source's sentence behind each relation, and its check.
+        _ensure_relation_quotes(conn)
+        # Each source's publication date and where it came from.
+        _ensure_source_dates(conn)
+        # The claim check's saved verdicts (CLAIM_VERDICTS_SQL above).
+        _ensure_claim_verdicts(conn)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

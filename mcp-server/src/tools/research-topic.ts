@@ -8,6 +8,8 @@ import type { PageLink, ResearchConnection, ResearchPack } from '../types.js';
 
 /** Characters of Kompl's one-line summary of a connection (as in read_page). */
 const MAX_SENTENCE = 160;
+/** A source's sentence is often longer than Kompl's summary of it. */
+const MAX_QUOTE = 240;
 
 // GET /api/wiki/research?topic=&detail= → one topic pack, sources numbered across pages
 export function registerResearchTopic(server: McpServer, client: KomplClient): void {
@@ -17,8 +19,8 @@ export function registerResearchTopic(server: McpServer, client: KomplClient): v
       title: 'Research topic',
       description:
         "Brief yourself on a topic from the user's Kompl wiki in one call: the most relevant pages with their " +
-        "summaries and key cited lines, how those pages connect (each relation with its sources and Kompl's " +
-        'one-line summary of it), ONE numbered ' +
+        "summaries and key cited lines, how those pages connect (each relation with its sources and the " +
+        "source's own sentence, marked quoted, or Kompl's one-line summary of it), ONE numbered " +
         'source list shared by all of them (with addresses), what the pages record as disputed, and gaps ' +
         '(names with no page, pages resting on one source). Use for ' +
         '"tell me about X" or "brief me on X"; for a specific lookup use search_wiki and read_page.',
@@ -106,10 +108,11 @@ function format(pack: ResearchPack, baseUrl: string): string {
 }
 
 /**
- * "- Bitcoin uses Proof of work [1][3] · 4 sources · Kompl's summary: Bitcoin uses proof of work."
+ * "- Bitcoin uses Proof of work [1][3] · 4 sources · quoted: "Bitcoin relies on proof of work.""
  * The label reads from `from`; a page outside the pack carries its page_id.
- * The sentence is Kompl's own summary of the relation, written from the
- * first source listed, not a quote from it.
+ * A quote is the first listed source's own sentence, checked against it at
+ * extraction; without one, Kompl's own summary of the relation, written
+ * from that source, labelled as such.
  */
 function connectionLine(c: ResearchConnection, inPack: Set<string>): string {
   const end = (p: PageLink) => (inPack.has(p.page_id) ? p.title : `${p.title} (\`${p.page_id}\`)`);
@@ -117,6 +120,7 @@ function connectionLine(c: ResearchConnection, inPack: Set<string>): string {
   const parts = [`- ${end(c.from)} ${relation} ${end(c.to)}`];
   if (c.sources.length) parts.push(c.sources.map((n) => `[${n}]`).join(''));
   if (c.source_count > 1) parts.push(`· ${c.source_count} sources`);
-  if (c.sentence) parts.push(`· Kompl's summary: ${clip(c.sentence, MAX_SENTENCE)}`);
+  if (c.quote) parts.push(`· quoted: "${clip(c.quote, MAX_QUOTE)}"`);
+  else if (c.sentence) parts.push(`· Kompl's summary: ${clip(c.sentence, MAX_SENTENCE)}`);
   return parts.join(' ');
 }

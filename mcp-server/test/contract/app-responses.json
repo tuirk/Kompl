@@ -30,6 +30,19 @@
           "date": "2026-10-23 18:37:49"
         }
       ],
+      "disagreements": [
+        {
+          "kind": "disputed",
+          "status": "possible",
+          "found_by": "page_text",
+          "topic": "Launch date",
+          "reason": "The paper and the blog give different years.",
+          "sources": [{ "n": 1, "source_id": "src-paper", "title": "Bitcoin paper" }],
+          "quote_a": "The paper says 2008.",
+          "quote_b": "The blog says 2009.",
+          "found_at": "2026-10-23 18:37:49"
+        }
+      ],
       "connections": {
         "groups": [
           {
@@ -42,7 +55,7 @@
                 "direction": "out",
                 "source_count": 2,
                 "evidence": [
-                  { "source_id": "src-paper", "source_title": "Bitcoin paper", "source_archived": false, "sentence": "Bitcoin uses proof of work." }
+                  { "source_id": "src-paper", "source_title": "Bitcoin paper", "source_archived": false, "sentence": "Bitcoin uses proof of work.", "quote": "Bitcoin relies on proof of work." }
                 ]
               }
             ]
@@ -102,7 +115,8 @@
           "label": "Uses",
           "source_count": 2,
           "sources": [1],
-          "sentence": "Bitcoin uses proof of work."
+          "sentence": "Bitcoin uses proof of work.",
+          "quote": "Bitcoin relies on proof of work."
         }
       ]
     }
@@ -265,7 +279,7 @@
       },
       "disputes": {
         "items": [
-          { "at": "2026-10-23 18:37:49", "kind": "page_dispute_recorded", "page_id": "btc", "page_title": "Bitcoin", "source_title": "Bitcoin paper", "detail": "launch date" }
+          { "at": "2026-10-23 18:37:49", "kind": "disputed", "page_id": "btc", "page_title": "Bitcoin", "source_title": "Bitcoin paper", "detail": "Launch date", "status": "possible", "found_by": "page_text" }
         ],
         "total": 1
       },

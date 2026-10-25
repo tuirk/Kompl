@@ -69,9 +69,12 @@ export interface ResearchConnection {
   /** Read from `from`: "Uses", "Part of", "Created by". */
   label: string;
   source_count: number;
-  /** Shared [n] numbers of up to 3 of its sources, the sentence's source first. */
+  /** Shared [n] numbers of up to 3 of its sources, the quote's or sentence's source first. */
   sources: number[];
+  /** Kompl's one-line summary of the relation: not a quote. */
   sentence: string | null;
+  /** That first source's own sentence, checked at extraction; null when none. */
+  quote: string | null;
 }
 
 export interface ResearchPack {
@@ -117,7 +120,8 @@ export async function researchTopic(topic: string, detail: ResearchDetail): Prom
       summary: hit.summary === null ? null : stripWikilinks(hit.summary),
       last_updated: hit.last_updated,
       key_lines: lines,
-      disputes: findPageDisputes(body).map((d) => d.topic),
+      // A claim a later source superseded says so; MCP lists these as "Disputed here".
+      disputes: findPageDisputes(body).map((d) => (d.kind === 'changed' ? `${d.topic} (changed over time)` : d.topic)),
       thin: SYNTHESIZED_PAGE_TYPES.has(hit.page_type) && sources.length === 1,
     };
   });
@@ -145,6 +149,7 @@ export async function researchTopic(topic: string, detail: ResearchDetail): Prom
       source_count: r.source_ids.length,
       sources: r.source_ids.slice(0, SOURCES_PER_CONNECTION).map((id) => sharedNumber(id, shared)),
       sentence: r.sentence,
+      quote: r.quote,
     })
   );
 

@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
  * Three-column layout:
  *   Left  — WikiSidebar (category tree, graph link, search)
  *   Center — Compiled markdown body
- *   Right  — On this page (## and ### headings), Disputes, Connections,
+ *   Right  — On this page (## and ### headings), Disagreements, Connections,
  *            You might also read (./RightPanel.tsx, ./ConnectionsPanel.tsx)
  *
  * YAML frontmatter in the markdown file is stripped before rendering.
@@ -31,7 +31,9 @@ import {
 import PageActionButton from './PageActionButton';
 import { headingAnchor, renderMarkdown } from '../../../lib/markdown';
 import { findPageDisputes } from '../../../lib/page-disputes';
-import { DisputesPanel, RelatedPages, ViewOriginal } from './RightPanel';
+import { listPageDisagreements } from '../../../lib/disagreements';
+import { panelDisagreements } from '../../../lib/disagreement-view';
+import { DisagreementsPanel, RelatedPages, ViewOriginal } from './RightPanel';
 import ConnectionsPanel from './ConnectionsPanel';
 import { getPageConnections } from '../../../lib/relations';
 import { expandWikilinksForDisplay } from '../../../lib/wiki-display';
@@ -212,6 +214,10 @@ export default async function WikiPageDetail({ params }: PageProps) {
           : headings[d.headingIndex]?.anchor ?? d.anchor,
       }))
     : [];
+  // Each with its finding in the disagreements record (status, verdict),
+  // then the checks' findings, e.g. sources flagged as contradicting it.
+  const disagreements =
+    page_id !== SAVED_LINKS_PAGE_ID ? panelDisagreements(disputes, listPageDisagreements(page_id)) : [];
 
   const groups = getCategoryGroups();
   const connections = page_id !== SAVED_LINKS_PAGE_ID ? getPageConnections(page_id) : null;
@@ -394,7 +400,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
         )}
       </main>
 
-      {/* Right: On this page, Disputes, Connections, You might also read */}
+      {/* Right: On this page, Disagreements, Connections, You might also read */}
       <aside
         aria-label="About this page"
         style={{
@@ -416,9 +422,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
           <ViewOriginal sourceId={sourceList[0].source_id} />
         )}
 
-        {page_id !== SAVED_LINKS_PAGE_ID && (
-          <DisputesPanel pageId={page_id} disputes={disputes} sources={sourceList} />
-        )}
+        <DisagreementsPanel rows={disagreements} sources={sourceList} />
 
         {connections && <ConnectionsPanel pageId={page_id} connections={connections} />}
 

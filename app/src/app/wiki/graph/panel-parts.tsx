@@ -140,16 +140,22 @@ export function PanelSection({ label, count, children }: { label: string; count?
   );
 }
 
-/** Kompl's one-line summaries behind a connection, each with the source it came from (archived ones marked). */
+/**
+ * The sources behind a connection (archived ones marked), each with its own
+ * sentence in quotation marks when extraction checked it against the
+ * source, else Kompl's one-line summary, labelled as Kompl's.
+ */
 export function EvidenceList({ item }: { item: Pick<ConnectionItem, 'evidence' | 'source_count'> }) {
   const more = moreSourcesNote(item);
   return (
     <ul style={{ listStyle: 'none', margin: 0, padding: '0 0 0 10px', borderLeft: '2px solid var(--border-hover)' }}>
       {item.evidence.map((e) => (
         <li key={e.source_id} style={{ padding: '4px 0' }}>
-          {e.sentence && <span style={{ ...BODY, display: 'block' }}>{e.sentence}</span>}
+          {(e.quote ?? e.sentence) && (
+            <span style={{ ...BODY, display: 'block' }}>{e.quote ? `“${e.quote}”` : e.sentence}</span>
+          )}
           <span style={META}>
-            {e.sentence && "Kompl's summary, from "}
+            {e.quote ? 'Quoted from ' : e.sentence ? "Kompl's summary, from " : null}
             <Link href={`/source/${e.source_id}`} style={{ color: 'var(--accent)' }}>
               {e.source_title}
             </Link>

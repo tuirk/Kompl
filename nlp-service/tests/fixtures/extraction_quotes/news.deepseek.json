@@ -1,0 +1,35 @@
+{
+  "title": "Lisbon opens its first night-time tram line",
+  "entities": [
+    {"name": "Carris", "type": "ORG", "mentions": ["Carris"], "context": "Lisbon's transport company, which runs the trams."},
+    {"name": "Lisbon", "type": "LOCATION", "mentions": ["Lisbon"], "context": "City where the night tram line opened."},
+    {"name": "João Matos", "type": "PERSON", "mentions": ["João Matos"], "context": "Carris spokesperson."},
+    {"name": "Remodelado", "type": "PRODUCT", "mentions": ["Remodelado"], "context": "Historic tram cars built in the 1930s."},
+    {"name": "Siemens articulated trams", "type": "PRODUCT", "mentions": ["Siemens articulated trams"], "context": "Newer trams on route 15."}
+  ],
+  "concepts": [
+    {"name": "Night-time tram service", "description": "Tram service running after midnight."}
+  ],
+  "claims": [
+    {"claim": "Carris launched a night-time service on tram line 28.", "confidence": "stated", "entities_involved": ["Carris", "Lisbon"],
+     "quote": "Lisbon's transport company Carris launched a night-time service on tram line 28 on Monday, the first time the city's historic trams have run after midnight."},
+    {"claim": "Carris expects around 3,000 riders a night in the first summer.", "confidence": "stated", "entities_involved": ["Carris", "João Matos"],
+     "quote": "\"We expect around 3,000 riders a night in the first summer,\" said Carris spokesperson João Matos."},
+    {"claim": "The Remodelado cars were built in the 1930s.", "confidence": "stated", "entities_involved": ["Remodelado"],
+     "quote": "The Remodelado trams were originally built in the 1930s."},
+    {"claim": "Critics say the night service will worsen noise in Alfama.", "confidence": "stated", "entities_involved": ["Night-time tram service"]},
+    {"claim": "The city council says the line is quieter than the buses it replaces.", "confidence": "stated", "entities_involved": ["Night-time tram service"],
+     "quote": 42}
+  ],
+  "relationships": [
+    {"from_entity": "Remodelado", "to": "Carris", "type": "created_by", "description": "Carris rebuilt the Remodelado cars in the 1990s.",
+     "quote": "The trams themselves are Remodelado cars, built in the 1930s and rebuilt by Carris in the 1990s."},
+    {"from_entity": "Siemens articulated trams", "to": "tuk-tuk operators", "type": "Competes with", "description": "The newer trams compete for tourists with tuk-tuks.",
+     "quote": "They share the line with the newer Siemens articulated trams on route 15, which compete for tourists with the citys tuk-tuk operators.",
+     "strength": "high"}
+  ],
+  "contradictions": [
+    {"claim": "The night service will worsen noise in Alfama.", "against": "The city council says the line runs quieter than the buses it replaces."}
+  ],
+  "summary": "Lisbon's Carris launched a night tram service on line 28."
+}

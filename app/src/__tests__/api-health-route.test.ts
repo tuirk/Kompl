@@ -110,6 +110,8 @@ describe('GET /api/health — regression: stage-1 grep targets preserved', () =>
     expect(tables).toContain('entity_mentions');
     expect(tables).toContain('relationship_mentions');
     expect(tables).toContain('triage_rechecks');
+    expect(tables).toContain('disagreements');
+    expect(tables).toContain('claim_verdicts');
     // provider_keys still present with both LLM fields (Phase 1 pre-existing)
     const pk = body.provider_keys as Record<string, unknown>;
     expect(typeof pk.gemini_present).toBe('boolean');

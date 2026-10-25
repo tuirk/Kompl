@@ -222,6 +222,11 @@ describe('redraftPage', () => {
       [A, 'S1'],
       [B, 'S2'],
     ]);
+    // Each source carries its date (plan 3.1): the saved day, until a publication date is known.
+    for (const s of body.source_contents as Array<{ date?: string; date_kind?: string }>) {
+      expect(s.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(s.date_kind).toBe('saved');
+    }
     // Source pages and the page itself are never link targets.
     expect(body.existing_page_titles).toEqual(['Satoshi Nakamoto']);
 

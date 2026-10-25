@@ -11,8 +11,16 @@ import { aliasRecordFromBackup } from '@/lib/alias-records';
 import { screenAliasesNowOrLater } from '@/lib/alias-screen';
 import { isBackedUpSetting } from '@/lib/backup-settings';
 import { sanitizeDraftRules } from '@/lib/draft-rules';
+import { backfillDisagreements, importDisagreements } from '@/lib/disagreement-backfill';
+import { importClaimVerdicts } from '@/lib/claim-check/verdicts';
 import { backfillRelationDescriptions } from '@/lib/relation-backfill';
-import { cleanRelationDescription } from '@/lib/relation-rows';
+import { backfillSourceDates } from '@/lib/source-date-backfill';
+import {
+  cleanRelationDescription,
+  cleanRelationQuote,
+  quoteVerifiedColumn,
+  quoteVerifiedFromColumn,
+} from '@/lib/relation-rows';
 import { isSafeId } from '@/lib/safe-paths';
 import { resyncAllWikilinks } from '@/lib/wikilinks';
 
@@ -96,6 +104,8 @@ export async function POST(request: Request) {
   const compileProgress      = JSON.parse((await zip.file('db/compile_progress.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
   const chatMessages         = JSON.parse((await zip.file('db/chat_messages.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
   const pagePlans            = JSON.parse((await zip.file('db/page_plans.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
+  const disagreements        = JSON.parse((await zip.file('db/disagreements.json')?.async('string')) ?? '[]') as unknown[];
+  const claimVerdicts        = JSON.parse((await zip.file('db/claim_verdicts.json')?.async('string')) ?? '[]') as unknown[];
   const settings    = JSON.parse((await zip.file('db/settings.json')?.async('string')) ?? '[]') as Record<string, string>[];
   const schemaContent = (await zip.file('schema.md')?.async('string')) ?? null;
 
@@ -169,11 +179,15 @@ export async function POST(request: Request) {
     }
 
     for (const s of sources) {
+      // published_at / published_at_source exist from the v30 step; older
+      // backups import NULL, read as the day the source was added.
+      const published = typeof s.published_at === 'string' && typeof s.published_at_source === 'string';
       db.prepare(
         `INSERT OR IGNORE INTO sources
            (source_id, title, source_type, source_url, content_hash, file_path,
-            status, date_ingested, metadata, compile_status, onboarding_session_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL)`
+            status, date_ingested, metadata, compile_status, onboarding_session_id,
+            published_at, published_at_source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, ?)`
       ).run(
         s.source_id as string,
         s.title as string,
@@ -183,7 +197,9 @@ export async function POST(request: Request) {
         s.file_path as string,
         (s.status as string | null) ?? 'active',
         s.date_ingested as string,
-        (s.metadata as string | null) ?? null
+        (s.metadata as string | null) ?? null,
+        published ? (s.published_at as string) : null,
+        published ? (s.published_at_source as string) : null
       );
     }
 
@@ -309,18 +325,23 @@ export async function POST(request: Request) {
     for (const r of relationshipMentions) {
       // description exists from schema v28; older backups import it as NULL
       // and the backfill below fills it from the restored extractions.
+      // quote and quote_verified exist from v30; older backups import NULL,
+      // shown as Kompl's summary like any relation extracted before quotes.
+      const quote = cleanRelationQuote(r.quote, quoteVerifiedFromColumn(r.quote_verified as number | null));
       db.prepare(
         `INSERT OR IGNORE INTO relationship_mentions
            (from_canonical, to_canonical, relationship_type, source_id, first_seen_at,
-            description)
-         VALUES (?, ?, ?, ?, ?, ?)`
+            description, quote, quote_verified)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         r.from_canonical as string,
         r.to_canonical as string,
         r.relationship_type as string,
         r.source_id as string,
         r.first_seen_at as string,
-        cleanRelationDescription(r.description)
+        cleanRelationDescription(r.description),
+        quote.quote,
+        quoteVerifiedColumn(quote.quote_verified)
       );
     }
 
@@ -412,6 +433,12 @@ export async function POST(request: Request) {
       );
     }
 
+    // The disagreements record (v30), owner verdicts included; backups from
+    // before it carry none and are filled below from their pages.
+    importDisagreements(db, Array.isArray(disagreements) ? disagreements : []);
+    // The claim check's saved verdicts (v30); older backups carry none.
+    importClaimVerdicts(db, Array.isArray(claimVerdicts) ? claimVerdicts : []);
+
     for (const s of settings) {
       // schema_version, the page-update flag and the agent-sources switch
       // belong to this install, not to the backup (lib/backup-settings.ts).
@@ -444,6 +471,25 @@ export async function POST(request: Request) {
     backfillRelationDescriptions(db);
   } catch (err) {
     console.error('[import] relation description backfill failed:', err instanceof Error ? err.message : err);
+  }
+
+  // Disagreements the restored pages record and the triage verdicts in the
+  // restored activity log, for what the backup's record lacks (no LLM
+  // calls). Non-fatal: the next boot's backfill never re-runs, but each
+  // page's next commit syncs it.
+  try {
+    backfillDisagreements(db);
+  } catch (err) {
+    console.error('[import] disagreements backfill failed:', err instanceof Error ? err.message : err);
+  }
+
+  // Sources from a backup made before publication dates were kept get them
+  // from their restored text (no LLM calls); dates the backup carries stay.
+  // Non-fatal: undated sources read as the day they were added.
+  try {
+    backfillSourceDates(db);
+  } catch (err) {
+    console.error('[import] source dates backfill failed:', err instanceof Error ? err.message : err);
   }
 
   // -------------------------------------------------------------------------

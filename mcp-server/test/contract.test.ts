@@ -78,7 +78,7 @@ describe('MCP contract fixture', () => {
   });
 
   it.each([
-    ['read_page', { page_id: 'btc', include_related: true }, ['# Bitcoin', '[1] Bitcoin paper', 'source_id `src-paper`', '- Uses: Proof of work (`pow`)', 'Lightning Network', '**Related:** Proof of work']],
+    ['read_page', { page_id: 'btc', include_related: true }, ['# Bitcoin', '[1] Bitcoin paper', 'source_id `src-paper`', '- Uses: Proof of work (`pow`)', 'Lightning Network', '**Related:** Proof of work', '- Disputed: Launch date · [1]', 'Quotes: "The paper says 2008."']],
     ['read_source', { source_id: 'src-paper' }, ['# Bitcoin paper', 'Characters 1–89 of 89', 'offset=89']],
     ['read_source', { page_id: 'btc', n: 1, query: 'mining' }, ['Source [1] of "Bitcoin"', 'Passages matching "mining"', 'Mining secures the network.']],
     ['research_topic', { topic: 'bitcoin' }, ['## 1. Bitcoin', 'Disputed here: Launch date', '- Bitcoin uses Proof of work', '[1] Bitcoin paper', 'source_id `src-paper`', 'Bitcoin Core (3)', 'Lightning Network']],
@@ -86,7 +86,7 @@ describe('MCP contract fixture', () => {
     ['search_wiki', {}, ['**Bitcoin** (entity) [Cryptocurrency] — 2 source(s)']],
     ['list_sources', {}, ['**Bitcoin paper**', 'in 2 page(s)', 'ID: `src-paper`']],
     ['wiki_status', {}, ['Bitcoin Core', 'Bitcoin ETF', 'Old note', 'Launch year', 'Cryptocurrency']],
-    ['recent_changes', { days: 7 }, ['Bitcoin paper', 'launch date', 'dns']],
+    ['recent_changes', { days: 7 }, ['Bitcoin paper', 'disputed, Bitcoin (Launch date), not yet confirmed by the user', 'dns']],
     ['recent_changes', { session_id: 's1' }, ['`s1`', 'https://bad.test/: failed']],
     ['recent_changes', { page_id: 'btc' }, ['Bitcoin', 'History', 'Disputed: Launch date']],
     ['add_source', { urls: ['https://example.org/new'] }, ['Added 1 source(s)', 'src-paper', 'https://x.com/someone/status/1']],

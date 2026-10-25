@@ -1,0 +1,19 @@
+{
+  "title": "Attention Is Not All You Need for Small Data",
+  "entities": [
+    {"name": "Vaswani et al.", "type": "PERSON", "mentions": ["Vaswani et al."], "context": "Authors who introduced the transformer in 2017."},
+    {"name": "GPT-4", "type": "PRODUCT", "mentions": ["GPT-4"], "context": "A large language model built on transformers."}
+  ],
+  "concepts": [
+    {"name": "Transformer architecture", "description": "Neural network architecture based on self-attention."},
+    {"name": "Two-layer LSTM", "description": "A small recurrent network used as the baseline."}
+  ],
+  "claims": [
+    {"claim": "A two-layer LSTM matches the transformer's accuracy on four of six benchmarks.", "confidence": "stated", "entities_involved": ["Two-layer LSTM", "Transformer architecture"]}
+  ],
+  "relationships": [
+    {"from_entity": "Vaswani et al.", "to": "Transformer architecture", "type": "created_by", "description": "Vaswani et al. introduced the transformer."}
+  ],
+  "contradictions": [],
+  "summary": "Small recurrent models can match transformers on small data sets."
+}

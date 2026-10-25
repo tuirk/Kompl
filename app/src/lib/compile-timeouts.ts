@@ -66,7 +66,8 @@ export function computeResolveMs(sourceCount: number): number {
 // match = sequential `for source` × top-3 candidates × (tfidf + triage),
 // then up to recheckCalls triage calls on stored failures (the per-compile
 // cap in lib/triage-recheck-limits.ts; 0 when match may not re-check).
-// candidatesPerSource defaults to 3 (the slice(0, 3) cap in match/route.ts).
+// candidatesPerSource defaults to 3 (MAX_TRIAGE_CANDIDATES_PER_SOURCE in
+// lib/triage-candidates.ts).
 export function computeMatchMs(sourceCount: number, candidatesPerSource = 3, recheckCalls = 0): number {
   const raw = sourceCount * candidatesPerSource * MATCH_PER_PAIR_MS + recheckCalls * MATCH_RECHECK_MS;
   return withSlack(raw, MATCH_FLOOR_MS);

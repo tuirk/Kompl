@@ -10,8 +10,18 @@
  */
 export const DIRECTION_AGNOSTIC_RELATIONS: ReadonlySet<string> = new Set(['competes_with', 'contradicts']);
 
+/**
+ * The types a comparison page ("A vs B") is about. Plan Rule 4 counts them
+ * together toward its source threshold; the draft's comparison dossier
+ * reads both.
+ */
+export const COMPARISON_RELATIONS: ReadonlySet<string> = new Set(['competes_with', 'contradicts']);
+
 /** Longest description kept; the extract prompt asks for one sentence. */
 export const RELATION_DESCRIPTION_MAX_CHARS = 300;
+
+/** Longest quote kept; a longer one keeps its start and ends in "…". */
+export const RELATION_QUOTE_MAX_CHARS = 500;
 
 /** The types the extract prompt lists (nlp-service llm_client.py). */
 const PROMPT_RELATIONS: ReadonlySet<string> = new Set([
@@ -45,7 +55,19 @@ export function normalizeRelationType(type: string): string {
   return RELATION_SYNONYMS.get(folded) ?? written;
 }
 
-export interface RelationRow {
+/**
+ * The source's sentence for a relation (plan 3.2, extractions from v30 on):
+ * `quote` as the extraction stored it, and `quote_verified` from the
+ * nlp-service soft check (true: found in the source, and the quote is then
+ * the source's own text; false: not found; null: no quote, or an extraction
+ * made before quotes). Only a verified quote is ever shown as quoted.
+ */
+export interface RelationQuote {
+  quote: string | null;
+  quote_verified: boolean | null;
+}
+
+export interface RelationRow extends RelationQuote {
   from_canonical: string;
   to_canonical: string;
   relationship_type: string;
@@ -54,7 +76,7 @@ export interface RelationRow {
 }
 
 /** One usable entry of `llm_output.relationships`, names as the LLM wrote them. */
-export interface LlmRelation {
+export interface LlmRelation extends RelationQuote {
   from: string;
   to: string;
   type: string;
@@ -69,6 +91,31 @@ export function cleanRelationDescription(value: unknown): string | null {
   return text.length > RELATION_DESCRIPTION_MAX_CHARS
     ? text.slice(0, RELATION_DESCRIPTION_MAX_CHARS).trimEnd()
     : text;
+}
+
+/**
+ * An entry's quote and its check, as stored: the quote trimmed and clipped
+ * (empty or not a string -> null), and quote_verified only true or false
+ * when there is a quote (anything else -> null).
+ */
+export function cleanRelationQuote(quote: unknown, verified: unknown): RelationQuote {
+  if (typeof quote !== 'string' || !quote.trim()) return { quote: null, quote_verified: null };
+  const text = quote.trim();
+  return {
+    quote:
+      text.length > RELATION_QUOTE_MAX_CHARS ? `${text.slice(0, RELATION_QUOTE_MAX_CHARS - 1).trimEnd()}…` : text,
+    quote_verified: typeof verified === 'boolean' ? verified : null,
+  };
+}
+
+/** quote_verified as SQLite stores it: 1, 0 or NULL. */
+export function quoteVerifiedColumn(verified: boolean | null | undefined): number | null {
+  return verified === true ? 1 : verified === false ? 0 : null;
+}
+
+/** The stored quote_verified column read back. */
+export function quoteVerifiedFromColumn(value: number | null | undefined): boolean | null {
+  return value === 1 ? true : value === 0 ? false : null;
 }
 
 /** from/to in stored order: sorted lowercase for direction-agnostic types. */
@@ -103,7 +150,13 @@ export function readLlmRelations(relationships: unknown): LlmRelation[] {
     const to = text(r.to);
     const type = text(r.type);
     if (!from || !to || !type) continue;
-    out.push({ from, to, type, description: cleanRelationDescription(r.description) });
+    out.push({
+      from,
+      to,
+      type,
+      description: cleanRelationDescription(r.description),
+      ...cleanRelationQuote(r.quote, r.quote_verified),
+    });
   }
   return out;
 }
@@ -113,7 +166,8 @@ export function readLlmRelations(relationships: unknown): LlmRelation[] {
  * its canonical spelling (the aliases table); a prompt type is stored in its
  * canonical spelling (normalizeRelationType). One row per (from, to, type):
  * the first entry wins, and a later duplicate only supplies the description
- * when the first had none.
+ * when the first had none, and its quote when the first had none or only an
+ * unverified one and the later one is verified.
  *
  * The description backfill reads llm_output with readLlmRelations alone, so
  * it still finds older rows under the type as the LLM wrote it.
@@ -131,6 +185,10 @@ export function buildRelationRows(
     const seen = rows.get(key);
     if (seen) {
       seen.description ??= rel.description;
+      if (rel.quote !== null && (seen.quote === null || (seen.quote_verified !== true && rel.quote_verified === true))) {
+        seen.quote = rel.quote;
+        seen.quote_verified = rel.quote_verified;
+      }
       continue;
     }
     rows.set(key, {
@@ -139,6 +197,8 @@ export function buildRelationRows(
       relationship_type: type,
       source_id: sourceId,
       description: rel.description,
+      quote: rel.quote,
+      quote_verified: rel.quote_verified,
     });
   }
   return [...rows.values()];

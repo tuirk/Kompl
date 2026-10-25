@@ -35,7 +35,10 @@ export interface MissingPage {
 export type NamedWith = Map<string, { name: string; pageIds: Set<string> }>;
 
 /** From relation rows with exactly one end on a shown page (`names`: lowercased name -> page id): the other end. */
-export function namedWithPages(rows: Iterable<RelationRow>, names: ReadonlyMap<string, string>): NamedWith {
+export function namedWithPages(
+  rows: Iterable<Pick<RelationRow, 'from_canonical' | 'to_canonical'>>,
+  names: ReadonlyMap<string, string>
+): NamedWith {
   const namedWith: NamedWith = new Map();
   for (const row of rows) {
     const fromId = names.get(row.from_canonical.toLowerCase());

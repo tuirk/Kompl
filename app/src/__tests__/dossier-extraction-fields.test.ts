@@ -58,6 +58,31 @@ describe('buildDossier — extraction contradictions', () => {
     expect(dossier).not.toContain('Kaunas');
     expect(dossier).not.toContain('undefined');
   });
+
+  it('gives concept pages their contradictions too (plan 3.1)', () => {
+    const extractions = new Map<string, Record<string, unknown>>([
+      [
+        'src-A',
+        {
+          entities: [],
+          concepts: [{ name: 'Proof of stake', description: 'A consensus method.' }],
+          claims: [],
+          relationships: [],
+          contradictions: [
+            { claim: 'Proof of stake uses 99% less energy.', against: 'Proof of stake saves little energy.' },
+            { claim: 'Mining is profitable.', against: 'Mining is not profitable.' },
+          ],
+        },
+      ],
+    ]);
+
+    const dossier = buildDossier(plan('concept', 'Proof of stake', ['src-A']), extractions, new Map(), new Map());
+
+    expect(dossier).toContain(
+      '  This source disputes "Proof of stake saves little energy." and says instead "Proof of stake uses 99% less energy."',
+    );
+    expect(dossier).not.toContain('Mining');
+  });
 });
 
 describe('buildDossier — concept definitions', () => {

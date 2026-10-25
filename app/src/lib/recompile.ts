@@ -9,7 +9,7 @@
  * Flow (outbox, CLAUDE.md rule 5):
  *   Phase 1 (async)  — read remaining sources, call /pipeline/draft-page
  *   Phase 2 (sync)   — db.transaction: update pages + pending_content +
- *                      draft_rules marker + FTS5
+ *                      draft_rules marker + FTS5 + disagreements record
  *   Phase 3a (await) — /storage/write-page, then clearPendingContent
  *   Phase 3c         — page_links resync
  *   Phase 3b (f&f)   — vector refresh, retried like a compile's
@@ -40,7 +40,8 @@ import { assignCitationLabels, labelsToStoredCitations, rewordLabelSubjects } fr
 import { normalizeFrontmatter, relatedLinkTargets, sourceOnlyTitles, tidyDraftLinks } from './draft-cleanup';
 import { CURRENT_DRAFT_RULES, isDraftedPage, setPageDraftRules } from './draft-rules';
 import { removeEmptyContradictionSections } from './page-sections';
-import { recordNewDisputes } from './page-disputes';
+import { recordPageDisagreements } from './disagreements';
+import { sourceDates, withSourceDate } from './source-dates';
 import { upsertVectorWithRetry } from './vector-upsert';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -51,6 +52,9 @@ interface SourceContent {
   markdown: string;
   /** "S1"-style label the page cites this source with (lib/citations.ts). */
   citation_label?: string;
+  /** Publication date, else the day it was saved (lib/source-dates.ts). */
+  date?: string;
+  date_kind?: 'published' | 'saved';
 }
 
 interface WritePageResult {
@@ -173,10 +177,12 @@ export async function recompilePage(
   // The model cites [S1]-style labels; they become stored [^source_id]
   // references (lib/citations.ts), as in the compile draft route.
   const labels = assignCitationLabels(sourceContents.map((sc) => sc.source_id));
+  // Dates tell a claim that changed over time from a disagreement (plan 3.1).
+  const dates = sourceDates(getDb(), sourceContents.map((sc) => sc.source_id));
   const drafted = await callDraftPage(
     page.page_type,
     page.title,
-    sourceContents.map((sc) => ({ ...sc, citation_label: labels.get(sc.source_id.toLowerCase()) })),
+    sourceContents.map((sc) => withSourceDate({ ...sc, citation_label: labels.get(sc.source_id.toLowerCase()) }, dates)),
     existingCategories,
     getCompileModel(),
   );
@@ -220,6 +226,9 @@ export async function recompilePage(
     db.prepare(
       'INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)'
     ).run(pageId, page.title, bodyForFts);
+
+    // Disagreements the committed text records (lib/disagreements.ts).
+    recordPageDisagreements(db, { page_id: pageId, title: page.title }, newMarkdown);
   })();
 
   // ── Phase 3a (awaited): flush pending_content to disk via nlp-service ────
@@ -240,9 +249,6 @@ export async function recompilePage(
     category: page.category ?? '',
     source_count: newSourceCount,
   });
-
-  // ── Phase 3b: disputes the page records in its own text (activity feed) ──
-  recordNewDisputes({ page_id: pageId, title: page.title }, newMarkdown);
 
   return { outcome: 'rewritten' };
 }

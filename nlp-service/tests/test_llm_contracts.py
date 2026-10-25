@@ -83,12 +83,14 @@ from services.llm_client import (
     DisambiguationResponse,
     CrossrefResponse,
     LabelMergeResponse,
+    ClaimJudgeResponse,
     _LINT_SYSTEM_PROMPT,
     _EXTRACTION_SYSTEM_PROMPT,
     _DISAMBIGUATION_SYSTEM_PROMPT,
     _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT,
     _CROSSREF_SYSTEM_PROMPT,
     _LABEL_MERGE_SYSTEM_PROMPT,
+    _CLAIM_JUDGE_SYSTEM_PROMPT,
 )
 
 
@@ -244,3 +246,30 @@ def test_label_merge_rejects_bare_list():
 def test_label_merge_prompt_anchors_keys():
     for key in ("merges", "label", "into", "reason"):
         assert key in _LABEL_MERGE_SYSTEM_PROMPT, f"missing key: {key}"
+
+
+
+# ── ClaimJudgeResponse — wrapper key = "judgements" ───────────────────────────
+
+def test_claim_judge_canonical():
+    p = ClaimJudgeResponse.model_validate({
+        "judgements": [{"pair_id": "p1", "topic": "launch year", "reason": "A gives 2008; B gives 2009.", "verdict": "disputed"}],
+    })
+    assert p.judgements[0].verdict == "disputed"
+
+
+def test_claim_judge_rejects_results_wrapper():
+    with pytest.raises(ValidationError):
+        ClaimJudgeResponse.model_validate({
+            "results": [{"pair_id": "p1", "topic": "t", "reason": "r", "verdict": "none"}],
+        })
+
+
+def test_claim_judge_rejects_bare_list():
+    with pytest.raises(ValidationError):
+        ClaimJudgeResponse.model_validate([{"pair_id": "p1", "topic": "t", "reason": "r", "verdict": "none"}])
+
+
+def test_claim_judge_prompt_anchors_keys():
+    for key in ("judgements", "pair_id", "topic", "reason", "verdict"):
+        assert key in _CLAIM_JUDGE_SYSTEM_PROMPT, f"missing key: {key}"

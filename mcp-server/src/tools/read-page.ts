@@ -5,7 +5,16 @@ import { fence } from '../fence.js';
 import { clip } from '../format.js';
 import { pageIdInput } from '../ids.js';
 import { failure, READ_ONLY, text } from '../result.js';
-import type { ConnectionEvidence, ConnectionItem, PageConnections, PageData, PageLink, PageSource, RelatedPages } from '../types.js';
+import type {
+  ConnectionEvidence,
+  ConnectionItem,
+  PageConnections,
+  PageData,
+  PageDisagreement,
+  PageLink,
+  PageSource,
+  RelatedPages,
+} from '../types.js';
 
 /** Long link lists are cut here; the rest is counted. */
 const MAX_LINKS = 20;
@@ -15,6 +24,17 @@ const MAX_CONNECTIONS = 15;
 const RELATED_TO = 'related_to';
 /** Characters of Kompl's one-line summary of a connection. */
 const MAX_SENTENCE = 160;
+/** Characters of a disagreement's topic, reason or quote. */
+const MAX_DISAGREEMENT_TEXT = 200;
+const KIND_LABEL: Record<string, string> = {
+  disputed: 'Disputed',
+  changed: 'Changed over time',
+  contradiction: 'Contradiction',
+  scope: 'Different scope',
+  opinion: 'Different opinions',
+};
+/** A source's sentence is often longer than Kompl's summary of it. */
+const MAX_QUOTE = 240;
 
 // GET /api/wiki/{page_id}/data → page metadata, markdown body, numbered
 // sources, connections (newer apps) or links; plus /related when asked.
@@ -26,8 +46,9 @@ export function registerReadPage(server: McpServer, client: KomplClient): void {
       description:
         'Read a Kompl wiki page by its page_id (from search_wiki): the full text with [n] citations, the numbered ' +
         'sources they refer to (with address and date), how the page connects to others (each relation, such as ' +
-        "uses or part of, with the source it was read from and Kompl's one-line summary of it, which is not a " +
-        'quote), and the pages it links to and from.',
+        "uses or part of, with the source it was read from and either that source's own sentence, marked " +
+        "quoted, or Kompl's one-line summary of it, which is not a quote), the disagreements Kompl recorded " +
+        'on it (Disputed, Changed), and the pages it links to and from.',
       inputSchema: {
         page_id: pageIdInput().describe('The page_id from search results'),
         include_related: z
@@ -60,6 +81,7 @@ export function registerReadPage(server: McpServer, client: KomplClient): void {
         `**Sources** (the [n] markers above refer to these):`,
         page.sources.length ? page.sources.map(sourceLine).join('\n') : '  (none)',
       ];
+      if (page.disagreements?.length) lines.push(...disagreementLines(page.disagreements));
       if (page.connections) {
         lines.push(...connectionLines(page.connections, page.sources));
       } else {
@@ -86,6 +108,29 @@ function sourceLine(s: PageSource): string {
   // The date is when the page was last compiled from this source, not when it was published.
   const details = [s.source_url, s.date ? `compiled ${s.date.slice(0, 10)}` : null, id].filter(Boolean).join(' · ');
   return `  [${s.n}] ${s.title} — ${details}`;
+}
+
+/**
+ * "- Disputed: Launch date · [1] [2] · not yet confirmed by the user": each
+ * disagreement Kompl recorded on the page, its sources by the page's [n]
+ * (by name and id when the page does not list one), and whether the user
+ * confirmed it. Quotes follow on their own line when a check kept them.
+ */
+function disagreementLines(items: PageDisagreement[]): string[] {
+  const lines = ['**Disagreements recorded on this page:**'];
+  for (const d of items) {
+    const refs = d.sources
+      .map((s) => (s.n ? `[${s.n}]` : `(source: ${s.title ?? 'deleted'}, \`${s.source_id}\`)`))
+      .join(' ');
+    const parts = [`- ${KIND_LABEL[d.kind] ?? d.kind}: ${clip(d.topic || d.reason || 'unnamed', MAX_DISAGREEMENT_TEXT)}`];
+    if (refs) parts.push(`· ${refs}`);
+    if (d.topic && d.reason) parts.push(`· ${clip(d.reason, MAX_DISAGREEMENT_TEXT)}`);
+    parts.push(d.status === 'confirmed' ? '· confirmed by the user' : '· not yet confirmed by the user');
+    lines.push(parts.join(' '));
+    const quotes = [d.quote_a, d.quote_b].filter((q): q is string => !!q).map((q) => `"${clip(q, MAX_DISAGREEMENT_TEXT)}"`);
+    if (quotes.length) lines.push(`  Quotes: ${quotes.join(' vs ')}`);
+  }
+  return lines;
 }
 
 /**
@@ -130,23 +175,31 @@ function moreLine(rest: ConnectionItem[], full: Set<ConnectionItem>): string {
 }
 
 /**
- * "- Uses: Proof of work (`pow`) [2] · 3 sources · Kompl's summary: Bitcoin uses proof of work."
- * The sentence is what the extraction model wrote about the relation when it
- * read source [2], not a quote from it, so it is labelled as Kompl's.
+ * "- Uses: Proof of work (`pow`) [2] · 3 sources · quoted: "Bitcoin relies on proof of work.""
+ * A quote is source [2]'s own sentence, checked against it when it was
+ * extracted. Without one, the line carries what the extraction model wrote
+ * about the relation on reading the source, labelled as Kompl's summary.
  */
 function connectionLine(label: string, item: ConnectionItem, numbered: Map<string, number>): string {
   const parts = [`- ${label}: ${item.title} ${item.page_id ? `(\`${item.page_id}\`)` : '(no page)'}`];
   const evidence = pickEvidence(item.evidence, numbered);
   if (evidence) parts.push(sourceRef(evidence, numbered));
   if (item.source_count > 1) parts.push(`· ${item.source_count} sources`);
-  if (evidence?.sentence) parts.push(`· Kompl's summary: ${clip(evidence.sentence, MAX_SENTENCE)}`);
+  if (evidence?.quote) parts.push(`· quoted: "${clip(evidence.quote, MAX_QUOTE)}"`);
+  else if (evidence?.sentence) parts.push(`· Kompl's summary: ${clip(evidence.sentence, MAX_SENTENCE)}`);
   return parts.join(' ');
 }
 
-/** A summary from a source the page cites (so read_source can check it), else any summary, else the first source. */
+/**
+ * A quote, then a summary, each from a source the page cites first (so
+ * read_source can check it); else the first source.
+ */
 function pickEvidence(evidence: ConnectionEvidence[], numbered: Map<string, number>): ConnectionEvidence | undefined {
+  const cited = (e: ConnectionEvidence) => numbered.has(e.source_id.toLowerCase());
   return (
-    evidence.find((e) => e.sentence && numbered.has(e.source_id.toLowerCase())) ??
+    evidence.find((e) => e.quote && cited(e)) ??
+    evidence.find((e) => e.quote) ??
+    evidence.find((e) => e.sentence && cited(e)) ??
     evidence.find((e) => e.sentence) ??
     evidence[0]
   );

@@ -5,8 +5,11 @@
  */
 
 import { ALIAS_SCREEN_THROUGH_KEY, ALIAS_SCREEN_VERSION_KEY } from './alias-screen';
+import { CLAIM_CHECK_FLAG, WIKI_CHECK_FLAG } from './claim-check/flag';
 import { AGENT_ADD_SOURCES_KEY } from './db';
+import { DISAGREEMENTS_BACKFILL_KEY } from './disagreement-backfill';
 import { PAGE_UPGRADE_FLAG } from './page-upgrade-state';
+import { SOURCE_DATES_BACKFILL_KEY } from './source-date-backfill';
 import { TRIAGE_RECHECK_FLAG } from './triage-rechecks';
 
 const NOT_BACKED_UP = new Set([
@@ -22,10 +25,21 @@ const NOT_BACKED_UP = new Set([
   // Re-checking failed triage calls spends AI calls: this install's choice,
   // never switched on by a restore (lib/triage-rechecks.ts).
   TRIAGE_RECHECK_FLAG,
+  // The compile's claim check spends AI calls: this install's choice, never
+  // switched on by a restore (lib/claim-check/flag.ts).
+  CLAIM_CHECK_FLAG,
+  // Arms one confirmed whole-wiki check run; a backup never arms it.
+  WIKI_CHECK_FLAG,
   // Which of this database's alias rows the alias screen has looked at
   // (lib/alias-screen.ts); a backup's ids mean nothing here.
   ALIAS_SCREEN_VERSION_KEY,
   ALIAS_SCREEN_THROUGH_KEY,
+  // Whether this database's pages were read into the disagreements record
+  // (lib/disagreement-backfill.ts); a restore runs that itself.
+  DISAGREEMENTS_BACKFILL_KEY,
+  // Whether this database's undated sources were dated from their text
+  // (lib/source-date-backfill.ts); a restore runs that itself.
+  SOURCE_DATES_BACKFILL_KEY,
 ]);
 
 export function isBackedUpSetting(key: string): boolean {

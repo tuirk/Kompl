@@ -11,6 +11,7 @@ import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import { GET } from '../app/api/wiki/changes/route';
 import { DATA_ROOT, logActivity, setSourceStatus } from '../lib/db';
+import { importTriageVerdicts, listPageDisagreements, recordDisagreement, setOwnerVerdict, syncPageTextDisagreements } from '../lib/disagreements';
 import { seedPage, seedProvenance, seedSource, setupTestDb, type TestDbHandle } from './helpers/test-db';
 
 let handle: TestDbHandle | null = null;
@@ -42,10 +43,7 @@ describe('changes since', () => {
       `UPDATE pages SET created_at = datetime('now', '-30 days'), last_updated = datetime('now', '-30 days')
         WHERE page_id = 'untouched'`
     ).run();
-    logActivity('page_dispute_recorded', {
-      source_id: null,
-      details: { page_id: 'old-page', title: 'Old page', topic: 'founding date' },
-    });
+    syncPageTextDisagreements(db, { page_id: 'old-page', title: 'Old page' }, `### Disputed: founding date\n\n1323[^${a}] or 1320[^${b}].`);
     logActivity('ingest_url_failed', { source_id: null, details: { url: 'https://b.test/', error: 'dns' } });
 
     const { status, body } = await changes('days=7');
@@ -58,8 +56,39 @@ describe('changes since', () => {
     expect(created.change).toBe('created');
     expect(created.sources.map((s) => s.title).sort()).toEqual(['Source A', 'Source B']);
     expect(pages.find((p) => p.page_id === 'old-page')!.change).toBe('updated');
-    expect(body.disputes.items[0]).toMatchObject({ page_id: 'old-page', detail: 'founding date' });
+    expect(body.disputes.items[0]).toMatchObject({
+      kind: 'disputed',
+      page_id: 'old-page',
+      detail: 'Founding date',
+      status: 'possible',
+      found_by: 'page_text',
+    });
     expect(body.failures.items[0]).toMatchObject({ kind: 'ingest_url_failed', detail: 'dns' });
+  });
+
+  it('lists the disagreements record: every finder, the owner\'s dismissals left out', async () => {
+    handle = setupTestDb();
+    const db = handle.db;
+    const a = seedSource(db, { title: 'Source A' });
+    const b = seedSource(db, { title: 'Flagging source' });
+    seedPage(db, { page_id: 'p', title: 'Page' });
+    syncPageTextDisagreements(db, { page_id: 'p', title: 'Page' }, `### Changed: the limit\n\n10[^${a}], now 20[^${b}].`);
+    recordDisagreement(db, { page_id: 'p', found_by: 'triage', kind: 'contradiction', source_b: b, reason: 'Another year' });
+    // Logged before the record existed: taken in by the backfill.
+    logActivity('page_contradiction_detected', { source_id: a, details: { page_id: 'p', reason: 'Older figure' } });
+    importTriageVerdicts(db);
+    const dismissed = recordDisagreement(db, { page_id: 'p', found_by: 'wiki_check', kind: 'scope', key: 'x' });
+    setOwnerVerdict(dismissed.disagreement_id, 'dismissed');
+    setOwnerVerdict(listPageDisagreements('p')[0].disagreement_id, 'confirmed');
+
+    const { body } = await changes('days=1');
+    expect(body.disputes.total).toBe(3);
+    const items = body.disputes.items as Array<Record<string, unknown>>;
+    expect(items.map((i) => [i.kind, i.found_by, i.status, i.detail, i.source_title]).sort()).toEqual([
+      ['changed', 'page_text', 'confirmed', 'The limit', null],
+      ['contradiction', 'triage', 'possible', 'Another year', 'Flagging source'],
+      ['contradiction', 'triage', 'possible', 'Older figure', 'Source A'],
+    ]);
   });
 
   it('lists pages rewritten without a new source and leaves out archived pages', async () => {

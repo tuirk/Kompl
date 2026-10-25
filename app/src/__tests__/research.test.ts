@@ -44,6 +44,28 @@ async function research(query: string) {
 }
 
 describe('research pack', () => {
+  it('says which recorded disagreements are changes over time (plan 3.1)', async () => {
+    handle = setupTestDb();
+    const a = seedSource(handle.db, { source_id: randomUUID(), title: 'Old report' });
+    const b = seedSource(handle.db, { source_id: randomUUID(), title: 'New report' });
+    page(
+      'reward',
+      'Block reward',
+      [
+        `The block reward pays miners [^${a}].`,
+        '### Changed: reward size',
+        `50 coins as of 2009 [^${a}]; 3.125 coins as of 2024 [^${b}].`,
+        '### Disputed: first halving date',
+        `2012 [^${a}] or 2013 [^${b}].`,
+      ].join('\n\n'),
+      [a, b]
+    );
+    stubVectors();
+    const { body } = await research('topic=block%20reward');
+    const reward = body.pages.find((p: { page_id: string }) => p.page_id === 'reward');
+    expect(reward.disputes).toEqual(['Reward size (changed over time)', 'First halving date']);
+  });
+
   it('numbers sources once across pages and keeps only the cited lines about the topic', async () => {
     handle = setupTestDb();
     const db = handle.db;

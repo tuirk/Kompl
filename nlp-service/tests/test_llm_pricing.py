@@ -32,6 +32,8 @@ _FIELDS = {
     "draft_thinking_budget_is_cap",
     "draft_max_output_tokens",
     "draft_prompt_char_cap",
+    "claim_judge_thinking_budget",
+    "claim_judge_max_output_tokens",
 }
 
 
@@ -69,6 +71,8 @@ def test_deepseek_flash_prices_and_draft_limits(pricing_client):
         "draft_thinking_budget_is_cap": False,
         "draft_max_output_tokens": 16384,
         "draft_prompt_char_cap": 128000,
+        "claim_judge_thinking_budget": 512,
+        "claim_judge_max_output_tokens": 8192,
     }
 
 
@@ -77,6 +81,12 @@ def test_draft_limits_match_the_draft_call(pricing_client):
     assert body["draft_thinking_budget"] == llm_client._read_thinking_budget("draft_page")
     assert body["draft_max_output_tokens"] == llm_client._DRAFT_PAGE_MAX_OUTPUT_TOKENS
     assert body["draft_prompt_char_cap"] == llm_client._GEMINI_INPUT_TOKEN_CAP
+
+
+def test_claim_judge_limits_match_the_judge_call(pricing_client):
+    body = pricing_client.get("/llm/pricing", params={"model": "deepseek-flash"}).json()
+    assert body["claim_judge_thinking_budget"] == llm_client._read_thinking_budget("judge_claim_pairs")
+    assert body["claim_judge_max_output_tokens"] == llm_client._CLAIM_JUDGE_MAX_OUTPUT_TOKENS
 
 
 def test_draft_page_sends_the_reported_output_limit(mock_gemini, mock_limiter, mock_cost):

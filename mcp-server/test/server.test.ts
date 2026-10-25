@@ -43,13 +43,18 @@ describe('tool catalogue', () => {
     expect(client.getInstructions()!.length).toBeLessThan(2000);
   });
 
-  it("calls a relation's sentence Kompl's summary, never the source's words", async () => {
+  it("calls a relation's summary Kompl's, and only a checked source sentence quoted", async () => {
     const client = await connect(fakeKompl({}).fetchImpl);
     const { tools } = await client.listTools();
     const texts = [client.getInstructions()!, ...tools.map((t) => t.description ?? '')];
-    for (const t of texts) expect(t).not.toMatch(/says so|source says|quoted|the sentence the source/i);
+    for (const t of texts) expect(t).not.toMatch(/says so|source says|the sentence the source/i);
     expect(client.getInstructions()).toMatch(/summary Kompl wrote \(not a quote/);
-    expect(tools.find((t) => t.name === 'read_page')!.description).toMatch(/Kompl's one-line summary/);
+    expect(client.getInstructions()).toMatch(/the source's own sentence, marked quoted/);
+    for (const name of ['read_page', 'research_topic']) {
+      const description = tools.find((t) => t.name === name)!.description;
+      expect(description).toMatch(/Kompl's one-line summary/);
+      expect(description).toMatch(/own sentence, marked\s+quoted/);
+    }
   });
 });
 

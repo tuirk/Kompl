@@ -2,8 +2,10 @@
  * The match step's triage call (nlp-service /pipeline/triage): does a source
  * warrant updating an existing wiki page? Used for this session's sources
  * (app/api/compile/match/route.ts) and for re-checks of stored failures
- * (lib/compile/triage-recheck.ts).
+ * (lib/compile/triage-recheck.ts). What it is judged on: lib/triage-evidence.ts.
  */
+
+import type { TriageInput } from './triage-evidence';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -41,7 +43,7 @@ export interface MatchEntry {
 }
 
 export async function callTriage(
-  sourceClaims: string,
+  input: TriageInput,
   existingPageSummary: string,
   pageTitle: string,
   compileModel?: string,
@@ -50,9 +52,11 @@ export async function callTriage(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      source_claims: sourceClaims,
+      source_claims: input.source_claims,
       existing_page_summary: existingPageSummary,
       page_title: pageTitle,
+      page_section: input.page_section,
+      evidence: input.evidence,
       ...(compileModel ? { compile_model: compileModel } : {}),
     }),
     signal: AbortSignal.timeout(30_000),

@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
-import { getBacklinks, getLinkedPages, getPage, readPageMarkdown } from '@/lib/db';
+import { getBacklinks, getLinkedPages, getPage, getSource, readPageMarkdown } from '@/lib/db';
 import { citationsToText } from '@/lib/citations';
 import { getNumberedSources, getSourceTitleSet } from '@/lib/page-sources';
 import { displayPageBody } from '@/lib/page-sections';
 import { getPageConnections } from '@/lib/relations';
+import { listPageDisagreements } from '@/lib/disagreements';
+import { pageDisagreementsOut } from '@/lib/disagreement-view';
 
 /** GET /api/wiki/[page_id]/data — full page JSON for the Kompl MCP server.
  *
@@ -15,8 +17,10 @@ import { getPageConnections } from '@/lib/relations';
  *  card (lib/relations.ts getPageConnections: typed relations with their
  *  evidence, then the other wikilinked pages). `links` are the pages this
  *  page links to and `backlinks` the pages linking here; both stay for MCP
- *  builds that predate `connections`. Page metadata that the frontmatter
- *  duplicates is in the top-level fields. */
+ *  builds that predate `connections`. `disagreements` are the ones Kompl
+ *  recorded on the page (lib/disagreements.ts), the owner's dismissals left
+ *  out, each source numbered like `sources`. Page metadata that the
+ *  frontmatter duplicates is in the top-level fields. */
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ page_id: string }> }
@@ -51,6 +55,7 @@ export async function GET(
     content,
     sources,
     connections: getPageConnections(page_id),
+    disagreements: pageDisagreementsOut(listPageDisagreements(page_id), sources, (id) => getSource(id)?.title ?? null),
     links: getLinkedPages(page_id),
     backlinks: getBacklinks(page_id)
       .filter((p) => p.page_id !== page_id)

@@ -5,9 +5,9 @@
  * Backed by activity_log rows with action_type='page_contradiction_detected'
  * — there's no separate table. See getPageContradictions in lib/db.ts.
  *
- * Feeds the flagged sources in the Disputes section of the right panel on
- * /wiki/[page_id], next to the disputes the page records in its own text
- * (lib/page-disputes.ts).
+ * Kept for API callers. The right panel reads the disagreements record
+ * (lib/disagreements.ts), which takes these verdicts in on a page's first
+ * read.
  * Zero LLM cost, bounded by page_id scan over an indexed column.
  */
 

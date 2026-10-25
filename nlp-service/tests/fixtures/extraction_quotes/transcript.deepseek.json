@@ -1,0 +1,31 @@
+{
+  "title": "How the Rust borrow checker works",
+  "entities": [
+    {"name": "Rust", "type": "PRODUCT", "mentions": ["rust"], "context": "Programming language."},
+    {"name": "Go", "type": "PRODUCT", "mentions": ["go"], "context": "Programming language with a garbage collector."},
+    {"name": "Mozilla Research", "type": "ORG", "mentions": ["mozilla research"], "context": "Where the Rust team designed the borrow checker."},
+    {"name": "Rust compiler", "type": "PRODUCT", "mentions": ["rust compiler"], "context": "The compiler the borrow checker is part of."}
+  ],
+  "concepts": [
+    {"name": "Borrow checker", "description": "The part of the Rust compiler that checks reference lifetimes."},
+    {"name": "Memory safety", "description": "Freedom from invalid memory access."}
+  ],
+  "claims": [
+    {"claim": "The borrow checker makes sure references never outlive their data.", "confidence": "stated", "entities_involved": ["Borrow checker", "Rust compiler"],
+     "quote": "The borrow checker is the part of the Rust compiler that makes sure references never outlive the data they point to."},
+    {"claim": "Rust provides memory safety without a garbage collector.", "confidence": "stated", "entities_involved": ["Rust", "Memory safety"],
+     "quote": "Rust gives you memory safety without a garbage collector."},
+    {"claim": "The borrow checker was designed by the Rust team at Mozilla Research.", "confidence": "stated", "entities_involved": ["Borrow checker", "Mozilla Research"],
+     "quote": "It was designed together with the ownership model by the Rust team at Mozilla Research."}
+  ],
+  "relationships": [
+    {"from_entity": "Borrow checker", "to": "Rust compiler", "type": "part_of", "description": "The borrow checker is part of the Rust compiler.",
+     "quote": "the borrow checker is the part of the rust compiler that makes sure references never outlive the data they point to"},
+    {"from_entity": "Rust", "to": "Go", "type": "competes_with", "description": "Rust and Go are compared on memory management.",
+     "quote": "Rust gives you memory safety without a garbage collector, unlike Go, which uses one."},
+    {"from_entity": "Borrow checker", "to": "Mozilla Research", "type": "created_by", "description": "The Rust team at Mozilla Research designed it.",
+     "quote": "It was designed together with the ownership model by the Rust team at Mozilla Research."}
+  ],
+  "contradictions": [],
+  "summary": "A talk on how the Rust borrow checker keeps references valid."
+}

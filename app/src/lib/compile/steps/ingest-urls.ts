@@ -33,6 +33,7 @@ import {
   peekMetadata,
 } from '../../nlp-convert';
 import { regenerateSavedLinksPage } from '../../saved-links';
+import { pickSourceDate } from '../../source-dates';
 import { runPerItemStep } from '../step-runner';
 
 const INGEST_URLS_CONCURRENCY = 5;
@@ -123,6 +124,12 @@ export async function runIngestUrlsStep(
         : convertResult.metadata;
 
       const filePath = storeRawMarkdown(sourceId, convertResult.markdown);
+      const date = pickSourceDate({
+        converted: convertResult,
+        source_type: convertResult.source_type,
+        metadata: finalMetadata,
+        markdown: convertResult.markdown,
+      });
       insertSource({
         source_id: sourceId,
         title: convertResult.title,
@@ -134,6 +141,7 @@ export async function runIngestUrlsStep(
         compile_status: 'pending',
         onboarding_session_id: sessionId,
         title_source: convertResult.title_source,
+        ...date,
       });
 
       // YouTube + no-transcript is now rejected upstream by nlp-service

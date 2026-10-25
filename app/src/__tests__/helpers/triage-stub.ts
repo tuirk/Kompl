@@ -13,6 +13,8 @@ export const status = (code: number, detail: string) => () => Response.json({ de
 export interface FetchStub {
   /** Page titles sent to /pipeline/triage, in call order. */
   triaged: string[];
+  /** The bodies sent to /pipeline/triage, in call order. */
+  triageBodies: Array<Record<string, string>>;
   /** Every path fetched, in order. */
   calls: string[];
   /** The bodies the app sent to its own routes, by path. */
@@ -37,7 +39,7 @@ export function stubFetch(opts: {
   routes?: Record<string, (req: Request) => Promise<Response>>;
   answers?: Record<string, () => Response>;
 }): FetchStub {
-  const stub: FetchStub = { triaged: [], calls: [], routeBodies: {} };
+  const stub: FetchStub = { triaged: [], triageBodies: [], calls: [], routeBodies: {} };
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -62,6 +64,7 @@ export function stubFetch(opts: {
       }
       if (path === '/pipeline/triage') {
         stub.triaged.push(body.page_title);
+        stub.triageBodies.push(body);
         const reply = opts.triage?.[body.page_title];
         if (!reply) throw new Error(`no triage answer for ${body.page_title}`);
         return reply();

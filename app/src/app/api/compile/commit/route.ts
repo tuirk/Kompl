@@ -13,6 +13,7 @@
  *     - provenance for the sources the draft used, once per page
  *       (lib/plan-provenance.ts)
  *     - pages_fts upsert
+ *     - disagreements the committed text records (lib/disagreements.ts)
  *     - insertActivity('page_compiled', ...)
  *     - updatePlanStatus('committed')
  *     NO await inside this callback — better-sqlite3 is sync-only.
@@ -64,7 +65,7 @@ import {
 } from '../../../../lib/db';
 import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from '../../../../lib/draft-rules';
 import { flushOutboxPage, reconcileOutbox } from '../../../../lib/outbox-flush';
-import { recordNewDisputes } from '../../../../lib/page-disputes';
+import { recordPageDisagreements } from '../../../../lib/disagreements';
 import { contributingSourceIds, getPlanUsedSourceIds, recordPageContributions } from '../../../../lib/plan-provenance';
 import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
 import { syncPageWikilinks } from '../../../../lib/wikilinks';
@@ -362,6 +363,10 @@ async function commitSession(session_id: string): Promise<Response> {
           `INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)`
         ).run(page_id, plan.title, stripFrontmatter(markdown));
 
+        // Disagreements the committed text records (lib/disagreements.ts):
+        // synced in this transaction, in its own savepoint.
+        recordPageDisagreements(db, { page_id, title: plan.title }, markdown, { session_id });
+
         // Log to activity
         logActivity('page_compiled', {
           source_id: sourceIds[0] ?? null,
@@ -422,10 +427,6 @@ async function commitSession(session_id: string): Promise<Response> {
       category: category ?? '',
       source_count: sourceIds.length,
     });
-
-    // Phase 3b: disputes the page records in its own text, for the activity
-    // feed (lib/page-disputes.ts). Never throws.
-    if (typeof markdown === 'string') recordNewDisputes({ page_id, title: plan.title }, markdown);
 
     committedPageIds.add(page_id);
     committed++;

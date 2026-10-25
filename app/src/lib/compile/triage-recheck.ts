@@ -21,8 +21,9 @@
  * One match_triage_rechecked activity row per compile when anything happened.
  */
 
-import { getEffectiveCompileModel, logActivity, readRawMarkdown } from '../db';
+import { getEffectiveCompileModel, getPage, logActivity, readRawMarkdown } from '../db';
 import { callTriage, triageFailureOf, type MatchEntry, type TriageFailure } from '../triage-call';
+import { readExtraction, readTriageInput, triageAliases, triageInput } from '../triage-evidence';
 import {
   MAX_TRIAGE_ATTEMPTS,
   MAX_TRIAGE_RECHECKS_PER_COMPILE,
@@ -77,6 +78,8 @@ export async function recheckStoredTriages(
   let answered = 0;
   let failed = 0;
   let ceilingHit = false;
+  // Read on the first call only: most compiles re-check nothing.
+  let aliases: Map<string, string[]> | undefined;
 
   const drop = (pair: StoredTriagePair, why: DropReason) => {
     removeTriagePair(pair.source_id, pair.page_id);
@@ -111,10 +114,16 @@ export async function recheckStoredTriages(
       drop(pair, 'source_gone');
       continue;
     }
+    // Judged like this session's pairs: on the source's claims about the
+    // page (lib/triage-evidence.ts). dropReason saw the page exists.
+    const page = getPage(pair.page_id);
+    const input = page
+      ? readTriageInput(markdown, readExtraction(pair.source_id), page, (aliases ??= triageAliases()))
+      : triageInput(markdown, [], null);
 
     rechecked++;
     try {
-      const verdict = await callTriage(markdown, pair.page_summary ?? '', pair.page_title!, model);
+      const verdict = await callTriage(input, pair.page_summary ?? '', pair.page_title!, model);
       stampRecheckVerdict(pair.source_id, pair.page_id, verdict, sessionId);
       matches.push(entry(verdict.decision, verdict.reason));
       answered++;

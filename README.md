@@ -181,7 +181,7 @@ replaced by the absolute path to your Kompl folder. It talks to Kompl at
 |---|---|
 | `search_wiki` | Finds pages by keywords and meaning; without a query, lists pages newest first |
 | `research_topic` | One-call brief on a topic: key pages, their cited lines, how they connect, one source list numbered across them, disputes, gaps |
-| `read_page` | A page with `[n]` citations, its numbered sources (address and date), and how it connects to other pages (each relation with its source) |
+| `read_page` | A page with `[n]` citations, its numbered sources (address and date), how it connects to other pages (each relation with its source), and the disagreements recorded on it |
 | `read_source` | The original text behind a source or a page's citation `[n]`, or just the passages that match a query |
 | `list_sources` | What you've added, searchable by title or address |
 | `recent_changes` | What changed since a date, in one compile, or on one page (with the sections that changed) |

@@ -37,6 +37,7 @@ import {
   setLastLintAt,
   setRelatedPagesMinSources,
 } from '../lib/db';
+import { syncPageTextDisagreements } from '../lib/disagreements';
 import { seedExtraction, seedPage, seedProvenance, seedSource, setupTestDb, type TestDbHandle } from './helpers/test-db';
 
 const CONTRACT_DIR = path.resolve(__dirname, '../../../mcp-server/test/contract');
@@ -164,12 +165,13 @@ function seedWiki(h: TestDbHandle): { paper: string; blog: string } {
   db.prepare(`UPDATE sources SET date_ingested = datetime('now', '-400 days') WHERE source_id = ?`).run(old);
 
   const rel = db.prepare(
-    `INSERT INTO relationship_mentions (from_canonical, to_canonical, relationship_type, source_id, description, first_seen_at)
-     VALUES (?, ?, ?, ?, ?, datetime('now'))`
+    `INSERT INTO relationship_mentions
+       (from_canonical, to_canonical, relationship_type, source_id, description, quote, quote_verified, first_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`
   );
-  rel.run('Bitcoin', 'Proof of work', 'uses', paper, 'Bitcoin uses proof of work.');
-  rel.run('Bitcoin', 'Proof of work', 'uses', blog, null);
-  rel.run('Bitcoin', 'Satoshi Nakamoto', 'created_by', paper, 'Satoshi Nakamoto created Bitcoin.');
+  rel.run('Bitcoin', 'Proof of work', 'uses', paper, 'Bitcoin uses proof of work.', 'Bitcoin relies on proof of work.', 1);
+  rel.run('Bitcoin', 'Proof of work', 'uses', blog, null, null, null);
+  rel.run('Bitcoin', 'Satoshi Nakamoto', 'created_by', paper, 'Satoshi Nakamoto created Bitcoin.', null, null);
 
   // A name several sources mention with no page yet.
   for (let i = 0; i < 3; i++) {
@@ -186,6 +188,9 @@ function seedWiki(h: TestDbHandle): { paper: string; blog: string } {
   db.prepare(
     `INSERT INTO ingest_failures (failure_id, source_url, title_hint, error) VALUES ('f1', 'https://bad.test/', 'Bad page', 'dns')`
   ).run();
+  // The page's Disputed section in the disagreements record (as its commit
+  // writes it), plus the feed event recent_changes(page_id) lists.
+  syncPageTextDisagreements(db, { page_id: 'btc', title: 'Bitcoin' }, btc, { log: false });
   logActivity('page_dispute_recorded', { source_id: null, details: { page_id: 'btc', title: 'Bitcoin', topic: 'launch date' } });
   logActivity('ingest_url_failed', { source_id: null, details: { url: 'https://bad.test/', error: 'dns', session_id: 's1' } });
   logActivity('lint_complete', {

@@ -37,6 +37,9 @@ const fallback = buildMentionPin(
   [{ alias: 'Ethereum', canonical_name: 'Ethereum Foundation' }, { alias: 'ETH', canonical_name: 'Ethereum Foundation' }]
 );
 
+
+/** Extractions made before quotes (plan 3.2) carry none. */
+const NO_QUOTE = { quote: null, quote_verified: null };
 describe('buildResolverPin', () => {
   const pin = buildResolverPin(GROUPS, fallback);
 
@@ -85,8 +88,8 @@ describe('buildSourceMentionRows', () => {
     ]);
     expect(rows.relations).toEqual([
       // "Chrome" is the source's ORG first, so both ends name its rows; competes_with is sorted
-      { from_canonical: 'Google Chrome', to_canonical: 'Google Gemini', relationship_type: 'competes_with', source_id: 's1', description: 'Fills the first.' },
-      { from_canonical: 'Gemini app', to_canonical: 'Google Chrome', relationship_type: 'competes_with', source_id: 's1', description: 'Later sentence.' },
+      { from_canonical: 'Google Chrome', to_canonical: 'Google Gemini', relationship_type: 'competes_with', source_id: 's1', description: 'Fills the first.', ...NO_QUOTE },
+      { from_canonical: 'Gemini app', to_canonical: 'Google Chrome', relationship_type: 'competes_with', source_id: 's1', description: 'Later sentence.', ...NO_QUOTE },
     ]);
   });
 
@@ -115,7 +118,17 @@ describe('rebuildSessionMentions', () => {
   }
   const rowsOf = (sid: string) => ({
     entities: [{ canonical_name: 'Google Gemini', source_id: sid, entity_type: 'PRODUCT' }],
-    relations: [{ from_canonical: 'ChatGPT', to_canonical: 'Google Gemini', relationship_type: 'competes_with', source_id: sid, description: null }],
+    relations: [
+      {
+        from_canonical: 'ChatGPT',
+        to_canonical: 'Google Gemini',
+        relationship_type: 'competes_with',
+        source_id: sid,
+        description: null,
+        quote: null,
+        quote_verified: null,
+      },
+    ],
   });
   const dump = () =>
     handle!.db

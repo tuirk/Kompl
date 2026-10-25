@@ -119,6 +119,23 @@ describe('research_topic connections', () => {
     ]);
     expect(res.text).toContain('[3] Third — http://kompl.test/source/s3');
   });
+
+  it("shows the first source's checked sentence as quoted instead of the summary", async () => {
+    const kompl = fakeKompl({
+      '/api/wiki/research': {
+        ...PACK,
+        connections: [
+          {
+            ...connection(['btc', 'Bitcoin'], ['pow', 'Proof of work'], 'Uses', [2, 1], 2, 'Bitcoin uses proof of work.'),
+            quote: 'Bitcoin relies on proof of work.',
+          },
+        ],
+      },
+    });
+    const res = await call(await connect(kompl.fetchImpl), 'research_topic', { topic: 'bitcoin mining' });
+    expect(res.text).toContain('- Bitcoin uses Proof of work [2][1] · 2 sources · quoted: "Bitcoin relies on proof of work."');
+    expect(res.text).not.toContain("Kompl's summary: Bitcoin uses proof of work.");
+  });
 });
 
 describe('research_topic numbers can be checked with read_source', () => {

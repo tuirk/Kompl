@@ -39,6 +39,12 @@ export interface ConnectionEvidence {
    * when it read this source; not a quote from the source. null when none was kept.
    */
   sentence: string | null;
+  /**
+   * The source's own sentence for the relation, checked against the source
+   * when it was extracted. null when none was found, and for relations
+   * extracted before Kompl kept quotes (absent from older apps).
+   */
+  quote?: string | null;
 }
 
 /** A typed relation of the page, read from the page's side ("Uses", "Used by"). */
@@ -49,7 +55,7 @@ export interface ConnectionItem {
   type: string;
   direction: 'out' | 'in';
   source_count: number;
-  /** At most 3, those with a summary first, newest first. */
+  /** At most 3: those with a quote, then those with a summary, newest first. */
   evidence: ConnectionEvidence[];
 }
 
@@ -60,9 +66,32 @@ export interface PageConnections {
   linked_only: PageLink[];
 }
 
+/**
+ * A disagreement Kompl recorded on the page (newer apps): one of its own
+ * Disputed/Changed sections, or one a check found. The user's dismissals are
+ * left out.
+ */
+export interface PageDisagreement {
+  /** disputed, changed, contradiction (not classified yet), scope or opinion. */
+  kind: string;
+  /** possible (not yet confirmed by the user) or confirmed. */
+  status: string;
+  /** page_text, triage, claim_check or wiki_check. */
+  found_by: string;
+  topic: string;
+  reason: string | null;
+  /** n matches the page's [n] markers; null when the page does not list the source. */
+  sources: Array<{ n: number | null; source_id: string; title: string | null }>;
+  quote_a: string | null;
+  quote_b: string | null;
+  found_at: string;
+}
+
 export interface PageData extends PageMeta {
   content: string;
   sources: PageSource[];
+  /** Disagreements recorded on the page (older apps omit it). */
+  disagreements?: PageDisagreement[];
   /** Typed connections with their evidence (older apps omit it). */
   connections?: PageConnections;
   /** Pages this page links to / pages linking here (older apps omit both). */
@@ -191,10 +220,12 @@ export interface ResearchConnection {
   /** Read from `from`: "Uses", "Part of", "Created by". */
   label: string;
   source_count: number;
-  /** Numbers in the pack's shared source list; the summary's source first. */
+  /** Numbers in the pack's shared source list; the quote's or summary's source first. */
   sources: number[];
   /** Kompl's one-line summary of the relation (as ConnectionEvidence.sentence): not a quote. */
   sentence: string | null;
+  /** That first source's own sentence, checked at extraction (as ConnectionEvidence.quote). */
+  quote?: string | null;
 }
 
 /** A list cut at the caller's limit, with the full count. */
@@ -233,13 +264,21 @@ export interface WikiEvent {
   detail: string | null;
 }
 
+/** A disagreement recorded in the window; older apps send activity events without status or found_by. */
+export interface DisputeEvent extends WikiEvent {
+  /** possible (not yet confirmed by the user) or confirmed. */
+  status?: string;
+  /** page_text, triage, claim_check or wiki_check. */
+  found_by?: string;
+}
+
 export type Changes =
   | {
       mode: 'since';
       since: string;
       sources_added: Listed<AddedSource>;
       pages: Listed<ChangedPage>;
-      disputes: Listed<WikiEvent>;
+      disputes: Listed<DisputeEvent>;
       failures: Listed<WikiEvent>;
     }
   | {

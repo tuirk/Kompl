@@ -22,6 +22,10 @@ export const COMPILE_STEPS = [
   { key: 'labels',   label: 'Merging categories'        },
   { key: 'commit',   label: 'Finalizing'                },
   { key: 'schema',   label: 'Setting up wiki structure' },
+  // Claim check (plan 3.3, lib/compile/steps/claims.ts): after the pages are
+  // committed, so findings land on them. Behind a flag that is off by
+  // default; marked skipped (and so hidden) at the start of a run while off.
+  { key: 'claims',   label: 'Checking claims'           },
 ] as const;
 
 export type CompileStepKey = (typeof COMPILE_STEPS)[number]['key'];

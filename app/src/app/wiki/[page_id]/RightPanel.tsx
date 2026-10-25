@@ -1,6 +1,6 @@
 /**
  * The wiki article's right panel, below "On this page" (components/WikiToc):
- * Disputes, Connections (./ConnectionsPanel.tsx, built from the pieces
+ * Disagreements, Connections (./ConnectionsPanel.tsx, built from the pieces
  * exported here), You might also read and, for source notes, the original.
  * Server components, laid out like the left sidebar: rows that tint on hover
  * and show a focus ring for the keyboard, section labels with counts.
@@ -9,10 +9,11 @@
 
 import Link from 'next/link';
 import type { CSSProperties, ReactNode } from 'react';
-import { FileText, Flag, Scale } from 'lucide-react';
+import { FileText, Flag, History, Scale } from 'lucide-react';
 import { LocalDate } from '../../../components/LocalDate';
-import type { PageDispute } from '../../../lib/page-disputes';
+import type { PanelDisagreement } from '../../../lib/disagreement-view';
 import type { NumberedSource } from '../../../lib/page-sources';
+import DisagreementVerdict from './DisagreementVerdict';
 
 const APP_URL = process.env.APP_URL ?? 'http://app:3000';
 /** The panel's own API reads; never hold the page longer. */
@@ -66,88 +67,88 @@ export function PageRow({ href, title }: { href: string; title: string }) {
   );
 }
 
-interface FlaggedSource {
-  source_id: string | null;
-  source_title: string | null;
-  source_url: string | null;
-  reason: string | null;
-  detected_at: string | null;
-}
+const KIND_LABEL: Record<string, string> = {
+  disputed: 'Sources disagree',
+  changed: 'Changed over time',
+  contradiction: 'A new source contradicts this page',
+  scope: 'Different scope',
+  opinion: 'Different opinions',
+};
+
+const FOUND_BY: Record<string, string> = {
+  page_text: 'in the page text',
+  triage: 'flagged when the source was added',
+  claim_check: 'found by the claim check',
+  wiki_check: 'found by the wiki check',
+};
 
 /**
- * Disputes: the ones the page records in its own text (a "Disputed" or
- * "Contradictions" section citing two or more sources, lib/page-disputes.ts),
- * then new sources the compile flagged as contradicting the page
- * (page_contradiction_detected, via /api/wiki/[page_id]/contradictions).
+ * Disagreements: the Disputed/Changed sections the page records in its own
+ * text (lib/page-disputes.ts), then what Kompl's checks found against the
+ * page, e.g. a new source the compile flagged as contradicting it. All come
+ * from the disagreements record (lib/disagreements.ts), so each carries the
+ * owner's Confirm / Dismiss (./DisagreementVerdict.tsx). Dismissed ones stay
+ * listed, dimmed, so the verdict can be taken back.
  */
-export async function DisputesPanel({
-  pageId,
-  disputes,
+export function DisagreementsPanel({
+  rows,
   sources,
 }: {
-  pageId: string;
-  disputes: ReadonlyArray<PageDispute>;
+  rows: ReadonlyArray<PanelDisagreement>;
   sources: ReadonlyArray<NumberedSource>;
 }) {
-  const res = await fetch(`${APP_URL}/api/wiki/${pageId}/contradictions`, {
-    cache: 'no-store',
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  }).catch(() => null);
-  const flagged: FlaggedSource[] = res?.ok ? ((await res.json()) as { items: FlaggedSource[] }).items : [];
-
-  const total = disputes.length + flagged.length;
-  if (total === 0) return null;
-  const byId = new Map(sources.map((s) => [s.source_id, s]));
+  if (rows.length === 0) return null;
+  const byId = new Map(sources.map((s) => [s.source_id.toLowerCase(), s]));
+  const nameOf = (id: string) => {
+    const s = byId.get(id.toLowerCase());
+    return s ? `${s.n}. ${s.title ?? 'Untitled source'}` : 'A source no longer in the wiki';
+  };
+  const open = rows.filter((r) => r.status !== 'dismissed').length;
 
   return (
-    <PanelSection label="Disputes" count={total}>
-      {disputes.map((d) => {
-        const sides = d.sourceIds.map((id) => byId.get(id));
-        const names = sides.map((s) => (s ? `${s.n}. ${s.title ?? 'Untitled source'}` : 'A source no longer in the wiki'));
+    <PanelSection label="Disagreements" count={open}>
+      {rows.map((r) => {
+        const dismissed = r.status === 'dismissed';
+        const Icon = r.found_by !== 'page_text' ? Flag : r.kind === 'changed' ? History : Scale;
+        const tone = r.found_by !== 'page_text' ? 'var(--danger)' : 'var(--warning)';
+        const fromText = r.found_by === 'page_text';
+        const source = r.source_id ? byId.get(r.source_id.toLowerCase()) : undefined;
+        const title = fromText
+          ? r.topic
+          : r.topic || (source ? source.title ?? 'Untitled source' : r.source_id ? 'A source no longer in the wiki' : 'This page');
+        const href = fromText ? (r.anchor ? `#${r.anchor}` : null) : r.source_id && source ? `/source/${r.source_id}` : null;
+        const note = fromText
+          ? r.kind === 'changed'
+            ? `Changed over time · ${r.source_ids.length} sources`
+            : `${r.source_ids.length} sources disagree`
+          : r.reason ?? KIND_LABEL[r.kind] ?? 'Contradicts this page.';
         return (
-          <a
-            key={`${d.anchor}-${d.headingIndex}`}
-            href={`#${d.anchor}`}
+          <div
+            key={r.key}
             className="wiki-rp-item"
-            title={`Sources that disagree:\n${names.join('\n')}`}
-            style={{ ...ROW, display: 'flex', gap: 8, alignItems: 'flex-start' }}
+            title={fromText ? `Sources that disagree:\n${r.source_ids.map(nameOf).join('\n')}` : FOUND_BY[r.found_by]}
+            style={{ ...ROW, display: 'flex', gap: 8, alignItems: 'flex-start', opacity: dismissed ? 0.55 : 1 }}
           >
-            <Scale size={14} aria-hidden style={{ ...ICON, color: 'var(--warning)' }} />
-            <span style={{ minWidth: 0 }}>
-              <span style={{ display: 'block' }}>{d.topic}</span>
-              <span style={NOTE}>{`${d.sourceIds.length} sources disagree`}</span>
-            </span>
-          </a>
-        );
-      })}
-      {flagged.map((item, idx) => {
-        const label = item.source_title ?? item.source_url ?? 'Untitled source';
-        const body = (
-          <>
-            <Flag size={14} aria-hidden style={{ ...ICON, color: 'var(--danger)' }} />
-            <span style={{ minWidth: 0 }}>
-              <span style={{ display: 'block' }}>{label}</span>
+            <Icon size={14} aria-hidden style={{ ...ICON, color: tone }} />
+            <span style={{ minWidth: 0, flex: 1 }}>
+              {href ? (
+                <Link href={href} style={{ display: 'block', color: 'inherit', textDecoration: 'none' }}>
+                  {title}
+                </Link>
+              ) : (
+                <span style={{ display: 'block' }}>{title}</span>
+              )}
               <span style={NOTE}>
-                {item.reason ?? 'Contradicts this page.'}
-                {item.detected_at && (
+                {note}
+                {!fromText && r.found_at && (
                   <>
                     {' · flagged '}
-                    <LocalDate iso={item.detected_at} />
+                    <LocalDate iso={r.found_at} />
                   </>
                 )}
               </span>
+              {r.disagreement_id && <DisagreementVerdict id={r.disagreement_id} status={r.status} topic={title} />}
             </span>
-          </>
-        );
-        const key = `${item.source_id ?? 'unknown'}-${item.detected_at ?? idx}`;
-        const style: CSSProperties = { ...ROW, display: 'flex', gap: 8, alignItems: 'flex-start' };
-        return item.source_id ? (
-          <Link key={key} href={`/source/${item.source_id}`} className="wiki-rp-item" style={style}>
-            {body}
-          </Link>
-        ) : (
-          <div key={key} style={{ ...style, color: 'var(--fg-muted)' }}>
-            {body}
           </div>
         );
       })}

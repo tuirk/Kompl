@@ -24,6 +24,8 @@ import {
 import AgentSourcesCard from './AgentSourcesCard';
 import PageUpgradeCard from './PageUpgradeCard';
 import TriageRecheckCard from './TriageRecheckCard';
+import ClaimCheckCard from './ClaimCheckCard';
+import WikiCheckCard from './WikiCheckCard';
 import {
   DEFAULT_COMPILE_MODEL, LLM_MODELS, LLM_MODEL_INFO, getProviderForModel, isLlmModel,
   type LlmModel, type LlmProvider,
@@ -675,10 +677,9 @@ export default function SettingsPage() {
               badge="Beta"
               summary={
                 <>
-                  Checks the wiki for orphan pages, stale summaries, broken source references,
-                  entities mentioned by three or more sources that have no page yet, and
-                  contradictions between pages. The contradiction check uses your AI model, so
-                  checks run only when you start one.
+                  Checks the wiki for orphan pages, stale summaries, broken source references and
+                  entities mentioned by three or more sources that have no page yet. Disagreements
+                  between sources have their own check below.
                 </>
               }
               control={
@@ -699,6 +700,8 @@ export default function SettingsPage() {
                 </div>
               )}
             </SettingCard>
+
+            <WikiCheckCard />
 
             <SettingCard
               title="Stale source alerts"
@@ -884,6 +887,8 @@ export default function SettingsPage() {
             />
 
             <TriageRecheckCard />
+
+            <ClaimCheckCard />
 
             <Card>
               <details>

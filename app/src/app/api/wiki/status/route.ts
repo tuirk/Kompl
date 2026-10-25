@@ -5,8 +5,9 @@
  *   - gaps from the plain-read health checks (lib/wiki-health.ts): names
  *     with no page, pages resting on one source, unlinked pages, sources
  *     older than the Settings stale threshold;
- *   - contradictions found by the last manual health check, which is the
- *     only check that uses the LLM;
+ *   - the last health check: since plan 3.6 that is the whole-wiki check's
+ *     open findings, two sources disagreeing on a page (lib/claim-check/);
+ *     before any run of it, the contradictions an older lint pass logged;
  *   - the knowledge graph's topic clusters and bridge pages, as the map's
  *     default view shows them (lib/graph-report.ts; cached, report-only,
  *     betweenness in a worker thread; left out, and logged, if building it
@@ -30,6 +31,7 @@ import {
   getWikiStats,
 } from '@/lib/db';
 import { graphReportCached, type GraphReport } from '@/lib/graph-report';
+import { lastWikiCheckAt, wikiCheckFindings } from '@/lib/claim-check/verdicts';
 import { normalizeLintResult } from '@/lib/lint-result';
 import { getThinPages, MISSING_NAMES_LIMIT, runHealthChecksCached } from '@/lib/wiki-health';
 
@@ -50,6 +52,7 @@ export async function GET() {
   const orphans = checks.orphan_pages.filter((p) => p.page_id !== SAVED_LINKS_PAGE_ID && !archived.has(p.page_id));
   const thresholdDays = getStaleThresholdDays();
   const lastCheck = normalizeLintResult(getLastLintResult());
+  const wikiCheckAt = lastWikiCheckAt(db);
   const running = getRunningCompileSession();
   const graph = await graphReport(db);
 
@@ -82,16 +85,18 @@ export async function GET() {
       orphan_pages: summary(orphans, (p) => p),
       dead_provenance: { count: checks.dead_provenance.length },
     },
-    last_health_check: lastCheck
-      ? {
-          at: getLastLintAt(),
-          contradictions: summary(lastCheck.contradictions, (c) => ({
-            page_a: c.page_a_title,
-            page_b: c.page_b_title,
-            claim: c.claim,
-          })),
-        }
-      : null,
+    last_health_check: wikiCheckAt
+      ? { at: wikiCheckAt, contradictions: summary(wikiCheckFindings(db), (c) => c) }
+      : lastCheck
+        ? {
+            at: getLastLintAt(),
+            contradictions: summary(lastCheck.contradictions, (c) => ({
+              page_a: c.page_a_title,
+              page_b: c.page_b_title,
+              claim: c.claim,
+            })),
+          }
+        : null,
     // Left out if the graph report failed: the MCP then reads it as an older app.
     ...(graph ? { clusters: graph.clusters, bridges: graph.bridges } : {}),
   });

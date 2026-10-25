@@ -16,7 +16,7 @@ import { compareRelationLabels, relationLabel, type RelationDirection } from './
 export { getRelationEdges, type EdgeRelation, type MissingPage, type RelationEdge, type RelationEdges } from './relation-edges';
 export { getRelationsAmong, type PageRelation, type RelationEnd } from './relation-among';
 
-/** Evidence entries kept per connection: sentences first, newest first. */
+/** Evidence entries kept per connection: quotes, then sentences, newest first. */
 const EVIDENCE_PER_ITEM = 3;
 
 /**
@@ -28,7 +28,19 @@ export interface RelationEvidence {
   source_id: string;
   source_title: string;
   source_archived: boolean;
+  /** Kompl's one-line summary of the relation, written on reading the source. */
   sentence: string | null;
+  /**
+   * The source's own sentence, checked against the source at extraction
+   * (v30); null when none was found, and for relations extracted before.
+   */
+  quote: string | null;
+}
+
+/** What one source says about a connection. */
+interface SourceSays {
+  sentence: string | null;
+  quote: string | null;
 }
 
 /**
@@ -78,8 +90,8 @@ export function getPageConnections(pageId: string): PageConnections {
   const names = buildNameMap(db, pages, true);
   const shown = (id: string) => pages.get(id)?.archived === false;
 
-  // key: other end + type + label. sentences: source_id -> sentence, newest first.
-  const items = new Map<string, { item: ConnectionItem; sentences: Map<string, string | null> }>();
+  // key: other end + type + label. says: source_id -> its sentence and quote, newest first.
+  const items = new Map<string, { item: ConnectionItem; says: Map<string, SourceSays> }>();
   for (const row of loadRelationRows(db)) {
     const fromId = names.get(row.from_canonical.toLowerCase()) ?? null;
     const toId = names.get(row.to_canonical.toLowerCase()) ?? null;
@@ -99,26 +111,37 @@ export function getPageConnections(pageId: string): PageConnections {
       const title = otherId !== null ? (pages.get(otherId) as { title: string }).title : otherName;
       entry = {
         item: { page_id: otherId, title, type, direction, source_count: 0, evidence: [] },
-        sentences: new Map(),
+        says: new Map(),
       };
       items.set(key, entry);
     }
-    if ((entry.sentences.get(row.source_id) ?? null) === null) {
-      entry.sentences.set(row.source_id, row.description);
+    const said = entry.says.get(row.source_id);
+    if (!said) {
+      entry.says.set(row.source_id, { sentence: row.description, quote: row.quote });
+    } else {
+      said.sentence ??= row.description;
+      said.quote ??= row.quote;
     }
   }
 
   const sourceRow = db.prepare('SELECT title, status FROM sources WHERE source_id = ?');
   const byLabel = new Map<string, ConnectionItem[]>();
-  for (const { item, sentences } of items.values()) {
-    item.source_count = sentences.size;
-    const all = [...sentences];
-    const ranked = [...all.filter(([, s]) => s !== null), ...all.filter(([, s]) => s === null)];
-    for (const [source_id, sentence] of ranked) {
+  const weight = (s: SourceSays) => (s.quote !== null ? 0 : s.sentence !== null ? 1 : 2);
+  for (const { item, says } of items.values()) {
+    item.source_count = says.size;
+    // Sorting is stable, so each rank stays newest first.
+    const ranked = [...says].sort(([, a], [, b]) => weight(a) - weight(b));
+    for (const [source_id, { sentence, quote }] of ranked) {
       if (item.evidence.length >= EVIDENCE_PER_ITEM) break;
       const source = sourceRow.get(source_id) as { title: string; status: string | null } | undefined;
       if (source) {
-        item.evidence.push({ source_id, source_title: source.title, source_archived: source.status === 'archived', sentence });
+        item.evidence.push({
+          source_id,
+          source_title: source.title,
+          source_archived: source.status === 'archived',
+          sentence,
+          quote,
+        });
       }
     }
     const label = relationLabel(item.type, item.direction);

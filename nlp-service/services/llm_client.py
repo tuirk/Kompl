@@ -38,11 +38,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
-from . import draft_budget
+from . import draft_budget, quote_check
 from .providers import LLMRequest, get_provider
 
 # ---------------------------------------------------------------------------
@@ -358,6 +359,7 @@ _DEFAULT_THINKING_BUDGETS: dict[str, int] = {
     "crossref_pages": 0,
     "triage_page_update": 0,
     "consolidate_labels": 512,
+    "judge_claim_pairs": 512,
 }
 
 
@@ -687,17 +689,62 @@ class ExtractionConcept(BaseModel):
     description: str
 
 
-class ExtractionClaim(BaseModel):
+def _quote_or_none(value: Any) -> str | None:
+    """A quote as the LLM gave it; empty, missing or not a string reads as
+    None, so one bad quote never fails the whole extraction (DeepSeek's
+    json_object mode enforces no schema)."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _require_quote_key(schema: dict[str, Any]) -> None:
+    """List `quote` as required in the schema the LLM sees, so Gemini always
+    writes it (it may skip optional fields); null stays allowed, and
+    parsing still accepts a missing key."""
+    required = schema.setdefault("required", [])
+    if "quote" not in required:
+        required.append("quote")
+
+
+class _Quoted(BaseModel):
+    """Items carrying `quote`, the source sentence they rest on (plan 3.2,
+    D4), and `quote_verified`, set after parsing by services/quote_check.py
+    (True: found in the source, and `quote` is then the source's own text;
+    False: not found, kept but never shown as quoted; None: no quote).
+    `quote_verified` is left out of the schema the LLM sees. Extractions
+    made before quotes have neither key. The fields are declared last in
+    each model, so the LLM writes the item before its quote."""
+    model_config = ConfigDict(json_schema_extra=_require_quote_key)
+
+    @field_validator("quote", mode="before", check_fields=False)
+    @classmethod
+    def _soft_quote(cls, value: Any) -> str | None:
+        return _quote_or_none(value)
+
+
+class ExtractionClaim(_Quoted):
     claim: str
     confidence: str    # "stated" | "implied" | "speculative"
     entities_involved: list[str]
+    quote: str | None = None
+    quote_verified: SkipJsonSchema[bool | None] = None
 
 
-class ExtractionRelationship(BaseModel):
+class ExtractionRelationship(_Quoted):
     from_entity: str   # JSON key: "from_entity" (avoids Python reserved word)
     to: str
-    type: str          # uses | competes_with | part_of | created_by | related_to | contradicts
+    # uses | competes_with | part_of | created_by | related_to | contradicts.
+    # A free string: an off-list value must not fail the whole extraction;
+    # the app normalises the spelling (app/src/lib/relation-rows.ts).
+    type: str
     description: str
+    quote: str | None = None
+    quote_verified: SkipJsonSchema[bool | None] = None
+    # Both ends are names from this extraction's entity or concept lists
+    # (by skeleton); set after parsing, outside the LLM's schema. Counted
+    # only: nothing is dropped until a measured run decides.
+    ends_listed: SkipJsonSchema[bool | None] = None
 
 
 class ExtractionContradiction(BaseModel):
@@ -749,11 +796,31 @@ Return JSON with these fields:
    - claim: the claim text itself (a string — full sentence)
    - confidence: "stated" (explicit) | "implied" (strongly suggested) | "speculative"
    - entities_involved: list of entity/concept names from your entities/concepts lists
-5. relationships — connections between entities/concepts
-   - from_entity: name of first entity/concept
-   - to: name of second entity/concept
-   - type: uses | competes_with | part_of | created_by | related_to | contradicts
-   - description: 1-sentence explanation of how these entities relate
+   - quote: the one sentence of the source that states or most directly
+     supports the claim, copied exactly as written: same words, same order,
+     no paraphrase, no ellipsis. For a very long sentence copy the
+     continuous part that carries the claim. null only if no sentence does.
+5. relationships — connections between the entities and concepts you listed
+   - from_entity, to: names copied exactly from your entities or concepts
+     lists; do not introduce other names
+   - type: one of these, read as "from_entity <type> to":
+       uses           from uses, runs on or is built with to
+                      (from_entity "ChatGPT", to "GPT-4")
+       part_of        from is a part, member or component of to, the whole
+                      (from_entity "Chrome DevTools", to "Google Chrome")
+       created_by     from was created, founded, written or built by to, the maker
+                      (from_entity "Linux", to "Linus Torvalds")
+       competes_with  from and to are rival alternatives; order does not matter
+                      (from_entity "Firefox", to "Google Chrome")
+       contradicts    from and to make claims that cannot both be true; order
+                      does not matter (from_entity "Steady-state theory",
+                      to "Big Bang theory")
+       related_to     only when none of the types above fits
+     When the source says it the other way round ("Linus Torvalds created
+     Linux"), swap the names to fit the type; never invent an inverse type.
+   - description: 1-sentence explanation, in your words, of how they relate
+   - quote: the source sentence that states this relationship, copied
+     exactly as written; null if no single sentence states it
 6. contradictions — claims that contradict other sources or internal logic
    - claim: what this source claims
    - against: what it contradicts (leave empty string if unknown)
@@ -763,6 +830,36 @@ Keep lists focused: 5-15 entities, 3-10 concepts, 3-15 claims, 3-10 relationship
 Each entity appears once. Stop as soon as the source is covered — do NOT
 repeat names or pad the output.
 """ + _JSON_TRAILER
+
+
+def _checked(
+    result: LLMExtractionResponse, source_id: str, markdown: str
+) -> LLMExtractionResponse:
+    """The extraction after the soft quote check and the relation-end count
+    (services/quote_check.py), both in place, with one log line. Never
+    raises: a failed check leaves quote_verified unset and is logged, as a
+    quote is never a reason to lose an extraction."""
+    try:
+        report = quote_check.check_extraction(
+            result.claims,
+            result.relationships,
+            [e.name for e in result.entities] + [c.name for c in result.concepts],
+            markdown,
+        )
+    except Exception as e:  # noqa: BLE001 - logged; the extraction stands
+        print(f"[extract] {source_id}: quote check failed: {e!r}", file=sys.stderr, flush=True)
+        return result
+    unlisted = report.unlisted_ends
+    print(
+        f"[extract] {source_id}: verified quotes: claims "
+        f"{report.claims_verified}/{report.claims_quoted} (of {report.claims}), "
+        f"relationships {report.relations_verified}/{report.relations_quoted} "
+        f"(of {report.relations}); relation ends not in the entity/concept "
+        f"lists: {len(unlisted)}" + (f" {list(unlisted[:10])}" if unlisted else ""),
+        file=sys.stderr,
+        flush=True,
+    )
+    return result
 
 
 def extract_source(
@@ -793,6 +890,7 @@ def extract_source(
     """
     import json as _json
 
+    source_text = markdown  # the quote check reads the whole source
     input_cap = _extract_input_cap_for(model)
     if len(markdown) > input_cap:
         truncated = markdown[:input_cap]
@@ -837,7 +935,7 @@ def extract_source(
         raise LLMCompileError("extract_llm_error: empty response text")
 
     if result.parsed is not None:
-        return result.parsed  # type: ignore[return-value]
+        return _checked(result.parsed, source_id, source_text)  # type: ignore[arg-type]
 
     # Recovery path for the Gemini 2.5 Flash structured-output repetition
     # loop (upstream bug, see repo issue). Three attempts in order of cost:
@@ -857,7 +955,7 @@ def extract_source(
             file=sys.stderr,
             flush=True,
         )
-        return salvaged
+        return _checked(salvaged, source_id, source_text)
 
     if result.finish_reason != "MAX_TOKENS":
         # Not a truncation — parse error is something else (schema drift,
@@ -935,7 +1033,7 @@ def extract_source(
         ) from first_err
 
     if fallback_result.parsed is not None:
-        return fallback_result.parsed  # type: ignore[return-value]
+        return _checked(fallback_result.parsed, source_id, source_text)  # type: ignore[arg-type]
 
     fallback_parse_err = fallback_result.parse_error
     salvaged_fallback = _salvage_extraction(fallback_raw)
@@ -945,7 +1043,7 @@ def extract_source(
             file=sys.stderr,
             flush=True,
         )
-        return salvaged_fallback
+        return _checked(salvaged_fallback, source_id, source_text)
     raise LLMCompileError(
         f"extract_llm_parse_failed_after_fallback: "
         f"first={first_err}; second={fallback_parse_err}; "
@@ -1157,9 +1255,17 @@ SOURCES ONLY:
 - One exception: the opening paragraph may define a general term in one plain sentence without a citation. That sentence names no person, organization, product, date, number or ranking.
 - Thin sources make a short page. Do not pad it.
 
-CONTRADICTIONS:
-- Two claims contradict only if both cannot be true. Different milestones (designed vs first released, proposed vs founded), dates of different events, or one source giving more detail are not contradictions: state each fact with its own citation.
-- Write about a contradiction only when one exists, citing both sources. Never add a Contradictions or Disputed section that says there are none."""
+DISAGREEMENTS (this format applies whatever the wiki schema says):
+- Two claims disagree only if both cannot be true. Different milestones (designed vs first released, proposed vs founded), dates of different events, or one source giving more detail are not disagreements: state each fact with its own citation.
+- Give each real disagreement its own section with one of these two headings, never another (not "Contradictions" or "Conflicting claims"):
+  - "### Disputed: <topic>" when sources disagree about the same fact. State each side with its citation: "One source gives 2013 [S1]; another gives 2015 [S2]."
+  - "### Changed: <topic>" when a later source shows that an earlier claim no longer holds (a figure, status or rule that changed over time). Give the older claim with its source's date, then the newer one with its source's date: "The limit was 10 as of 2020 [S1]; it is 20 as of 2023 [S2]."
+- Tell the two apart by the dates in SOURCE DATES: Changed only when the later-dated source shows the change; otherwise Disputed. Without dates, use Disputed.
+- Never add either section to say there is nothing to report."""
+
+# One-line forms of the two headings, restated where the prompt reminds the
+# model of them (the final check, update drafts).
+_DISAGREEMENT_HEADINGS = '"### Disputed: <topic>" or "### Changed: <topic>"'
 
 _DRAFT_PAGE_PROMPTS: dict[str, str] = {
     "source-summary": f"""\
@@ -1199,7 +1305,7 @@ Write a concept wiki page synthesizing information from multiple sources.
 The page body should include:
 - A definition/description paragraph
 - ## Key Claims (from sources, each with its citation)
-- ## Contradictions (only if two sources make claims that cannot both be true; otherwise leave it out)
+- Disagreements between sources, only if two sources make claims that cannot both be true, in the DISAGREEMENTS format below; otherwise leave them out
 - ## Related Concepts (at most 5 pages from the wikilink list that the sources directly connect to this topic; leave it out if there are none)
 
 Synthesize across sources. Attribute specific claims to their source.
@@ -1270,7 +1376,10 @@ def _final_check(cited: bool) -> str:
         ]
     lines.append("- Each wiki page is linked at most once; source documents are never linked.")
     if cited:
-        lines.append("- No Contradictions section unless two sources truly conflict; at most 5 Related Concepts.")
+        lines.append(
+            f"- A disagreement only where two sources truly conflict, headed {_DISAGREEMENT_HEADINGS}; "
+            "at most 5 Related Concepts."
+        )
     lines.append("- Frontmatter keys: title, page_type, category, summary.")
     return "\n".join(lines) + "\n"
 
@@ -1293,6 +1402,27 @@ def _source_header(sc: dict[str, Any], cite: bool) -> str:
         name = f"{name} (shortened: first {len(sc.get('markdown', '')):,} of {full:,} characters)"
     label = sc.get("citation_label")
     return f"--- Source [{label}]: {name} ---" if cite and label else f"--- Source: {name} ---"
+
+
+def _source_dates_line(sources: list[dict[str, Any]], earlier: list[dict[str, Any]]) -> str | None:
+    """Each labelled source's date, for telling a Changed claim from a
+    Disputed one (plan 3.1, D5). The app sends the publication date when it
+    knows it, else the date the source was saved (date_kind "saved").
+    None when no source has a date (older apps send none)."""
+    entries: list[str] = []
+    seen: set[str] = set()
+    for sc in [*sources, *earlier]:
+        label, date = sc.get("citation_label"), sc.get("date")
+        if not label or not date or label in seen:
+            continue
+        seen.add(label)
+        entries.append(f"[{label}] {date}{' (saved)' if sc.get('date_kind') == 'saved' else ''}")
+    if not entries:
+        return None
+    return (
+        'SOURCE DATES (when each source was published; "saved" marks the day it was added to the wiki, '
+        "given when the publication date is unknown): " + "; ".join(entries)
+    )
 
 
 def _earlier_sources_note(earlier: list[dict[str, Any]]) -> list[str]:
@@ -1348,12 +1478,13 @@ def draft_page(
     # Build user prompt
     parts: list[str] = [f"Title: {title}", f"Page type: {page_type}", ""]
 
+    synthesized = page_type in _CITED_PAGE_TYPES
     if schema:
         # schema.md is written once per wiki and may predate these rules (it
-        # can demand "Disputed" sections or extra frontmatter fields).
+        # can demand "Contradictions" sections or extra frontmatter fields).
         parts += [
             "Wiki schema (house conventions; where it conflicts with the system instructions on "
-            "frontmatter keys, links, citations, contradictions or related lists, follow the "
+            "frontmatter keys, links, citations, disagreement sections or related lists, follow the "
             "system instructions):",
             schema,
             "",
@@ -1362,11 +1493,18 @@ def draft_page(
     if existing_content:
         parts += ["Existing page content (update this, don't rewrite from scratch):",
                   existing_content, ""]
+        conflict = (
+            "if a new source conflicts with an existing claim, keep both, cite each and record the "
+            "disagreement in the DISAGREEMENTS format. Rewrite an existing section about sources that "
+            "disagree under any other heading (such as Contradictions) into that format, keeping its "
+            "citations."
+            if synthesized
+            else "if a new source conflicts with an existing claim, keep both and cite each."
+        )
         parts += [
             "UPDATING: The existing claims come from earlier sources, some not shown here. Keep them "
-            "and their labels even though you cannot check them. Add what the new sources say; if a "
-            "new source conflicts with an existing claim, keep both and cite each. Do not attach a new "
-            "label to an existing claim unless that source states it.",
+            f"and their labels even though you cannot check them. Add what the new sources say; {conflict} "
+            "Do not attach a new label to an existing claim unless that source states it.",
             "",
         ]
 
@@ -1423,6 +1561,9 @@ def draft_page(
     )
     if cite:
         parts += [_CITATION_RULES, ""]
+        dates = _source_dates_line(source_contents, earlier)
+        if dates:
+            parts += [dates, ""]
 
     # Source documents share what the budget leaves after the parts above,
     # which are never cut (services/draft_budget.py). An older source the
@@ -1682,7 +1823,7 @@ The schema should cover:
 2. Naming conventions for page titles
 3. YAML frontmatter: exactly title, page_type, category and summary (Kompl tracks sources, dates and status itself; define no other fields)
 4. Cross-referencing rules (link an existing page at its first mention, once per page; never link source documents)
-5. How to handle contradictions between sources (only claims that cannot both be true; different milestones are not contradictions)
+5. How to handle contradictions between sources (only claims that cannot both be true; different milestones are not contradictions). Kompl records each one under a "### Disputed: <topic>" heading, or "### Changed: <topic>" when a later source shows the claim changed over time; keep those two headings
 6. Category structure based on the content seen so far
 7. When to create a new page vs update an existing one
 8. Content quality standards (factual accuracy, attribution, no hallucination)
@@ -1692,18 +1833,30 @@ instructions for the LLM on all future wiki updates.
 """
 
 
+TriageEvidence = Literal["claims", "source_text"]
+
+
 def triage_page_update(
     source_claims: str,
     existing_page_summary: str,
     page_title: str,
     model: str = _DEFAULT_MODEL,
+    *,
+    page_section: str = "",
+    evidence: TriageEvidence = "source_text",
 ) -> dict[str, str]:
     """Decide whether a source warrants updating an existing wiki page.
 
     Args:
-        source_claims:        Extracted markdown text from the new source.
-        existing_page_summary: Current summary/content of the wiki page.
+        source_claims:        With evidence='claims', the claims the source's
+                              extraction makes about the page's subject, each
+                              with the source's own sentence when one was kept
+                              (app lib/triage-evidence.ts). With
+                              evidence='source_text', the source's text.
+        existing_page_summary: Current summary of the wiki page.
         page_title:           Title of the wiki page being triaged.
+        page_section:         The page's section(s) most related to the
+                              claims; empty for none.
 
     Returns dict with keys 'decision' ('update'|'contradiction'|'skip') and 'reason'.
 
@@ -1713,20 +1866,30 @@ def triage_page_update(
         LLMCompileError      — empty response, JSON parse failed, or a decision
                                other than the three (case and spacing ignored)
     """
-    import json as _json
-
+    section = (
+        f"The page's section most related to these claims:\n{page_section}\n\n"
+        if page_section.strip() else ''
+    )
+    new_information = (
+        "What the new source claims about this page's subject (each claim is "
+        "followed by the source's own sentence when one was kept):\n"
+        if evidence == "claims"
+        else 'New information from ingested source:\n'
+    )
     prompt = (
         f'You are a wiki maintenance assistant deciding whether a wiki page needs updating.\n\n'
         f'Wiki page: "{page_title}"\n'
         f'Current page summary:\n{existing_page_summary}\n\n'
-        f'New information from ingested source:\n{source_claims}\n\n'
+        f'{section}'
+        f'{new_information}{source_claims}\n\n'
         f'Respond with JSON only:\n'
         f'{{\n'
         f'  "decision": "update" | "contradiction" | "skip",\n'
         f'  "reason": "brief explanation (1-2 sentences)"\n'
         f'}}\n\n'
         f'- "update": source has material new information not in the current page\n'
-        f'- "contradiction": source directly contradicts a factual claim in the page\n'
+        f'- "contradiction": source directly contradicts a factual claim in the page; '
+        f"the reason quotes the page's claim and the source's claim\n"
         f'- "skip": source is redundant or only tangentially mentions the topic'
     )
 
@@ -1927,6 +2090,166 @@ def consolidate_labels(
 
 
 # ---------------------------------------------------------------------------
+# Claim check — do two sources' claims disagree? (plan 3.3 and 3.6, D3/D5)
+# ---------------------------------------------------------------------------
+#
+# The app pairs claims from different sources that share a subject
+# (app/src/lib/claim-check/) and sends them in batches; one call judges a
+# batch, each pair on its own (batch prompting: Cheng et al. 2023 report
+# about the same accuracy up to ~6 items per call at a fraction of the
+# calls; larger batches drift). Each pair is judged NLI-style: first whether
+# both claims speak about the same thing (de Marneffe et al. 2008: a
+# contradiction needs the two to be about the same event), then which
+# verdict. The definitions match the draft prompt's DISAGREEMENTS rules
+# (Disputed / Changed, plan 3.1). services/claim_verdicts.py settles the
+# answers: unknown verdicts are dropped and "outdated" stands only when the
+# sources' dates order the two claims (D5).
+
+CLAIM_VERDICTS = ("disputed", "outdated", "scope", "opinion", "none")
+# Most pairs one call judges (routers/claims.py enforces it; the app sends
+# CLAIM_JUDGE_BATCH_SIZE, app/src/lib/claim-check/limits.ts).
+CLAIM_JUDGE_MAX_PAIRS = 8
+# About 100 tokens per answer plus thinking. DeepSeek counts its reasoning
+# against this limit and at effort "low" still spent all of 4096 on one batch
+# (finish=length, cut-off JSON), so the same room as disambiguate. GET
+# /llm/pricing reports it for the app's whole-wiki check estimate.
+_CLAIM_JUDGE_MAX_OUTPUT_TOKENS = 8192
+
+
+class ClaimJudgement(BaseModel):
+    # No extra='forbid' — LLM output model. reason comes before verdict so
+    # the model states what each side says before it decides.
+    pair_id: str
+    topic: str
+    reason: str
+    verdict: str  # one of CLAIM_VERDICTS; services/claim_verdicts.py checks it
+
+
+class ClaimJudgeResponse(BaseModel):
+    # No extra='forbid' — LLM output model.
+    judgements: list[ClaimJudgement]
+
+
+_CLAIM_JUDGE_SYSTEM_PROMPT = """\
+You check a personal wiki for sources that disagree. Each item below is a
+PAIR of claims, A and B, taken from two different sources that talk about the
+same subject. Each claim comes with its source's title and date and, when one
+was kept, the source's own sentence. Judge every pair on its own; the pairs
+are unrelated to each other.
+
+For each pair, first decide whether both claims speak about the same thing:
+the same subject, the same event or measure, the same time and the same
+scope. Then choose one verdict:
+- "disputed": both claims are about the same fact and cannot both be true
+  ("founded in 2008" / "founded in 2009"; "is open source" / "is
+  proprietary").
+- "outdated": a figure, status or rule that changes over time, where the
+  later-dated source reports a newer state that replaces the earlier claim
+  ("supports 10 languages", 2020 / "supports 40 languages", 2024). Use it
+  only when the later-dated source shows the change. When the dates are the
+  same, unknown, or do not tell which claim is later, use "disputed".
+- "scope": they look opposed but are about different things, so both can be
+  true: different places, times, versions, groups or conditions ("free for
+  students" / "costs $10 a month"), or different milestones or events of one
+  thing (announced vs shipped, signed vs ratified).
+- "opinion": at least one side is a judgment, prediction or recommendation
+  rather than a checkable fact, and the two judgments differ.
+- "none": they agree, one only adds detail, or they are not about the same
+  thing at all.
+
+Dates: "published" is the source's publication date. "saved" is the day the
+source was added to the wiki, given when its publication date is unknown; the
+source was published on or before that day.
+
+For each pair return:
+- pair_id: the pair's id exactly as given.
+- topic: a few words naming what the two claims are about ("launch year").
+- reason: one sentence. For any verdict but "none", say what each side
+  claims ("A gives 2008; B gives 2009").
+- verdict: one of "disputed", "outdated", "scope", "opinion", "none".
+Answer every pair exactly once. Do not invent a conflict the claims do not
+state; most pairs that share a subject do not disagree.
+""" + _JSON_TRAILER
+
+
+def _claim_source_note(side: dict[str, Any]) -> str:
+    """The source's title and date as the judge reads them."""
+    date, kind = side.get("date"), side.get("date_kind")
+    if not date:
+        note = "date unknown"
+    else:
+        note = f"saved {date}, publication date unknown" if kind == "saved" else f"published {date}"
+    title = (side.get("source_title") or "").strip()
+    return f'"{title}", {note}' if title else note
+
+
+def _claim_pairs_payload(pairs: list[dict[str, Any]]) -> str:
+    """The pairs as the judge reads them: one block per pair, A then B."""
+    blocks: list[str] = []
+    for pair in pairs:
+        lines = [f"PAIR {pair['pair_id']}" + (f" (subject: {pair['subject']})" if pair.get("subject") else "")]
+        for label in ("a", "b"):
+            side = pair[label]
+            lines.append(f"  {label.upper()} ({_claim_source_note(side)}): {side['claim']}")
+            quote = side.get("quote")
+            if quote and quote != side["claim"]:
+                lines.append(f'     Source sentence: "{quote}"')
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def judge_claim_pairs(
+    pairs: list[dict[str, Any]],
+    model: str = _DEFAULT_MODEL,
+) -> ClaimJudgeResponse:
+    """Judge one batch of claim pairs in one call. No call without pairs.
+
+    Args:
+        pairs: {pair_id, subject, a, b} dicts; each side is {claim, quote,
+               source_title, date, date_kind} (routers/claims.py ClaimPairIn).
+
+    Returns the model's judgements as given; services/claim_verdicts.py
+    settles them against the pairs sent.
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted
+        CostCeilingError     — daily $ cap reached (refused before sending)
+        LLMCompileError      — call failed, empty response or JSON parse failed
+    """
+    if not pairs:
+        return ClaimJudgeResponse(judgements=[])
+
+    provider = get_provider(model)
+    try:
+        result = provider.complete(LLMRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": _CLAIM_JUDGE_SYSTEM_PROMPT},
+                {"role": "user", "content": _claim_pairs_payload(pairs)},
+            ],
+            response_model=ClaimJudgeResponse,
+            thinking_budget=_read_thinking_budget('judge_claim_pairs'),
+            max_output_tokens=_CLAIM_JUDGE_MAX_OUTPUT_TOKENS,
+            temperature=0.0,
+            step="claims",
+        ))
+    except _LIMIT_ERRORS:
+        raise
+    except Exception as e:
+        raise LLMCompileError(f"judge_claim_pairs_failed: {e}") from e
+
+    raw_text = result.text
+    if not raw_text:
+        raise LLMCompileError("judge_claim_pairs_error: empty response")
+    if result.parsed is None:
+        raise LLMCompileError(
+            f"judge_claim_pairs_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(step="claims", expected_wrapper="judgements", raw_text=raw_text)
+        ) from result.parse_error
+    return result.parsed  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
 # Finalize prompts with response-shape contracts
 # ---------------------------------------------------------------------------
 #
@@ -1948,3 +2271,4 @@ _DISAMBIGUATION_SYSTEM_PROMPT = _DISAMBIGUATION_SYSTEM_PROMPT + _format_response
 _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
 _CROSSREF_SYSTEM_PROMPT = _CROSSREF_SYSTEM_PROMPT + _format_response_contract(CrossrefResponse)
 _LABEL_MERGE_SYSTEM_PROMPT = _LABEL_MERGE_SYSTEM_PROMPT + _format_response_contract(LabelMergeResponse)
+_CLAIM_JUDGE_SYSTEM_PROMPT = _CLAIM_JUDGE_SYSTEM_PROMPT + _format_response_contract(ClaimJudgeResponse)

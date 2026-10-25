@@ -1,7 +1,8 @@
 // Interaction probes on a wiki article's page card: the numbers it states
 // against what it lists (Sources (N), citation markers, the Connections
-// count), a relation's "Why" evidence (labelled as Kompl's summary, not as a
-// quote, with working source links), "Show all N", "See in graph" and Back,
+// count), a relation's "Why" evidence (Kompl's summary labelled as such and
+// never as a quote, a source's checked sentence quoted with "Quoted from",
+// working source links), "Show all N", "See in graph" and Back,
 // and a source row opening the same source.
 import { headerCounts, waitForSettledGraph } from "./graph-util.mjs";
 import { gotoWithRetry } from "./net.mjs";
@@ -77,7 +78,12 @@ async function why(p, page) {
   const withSentence = ev.items.filter((i) => i.sentence && i.links.length);
   await p.expect(ev.items.some((i) => i.links.length), "the evidence names its source", { severity: "medium", detail: JSON.stringify(ev.items.slice(0, 3)) });
   for (const i of withSentence.slice(0, 3)) {
-    await p.expect(/Kompl.?s summary/i.test(i.note), "a relation's sentence is labelled as Kompl's summary", { severity: "medium", detail: `"${i.sentence}" — ${i.note}` });
+    // The source's own sentence, checked at extraction, is quoted and says so.
+    if (/Quoted from/i.test(i.note)) {
+      await p.expect(i.quoted, "a quote from the source is in quotation marks", { severity: "medium", detail: i.sentence });
+      continue;
+    }
+    await p.expect(/Kompl.?s summary/i.test(i.note), "a relation's sentence is labelled as Kompl's summary or quoted from its source", { severity: "medium", detail: `"${i.sentence}" — ${i.note}` });
     await p.expect(!i.quoted, "a summary is not dressed as a quote", { severity: "medium", detail: i.sentence });
   }
   for (const href of [...new Set(ev.items.flatMap((i) => i.links))].slice(0, 4)) {

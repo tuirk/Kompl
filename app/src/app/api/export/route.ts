@@ -19,6 +19,7 @@ import {
   getAllProvenance,
   getAllRelationshipMentions,
   getAllSources,
+  getDb,
   getExportableSettings,
   getSchemaVersion,
   pagesFilePath,
@@ -32,6 +33,8 @@ import { getPageDraftRulesMap } from '@/lib/draft-rules';
 import { exportPageBody } from '@/lib/page-export';
 import { isBackedUpSetting } from '@/lib/backup-settings';
 import { getSourceTitleSet } from '@/lib/page-sources';
+import { getAllDisagreements } from '@/lib/disagreement-backfill';
+import { getAllClaimVerdicts } from '@/lib/claim-check/verdicts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -275,6 +278,12 @@ export async function GET(request: Request) {
     // Every alias row, set aside or not, with how it was made and its status
     // (v29), so a restore keeps them. Older releases' imports ignore them.
     dbFolder.file('aliases.json', JSON.stringify(getAllAliases(), null, 2));
+    // The disagreements record (v30) with the owner's verdicts, so a restore
+    // keeps them. Older releases' imports ignore the file.
+    dbFolder.file('disagreements.json', JSON.stringify(getAllDisagreements(getDb()), null, 2));
+    // The claim check's saved verdicts (v30), so a restored wiki never pays
+    // to judge the same claim pair again. Older releases' imports ignore it.
+    dbFolder.file('claim_verdicts.json', JSON.stringify(getAllClaimVerdicts(getDb()), null, 2));
     dbFolder.file('extractions.json', JSON.stringify(getAllExtractions(), null, 2));
     dbFolder.file('page_links.json', JSON.stringify(getAllPageLinks(), null, 2));
     dbFolder.file('entity_mentions.json', JSON.stringify(getAllEntityMentions(), null, 2));

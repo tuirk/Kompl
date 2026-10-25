@@ -44,6 +44,37 @@ describe('read_page sources and links (apps from before connections)', () => {
   });
 });
 
+describe('read_page disagreements', () => {
+  it('lists each recorded disagreement, its sources and whether the user confirmed it, inside the fence', async () => {
+    const disagreements = [
+      {
+        kind: 'disputed', status: 'possible', found_by: 'page_text', topic: 'Launch year', reason: null,
+        sources: [{ n: 1, source_id: 's1', title: 'Bitcoin paper' }, { n: null, source_id: 's9', title: 'Old blog' }],
+        quote_a: null, quote_b: null, found_at: '2026-10-01 10:00:00',
+      },
+      {
+        kind: 'contradiction', status: 'confirmed', found_by: 'triage', topic: '', reason: 'Gives a later year.',
+        sources: [{ n: 1, source_id: 's1', title: 'Bitcoin paper' }],
+        quote_a: 'Launched in 2009.', quote_b: 'Launched in 2010.', found_at: '2026-10-02 10:00:00',
+      },
+    ];
+    const kompl = fakeKompl({ '/api/wiki/pow/data': { ...PAGE, disagreements } });
+    const res = await call(await connect(kompl.fetchImpl), 'read_page', { page_id: 'pow' });
+    expect(res.text).toContain('**Disagreements recorded on this page:**');
+    expect(res.text).toContain('- Disputed: Launch year · [1] (source: Old blog, `s9`) · not yet confirmed by the user');
+    expect(res.text).toContain('- Contradiction: Gives a later year. · [1] · confirmed by the user');
+    expect(res.text).toContain('  Quotes: "Launched in 2009." vs "Launched in 2010."');
+    // Wiki text: inside the fence, before Kompl's own closing line.
+    expect(res.text.indexOf('Disagreements recorded')).toBeLessThan(res.text.indexOf('</wiki-data>'));
+  });
+
+  it('says nothing about disagreements when the app sends none (older apps)', async () => {
+    const kompl = fakeKompl({ '/api/wiki/pow/data': PAGE });
+    const res = await call(await connect(kompl.fetchImpl), 'read_page', { page_id: 'pow' });
+    expect(res.text).not.toContain('Disagreements');
+  });
+});
+
 describe('read_page include_related', () => {
   const withRelated = (related: unknown) =>
     fakeKompl({ '/api/wiki/pow/data': PAGE, '/api/wiki/pow/related': related }).fetchImpl;
@@ -142,6 +173,36 @@ describe('read_page connections', () => {
     expect(text).not.toContain('**Links to:**');
     expect(text).not.toContain('**Linked from:**');
     expect(text).toContain('**Related:** Proof of stake (`pos`)');
+  });
+
+  it("shows a checked source sentence as quoted, ahead of summaries (the evidence above, as older apps send it, has none)", async () => {
+    const quoted = (source_id: string, title: string, sentence: string, quote: string) => ({ ...ev(source_id, title, sentence), quote });
+    const long = `${'Miners hash block headers with SHA-256 again and again '.repeat(6)}end.`;
+    const text = await read({
+      groups: [
+        {
+          label: 'Uses',
+          items: [
+            // A quote beats a summary from a cited source, and a cited quote beats an uncited one.
+            item('SHA-256', 'sha', 'uses', [
+              ev('s1', 'Bitcoin paper', 'Proof of work uses SHA-256.'),
+              quoted('s9', 'Old blog', 'Blog summary.', 'Mining runs SHA-256 twice.'),
+              quoted('S1', 'Bitcoin paper', 'Paper summary.', 'We use SHA-256 for proof of work.'),
+            ]),
+            item('Hashcash', 'hashcash', 'uses', [quoted('s9', 'Old blog', 'Summary.', 'Proof of work comes from Hashcash.')]),
+            item('Headers', 'headers', 'uses', [quoted('s1', 'Bitcoin paper', 'Summary.', long)]),
+          ],
+        },
+      ],
+      linked_only: [],
+    });
+    const rows = text.split('\n').filter((l) => l.startsWith('- Uses: '));
+    expect(rows).toEqual([
+      '- Uses: SHA-256 (`sha`) [1] · 3 sources · quoted: "We use SHA-256 for proof of work."',
+      '- Uses: Hashcash (`hashcash`) (source: Old blog, `s9`) · quoted: "Proof of work comes from Hashcash."',
+      `- Uses: Headers (\`headers\`) [1] · quoted: "${long.slice(0, 239)}…"`,
+    ]);
+    expect(text).not.toContain('Paper summary.');
   });
 
   it('shows 15 relations with one clipped sentence each, then names the pages among the rest; Also linked stops at 20', async () => {

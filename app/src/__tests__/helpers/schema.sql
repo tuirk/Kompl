@@ -17,7 +17,11 @@ CREATE TABLE sources (
   onboarding_session_id TEXT,
   -- v25: cascade-winner + LLM-rescue idempotency
   title_source TEXT,
-  title_rescued_at TIMESTAMP
+  title_rescued_at TIMESTAMP,
+  -- v30: publication date (YYYY-MM-DD) and where it came from
+  -- (lib/source-dates.ts); NULL for sources added before.
+  published_at TEXT,
+  published_at_source TEXT
 );
 
 CREATE TABLE pages (
@@ -188,6 +192,10 @@ CREATE TABLE relationship_mentions (
   -- v28: the extract LLM's one-sentence description of the relation;
   -- NULL = not yet filled (lib/relation-backfill.ts).
   description TEXT,
+  -- v30: the source's sentence for the relation and its check against the
+  -- source (1 found, 0 not found, NULL no quote); NULL before quotes.
+  quote TEXT,
+  quote_verified INTEGER,
   PRIMARY KEY (from_canonical, to_canonical, relationship_type, source_id)
 );
 
@@ -219,6 +227,50 @@ CREATE TABLE triage_rechecks (
   verdict_reason TEXT,
   verdict_session_id TEXT,
   PRIMARY KEY (source_id, page_id)
+);
+
+-- v30: every disagreement Kompl knows about on a page, with the owner's
+-- verdict (lib/disagreements.ts, scripts/migrate.py DISAGREEMENTS_SQL).
+CREATE TABLE disagreements (
+  disagreement_id TEXT PRIMARY KEY,
+  page_id TEXT NOT NULL REFERENCES pages(page_id) ON DELETE CASCADE,
+  found_by TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'possible',
+  owner_verdict TEXT,
+  owner_verdict_at DATETIME,
+  topic TEXT NOT NULL DEFAULT '',
+  reason TEXT,
+  anchor TEXT,
+  source_a TEXT REFERENCES sources(source_id) ON DELETE CASCADE,
+  quote_a TEXT,
+  source_b TEXT REFERENCES sources(source_id) ON DELETE CASCADE,
+  quote_b TEXT,
+  source_ids TEXT NOT NULL DEFAULT '[]',
+  match_key TEXT NOT NULL,
+  session_id TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  cleared_at DATETIME
+);
+
+-- v30: the claim check's saved verdicts, one per pair of claims
+-- (lib/claim-check/verdicts.ts, scripts/migrate.py CLAIM_VERDICTS_SQL).
+CREATE TABLE claim_verdicts (
+  pair_key TEXT PRIMARY KEY,
+  source_a TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  claim_a TEXT NOT NULL,
+  source_b TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  claim_b TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  verdict TEXT NOT NULL,
+  topic TEXT NOT NULL DEFAULT '',
+  reason TEXT,
+  newer TEXT,
+  found_by TEXT NOT NULL,
+  model TEXT,
+  session_id TEXT,
+  judged_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE VIRTUAL TABLE pages_fts USING fts5(
@@ -264,6 +316,13 @@ CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
 CREATE INDEX idx_triage_rechecks_page ON triage_rechecks(page_id);
 CREATE INDEX idx_triage_rechecks_first_failed ON triage_rechecks(first_failed_at);
+CREATE UNIQUE INDEX idx_disagreements_key ON disagreements(page_id, found_by, match_key);
+CREATE INDEX idx_disagreements_created ON disagreements(created_at);
+CREATE INDEX idx_disagreements_source_a ON disagreements(source_a);
+CREATE INDEX idx_disagreements_source_b ON disagreements(source_b);
+CREATE INDEX idx_claim_verdicts_source_a ON claim_verdicts(source_a);
+CREATE INDEX idx_claim_verdicts_source_b ON claim_verdicts(source_b);
+CREATE INDEX idx_claim_verdicts_judged ON claim_verdicts(found_by, judged_at);
 
 INSERT INTO settings (key, value) VALUES ('schema_version', '30');
 -- v26: fresh installs get an explicit compile_model row (DEFAULT_COMPILE_MODEL).

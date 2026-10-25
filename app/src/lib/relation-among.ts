@@ -22,18 +22,29 @@ export interface PageRelation {
   from: RelationEnd;
   to: RelationEnd;
   type: string;
-  /** Distinct sources, the one giving `sentence` first, then newest first. */
+  /**
+   * Distinct sources, newest first, led by the one `quote` and `sentence`
+   * come from: the newest with a quote, else the newest with a sentence.
+   */
   source_ids: string[];
-  /** The newest sentence any of those sources gives; null when none was kept. */
+  /** Kompl's one-line summary from the leading source; null when none was kept. */
   sentence: string | null;
+  /** The leading source's own sentence, checked at extraction (v30); else null. */
+  quote: string | null;
 }
 
-/** A relation as gathered from the rows: ends as stored; sources map to their sentence, newest first. */
+/** What one source says about a relation. */
+interface SourceSays {
+  sentence: string | null;
+  quote: string | null;
+}
+
+/** A relation as gathered from the rows: ends as stored; sources map to what they say, newest first. */
 interface Found {
   fromId: string;
   toId: string;
   type: string;
-  sources: Map<string, string | null>;
+  sources: Map<string, SourceSays>;
 }
 
 /**
@@ -82,7 +93,13 @@ function gather(names: Map<string, string>, rows: ReturnType<typeof loadRelation
       entry = { fromId, toId, type, sources: new Map() };
       found.set(key, entry);
     }
-    if ((entry.sources.get(row.source_id) ?? null) === null) entry.sources.set(row.source_id, row.description);
+    const said = entry.sources.get(row.source_id);
+    if (!said) {
+      entry.sources.set(row.source_id, { sentence: row.description, quote: row.quote });
+    } else {
+      said.sentence ??= row.description;
+      said.quote ??= row.quote;
+    }
   }
   return [...found.values()];
 }
@@ -114,13 +131,14 @@ function toPageRelation(f: Found, wanted: Set<string>, titleOf: (id: string) => 
   const swap = isSymmetricRelation(f.type) && !wanted.has(f.fromId);
   const [fromId, toId] = swap ? [f.toId, f.fromId] : [f.fromId, f.toId];
   const all = [...f.sources];
-  const said = all.find(([, sentence]) => sentence !== null);
-  const source_ids = said ? [said[0], ...all.filter(([id]) => id !== said[0]).map(([id]) => id)] : all.map(([id]) => id);
+  const lead = all.find(([, s]) => s.quote !== null) ?? all.find(([, s]) => s.sentence !== null);
+  const source_ids = lead ? [lead[0], ...all.filter(([id]) => id !== lead[0]).map(([id]) => id)] : all.map(([id]) => id);
   return {
     from: { page_id: fromId, title: titleOf(fromId) },
     to: { page_id: toId, title: titleOf(toId) },
     type: f.type,
     source_ids,
-    sentence: said ? said[1] : null,
+    sentence: lead ? lead[1].sentence : null,
+    quote: lead ? lead[1].quote : null,
   };
 }

@@ -2,8 +2,9 @@
 
 Endpoints:
   GET /llm/usage   — today's LLM spend vs the daily cap (from the on-disk cap file).
-  GET /llm/pricing — list prices for one model plus the draft_page limits, for
-                     the app's page-update estimate (Settings > Wiki health).
+  GET /llm/pricing — list prices for one model plus the draft_page and claim
+                     judge limits, for the app's estimates in Settings > Wiki
+                     health (page update, whole-wiki check).
 
 This router NEVER opens kompl.db. rule #1 in CLAUDE.md.
 """
@@ -16,6 +17,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict
 
 from services.llm_client import (
+    _CLAIM_JUDGE_MAX_OUTPUT_TOKENS,
     _DRAFT_PAGE_MAX_OUTPUT_TOKENS,
     _GEMINI_INPUT_TOKEN_CAP,
     _read_cap,
@@ -80,6 +82,10 @@ class LLMPricingResponse(BaseModel):
     # draft_page fits its source documents so the user prompt (sources
     # included) stays within this many chars (services/draft_budget.py).
     draft_prompt_char_cap: int
+    # One judge_claim_pairs call (the claim check and the whole-wiki check);
+    # the budget is a cap or an effort level as draft_thinking_budget_is_cap says.
+    claim_judge_thinking_budget: int
+    claim_judge_max_output_tokens: int
 
 
 @router.get("/llm/pricing", response_model=LLMPricingResponse)
@@ -98,4 +104,6 @@ def get_llm_pricing(model: LLMModel) -> LLMPricingResponse:
         draft_thinking_budget_is_cap=thinking_budget_is_token_cap(model),
         draft_max_output_tokens=_DRAFT_PAGE_MAX_OUTPUT_TOKENS,
         draft_prompt_char_cap=_GEMINI_INPUT_TOKEN_CAP,
+        claim_judge_thinking_budget=_read_thinking_budget("judge_claim_pairs"),
+        claim_judge_max_output_tokens=_CLAIM_JUDGE_MAX_OUTPUT_TOKENS,
     )

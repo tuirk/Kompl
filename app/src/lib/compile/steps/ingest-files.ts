@@ -29,6 +29,7 @@ import {
   type StagingRow,
 } from '../../db';
 import { callConvertFilePath } from '../../nlp-convert';
+import { pickSourceDate } from '../../source-dates';
 import { runPerItemStep } from '../step-runner';
 
 const INGEST_FILES_CONCURRENCY = 2;
@@ -106,6 +107,12 @@ export async function runIngestFilesStep(
         : convertResult.metadata;
 
       const filePath = storeRawMarkdown(sourceId, convertResult.markdown);
+      const date = pickSourceDate({
+        converted: convertResult,
+        source_type: convertResult.source_type,
+        metadata: finalMetadata,
+        markdown: convertResult.markdown,
+      });
       insertSource({
         source_id: sourceId,
         title: convertResult.title,
@@ -117,6 +124,7 @@ export async function runIngestFilesStep(
         compile_status: 'pending',
         onboarding_session_id: sessionId,
         title_source: convertResult.title_source,
+        ...date,
       });
 
       markStagingIngested(row.stage_id, sourceId);

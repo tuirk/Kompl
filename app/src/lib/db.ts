@@ -37,7 +37,7 @@ import type { ActivityEventType } from './activity-events';
 import { DEFAULT_COMPILE_MODEL, isLlmModel, type LlmModel } from './llm-models';
 import { buildFtsQuery } from './fts-query';
 import { numericConflict } from './name-guard';
-import { relationKey } from './relation-rows';
+import { COMPARISON_RELATIONS, quoteVerifiedColumn, quoteVerifiedFromColumn, relationKey } from './relation-rows';
 import type { SourceMentionRows } from './mention-rows';
 
 // Model registry lives in llm-models.ts (client-safe, no DB imports);
@@ -129,8 +129,8 @@ export function getSchemaVersion(): number | null {
 
 /**
  * Enumerate user tables (excluding sqlite_* internals and FTS5 shadow
- * tables). Used by /api/health to verify migration completed. The
- * integration test asserts this returns exactly 14 names.
+ * tables). Used by /api/health to verify migration completed; stage 1
+ * of the integration test checks how many names it returns.
  */
 const EXPECTED_TABLES = [
   'sources',
@@ -152,6 +152,8 @@ const EXPECTED_TABLES = [
   'relationship_mentions',
   'collect_staging',
   'triage_rechecks',
+  'disagreements',
+  'claim_verdicts',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -194,6 +196,11 @@ export interface SourceRow {
    *  marker so recompile does not re-rescue and rename the wiki page
    *  on every cycle. */
   title_rescued_at: string | null;
+  /** v30: publication date, YYYY-MM-DD, and where it came from
+   *  (lib/source-dates.ts). NULL for sources added before: read them
+   *  with sourceDateOf, which gives their ingest day. */
+  published_at?: string | null;
+  published_at_source?: string | null;
 }
 
 export interface ActivityRow {
@@ -267,6 +274,10 @@ export interface InsertSourceArgs {
    *  compatibility with call sites not yet updated; missing → NULL,
    *  which the rescue trigger treats as "legacy row, use isGarbageTitle". */
   title_source?: string | null;
+  /** v30: the publication date the ingest step picked (lib/source-dates.ts
+   *  pickSourceDate); missing -> NULL. */
+  published_at?: string | null;
+  published_at_source?: string | null;
 }
 
 /**
@@ -280,11 +291,11 @@ export function insertSource(args: InsertSourceArgs): void {
       `INSERT INTO sources
          (source_id, title, source_type, source_url, content_hash,
           file_path, status, metadata, compile_status, onboarding_session_id,
-          title_source)
+          title_source, published_at, published_at_source)
        VALUES
          (@source_id, @title, @source_type, @source_url, @content_hash,
           @file_path, 'active', @metadata, @compile_status, @onboarding_session_id,
-          @title_source)`
+          @title_source, @published_at, @published_at_source)`
     )
     .run({
       source_id: args.source_id,
@@ -297,6 +308,8 @@ export function insertSource(args: InsertSourceArgs): void {
       compile_status: args.compile_status ?? 'pending',
       onboarding_session_id: args.onboarding_session_id ?? null,
       title_source: args.title_source ?? null,
+      published_at: args.published_at ?? null,
+      published_at_source: args.published_at_source ?? null,
     });
 }
 
@@ -310,7 +323,7 @@ export function getSource(sourceId: string): SourceRow | null {
       `SELECT source_id, title, source_type, source_url, content_hash,
               file_path, status, date_ingested, metadata,
               compile_status, compile_attempts, onboarding_session_id,
-              title_source, title_rescued_at
+              title_source, title_rescued_at, published_at, published_at_source
          FROM sources
          WHERE source_id = ?`
     )
@@ -976,7 +989,8 @@ export function getSourceIdsMentioning(canonicalName: string): string[] {
  * and "B vs A" to one row (lib/relation-rows.ts does both).
  *
  * An existing row keeps its other columns (first_seen_at included); only its
- * description (v28) is refreshed, and only by a non-null one. A new row's
+ * description (v28) is refreshed, and only by a non-null one, and its quote
+ * with quote_verified (v30), only by a non-null quote. A new row's
  * first_seen_at defaults to now; the resolve rebuild passes the old row's.
  */
 export function insertRelationshipMentions(
@@ -986,6 +1000,8 @@ export function insertRelationshipMentions(
     relationship_type: string;
     source_id: string;
     description?: string | null;
+    quote?: string | null;
+    quote_verified?: boolean | null;
     first_seen_at?: string | null;
   }>
 ): void {
@@ -993,20 +1009,27 @@ export function insertRelationshipMentions(
   const db = openDb();
   const stmt = db.prepare(
     `INSERT INTO relationship_mentions
-       (from_canonical, to_canonical, relationship_type, source_id, description, first_seen_at)
-     VALUES (@from_canonical, @to_canonical, @relationship_type, @source_id, @description,
-             COALESCE(@first_seen_at, CURRENT_TIMESTAMP))
+       (from_canonical, to_canonical, relationship_type, source_id, description, quote, quote_verified,
+        first_seen_at)
+     VALUES (@from_canonical, @to_canonical, @relationship_type, @source_id, @description, @quote,
+             @quote_verified, COALESCE(@first_seen_at, CURRENT_TIMESTAMP))
      ON CONFLICT(from_canonical, to_canonical, relationship_type, source_id)
-       DO UPDATE SET description = COALESCE(excluded.description, description)`
+       DO UPDATE SET description = COALESCE(excluded.description, description),
+                     quote_verified = CASE WHEN excluded.quote IS NULL THEN quote_verified
+                                           ELSE excluded.quote_verified END,
+                     quote = COALESCE(excluded.quote, quote)`
   );
   db.transaction((rows: typeof mentions) => {
     for (const row of rows) {
+      const quote = row.quote ?? null;
       stmt.run({
         from_canonical: row.from_canonical,
         to_canonical: row.to_canonical,
         relationship_type: row.relationship_type,
         source_id: row.source_id,
         description: row.description ?? null,
+        quote,
+        quote_verified: quote === null ? null : quoteVerifiedColumn(row.quote_verified),
         first_seen_at: row.first_seen_at ?? null,
       });
     }
@@ -1051,16 +1074,16 @@ export function replaceSourceMentions(
  * A row keeps the first_seen_at of the old row with its key, else the
  * source's earliest old row (a renamed row was seen when its source was),
  * else the extraction's created_at (a source extracted without rows). A
- * relation without a sentence keeps the old row's. A source outside the
- * session is skipped, so other sessions' rows never change. Returns the
- * number of sources rewritten.
+ * relation without a sentence keeps the old row's, and one without a quote
+ * the old row's quote. A source outside the session is skipped, so other
+ * sessions' rows never change. Returns the number of sources rewritten.
  */
 export function rebuildSessionMentions(sessionId: string, sources: SourceMentionRows[]): number {
   const db = openDb();
   const inSession = db.prepare('SELECT 1 FROM sources WHERE source_id = ? AND onboarding_session_id = ?');
   const oldEntities = db.prepare('SELECT canonical_name, first_seen_at FROM entity_mentions WHERE source_id = ?');
   const oldRelations = db.prepare(
-    `SELECT from_canonical, to_canonical, relationship_type, first_seen_at, description
+    `SELECT from_canonical, to_canonical, relationship_type, first_seen_at, description, quote, quote_verified
        FROM relationship_mentions WHERE source_id = ?`
   );
   const extractedAt = db.prepare('SELECT created_at FROM extractions WHERE source_id = ?');
@@ -1072,6 +1095,8 @@ export function rebuildSessionMentions(sessionId: string, sources: SourceMention
     relationship_type: string;
     first_seen_at: string | null;
     description: string | null;
+    quote: string | null;
+    quote_verified: number | null;
   };
 
   let rebuilt = 0;
@@ -1096,8 +1121,13 @@ export function rebuildSessionMentions(sessionId: string, sources: SourceMention
         entities.map((e) => ({ ...e, source_id, first_seen_at: entitySeen.get(nocase(e.canonical_name)) ?? seenAt })),
         relations.map((r) => {
           const old = relationOld.get(relationKey(r.from_canonical, r.to_canonical, r.relationship_type));
+          const quote =
+            r.quote === null && old?.quote
+              ? { quote: old.quote, quote_verified: quoteVerifiedFromColumn(old.quote_verified) }
+              : { quote: r.quote, quote_verified: r.quote_verified };
           return {
             ...r,
+            ...quote,
             source_id,
             description: r.description ?? old?.description ?? null,
             first_seen_at: old?.first_seen_at ?? seenAt,
@@ -1140,6 +1170,43 @@ export function getSourceIdsForRelationship(
         WHERE from_canonical = ? AND to_canonical = ? AND relationship_type = ?`
     )
     .all(fromCanonical, toCanonical, relationshipType) as Array<{ source_id: string }>
+  ).map((r) => r.source_id);
+}
+
+/**
+ * The (from, to) name pairs of a session's competes_with / contradicts rows
+ * (COMPARISON_RELATIONS), as resolve left them: the plan step's comparison
+ * candidates.
+ */
+export function getSessionComparisonPairs(sessionId: string): Array<{ from_canonical: string; to_canonical: string }> {
+  const types = [...COMPARISON_RELATIONS];
+  return openDb()
+    .prepare(
+      `SELECT DISTINCT rm.from_canonical, rm.to_canonical
+         FROM relationship_mentions rm
+         JOIN sources s ON s.source_id = rm.source_id
+        WHERE s.onboarding_session_id = ?
+          AND rm.relationship_type IN (${types.map(() => '?').join(', ')})
+        ORDER BY rm.from_canonical, rm.to_canonical`
+    )
+    .all(sessionId, ...types) as Array<{ from_canonical: string; to_canonical: string }>;
+}
+
+/**
+ * Distinct sources that say two subjects compete with or contradict each
+ * other: competes_with and contradicts rows together, in either stored
+ * order (a row renamed before rows were re-sorted may be unsorted).
+ */
+export function getComparisonSourceIds(nameA: string, nameB: string): string[] {
+  const types = [...COMPARISON_RELATIONS];
+  return (openDb()
+    .prepare(
+      `SELECT DISTINCT source_id FROM relationship_mentions
+        WHERE relationship_type IN (${types.map(() => '?').join(', ')})
+          AND ((from_canonical = ? AND to_canonical = ?) OR (from_canonical = ? AND to_canonical = ?))
+        ORDER BY source_id`
+    )
+    .all(...types, nameA, nameB, nameB, nameA) as Array<{ source_id: string }>
   ).map((r) => r.source_id);
 }
 
@@ -2496,8 +2563,9 @@ export function getCurrentPageHash(pageId: string): string {
 // ============================================================================
 
 /**
- * Fetch all sources with optional filtering, sorting and pagination.
- * Used by GET /api/sources and the /sources list page.
+ * Fetch all sources with optional filtering, sorting and pagination. Every
+ * source unless `limit` is given: the backup and JSON exports read the whole
+ * list (a default of 200 once cut larger wikis' backups short).
  */
 export function getAllSources(options?: {
   status?: string;
@@ -2545,14 +2613,14 @@ export function getAllSources(options?: {
   const SORT_DIRS: Record<string, string> = { asc: 'ASC', desc: 'DESC' };
   const sortCol = SORT_COLS[options?.sort_by ?? 'date_ingested'] ?? 'date_ingested';
   const sortDir = SORT_DIRS[options?.sort_order ?? 'desc'] ?? 'DESC';
-  const limit = options?.limit ?? 200;
+  const limit = options?.limit ?? -1; // SQLite: LIMIT -1 is no limit
   const offset = options?.offset ?? 0;
 
   return openDb()
     .prepare(
       `SELECT source_id, title, source_type, source_url, content_hash,
               file_path, status, date_ingested, metadata, compile_status,
-              compile_attempts, onboarding_session_id
+              compile_attempts, onboarding_session_id, published_at, published_at_source
          FROM sources
          ${where}
          ORDER BY ${sortCol} ${sortDir}
@@ -3961,13 +4029,17 @@ export interface RelationshipMentionRow {
   first_seen_at: string;
   /** v28; null until filled (lib/relation-backfill.ts). */
   description: string | null;
+  /** v30: the source's sentence; null for relations extracted before quotes. */
+  quote: string | null;
+  /** v30: 1 found in the source, 0 not found, null without a quote. */
+  quote_verified: number | null;
 }
 
 export function getAllRelationshipMentions(): RelationshipMentionRow[] {
   return openDb()
     .prepare(
       `SELECT from_canonical, to_canonical, relationship_type, source_id, first_seen_at,
-              description
+              description, quote, quote_verified
          FROM relationship_mentions
         ORDER BY first_seen_at`
     )

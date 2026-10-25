@@ -1,12 +1,15 @@
 /**
  * POST /api/compile/match
  *
- * Part 2d — Wiki-Aware Updates: TF-IDF + LLM triage.
+ * Part 2d — Wiki-Aware Updates: LLM triage against existing pages.
  *
- * For returning sessions (page_count > 0), compares each session source
- * against non-summary wiki pages using TF-IDF cosine similarity, then
- * calls /pipeline/triage for each candidate above the 0.15 threshold
- * (top 3 per source).
+ * For returning sessions (page_count > 0), calls /pipeline/triage for each
+ * session source against at most MAX_TRIAGE_CANDIDATES_PER_SOURCE
+ * non-summary pages: first the pages whose subject the source names, then
+ * pages TF-IDF finds similar (lib/triage-candidates.ts). Each call is
+ * judged on the claims the source's extraction makes about the page, with
+ * the page's related section, or on the source's text when it makes none
+ * (lib/triage-evidence.ts).
  *
  * A triage call that gives no verdict (rate limit, daily cost ceiling, any
  * other error) is decision 'triage_failed' with the cause as its reason,
@@ -34,7 +37,6 @@ import {
   getEffectiveCompileModel,
   getPageCount,
   getPagesByType,
-  getPage,
   getSourcesBySession,
   logActivity,
   readRawMarkdown,
@@ -42,6 +44,8 @@ import {
 } from '@/lib/db';
 import { NO_RECHECKS, recheckStoredTriages } from '@/lib/compile/triage-recheck';
 import { callTriage, triageFailureOf, type MatchEntry, type TriageFailure, type TriageResponse } from '@/lib/triage-call';
+import { namesInSource, pickTriageCandidates, sharesSubject } from '@/lib/triage-candidates';
+import { claimsAbout, readExtraction, readTriageInput, subjectNames, triageAliases } from '@/lib/triage-evidence';
 import { recordTriageFailure, removeTriagePair } from '@/lib/triage-rechecks';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -110,7 +114,9 @@ export async function POST(request: Request) {
   }
 
   const corpusPageIds = candidatePages.map((p) => p.page_id);
+  const pageById = new Map(candidatePages.map((p) => [p.page_id, p]));
   const sources = getSourcesBySession(session_id);
+  const aliases = triageAliases();
 
   const matches: MatchEntry[] = [];
   const failures: MatchEntry[] = [];
@@ -133,40 +139,37 @@ export async function POST(request: Request) {
     );
     const markdown = readRawMarkdown(source.source_id);
     if (!markdown) continue;
+    const extraction = readExtraction(source.source_id);
 
-    // TF-IDF: find pages with significant overlap
-    let tfidfResult: TfidfResponse;
+    // Pages whose subject this source names, with its claims about each.
+    const named = namesInSource(source.source_id);
+    const shared = candidatePages
+      .filter((p) => sharesSubject(p, named))
+      .map((p) => ({ page_id: p.page_id, title: p.title, claims: claimsAbout(extraction, subjectNames(p, aliases)).length }));
+
+    // TF-IDF ranks them and fills the slots they leave. A failure is not
+    // fatal: the shared-entity pages are still checked.
+    let tfidfMatches: TfidfMatch[] = [];
     try {
-      tfidfResult = await callTfidfOverlap(markdown, corpusPageIds);
+      tfidfMatches = (await callTfidfOverlap(markdown, corpusPageIds)).top_matches;
     } catch {
-      // TF-IDF failure is non-fatal — skip this source
-      continue;
+      if (shared.length === 0) continue;
     }
 
-    // 0.15 calibrated against the actual cosine-similarity distribution for
-    // long-form sources (~50K chars) vs short wiki pages (~2K chars). On
-    // 2026-05-08 a paper titled "EXPLAINING THE FAVORITE-LONGSHOT BIAS"
-    // (58K chars) compared against a 20-page prediction-markets corpus
-    // produced top similarities at 0.208 / 0.185 / 0.137 / 0.118; the
-    // correct match (Favourite-longshot bias page) and a coauthor entity
-    // (Justin Wolfers) were both below the prior 0.3 cap. The triage LLM
-    // is the precision filter (and the existing slice(0, 3) per source
-    // caps cost at sourceCount × 3 triage calls per session).
-    const topCandidates = tfidfResult.top_matches
-      .filter((m) => m.similarity > 0.15)
-      .slice(0, 3);
-
+    const topCandidates = pickTriageCandidates(shared, tfidfMatches);
     totalCandidates += topCandidates.length;
 
-    for (const candidate of topCandidates) {
-      const page = getPage(candidate.page_id);
+    for (const pageId of topCandidates) {
+      const page = pageById.get(pageId);
       if (!page) continue;
 
       const existingSummary = page.summary ?? '';
+      // Judged on the source's claims about the page, else its text.
+      const input = readTriageInput(markdown, extraction, page, aliases);
 
       let triageResult: TriageResponse;
       try {
-        triageResult = await callTriage(markdown, existingSummary, page.title, getEffectiveCompileModel(session_id));
+        triageResult = await callTriage(input, existingSummary, page.title, getEffectiveCompileModel(session_id));
       } catch (err) {
         // No verdict is not a 'skip': plan must not record this source on
         // the page (see the header). Stored for a later re-check.

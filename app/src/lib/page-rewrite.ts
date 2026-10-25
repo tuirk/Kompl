@@ -27,7 +27,7 @@ import type { ActivityEventType } from './activity-events';
 import { stripFrontmatter } from './markdown';
 import { syncPageWikilinks } from './wikilinks';
 import { extractFrontmatterField } from './yaml-frontmatter';
-import { recordNewDisputes } from './page-disputes';
+import { recordPageDisagreements } from './disagreements';
 import { upsertVectorWithRetry } from './vector-upsert';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -125,6 +125,8 @@ export async function commitPageRewrite(args: {
       page.title,
       stripFrontmatter(markdown),
     );
+    // Disagreements the committed text records (lib/disagreements.ts).
+    recordPageDisagreements(db, { page_id: pageId, title: page.title }, markdown);
     logActivity(activity.type, { source_id: null, details: activity.details });
     return true;
   })();
@@ -158,9 +160,6 @@ export async function commitPageRewrite(args: {
       source_count: page.source_count,
     });
   }
-
-  // ── Phase 3b: disputes the page records in its own text (activity feed) ──
-  recordNewDisputes({ page_id: pageId, title: page.title }, markdown);
 
   return { ok: true, flushed };
 }

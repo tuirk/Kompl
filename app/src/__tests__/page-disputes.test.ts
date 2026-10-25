@@ -1,15 +1,14 @@
 /**
  * Disputes a page records in its own text (lib/page-disputes.ts): which
  * sections count (two or more sources cited), their topic, anchor and
- * position, and the activity event the commit paths log for each new one,
- * once.
+ * position, and how the activity feed shows a recorded one (the record
+ * itself: disagreements.test.ts).
  */
 
 import type { ReactElement } from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { getEventDef, resolveBadge, type FeedActivityRow } from '../lib/activity-events';
-import { findPageDisputes, recordNewDisputes } from '../lib/page-disputes';
-import { getActivityCounts, setupTestDb, type TestDbHandle } from './helpers/test-db';
+import { findPageDisputes } from '../lib/page-disputes';
 
 const A = 'aaaaaaaa-0000-4000-8000-000000000001';
 const B = 'bbbbbbbb-0000-4000-8000-000000000002';
@@ -48,13 +47,6 @@ const PAGE = [
   '```',
 ].join('\n');
 
-let handle: TestDbHandle | null = null;
-
-afterEach(() => {
-  handle?.cleanup();
-  handle = null;
-});
-
 function text(node: unknown): string {
   if (node === null || node === undefined || typeof node === 'boolean') return '';
   if (typeof node === 'string' || typeof node === 'number') return String(node);
@@ -79,22 +71,66 @@ describe('findPageDisputes', () => {
   it('finds nothing on a page without dispute sections', () => {
     expect(findPageDisputes(`---\ntitle: X\n---\n\n## Overview\n\nText[^${A}][^${B}].`)).toEqual([]);
   });
-});
 
-describe('recordNewDisputes', () => {
-  it('logs each new dispute once; rewording it with the same sources is not new', () => {
-    handle = setupTestDb();
-    const page = { page_id: 'vilnius', title: 'Vilnius' };
+  it('tells Disputed from Changed (plan 3.1)', () => {
+    const page = [
+      '## History',
+      '',
+      '### Disputed: launch year',
+      '',
+      `2013[^${A}] or 2015[^${B}].`,
+      '',
+      '### Changed: block size limit',
+      '',
+      `It was 1 MB as of 2015[^${A}]; it is 4 MB as of 2021[^${C}].`,
+    ].join('\n');
+    expect(findPageDisputes(page).map((d) => [d.kind, d.topic, d.sourceIds])).toEqual([
+      ['disputed', 'Launch year', [A, B]],
+      ['changed', 'Block size limit', [A, C]],
+    ]);
+  });
 
-    expect(recordNewDisputes(page, PAGE)).toBe(2);
-    expect(recordNewDisputes(page, PAGE)).toBe(0);
-    const reworded = PAGE.replace('whether Vilnius is a well-known tourist destination', 'how famous Vilnius is');
-    expect(recordNewDisputes(page, reworded)).toBe(0);
-    expect(getActivityCounts(handle.db).page_dispute_recorded).toBe(2);
+  it('matches the keyword anywhere in a heading, at any level, in any case', () => {
+    const cite = `One says 1[^${A}], another 2[^${B}].`;
+    const found = (heading: string) => findPageDisputes(`## Intro\n\nText.\n\n${heading}\n\n${cite}`);
+    const read = (heading: string) => found(heading).map((d) => [d.kind, d.topic]);
+    expect(read('# Founding date (disputed)')).toEqual([['disputed', 'Founding date']]);
+    expect(read('#### Population — CHANGED')).toEqual([['changed', 'Population']]);
+    expect(read('##### Why historians disagree')).toEqual([['disputed', 'Why historians disagree']]);
+    expect(read('###### Disputed founding place')).toEqual([['disputed', 'Founding place']]);
+    expect(read('## Disputes over the river name')).toEqual([['disputed', 'The river name']]);
+    // Nothing but the keyword and filler: the first sentence names it.
+    expect(read('### Contradictions between sources')).toEqual([['disputed', 'One says 1, another 2.']]);
+    expect(read('## Undisputed facts')).toEqual([]);
+    // "Changed" counts only as the heading's lead or tail, not mid-sentence.
+    expect(read('### Changed — consensus method')).toEqual([['changed', 'Consensus method']]);
+    expect(read('### What changed in 2024')).toEqual([]);
+    expect(read('## How the rules changed over time')).toEqual([]);
+    // Only ## and ### headings have a place in the table of contents.
+    expect(found('#### Population — changed')[0].headingIndex).toBe(-1);
+    expect(found('### Population — changed')[0].headingIndex).toBe(1);
+  });
 
-    const more = `${PAGE}\n\n## Disputed: the population\n\nAbout 580,000[^${B}], about 600,000[^${C}].`;
-    expect(recordNewDisputes(page, more)).toBe(1);
-    expect(getActivityCounts(handle.db).page_dispute_recorded).toBe(3);
+  it('a section holding Disputed/Changed sub-sections is not a dispute of its own', () => {
+    const page = [
+      '## Contradictions',
+      '',
+      `Sources differ[^${A}][^${B}].`,
+      '',
+      '### Disputed: launch year',
+      '',
+      `2013[^${A}] or 2015[^${B}].`,
+      '',
+      '### Changed: the limit',
+      '',
+      `10[^${A}], now 20[^${C}].`,
+    ].join('\n');
+    expect(findPageDisputes(page).map((d) => d.topic)).toEqual(['Launch year', 'The limit']);
+  });
+
+  it('a heading that only mentions a change elsewhere is not read as one', () => {
+    expect(findPageDisputes(`## Changes in 2024\n\nA[^${A}] B[^${B}].`)).toEqual([]);
+    expect(findPageDisputes(`## Exchange rates\n\nA[^${A}] B[^${B}].`)).toEqual([]);
   });
 });
 

@@ -186,16 +186,17 @@ function StepRow({ step, cache }: { step: PathStep; cache: Map<string, PageConne
   }
   const found = state.status === 'ready' ? relationsBetween(state.data, step.to) : [];
   const item = (found.find((f) => f.item.type === step.type) ?? found[0])?.item;
-  const evidence = item?.evidence.find((e) => e.sentence) ?? item?.evidence[0];
+  const evidence = item?.evidence.find((e) => e.quote) ?? item?.evidence.find((e) => e.sentence) ?? item?.evidence[0];
+  const said = evidence?.quote ? `“${evidence.quote}”` : evidence?.sentence;
   return (
     <div style={RAIL}>
       <span style={{ ...META, fontWeight: 600, color: 'var(--fg)' }}>{step.label}</span>
       {item && item.source_count > 1 && <span style={META}>{` · ${item.source_count} sources`}</span>}
       {state.status === 'loading' && <div style={META}>Loading the evidence…</div>}
-      {evidence?.sentence && <div style={{ ...BODY, fontSize: 12, lineHeight: '18px', marginTop: 2 }}>{evidence.sentence}</div>}
+      {said && <div style={{ ...BODY, fontSize: 12, lineHeight: '18px', marginTop: 2 }}>{said}</div>}
       {evidence && (
         <div style={META}>
-          {evidence.sentence && "Kompl's summary, from "}
+          {evidence.quote ? 'Quoted from ' : evidence.sentence ? "Kompl's summary, from " : null}
           <Link href={`/source/${evidence.source_id}`} style={{ color: 'var(--accent)' }}>
             {evidence.source_title}
           </Link>

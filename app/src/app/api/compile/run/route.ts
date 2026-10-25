@@ -15,13 +15,14 @@
  * Steps:
  *   1. extract  — POST /api/compile/extract per source (sequential)
  *   2. resolve  — POST /api/compile/resolve
- *   3. match    — POST /api/compile/match (TF-IDF + LLM triage vs existing pages)
+ *   3. match    — POST /api/compile/match (LLM triage vs existing pages)
  *   4. plan     — POST /api/compile/plan
  *   5. draft    — POST /api/compile/draft  (up to 15 min, Gemini calls)
  *   6. crossref — POST /api/compile/crossref
  *   6b. labels  — merge duplicate category labels in the drafts (in process)
  *   7. commit   — POST /api/compile/commit
  *   8. schema   — POST /api/compile/schema (schema.md bootstrap)
+ *   9. claims   — claim check of the new sources (in process; flag, off by default)
  */
 
 import { NextResponse } from 'next/server';
@@ -42,9 +43,11 @@ import { runIngestFilesStep } from '@/lib/compile/steps/ingest-files';
 import { runIngestUrlsStep } from '@/lib/compile/steps/ingest-urls';
 import { runIngestTextsStep } from '@/lib/compile/steps/ingest-texts';
 import { failIfNothingIngested } from '@/lib/compile/steps/ingest-outcome';
+import { runClaimsStep, skipClaimsStepIfOff } from '@/lib/compile/steps/claims';
 import { runLabelsStep } from '@/lib/compile/steps/labels';
 import { sanitizeLogValue } from '@/lib/log-safe';
 import { LONG_HTTP_AGENT, makeDispatcher } from '@/lib/long-http-agent';
+import { MAX_TRIAGE_CANDIDATES_PER_SOURCE } from '@/lib/triage-candidates';
 import { MAX_TRIAGE_RECHECKS_PER_COMPILE, clearSessionRecheckVerdicts } from '@/lib/triage-rechecks';
 import {
   computeResolveMs,
@@ -124,10 +127,14 @@ async function callMatch(
   sourceCount: number,
   willPlan: boolean,
 ): Promise<{ skipped: boolean; matches: unknown[]; stats: Record<string, number> }> {
-  // Dynamic timeout sized to sourceCount × candidatesPerSource (default 3, the
-  // slice(0,3) cap in match/route.ts), plus the re-check cap when match may
+  // Dynamic timeout sized to sourceCount × the per-source triage cap
+  // (lib/triage-candidates.ts), plus the re-check cap when match may
   // re-check stored triage failures. See compile-timeouts.ts:computeMatchMs.
-  const timeoutMs = computeMatchMs(sourceCount, 3, willPlan ? MAX_TRIAGE_RECHECKS_PER_COMPILE : 0);
+  const timeoutMs = computeMatchMs(
+    sourceCount,
+    MAX_TRIAGE_CANDIDATES_PER_SOURCE,
+    willPlan ? MAX_TRIAGE_RECHECKS_PER_COMPILE : 0,
+  );
   const res = await fetch(`${APP_URL}/api/compile/match`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -287,7 +294,7 @@ function assertCommitComplete(run: CompileRun, r: CommitResult): void {
   throw new Error(`commit failed: ${problems.join('; ')} (committed pages are durable in the DB; retry re-attempts the rest)`);
 }
 
-// Steps 6-8, then completion.
+// Steps 6-9, then completion.
 async function finishPipeline(run: CompileRun, planCount: number): Promise<void> {
   const { sessionId } = run;
   // Step 6: crossref — ALWAYS re-run.
@@ -328,6 +335,11 @@ async function finishPipeline(run: CompileRun, planCount: number): Promise<void>
   await timed(sessionId, 'schema', () => callSchema(sessionId));
   run.step('schema', 'done');
 
+  // Step 9: claims — once per session, behind its flag; checks the new
+  // sources' claims now that their pages exist. Never fails the compile
+  // (lib/compile/steps/claims.ts).
+  await timed(sessionId, 'claims', () => runClaimsStep(run));
+
   run.complete();
 }
 
@@ -367,6 +379,7 @@ async function resumeWithoutSources(run: CompileRun): Promise<void> {
     clearSessionRecheckVerdicts(sessionId);
     run.step('commit',   'done', skippedDetail);
     run.step('schema',   'done', skippedDetail);
+    run.step('claims',   'done', skippedDetail);
     run.complete();
     return;
   }
@@ -386,6 +399,9 @@ async function runCompilePipeline(run: CompileRun): Promise<void> {
   // Ingest steps check this before each item and before writing progress.
   const assertActive = () => run.assertActive();
   run.assertActive();
+  // The claim check's flag is read once here: off, its step is hidden from
+  // the progress page for the whole run.
+  skipClaimsStepIfOff(run);
 
   // ── Prelude (v18 onboarding v2 staging flow) ───────────────────────────
   // Only runs when the session has collect_staging rows. Legacy sessions

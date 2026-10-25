@@ -39,6 +39,7 @@ import {
   type StagingRow,
 } from '../../db';
 import { regenerateSavedLinksPage } from '../../saved-links';
+import { pickSourceDate } from '../../source-dates';
 import { runPerItemStep } from '../step-runner';
 
 // Sentinel returned to markStagingIngested when a saved-link row resolves
@@ -163,6 +164,7 @@ export async function runIngestTextsStep(
           compile_status: 'pending',
           onboarding_session_id: sessionId,
           title_source: 'paste',
+          ...pickSourceDate({ source_type: 'paste', metadata: payload.metadata, markdown: payload.text }),
         });
 
         markStagingIngested(row.stage_id, sourceId);
@@ -252,6 +254,7 @@ export async function runIngestTextsStep(
         compile_status: 'pending',
         onboarding_session_id: sessionId,
         title_source,
+        ...pickSourceDate({ source_type, metadata: payload.metadata, markdown: payload.markdown }),
       });
 
       markStagingIngested(row.stage_id, sourceId);

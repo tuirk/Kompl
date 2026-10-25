@@ -121,9 +121,9 @@ describe('getPageConnections', () => {
     expect(uses).toHaveLength(1);
     expect(uses[0]).toMatchObject({ page_id: 'pow', title: 'Proof of work', source_count: 4, direction: 'out' });
     expect(uses[0].evidence).toEqual([
-      { source_id: 'src-4', source_title: 'Source 4', source_archived: false, sentence: 'Satoshi coin relies on PoW.' },
-      { source_id: 'src-3', source_title: 'Source 3', source_archived: false, sentence: 'Mining is proof of work.' },
-      { source_id: 'src-1', source_title: 'Source 1', source_archived: false, sentence: 'Bitcoin uses proof of work.' },
+      { source_id: 'src-4', source_title: 'Source 4', source_archived: false, sentence: 'Satoshi coin relies on PoW.', quote: null },
+      { source_id: 'src-3', source_title: 'Source 3', source_archived: false, sentence: 'Mining is proof of work.', quote: null },
+      { source_id: 'src-1', source_title: 'Source 1', source_archived: false, sentence: 'Bitcoin uses proof of work.', quote: null },
     ]);
   });
 
@@ -205,8 +205,8 @@ describe('getPageConnections', () => {
     const [item] = getPageConnections('bitcoin').groups[0].items;
     expect(item).toMatchObject({ page_id: 'pow', source_count: 2 });
     expect(item.evidence).toEqual([
-      { source_id: 'src-old', source_title: 'Old source', source_archived: true, sentence: 'Miners run proof of work.' },
-      { source_id: 'src-live', source_title: 'Live source', source_archived: false, sentence: 'Bitcoin uses proof of work.' },
+      { source_id: 'src-old', source_title: 'Old source', source_archived: true, sentence: 'Miners run proof of work.', quote: null },
+      { source_id: 'src-live', source_title: 'Live source', source_archived: false, sentence: 'Bitcoin uses proof of work.', quote: null },
     ]);
   });
 

@@ -172,7 +172,7 @@ describe('recent_changes', () => {
     expect(res.text).toContain('• Created **The Merge** (`merge`) from Ethereum blog, 2026-10-10 09:00:00');
     expect(res.text).toContain('from Source 0, Source 1, Source 2, Source 3, Source 4 and 4 more');
     expect(res.text).toContain('…and 1 more');
-    expect(res.text).not.toContain('Disputes recorded');
+    expect(res.text).not.toContain('Disagreements recorded');
     expect(Object.fromEntries(kompl.requested[0].searchParams)).toEqual({ days: '7', limit: '20' });
   });
 

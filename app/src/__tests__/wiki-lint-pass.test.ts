@@ -97,42 +97,17 @@ describe('POST /api/wiki/lint-pass', () => {
     expect(manual.body.skipped).toBeUndefined();
   });
 
-  it('enriches contradiction titles from page pairs', async () => {
-    seedPage(handle.db, {
-      page_id: 'page-a',
-      title: 'Alpha',
-      category: 'Tech',
-      summary: 'Alpha claims X',
-    });
-    seedPage(handle.db, {
-      page_id: 'page-b',
-      title: 'Beta',
-      category: 'Tech',
-      summary: 'Beta claims Y',
-    });
-    vi.mocked(fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        contradictions: [{
-          page_a: 'page-a',
-          page_b: 'page-b',
-          claim: 'X vs Y',
-          severity: 'major',
-        }],
-      }),
-    } as Response);
+  it('no longer asks the LLM about page summaries: the whole-wiki check finds disagreements', async () => {
+    // Two summaries in one category: the retired check 5 would have sent them.
+    seedPage(handle.db, { page_id: 'page-a', title: 'Alpha', category: 'Tech', summary: 'Alpha claims X' });
+    seedPage(handle.db, { page_id: 'page-b', title: 'Beta', category: 'Tech', summary: 'Beta claims Y' });
 
     const { body } = await postLint();
-    const contras = body.contradictions as Array<{
-      page_a_id: string;
-      page_a_title: string;
-      page_b_title: string;
-      claim: string;
-    }>;
-    expect(contras).toHaveLength(1);
-    expect(contras[0].page_a_title).toBe('Alpha');
-    expect(contras[0].page_b_title).toBe('Beta');
-    expect(contras[0].claim).toBe('X vs Y');
+
+    // The only call left is the saved-links page refresh; nothing goes to an LLM route.
+    const urls = vi.mocked(fetch).mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes('/pipeline/'))).toEqual([]);
+    expect(body.contradictions).toEqual([]);
   });
 
   it('finds missing cross-refs: names the extraction found in 3+ sources', async () => {

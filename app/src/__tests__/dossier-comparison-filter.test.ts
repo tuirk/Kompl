@@ -153,6 +153,29 @@ describe('buildDossier — comparison filter', () => {
     expect(dossier).not.toContain('partial overlap');
   });
 
+  it('reads a relation type however the extraction spelled it, as Rule 4 counts it', () => {
+    const plan: Plan = {
+      page_type: 'comparison',
+      title: 'React vs Vue',
+      source_ids: JSON.stringify(['s1']),
+      related_plan_ids: JSON.stringify(['plan-react', 'plan-vue']),
+    };
+    const extractions = new Map<string, Record<string, unknown>>([
+      ['s1', mkExtraction([
+        { from_entity: 'React', to: 'Vue', type: 'Competes with', description: 'spelled loosely' },
+        { from_entity: 'Vue', to: 'React', type: 'conflicts_with', description: 'a synonym' },
+        { from_entity: 'React', to: 'Vue', type: 'uses', description: 'not a rivalry' },
+      ])],
+    ]);
+    const titleMap = new Map([['plan-react', 'React'], ['plan-vue', 'Vue']]);
+
+    const dossier = buildDossier(plan, extractions, titleMap, new Map());
+
+    expect(dossier).toContain('spelled loosely');
+    expect(dossier).toContain('a synonym');
+    expect(dossier).not.toContain('not a rivalry');
+  });
+
   it('handles malformed related_plan_ids JSON without throwing', () => {
     const plan: Plan = {
       page_type: 'comparison',

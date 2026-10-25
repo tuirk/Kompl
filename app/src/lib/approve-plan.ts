@@ -40,7 +40,7 @@ import {
 } from './db';
 import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from './draft-rules';
 import { flushOutboxPage } from './outbox-flush';
-import { recordNewDisputes } from './page-disputes';
+import { recordPageDisagreements } from './disagreements';
 import { pageTextVersionToken } from './page-rewrite';
 import { contributingSourceIds, recordPageContributions } from './plan-provenance';
 import { upsertVectorWithRetry } from './vector-upsert';
@@ -215,6 +215,9 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
         ftsBody
       );
 
+      // Disagreements the committed text records (lib/disagreements.ts).
+      recordPageDisagreements(db, { page_id, title: plan.title }, markdown);
+
       logActivity('draft_approved', {
         source_id: sourceIds[0] ?? null,
         details: { page_id, title: plan.title, plan_id },
@@ -270,10 +273,6 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
     category: category ?? '',
     source_count: sourceIds.length,
   });
-
-  // Phase 3b: disputes the page records in its own text, for the activity
-  // feed (lib/page-disputes.ts). Never throws.
-  if (typeof markdown === 'string') recordNewDisputes({ page_id, title: plan.title }, markdown);
 
   return { ok: true, plan_id, page_id, title: plan.title };
 }

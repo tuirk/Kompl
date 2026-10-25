@@ -35,8 +35,8 @@ function item(over: Partial<ConnectionItem> & Pick<ConnectionItem, 'title'>): Co
   };
 }
 
-function evidence(source_id: string, sentence: string | null, source_archived = false) {
-  return { source_id, source_title: `Title ${source_id}`, source_archived, sentence };
+function evidence(source_id: string, sentence: string | null, source_archived = false, quote: string | null = null) {
+  return { source_id, source_title: `Title ${source_id}`, source_archived, sentence, quote };
 }
 
 const related = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon'].map((title) => item({ title, type: 'related_to' }));

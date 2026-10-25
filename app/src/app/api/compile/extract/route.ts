@@ -42,6 +42,7 @@ import {
   saveExtraction,
   updateSourceTitle,
 } from '../../../../lib/db';
+import { extractionCheckCounts } from '../../../../lib/extraction-checks';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
 import { buildMentionPin } from '../../../../lib/mention-pin';
 import { buildSourceMentionRows } from '../../../../lib/mention-rows';
@@ -344,7 +345,9 @@ export async function POST(request: Request) {
     // these rows through its own groups (db.ts rebuildSessionMentions).
     // Re-extraction swaps the rows for the latest llm_output's; relation
     // rows come from lib/relation-rows.ts (type spelling, sorted
-    // competes_with / contradicts, the LLM's one-sentence description, v28).
+    // competes_with / contradicts, the LLM's one-sentence description, v28,
+    // and the source quote with the nlp-service check of it, v30). The
+    // claims' quotes and checks stay in llm_output.
     const pin = buildMentionPin(getEntityAndConceptPageTitles(), getAliases());
     saveExtraction(
       {
@@ -414,6 +417,8 @@ export async function POST(request: Request) {
         concept_count:      ((llmOutput as Record<string, unknown[]>).concepts        ?? []).length,
         claim_count:        ((llmOutput as Record<string, unknown[]>).claims          ?? []).length,
         relationship_count: ((llmOutput as Record<string, unknown[]>).relationships   ?? []).length,
+        // The nlp-service quote check and relation-end count (plan 3.2).
+        ...extractionCheckCounts(llmOutput),
       },
     });
 

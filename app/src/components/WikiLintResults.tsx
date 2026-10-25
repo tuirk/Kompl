@@ -194,30 +194,34 @@ export default function WikiLintResults({ result, raw, running }: WikiLintResult
         </ul>
       </LintCheckSection>
 
-      <LintCheckSection
-        label="Contradictions"
-        count={counts.contradictions}
-        legacyHint={legacyCountHint(counts.contradictions, result.contradictions.length)}
-        variant="issue"
-        defaultOpen={counts.contradictions > 0}
-      >
-        <ul style={{ margin: 0, paddingLeft: '1.1rem', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {result.contradictions.map((c, i) => (
-            <li key={`${c.page_a_id}-${c.page_b_id}-${i}`}>
-              <Link href={`/wiki/${c.page_a_id}`} style={linkStyle}>
-                {c.page_a_title}
-              </Link>
-              <span style={{ color: 'var(--fg-dim)' }}> ↔ </span>
-              <Link href={`/wiki/${c.page_b_id}`} style={linkStyle}>
-                {c.page_b_title}
-              </Link>
-              <span style={{ fontFamily: 'var(--font-body)', fontSize: '0.85rem', color: 'var(--fg-muted)' }}>
-                : {c.claim}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </LintCheckSection>
+      {/* Checks since plan 3.6 find no contradictions (the whole-wiki check
+          does, on the pages); results logged before still list theirs. */}
+      {counts.contradictions > 0 && (
+        <LintCheckSection
+          label="Contradictions"
+          count={counts.contradictions}
+          legacyHint={legacyCountHint(counts.contradictions, result.contradictions.length)}
+          variant="issue"
+          defaultOpen={counts.contradictions > 0}
+        >
+          <ul style={{ margin: 0, paddingLeft: '1.1rem', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {result.contradictions.map((c, i) => (
+              <li key={`${c.page_a_id}-${c.page_b_id}-${i}`}>
+                <Link href={`/wiki/${c.page_a_id}`} style={linkStyle}>
+                  {c.page_a_title}
+                </Link>
+                <span style={{ color: 'var(--fg-dim)' }}> ↔ </span>
+                <Link href={`/wiki/${c.page_b_id}`} style={linkStyle}>
+                  {c.page_b_title}
+                </Link>
+                <span style={{ fontFamily: 'var(--font-body)', fontSize: '0.85rem', color: 'var(--fg-muted)' }}>
+                  : {c.claim}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </LintCheckSection>
+      )}
 
       <div
         style={{

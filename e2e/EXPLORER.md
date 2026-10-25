@@ -86,8 +86,8 @@ Open the screenshot and ask, in this order:
    labels cut off without "…", text overlapping other text or icons.
 3. **Wording that misleads:** a sentence Kompl wrote shown as if it were the
    source's words (in quotes, or with no "Kompl's summary, from …" label); a
-   button named for something it does not do; a status that contradicts
-   another screen.
+   quotation without "Quoted from …"; a button named for something it does
+   not do; a status that contradicts another screen.
 4. **Numbers:** does every count on this screen agree with the list under it,
    and with the same count on other screens? Note each count you see; compare
    at the end (see "Numbers that should agree").
@@ -123,10 +123,12 @@ Use `--session tour`. Start at 1280x800; each stop says when to try 1024x768.
    largest "Connections" count), a small page, and a source-summary page. On
    each: title, "On this page", citation markers `[n]` against "Sources (N)",
    the right-hand card: Connections count against the rows, each group's
-   label, a `Why` toggle (`click "css:summary[aria-label^='Why']"`): the
-   sentence must be labelled "Kompl's summary, from <source>", never shown as
-   a quote; "no page yet" rows; Disputes; "You might also read"; "See in
-   graph". `resize 1024 768` on one article.
+   label, a `Why` toggle (`click "css:summary[aria-label^='Why']"`): each
+   source shows either its own sentence in quotation marks, labelled "Quoted
+   from <source>", or Kompl's sentence labelled "Kompl's summary, from
+   <source>", never in quotes; "no page yet" rows; Disagreements (Confirm,
+   Dismiss, Undo); "You might also read"; "See in graph". `resize 1024 768`
+   on one article.
 5. **Topic map** `goto /wiki/graph`. Header "N pages · M connections" against
    the legend's counts; `nodes`; `hover node:<title>` (the name card); `click
    node:<title>` (its panel: title, connections, the `Why` evidence wording);
@@ -162,8 +164,11 @@ End with `npm run explore-step -- stop --session tour`.
 - The site sets `zoom: 0.9` on `<html>`; the topic map resets it to 1. Text
   that looks slightly small is expected; text clipped by the zoom is not.
 - A relation's sentence (in the page card, the map's panels, the evidence
-  list) is written by Kompl's extraction model: it must say "Kompl's summary,
-  from <source title>" and never appear as a quotation of the source.
+  list) is either Kompl's, written by its extraction model, which must say
+  "Kompl's summary, from <source title>" and never appear in quotes, or the
+  source's own sentence, checked against the source when it was extracted,
+  which appears in quotation marks with "Quoted from <source title>".
+  Relations extracted before quotes were kept only have Kompl's summary.
 - "no page yet" marks a name with no article; it should not link anywhere.
 - **Numbers that should agree:** the wiki's page count (dashboard, `/wiki`)
   with the map's header plus its hidden "Source pages" (legend); "Sources (N)"

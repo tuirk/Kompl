@@ -35,6 +35,10 @@ export interface ConvertResponse {
   markdown: string;
   content_hash: string;
   metadata: Record<string, unknown>;
+  /** The publication date the source's own metadata names (YYYY-MM-DD) and
+   *  where it came from; absent or null when none (lib/source-dates.ts). */
+  published_at?: string | null;
+  published_at_source?: string | null;
 }
 
 export type ConvertErrorCode =

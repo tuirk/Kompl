@@ -29,7 +29,7 @@ def test_synthesized_prompts_carry_grounding_and_contradiction_rules(page_type):
     prompt = llm_client._DRAFT_PAGE_PROMPTS[page_type]
     assert "SOURCES ONLY:" in prompt
     assert "Add nothing from your own knowledge" in prompt
-    assert "CONTRADICTIONS:" in prompt
+    assert "DISAGREEMENTS (" in prompt
     assert "Different milestones" in prompt
 
 
@@ -49,7 +49,7 @@ def test_no_prompt_asks_for_values_the_model_cannot_know(page_type):
 
 def test_concept_template_limits_contradictions_and_related_lists():
     prompt = llm_client._DRAFT_PAGE_PROMPTS["concept"]
-    assert "only if two sources make claims that cannot both be true; otherwise leave it out" in prompt
+    assert "only if two sources make claims that cannot both be true, in the DISAGREEMENTS format" in prompt
     assert "at most 5 pages" in prompt
 
 

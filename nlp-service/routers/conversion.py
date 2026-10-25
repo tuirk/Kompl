@@ -39,12 +39,14 @@ from typing import Any, Literal
 logger = logging.getLogger(__name__)
 
 import httpx
+import requests
 from fastapi import APIRouter, HTTPException
 from markitdown import MarkItDown
 from pydantic import BaseModel, ConfigDict, Field
 
 from services._safe_paths import safe_join
 from services.http_client import HttpClient, HttpClientError
+from services.published_date import PublishedDate, from_file, from_html, from_meta_map, normalise_date
 from services.url_safety import validate_outbound_url
 
 
@@ -93,6 +95,18 @@ class ConvertResponse(BaseModel):
     markdown: str
     content_hash: str
     metadata: ContentMetadata
+    # The source's publication date (YYYY-MM-DD) when its own metadata names
+    # one, and where it came from (services/published_date.py; plan 3.2,
+    # D5). None when it names none: the app then looks for a date in the
+    # text, else uses the day the source was added (app/src/lib/source-dates.ts).
+    published_at: str | None = None
+    published_at_source: Literal[
+        "page_published",
+        "page_modified",
+        "file_metadata",
+        "youtube",
+        "github_push",
+    ] | None = None
 
 
 class UrlConvertRequest(BaseModel):
@@ -269,6 +283,13 @@ _GITHUB_HEADERS = {
 }
 
 
+def _date_fields(found: PublishedDate | None) -> dict[str, Any]:
+    """ConvertResponse's published_at / published_at_source for a found date."""
+    if found is None:
+        return {}
+    return {"published_at": found.date, "published_at_source": found.origin}
+
+
 def _is_github_repo_url(url: str) -> tuple[str, str] | None:
     """Return (owner, repo) if url is a GitHub repo root, else None."""
     m = _GITHUB_REPO_RE.match(url)
@@ -325,6 +346,8 @@ def _convert_github_repo(
 
     markdown = "\n".join(parts).strip()
     content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    # A README is as current as the repo's last push.
+    pushed = normalise_date(meta.get("pushed_at"))
 
     return ConvertResponse(
         source_id=source_id,
@@ -342,6 +365,7 @@ def _convert_github_repo(
             github_topics=topics or None,
             github_language=lang,
         ),
+        **(_date_fields(PublishedDate(pushed, "github_push")) if pushed else {}),
     )
 
 
@@ -570,6 +594,7 @@ def _convert_youtube(source_id: str, url: str) -> "ConvertResponse":
     markdown = "\n".join(md_parts)
 
     content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    published = normalise_date(meta["published_at"])
 
     return ConvertResponse(
         source_id=source_id,
@@ -586,7 +611,34 @@ def _convert_youtube(source_id: str, url: str) -> "ConvertResponse":
             content_type="text/html",
             final_url=url,
         ),
+        **(_date_fields(PublishedDate(published, "youtube")) if published else {}),
     )
+
+
+class _KeepBodySession(requests.Session):
+    """The session MarkItDown fetches a URL with: its own Accept header, and
+    the body kept, so the page's publication date can be read from its HTML
+    after MarkItDown converts it, without fetching the page twice."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.headers.update({"Accept": "text/markdown, text/html;q=0.9, text/plain;q=0.8, */*;q=0.1"})
+        self.body: bytes | None = None
+        self.content_type = ""
+
+    def get(self, url, **kwargs):  # type: ignore[override]
+        kwargs["stream"] = False  # read whole, so the body is still there afterwards
+        response = super().get(url, **kwargs)
+        self.body = response.content
+        self.content_type = response.headers.get("content-type", "")
+        return response
+
+
+def _page_date(session: _KeepBodySession) -> PublishedDate | None:
+    """The publication date in an HTML page the session fetched."""
+    if session.body is None or "html" not in session.content_type.lower():
+        return None
+    return from_html(session.body.decode("utf-8", errors="replace"))
 
 
 def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
@@ -608,8 +660,9 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     # the daemon thread will exit naturally when its socket closes. Not using
     # `with ...` because the context-manager's implicit shutdown(wait=True)
     # would reintroduce the blocking we're trying to avoid.
+    session = _KeepBodySession()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(MarkItDown().convert, url)
+    future = pool.submit(MarkItDown(requests_session=session).convert, url)
     try:
         result = future.result(timeout=_MARKITDOWN_URL_TIMEOUT_SECS)
     except concurrent.futures.TimeoutError:
@@ -647,6 +700,7 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
             content_type="text/html",
             final_url=url,
         ),
+        **_date_fields(_page_date(session)),
     )
 
 
@@ -834,6 +888,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
         markdown=markdown,
         content_hash=content_hash,
         metadata=metadata,
+        **_date_fields(from_meta_map(fc_metadata)),
     )
 
 
@@ -934,4 +989,5 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
             content_type=content_type,
             final_url=None,
         ),
+        **_date_fields(from_file(p)),
     )

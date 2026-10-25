@@ -8,7 +8,8 @@
  *   1. Source summaries — one per session source, always 'create'
  *   2. Entity pages — from canonical entity list
  *   3. Concept pages — from canonical_concepts (resolved cross-session)
- *   4. Comparison pages — relationships of type competes_with / contradicts
+ *   4. Comparison pages — pairs of subjects (entity or concept) that sources
+ *      say compete with or contradict each other
  *   5. Overview pages — when an entity type with a category has 3+ entity pages
  *
  * All planned pages are inserted into the page_plans table for the draft
@@ -23,25 +24,23 @@ import { NextResponse } from 'next/server';
 
 import {
   clearStagedPagePlans,
-  countSourcesForRelationship,
   countSourcesMentioning,
+  getComparisonSourceIds,
   getDb,
   getEntityPromotionThreshold,
-  getExtractionsBySession,
   getMentionKinds,
   getMinSourceChars,
   getPage,
-  getSourceIdsForRelationship,
+  getSessionComparisonPairs,
   getSourceIdsMentioning,
   getSourcePage,
   getTopicPageByTitle,
   hasPendingCreate,
   insertPagePlan,
-  logActivity,
   readRawMarkdown,
 } from '../../../../lib/db';
+import { recordTriageContradiction } from '../../../../lib/compile/triage-disagreement';
 import { countKinds, decidePageKind, isPageKind, sourceKinds, type PageKind } from '../../../../lib/page-kind';
-import { normalizeRelationType } from '../../../../lib/relation-rows';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -70,9 +69,10 @@ export interface PlannedPage {
 
 // ── Comparison page threshold ────────────────────────────────────────────────
 // A comparison page is only created when a specific rivalry appears in this
-// many distinct sources. One article saying "X competes with Y" is just that
-// article's opinion — three sources noting the same rivalry is a pattern
-// worth synthesising into its own page.
+// many distinct sources (competes_with and contradicts together). One
+// article saying "X competes with Y" is just that article's opinion — three
+// sources noting the same rivalry is a pattern worth synthesising into its
+// own page.
 // Deliberately NOT user-tunable — this is the load-bearing evidence signal,
 // not a noise knob.
 export const COMPARISON_SOURCE_THRESHOLD = 3;
@@ -186,27 +186,11 @@ export async function POST(request: Request) {
   // the current run.
   clearStagedPagePlans(session_id);
 
-  // Get extractions for relationships (Rule 4 comparison pages). Concepts
-  // are no longer read here — they go through the resolver and arrive as
-  // canonical_concepts in the request body, matching how canonical_entities
-  // flows in. Same 3-layer cross-session pipeline for both, so "Transformer
-  // Architecture" and "Transformer Networks" from different sessions
-  // converge instead of forming duplicate concept pages.
-  const extractions = getExtractionsBySession(session_id);
-  const extractionMap = new Map<string, { relationships: Array<{ from_entity: string; to: string; type: string }> }>();
-  for (const ext of extractions) {
-    try {
-      const llm = JSON.parse(ext.llm_output) as {
-        relationships?: Array<{ from_entity: string; to: string; type: string }>;
-      };
-      extractionMap.set(ext.source_id, {
-        relationships: llm.relationships ?? [],
-      });
-    } catch {
-      extractionMap.set(ext.source_id, { relationships: [] });
-    }
-  }
-
+  // Concepts are not read from the extractions here: they go through the
+  // resolver and arrive as canonical_concepts in the request body, matching
+  // how canonical_entities flows in. Same 3-layer cross-session pipeline for
+  // both, so "Transformer Architecture" and "Transformer Networks" from
+  // different sessions converge instead of forming duplicate concept pages.
   const plans: PlannedPage[] = [];
 
   // Wiki-wide promotion threshold (schema v17). An entity/concept gets its own
@@ -314,69 +298,32 @@ export async function POST(request: Request) {
   }
 
   // ── Rule 4: Comparison pages ─────────────────────────────────────────────────
-  // Wiki-wide counting: relationship_mentions was written at extract time with
-  // direction-agnostic types (competes_with, contradicts) already normalized
-  // to from/to lowercase-sorted order. We still enumerate THIS session's
-  // relationships to seed the candidate list (a pair nobody mentioned in the
-  // current session isn't worth re-evaluating), but the gate reads the full
-  // corpus so a pair that hit threshold across historical sources finally
-  // earns its page when the current session corroborates it.
-  const entityNameSet = new Set(canonicalEntities.map((e) => e.canonical.toLowerCase()));
-
-  // Raw-spelling → canonical map, built in-memory per request from the
-  // resolver's canonicalEntities output. Lets Rule 4 normalise relationship
-  // endpoints that still carry the LLM's raw spelling (e.g. "GPT 4") before
-  // the entityNameSet filter, the candidatePairs key, the planIdByCanonical
-  // lookup, and the comparison title. Without this, a relationship like
-  // "GPT 4 competes_with Claude" was silently dropped even though the
-  // resolver had already canonicalised both endpoints — undercounting the
-  // threshold and losing legitimate comparison pages.
-  //
-  // Persisted relationship_mentions rows are already consistent with the
-  // resolver's canonicals: resolve rebuilds the session's mention rows
-  // through its groups (rebuildSessionMentions, db.ts). This in-memory map
-  // fixes the OTHER surface: the raw llm.relationships Rule 4 reads from
-  // extractionMap.
-  const rawToCanonical = new Map<string, string>();
-  for (const g of canonicalEntities) {
-    rawToCanonical.set(g.canonical.toLowerCase(), g.canonical);
-    for (const a of g.aliases) rawToCanonical.set(a.toLowerCase(), g.canonical);
-  }
-  const canonicalize = (raw: string): string =>
-    rawToCanonical.get(raw.toLowerCase()) ?? raw;
-
-  const candidatePairs = new Map<string, { from: string; to: string; type: string }>();
-  for (const ext of extractionMap.values()) {
-    for (const rel of ext.relationships) {
-      // Same spelling the stored rows use ("Competes with" → competes_with).
-      const relType = normalizeRelationType(rel.type);
-      if (relType !== 'competes_with' && relType !== 'contradicts') continue;
-
-      // Canonicalise FIRST so all downstream filters/keys/titles use the
-      // same identity. entityNameSet holds canonical names in lowercase,
-      // so a raw variant must be folded to its canonical before checking.
-      const fromCanonical = canonicalize(rel.from_entity);
-      const toCanonical = canonicalize(rel.to);
-
-      if (!entityNameSet.has(fromCanonical.toLowerCase())) continue;
-      if (!entityNameSet.has(toCanonical.toLowerCase())) continue;
-
-      // Normalize to match the sort rule used by extract when writing
-      // relationship_mentions, so the lookup key lines up.
-      const [nameA, nameB] = fromCanonical.toLowerCase() <= toCanonical.toLowerCase()
-        ? [fromCanonical, toCanonical]
-        : [toCanonical, fromCanonical];
-      const key = `${nameA.toLowerCase()}|||${nameB.toLowerCase()}|||${relType}`;
-      if (!candidatePairs.has(key)) {
-        candidatePairs.set(key, { from: nameA, to: nameB, type: relType });
-      }
-    }
+  // A pair of subjects earns a comparison page ("A vs B") once
+  // COMPARISON_SOURCE_THRESHOLD distinct sources across the wiki say they
+  // compete or contradict each other: competes_with and contradicts count
+  // together, one page per pair (plan 3.5). Candidates are this session's
+  // relation rows (a pair nobody mentioned now isn't re-evaluated), which
+  // resolve rebuilt on the resolver's canonical names (rebuildSessionMentions,
+  // db.ts). Both ends must be subjects of this session, entity or concept,
+  // with a plan from Rules 2-3, so the page can link both.
+  const candidatePairs = new Map<string, { from: string; to: string }>();
+  for (const row of getSessionComparisonPairs(session_id)) {
+    const a = subjects.get(row.from_canonical.toLowerCase());
+    const b = subjects.get(row.to_canonical.toLowerCase());
+    if (!a || !b || a === b) continue;
+    // Sorted like the stored rows, so the title is the same whichever way
+    // round a source put it.
+    const [from, to] = a.canonical.toLowerCase() <= b.canonical.toLowerCase()
+      ? [a.canonical, b.canonical]
+      : [b.canonical, a.canonical];
+    const key = `${from.toLowerCase()}|||${to.toLowerCase()}`;
+    if (!candidatePairs.has(key)) candidatePairs.set(key, { from, to });
   }
 
   let relationshipsBelowThreshold = 0;
-  for (const { from, to, type } of candidatePairs.values()) {
-    const count = countSourcesForRelationship(from, to, type);
-    if (count < COMPARISON_SOURCE_THRESHOLD) {
+  for (const { from, to } of candidatePairs.values()) {
+    const comparisonSourceIds = getComparisonSourceIds(from, to);
+    if (comparisonSourceIds.length < COMPARISON_SOURCE_THRESHOLD) {
       relationshipsBelowThreshold++;
       continue;
     }
@@ -395,7 +342,7 @@ export async function POST(request: Request) {
       title: compTitle,
       page_type: 'comparison',
       action: existingComp ? 'update' : 'create',
-      source_ids: getSourceIdsForRelationship(from, to, type),
+      source_ids: comparisonSourceIds,
       related_plan_ids: related,
       existing_page_id: existingComp?.page_id,
     });
@@ -451,8 +398,10 @@ export async function POST(request: Request) {
   // a concrete downstream action; a failed triage has none:
   //   skip          → provenance-only plan (record the link, no re-draft)
   //   update        → update plan (re-draft the existing page with this source)
-  //   contradiction → NO plan (out of compile's hot path) + rich activity row
-  //                   powering the wiki page sidebar.
+  //   contradiction → the same update plan, so the draft writes the
+  //                   disagreement into the page, + a possible-disagreement
+  //                   record (lib/compile/triage-disagreement.ts) powering
+  //                   the wiki page sidebar.
   //   triage_failed → NO plan: triage gave no verdict (rate limit, cost
   //                   ceiling, error), so nothing may record the source on
   //                   the page. match/route.ts already logged it.
@@ -480,47 +429,40 @@ export async function POST(request: Request) {
         existing_page_id: match.page_id,
         related_plan_ids: [],
       });
-    } else if (match.decision === 'update') {
-      // Re-draft the existing page with this source appended as a contributor.
-      // Reuse action='update' (commit/route.ts already handles that path); the
-      // existing_page_id here is what makes the update route specific to this
-      // page. Dedup against plans already emitted by Rules 1-5 so one source
-      // doesn't write the same page twice.
-      const alreadyPlanned = plans.some(
-        (p) => p.existing_page_id === match.page_id && p.source_ids.includes(match.source_id)
-      );
-      if (alreadyPlanned) continue;
-      plans.push({
-        plan_id: randomUUID(),
-        title: match.page_title,
-        // Match targets entity, concept, comparison and overview pages.
-        page_type: updatePageType(getPage(match.page_id), 'entity'),
-        action: 'update',
-        source_ids: [match.source_id],
-        existing_page_id: match.page_id,
-        related_plan_ids: [],
-      });
-    } else if (match.decision === 'contradiction') {
-      // Log a detailed activity row. The getPageContradictions(pageId) helper
-      // in db.ts json_extracts from here — keep the field names stable.
-      // A re-checked pair's source is from an earlier session.
-      const srcMeta = sessionSourceMetaById.get(match.source_id) ?? earlierSourceMeta(match.source_id);
-      logActivity('page_contradiction_detected', {
-        source_id: match.source_id,
-        session_id,
-        step_key: 'match',
-        details: {
+    } else if (match.decision === 'update' || match.decision === 'contradiction') {
+      // Re-draft the existing page with this source as a contributor
+      // (commit/route.ts handles action='update'). One update plan per page:
+      // a plan Rules 1-5 or an earlier verdict made for it takes the source,
+      // since two drafts of one page from the same base lose one of the
+      // updates (auto-approve) or have the second approval refused.
+      const pagePlan = plans.find((p) => p.existing_page_id === match.page_id && p.action === 'update');
+      if (pagePlan) {
+        if (!pagePlan.source_ids.includes(match.source_id)) pagePlan.source_ids.push(match.source_id);
+      } else {
+        plans.push({
+          plan_id: randomUUID(),
+          title: match.page_title,
+          // Match targets entity, concept, comparison and overview pages.
+          page_type: updatePageType(getPage(match.page_id), 'entity'),
+          action: 'update',
+          source_ids: [match.source_id],
+          existing_page_id: match.page_id,
+          related_plan_ids: [],
+        });
+      }
+      // A contradiction is also recorded as a possible disagreement; the
+      // draft writes it into the page. A re-checked pair's source is from
+      // an earlier session.
+      if (match.decision === 'contradiction') {
+        recordTriageContradiction({
+          session_id,
+          source_id: match.source_id,
           page_id: match.page_id,
           page_title: match.page_title,
-          source_title: srcMeta?.title ?? null,
-          source_url: srcMeta?.source_url ?? null,
-          source_type: srcMeta?.source_type ?? null,
-          date_ingested: srcMeta?.date_ingested ?? null,
           reason: match.reason,
-          session_id,
-          detected_at: new Date().toISOString(),
-        },
-      });
+          source: sessionSourceMetaById.get(match.source_id) ?? earlierSourceMeta(match.source_id),
+        });
+      }
     }
     // 'triage_failed' and any other decision value: no plan. Triage is
     // enum-typed at the match layer; unknown values are a contract
