@@ -33,6 +33,7 @@ import logging
 import mimetypes
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -149,6 +150,26 @@ _MARKITDOWN_MIN_CHARS = 500
 # forever without this cap. On timeout we return None, which matches the
 # existing "too few chars" signal and triggers the Firecrawl fallback.
 _MARKITDOWN_URL_TIMEOUT_SECS = 20.0
+# Firecrawl answers 429 when the plan's requests per minute are used up; a
+# batch import (5 links at once, ingest-urls.ts) used to lose them all
+# (owner decision 2026-10-25: wait and retry). Wait as long as its message
+# asks ("retry after 23s"), else back off, and stop once the whole convert
+# would outrun the app's 120 s window (lib/nlp-convert.ts callConvertUrl).
+_FIRECRAWL_429_BACKOFF_SECS = (10.0, 20.0, 30.0)
+_FIRECRAWL_429_MAX_WAIT_SECS = 30.0
+_CONVERT_URL_BUDGET_SECS = 100.0
+_RETRY_AFTER_RE = re.compile(r"retry after (\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
+# Bot checks served instead of the page ("Checking your browser...", 62
+# characters, became a wiki page on the film run). Only short pages are
+# judged, so an article about such pages is never refused.
+_BOT_CHECK_MAX_CHARS = 2000
+_BOT_CHECK_RE = re.compile(
+    r"checking your browser|just a moment\.\.\.|attention required!? \| cloudflare|"
+    r"enable javascript and cookies to continue|verify you are (a )?human|"
+    r"are you a robot|ddos protection by|please wait while we verify|"
+    r"performing security verification",
+    re.IGNORECASE,
+)
 _DATA_ROOT = Path("/data")
 _ALLOWED_EXTENSIONS = {
     ".pdf",
@@ -641,6 +662,31 @@ def _page_date(session: _KeepBodySession) -> PublishedDate | None:
     return from_html(session.body.decode("utf-8", errors="replace"))
 
 
+def _is_bot_check(title: str | None, markdown: str) -> bool:
+    """A short page whose title or text is a bot check, not the article."""
+    if len(markdown) > _BOT_CHECK_MAX_CHARS:
+        return False
+    return bool(_BOT_CHECK_RE.search(f"{title or ''}\n{markdown}"))
+
+
+def _firecrawl_scrape(body: dict[str, Any], headers: dict[str, str], started: float) -> dict[str, Any]:
+    """POST /v2/scrape, waiting out 429s while the convert budget allows."""
+    for wait_default in (*_FIRECRAWL_429_BACKOFF_SECS, None):
+        try:
+            return _http.post_json(url="https://api.firecrawl.dev/v2/scrape", json_body=body, headers=headers)
+        except HttpClientError as e:
+            if e.status_code != 429 or wait_default is None:
+                raise
+            asked = _RETRY_AFTER_RE.search(f"{e.message} {e.upstream_body or ''}")
+            wait = min(float(asked.group(1)) + 1.0, _FIRECRAWL_429_MAX_WAIT_SECS) if asked else wait_default
+            # The retry itself takes up to 30 s (Firecrawl's own timeout).
+            if time.monotonic() - started + wait + 30.0 > _CONVERT_URL_BUDGET_SECS:
+                raise
+            logger.info("firecrawl 429, retrying in %.0fs", wait)
+            time.sleep(wait)
+    raise AssertionError("unreachable")
+
+
 def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     """
     Attempt to convert a URL via MarkItDown (free, local).
@@ -674,7 +720,7 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     pool.shutdown(wait=False)
 
     markdown = result.text_content or ""
-    if len(markdown) < _MARKITDOWN_MIN_CHARS:
+    if len(markdown) < _MARKITDOWN_MIN_CHARS or _is_bot_check(result.title, markdown):
         return None
 
     title = result.title or url
@@ -766,6 +812,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
             detail=f"url_blocked: {e} — URL does not resolve to a fetchable public address",
         ) from e
 
+    started = time.monotonic()
     # Layer 1: MarkItDown (free, local). YouTube URLs are handled above and
     # never reach this layer.
     markitdown_result = _try_markitdown_url(req.source_id, req.url)
@@ -792,11 +839,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     }
 
     try:
-        response: dict[str, Any] = _http.post_json(
-            url="https://api.firecrawl.dev/v2/scrape",
-            json_body=firecrawl_body,
-            headers=firecrawl_headers,
-        )
+        response: dict[str, Any] = _firecrawl_scrape(firecrawl_body, firecrawl_headers, started)
     except HttpClientError as e:
         # status_code is None → network error or timeout → 504 per contract 2a.
         # status_code set → upstream HTTP failure → 502 per contract 2a.
@@ -842,6 +885,10 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     fc_metadata = data.get("metadata")
     if not isinstance(fc_metadata, dict):
         fc_metadata = {}
+    # 422 like other unconvertible inputs: the link goes to Saved Links, and
+    # Retry failed can fetch it again later.
+    if _is_bot_check(fc_metadata.get("title"), markdown):
+        raise HTTPException(status_code=422, detail="bot_check_page: the site served a bot check instead of the page")
 
     # Flatten per docs/research/2026-04-08-conversion-deps.md section 1.
     fc_title = fc_metadata.get("title")
