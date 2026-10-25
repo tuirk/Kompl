@@ -21,8 +21,8 @@ const DATA: WikiGraph = {
   nodes: [page('a-pow', 'Proof of work'), page('b-bitcoin', 'Bitcoin'), page('c-eth', 'Ethereum'), page('d-vilnius', 'Vilnius')],
   links: [
     // Stored from the "a" end: proof of work is used by Bitcoin.
-    { source: 'a-pow', target: 'b-bitcoin', relations: [{ type: 'uses', direction: 'in', source_count: 3 }, { type: 'related_to', direction: 'out', source_count: 1 }], wikilink: true, weight: 3 },
-    { source: 'b-bitcoin', target: 'c-eth', relations: [{ type: 'competes_with', direction: 'out', source_count: 2 }], wikilink: false, weight: 2 },
+    { source: 'a-pow', target: 'b-bitcoin', relations: [{ type: 'uses', direction: 'in', source_count: 3, direction_disputed: false, outdated: false }, { type: 'related_to', direction: 'out', source_count: 1, direction_disputed: false, outdated: false }], wikilink: true, weight: 3 },
+    { source: 'b-bitcoin', target: 'c-eth', relations: [{ type: 'competes_with', direction: 'out', source_count: 2, direction_disputed: false, outdated: false }], wikilink: false, weight: 2 },
     { source: 'c-eth', target: 'd-vilnius', relations: [], wikilink: true, weight: 0 },
   ],
   missing: [],
@@ -76,11 +76,11 @@ describe('relationsBetween', () => {
     const connections: PageConnections = {
       groups: [
         { label: 'Uses', items: [
-          { page_id: 'a-pow', title: 'Proof of work', type: 'uses', direction: 'out', source_count: 3, evidence: [] },
-          { page_id: null, title: 'SHA-256', type: 'uses', direction: 'out', source_count: 1, evidence: [] },
+          { page_id: 'a-pow', title: 'Proof of work', type: 'uses', direction: 'out', source_count: 3, evidence: [], direction_dispute: null, outdated: null },
+          { page_id: null, title: 'SHA-256', type: 'uses', direction: 'out', source_count: 1, evidence: [], direction_dispute: null, outdated: null },
         ] },
         { label: 'Related to', items: [
-          { page_id: 'a-pow', title: 'Proof of work', type: 'related_to', direction: 'out', source_count: 1, evidence: [] },
+          { page_id: 'a-pow', title: 'Proof of work', type: 'related_to', direction: 'out', source_count: 1, evidence: [], direction_dispute: null, outdated: null },
         ] },
       ],
       linked_only: [{ page_id: 'd-vilnius', title: 'Vilnius' }],
@@ -102,7 +102,7 @@ describe('hoverCardText', () => {
     const data: WikiGraph = {
       nodes: [page('x', 'Bitcoin'), page('y', 'Proof of work')],
       links: [{ source: 'x', target: 'y', relations: [
-        { type: 'related_to', direction: 'out', source_count: 3 }, { type: 'uses', direction: 'out', source_count: 1 },
+        { type: 'related_to', direction: 'out', source_count: 3, direction_disputed: false, outdated: false }, { type: 'uses', direction: 'out', source_count: 1, direction_disputed: false, outdated: false },
       ], wikilink: true, weight: 3 }],
       missing: [],
     };

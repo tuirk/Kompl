@@ -106,8 +106,8 @@ describe('automatic fits', () => {
     const data: WikiGraph = {
       nodes: ['a', 'b', 'c', 'd'].map((id) => ({ id, label: id, group: 'entity', category: 'AI', source_count: 1, summary: null, last_updated: null, degree: 0 })),
       links: [
-        { source: 'a', target: 'b', relations: [{ type: 'uses', direction: 'out', source_count: 1 }], wikilink: false, weight: 1 },
-        { source: 'b', target: 'c', relations: [{ type: 'uses', direction: 'out', source_count: 1 }], wikilink: false, weight: 1 },
+        { source: 'a', target: 'b', relations: [{ type: 'uses', direction: 'out', source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1 },
+        { source: 'b', target: 'c', relations: [{ type: 'uses', direction: 'out', source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1 },
         { source: 'c', target: 'd', relations: [], wikilink: true, weight: 0 },
       ],
       missing: [],

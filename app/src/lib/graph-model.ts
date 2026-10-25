@@ -9,7 +9,7 @@
 
 import type { EdgeRelation, MissingPage } from './relation-edges';
 import type { WikiGraph } from './wiki-graph';
-import { LINE_ALPHA, LINE_FADED, LINE_HEX, LINE_LIT_HEX, withAlpha } from './graph-palette';
+import { LINE_ALPHA, LINE_FADED, LINE_HEX, LINE_LIT_HEX, LINE_OUTDATED, withAlpha } from './graph-palette';
 import {
   categoryAnchors, clusterRadius, edgeWidth, nodeRadius, rankCategories, ringOrder, seedPosition, UNCATEGORIZED,
 } from './graph-layout';
@@ -71,6 +71,8 @@ export interface ModelLink {
   kind: EdgeKind;
   /** The relation that names the line: the strongest specific one, else related_to; null for a plain link. */
   colorType: string | null;
+  /** That relation may be outdated (relation-outdated.ts): the line is drawn dimmed. */
+  outdated: boolean;
   sameCategory: boolean;
   width: number;
   color: string;
@@ -192,6 +194,7 @@ export function buildGraphModel(data: WikiGraph): GraphModel {
     if (!a || !b) continue;
     const kind = edgeKind(e.relations);
     const colorType = colorTypeOf(e.relations);
+    const outdated = e.relations.find((r) => r.type === colorType)?.outdated ?? false;
     links.push({
       source: a.id,
       target: b.id,
@@ -202,9 +205,10 @@ export function buildGraphModel(data: WikiGraph): GraphModel {
       weight: e.weight,
       kind,
       colorType,
+      outdated,
       sameCategory: a.category === b.category,
       width: edgeWidth(e.weight),
-      color: withAlpha(LINE_HEX, LINE_ALPHA[kind]),
+      color: withAlpha(LINE_HEX, outdated ? LINE_OUTDATED : LINE_ALPHA[kind]),
       faded: LINE_FADED_COLOR,
       bright: LINE_LIT_HEX,
     });

@@ -17,9 +17,9 @@ function page(id: string, extra: Partial<WikiGraphNode> = {}): WikiGraphNode {
   return { id, label: id.charAt(0).toUpperCase() + id.slice(1), group: 'entity', category: 'AI', source_count: 1, summary: null, last_updated: null, degree: 0, ...extra };
 }
 const typed = (source: string, target: string, type = 'uses', direction: 'out' | 'in' = 'out'): RelationEdge =>
-  ({ source, target, relations: [{ type, direction, source_count: 1 }], wikilink: false, weight: 1 });
+  ({ source, target, relations: [{ type, direction, source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1 });
 const related = (source: string, target: string): RelationEdge =>
-  ({ source, target, relations: [{ type: 'related_to', direction: 'out', source_count: 1 }], wikilink: false, weight: 1 });
+  ({ source, target, relations: [{ type: 'related_to', direction: 'out', source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1 });
 const plain = (source: string, target: string): RelationEdge => ({ source, target, relations: [], wikilink: true, weight: 0 });
 const ALL: GraphFilters = { ...DEFAULT_FILTERS, showPlain: true, showRelated: true };
 

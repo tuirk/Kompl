@@ -122,6 +122,7 @@ export function buildMissingLayer(model: Pick<GraphModel, 'missing' | 'byId'>): 
         weight: 0,
         kind: 'related',
         colorType: null,
+        outdated: false,
         sameCategory: p.category === home.category,
         width: 1,
         color: MISSING_LINE,

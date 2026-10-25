@@ -7,8 +7,10 @@
 
 import { getDb } from './db';
 import { MISSING_PAGE_MIN_SOURCES, namedWithPages, rankMissingPages, type MissingPage } from './missing-pages';
+import { prefersFirst, sourceDayLookup } from './relation-direction';
 import { buildNameMap, loadPages, loadRelationRows } from './relation-names';
 import { compareRelationLabels, isSymmetricRelation, relationLabel, type RelationDirection } from './relation-labels';
+import { loadOutdatedIndex } from './relation-outdated';
 
 export type { MissingPage } from './missing-pages';
 
@@ -20,6 +22,10 @@ export interface EdgeRelation {
   type: string;
   direction: RelationDirection;
   source_count: number;
+  /** Other sources state this directed type the other way round (relation-direction.ts). */
+  direction_disputed: boolean;
+  /** Every source is older than a "Changed" finding about the two pages (relation-outdated.ts). */
+  outdated: boolean;
 }
 
 export interface RelationEdge {
@@ -41,7 +47,8 @@ export interface RelationEdges {
 /**
  * Archived pages are left out unless includeArchived; Saved Links always.
  * Symmetric relation types (relation-labels.ts) merge both directions into
- * one relation that keeps the direction of its newest row.
+ * one relation that keeps the direction of its newest row; a directed type
+ * stated both ways keeps the way prefersFirst picks (relation-direction.ts).
  */
 export function getRelationEdges(opts: { includeArchived?: boolean } = {}): RelationEdges {
   const db = getDb();
@@ -54,7 +61,8 @@ export function getRelationEdges(opts: { includeArchived?: boolean } = {}): Rela
     return page !== undefined && (includeArchived || !page.archived);
   };
 
-  type Pair = { source: string; target: string; relations: Map<string, { type: string; direction: RelationDirection; sources: Set<string> }>; wikilink: boolean };
+  type Rel = { type: string; direction: RelationDirection; sources: Set<string>; quoted: boolean; firstRow: number; disputed: boolean };
+  type Pair = { source: string; target: string; relations: Map<string, Rel>; wikilink: boolean };
   const pairs = new Map<string, Pair>();
   const pairOf = (a: string, b: string): Pair => {
     const [source, target] = a < b ? [a, b] : [b, a];
@@ -67,7 +75,7 @@ export function getRelationEdges(opts: { includeArchived?: boolean } = {}): Rela
     return pair;
   };
   const rows = loadRelationRows(db);
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     const fromId = names.get(row.from_canonical.toLowerCase()) ?? null;
     const toId = names.get(row.to_canonical.toLowerCase()) ?? null;
     if (fromId === null || toId === null || fromId === toId) continue;
@@ -77,10 +85,25 @@ export function getRelationEdges(opts: { includeArchived?: boolean } = {}): Rela
     const key = isSymmetricRelation(type) ? type : `${type}\u0000${direction}`;
     let rel = pair.relations.get(key);
     if (!rel) {
-      rel = { type, direction, sources: new Set() };
+      rel = { type, direction, sources: new Set(), quoted: false, firstRow: index, disputed: false };
       pair.relations.set(key, rel);
     }
     rel.sources.add(row.source_id);
+    rel.quoted ||= row.quote !== null;
+  }
+  // One way round per directed type and pair.
+  const dayOf = sourceDayLookup(db);
+  const reading = (r: Rel) => ({ sourceIds: [...r.sources], quoted: r.quoted, firstRow: r.firstRow });
+  for (const pair of pairs.values()) {
+    for (const [key, out] of [...pair.relations]) {
+      if (out.direction !== 'out' || isSymmetricRelation(out.type)) continue;
+      const inKey = `${out.type}\u0000in`;
+      const back = pair.relations.get(inKey);
+      if (!back) continue;
+      const outWins = prefersFirst(reading(out), reading(back), dayOf);
+      (outWins ? out : back).disputed = true;
+      pair.relations.delete(outWins ? inKey : key);
+    }
   }
 
   const links = db
@@ -91,10 +114,18 @@ export function getRelationEdges(opts: { includeArchived?: boolean } = {}): Rela
     if (a !== b && shown(a) && shown(b)) pairOf(a, b).wikilink = true;
   }
 
+  const outdated = loadOutdatedIndex(db, names);
+  const end = (id: string) => ({ page_id: id, name: (pages.get(id) as { title: string }).title });
   const edges = [...pairs.values()]
     .map((p): RelationEdge => {
       const relations = [...p.relations.values()]
-        .map((r) => ({ type: r.type, direction: r.direction, source_count: r.sources.size }))
+        .map((r) => ({
+          type: r.type,
+          direction: r.direction,
+          source_count: r.sources.size,
+          direction_disputed: r.disputed,
+          outdated: outdated.check(end(p.source), end(p.target), r.sources) !== null,
+        }))
         .sort(
           (x, y) =>
             y.source_count - x.source_count ||

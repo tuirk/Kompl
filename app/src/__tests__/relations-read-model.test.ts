@@ -189,7 +189,7 @@ describe('getPageConnections', () => {
     ]);
     for (const edges of [getRelationEdges().edges, getRelationEdges({ includeArchived: true }).edges]) {
       expect(edges).toEqual([
-        { source: 'bitcoin', target: 'pow', relations: [{ type: 'uses', direction: 'out', source_count: 1 }], wikilink: false, weight: 1 },
+        { source: 'bitcoin', target: 'pow', relations: [{ type: 'uses', direction: 'out', source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1 },
       ]);
     }
   });
@@ -237,13 +237,13 @@ describe('getRelationEdges', () => {
       source: 'bitcoin',
       target: 'ethereum',
       relations: [
-        { type: 'related_to', direction: 'out', source_count: 2 },
-        { type: 'competes_with', direction: 'out', source_count: 1 },
+        { type: 'related_to', direction: 'out', source_count: 2, direction_disputed: false, outdated: false },
+        { type: 'competes_with', direction: 'out', source_count: 1, direction_disputed: false, outdated: false },
       ],
       wikilink: true,
       weight: 2,
     });
-    expect(edge('bitcoin', 'pow')).toMatchObject({ relations: [{ type: 'uses', direction: 'out', source_count: 4 }], wikilink: true, weight: 4 });
+    expect(edge('bitcoin', 'pow')).toMatchObject({ relations: [{ type: 'uses', direction: 'out', source_count: 4, direction_disputed: false, outdated: false }], wikilink: true, weight: 4 });
     expect(edge('bitcoin', 'lightning')).toMatchObject({ relations: [{ type: 'part_of', direction: 'in' }], wikilink: false, weight: 1 });
     expect(edge('bitcoin', 'vilnius')).toMatchObject({ relations: [], wikilink: true, weight: 0 });
   });

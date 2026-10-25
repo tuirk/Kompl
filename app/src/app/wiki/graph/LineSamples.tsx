@@ -2,11 +2,11 @@
  * Small line samples for the graph legend, drawn on the canvas's own
  * background with the canvas's line colours and sizes, so the key matches
  * the map exactly: an arrow, a zigzag, the three brightness tiers, the
- * missing-page dashes, widths and the accent.
+ * missing-page dashes, a dimmed (possibly outdated) line, widths and the accent.
  */
 
 import { LINE_PX, zigzagAmplitude, zigzagPeriod } from '../../../lib/graph-line-style';
-import { ACCENT_HEX, CANVAS_BG, LINE_ALPHA, LINE_HEX, withAlpha } from '../../../lib/graph-palette';
+import { ACCENT_HEX, CANVAS_BG, LINE_ALPHA, LINE_HEX, LINE_OUTDATED, withAlpha } from '../../../lib/graph-palette';
 import { edgeWidth } from '../../../lib/graph-layout';
 
 export const SAMPLE_W = 40;
@@ -17,7 +17,7 @@ const MID_THIN = MID + 0.5;
 const TYPED = withAlpha(LINE_HEX, LINE_ALPHA.typed);
 const WIDTH = edgeWidth(1);
 
-export type SampleKind = 'arrow' | 'zigzag' | 'related' | 'plain' | 'dashed' | 'widths' | 'accent';
+export type SampleKind = 'arrow' | 'zigzag' | 'related' | 'plain' | 'dashed' | 'outdated' | 'widths' | 'accent';
 
 function zigzagPoints(): string {
   const period = zigzagPeriod(WIDTH);
@@ -58,6 +58,7 @@ export default function LineSample({ kind, on = true }: { kind: SampleKind; on?:
       {kind === 'related' && stroke(withAlpha(LINE_HEX, LINE_ALPHA.related))}
       {kind === 'plain' && stroke(withAlpha(LINE_HEX, LINE_ALPHA.plain), 1)}
       {kind === 'dashed' && stroke(withAlpha(LINE_HEX, LINE_ALPHA.related), 1, '3 3')}
+      {kind === 'outdated' && stroke(withAlpha(LINE_HEX, LINE_OUTDATED))}
       {kind === 'accent' && stroke(ACCENT_HEX)}
       {kind === 'widths' &&
         [1, 2, 3].map((w, i) => <line key={w} x1={2} y1={2.5 + i * 4.5} x2={SAMPLE_W - 2} y2={2.5 + i * 4.5} stroke={TYPED} strokeWidth={w} />)}

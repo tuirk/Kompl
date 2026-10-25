@@ -87,7 +87,7 @@ describe('buildRelationRows with variant types', () => {
       {
         source: 'chatgpt',
         target: 'claude',
-        relations: [{ type: 'competes_with', direction: 'out', source_count: 3 }],
+        relations: [{ type: 'competes_with', direction: 'out', source_count: 3, direction_disputed: false, outdated: false }],
         wikilink: false,
         weight: 3,
       },

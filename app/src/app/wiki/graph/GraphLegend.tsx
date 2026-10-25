@@ -85,6 +85,7 @@ export default function GraphLegend(props: Props) {
   const groups = useMemo(() => legendCategoryGroups(model), [model]);
   const types = useMemo(() => legendPageTypes(model), [model]);
   const opposed = useMemo(() => model.links.some((l) => l.colorType === 'competes_with' || l.colorType === 'contradicts'), [model]);
+  const outdated = useMemo(() => model.links.some((l) => l.outdated), [model]);
   const sourceCount = useMemo(
     () => model.nodes.filter((n) => n.isSource && !filters.hiddenCategories.has(n.category)).length,
     [model, filters.hiddenCategories]
@@ -141,7 +142,7 @@ export default function GraphLegend(props: Props) {
           <h2 id={titleId} style={{ margin: 0, fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 10, lineHeight: '15px', letterSpacing: 1, textTransform: 'uppercase', color: 'var(--fg-secondary)' }}>
             Filters
           </h2>
-          {open && <LegendKey opposed={opposed} missing={missingCount > 0} frame={panelRef} />}
+          {open && <LegendKey opposed={opposed} missing={missingCount > 0} outdated={outdated} frame={panelRef} />}
           <span style={{ flex: 1 }} />
           <button ref={closeRef} type="button" className="graph-icon-btn" aria-label="Collapse filters" title="Collapse filters"
             aria-controls={panelId} onClick={collapse} style={ICON_BUTTON}>

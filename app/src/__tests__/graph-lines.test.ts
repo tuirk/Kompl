@@ -25,7 +25,7 @@ function page(id: string): WikiGraphNode {
   return { id, label: id, group: 'entity', category: 'Crypto', source_count: 1, summary: null, last_updated: null, degree: 0 };
 }
 const rel = (source: string, target: string, type: string, direction: 'out' | 'in' = 'out'): RelationEdge =>
-  ({ source, target, relations: [{ type, direction, source_count: 1 }], wikilink: false, weight: 1 });
+  ({ source, target, relations: [{ type, direction, source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1 });
 const DATA: WikiGraph = {
   nodes: ['bitcoin', 'eth', 'pow', 'vilnius', 'zz'].map(page),
   links: [

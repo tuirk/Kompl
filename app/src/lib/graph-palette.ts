@@ -50,6 +50,9 @@ export const LINE_HEX = '#D6DBE2';
 /** Line alpha by kind: typed, only "related to", only a wikilink. */
 export const LINE_ALPHA = { typed: 0.75, related: 0.55, plain: 0.4 } as const;
 
+/** A line named by a relation a newer source superseded (relation-outdated.ts), below every tier. */
+export const LINE_OUTDATED = 0.25;
+
 /** Lines away from what is hovered or selected. */
 export const LINE_FADED = 0.06;
 

@@ -75,6 +75,13 @@ export interface ResearchConnection {
   sentence: string | null;
   /** That first source's own sentence, checked at extraction; null when none. */
   quote: string | null;
+  /**
+   * Other sources state it the other way round: the label read from `from`
+   * that way, and their shared [n] numbers (up to 3). null when none do.
+   */
+  direction_dispute: { label: string; sources: number[] } | null;
+  /** A newer source supersedes every source of it (lib/relation-outdated.ts): its [n] and the change's topic. */
+  outdated: { source: number; topic: string } | null;
 }
 
 export interface ResearchPack {
@@ -150,6 +157,11 @@ export async function researchTopic(topic: string, detail: ResearchDetail): Prom
       sources: r.source_ids.slice(0, SOURCES_PER_CONNECTION).map((id) => sharedNumber(id, shared)),
       sentence: r.sentence,
       quote: r.quote,
+      direction_dispute: r.direction_dispute && {
+        label: relationLabel(r.type, 'in'),
+        sources: r.direction_dispute.other_source_ids.slice(0, SOURCES_PER_CONNECTION).map((id) => sharedNumber(id, shared)),
+      },
+      outdated: r.outdated && { source: sharedNumber(r.outdated.source_id, shared), topic: r.outdated.topic },
     })
   );
 

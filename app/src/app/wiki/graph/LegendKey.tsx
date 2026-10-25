@@ -45,7 +45,7 @@ function LineKey({ kind, children }: { kind: SampleKind; children: ReactNode }) 
 }
 
 /** The key itself: dots (colour, size, ring, dashed, BRIDGE, mint ring) and lines, drawn as the canvas draws them. */
-export function KeyBody({ opposed, missing }: { opposed: boolean; missing: boolean }) {
+export function KeyBody({ opposed, missing, outdated = false }: { opposed: boolean; missing: boolean; outdated?: boolean }) {
   return (
     <>
       <div style={SUB}>Dots</div>
@@ -61,6 +61,7 @@ export function KeyBody({ opposed, missing }: { opposed: boolean; missing: boole
       <LineKey kind="related">“related to”</LineKey>
       <LineKey kind="plain">plain link (wikilink only)</LineKey>
       {missing && <LineKey kind="dashed">leads to a missing page</LineKey>}
+      {outdated && <LineKey kind="outdated">dimmed = may be outdated (a newer source says otherwise)</LineKey>}
       <LineKey kind="widths">thicker = more sources</LineKey>
       <LineKey kind="accent">selected line or path</LineKey>
       <p style={{ ...KEY_ROW, margin: '6px 0 0', display: 'block', color: 'var(--fg-dim)' }}>
@@ -74,7 +75,9 @@ export function KeyBody({ opposed, missing }: { opposed: boolean; missing: boole
  * The ⓘ button and its popover. `frame` is the positioned box the popover is
  * placed in (the legend panel); its parent is the canvas it must stay inside.
  */
-export default function LegendKey({ opposed, missing, frame }: { opposed: boolean; missing: boolean; frame: RefObject<HTMLElement | null> }) {
+export default function LegendKey({ opposed, missing, outdated = false, frame }: {
+  opposed: boolean; missing: boolean; outdated?: boolean; frame: RefObject<HTMLElement | null>;
+}) {
   const [state, dispatch] = useReducer(keyPopover, KEY_POPOVER_CLOSED);
   const open = isKeyPopoverOpen(state);
   const [place, setPlace] = useState<PopoverPlace | null>(null);
@@ -177,7 +180,7 @@ export default function LegendKey({ opposed, missing, frame }: { opposed: boolea
         <Info size={15} aria-hidden />
       </button>
       <KeyDialog id={popId} headingId={headingId} open={open} place={place} popRef={popRef} onEnter={enter} onLeave={leave}>
-        <KeyBody opposed={opposed} missing={missing} />
+        <KeyBody opposed={opposed} missing={missing} outdated={outdated} />
       </KeyDialog>
     </>
   );

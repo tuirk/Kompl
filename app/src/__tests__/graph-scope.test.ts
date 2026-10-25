@@ -21,9 +21,9 @@ function page(id: string, category = 'Travel', group = 'entity'): WikiGraphNode 
   return { id, label: id.toUpperCase(), group, category, source_count: 1, summary: null, last_updated: null, degree: 0 };
 }
 const typed = (source: string, target: string): RelationEdge =>
-  ({ source, target, relations: [{ type: 'part_of', direction: 'out', source_count: 1 }], wikilink: false, weight: 1 });
+  ({ source, target, relations: [{ type: 'part_of', direction: 'out', source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1 });
 const related = (source: string, target: string): RelationEdge =>
-  ({ source, target, relations: [{ type: 'related_to', direction: 'out', source_count: 1 }], wikilink: false, weight: 1 });
+  ({ source, target, relations: [{ type: 'related_to', direction: 'out', source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1 });
 const plain = (source: string, target: string): RelationEdge => ({ source, target, relations: [], wikilink: true, weight: 0 });
 const withFilters = (f: Partial<GraphFilters>): GraphFilters => ({ ...DEFAULT_FILTERS, ...f });
 const ids = (xs: Array<{ id: string }>) => xs.map((x) => x.id).sort();

@@ -28,7 +28,7 @@ afterEach(() => {
 function seed() {
   handle = setupTestDb();
   const db = handle.db;
-  const [s1, s2] = ['One', 'Two'].map((title) => seedSource(db, { title }));
+  const [s1, s2, s3] = ['One', 'Two', 'Three'].map((title) => seedSource(db, { title }));
   for (const [id, title] of [['eth', 'Ethereum'], ['vb', 'Vitalik Buterin'], ['vilnius', 'Vilnius'], ['lt', 'Lithuania']]) {
     seedPage(db, { page_id: id, title });
   }
@@ -38,6 +38,7 @@ function seed() {
   rel.run('Ethereum', 'Vitalik Buterin', 'founded_by', s1, 'Vitalik Buterin founded Ethereum.');
   rel.run('Vilnius', 'Lithuania', 'located_in', s1, 'Vilnius is in Lithuania.');
   rel.run('Lithuania', 'Vilnius', 'located_in', s2, 'A reversed row.');
+  rel.run('Vilnius', 'Lithuania', 'located_in', s3, 'Vilnius is the capital of Lithuania.');
 }
 
 describe('relation direction', () => {
@@ -53,16 +54,32 @@ describe('relation direction', () => {
     expect(relationLabel('by', 'in')).toBe('← By');
   });
 
-  it('labels each end of an unknown type in the read model and keeps its two directions apart', () => {
+  it('labels each end of an unknown type in the read model and shows one direction, the one more sources state', () => {
     seed();
     expect(getPageConnections('eth').groups).toMatchObject([{ label: 'Founded by', items: [{ page_id: 'vb', direction: 'out' }] }]);
     expect(getPageConnections('vb').groups).toMatchObject([{ label: 'Founded', items: [{ page_id: 'eth', direction: 'in' }] }]);
+    // Two sources say Vilnius is in Lithuania, one the reverse: one row, both sides listed.
     expect(getPageConnections('vilnius').groups).toMatchObject([
-      { label: 'Located in', items: [{ page_id: 'lt', direction: 'out', source_count: 1 }] },
-      { label: '← Located in', items: [{ page_id: 'lt', direction: 'in', source_count: 1 }] },
+      {
+        label: 'Located in',
+        items: [{
+          page_id: 'lt', direction: 'out', source_count: 2,
+          direction_dispute: {
+            kept: { label: 'Located in', sources: expect.arrayContaining([{ source_id: expect.any(String), source_title: 'One' }]) },
+            other: { label: '← Located in', sources: [{ source_title: 'Two' }] },
+          },
+        }],
+      },
+    ]);
+    const dispute = getPageConnections('vilnius').groups[0].items[0].direction_dispute;
+    expect(dispute?.kept.sources.map((s) => s.source_title).sort()).toEqual(['One', 'Three']);
+    expect(getPageConnections('lt').groups).toMatchObject([
+      { label: '← Located in', items: [{ page_id: 'vilnius', direction: 'in', source_count: 2 }] },
     ]);
     const edge = getRelationEdges().edges.find((e) => e.source === 'lt' && e.target === 'vilnius');
-    expect(edge?.relations).toHaveLength(2);
+    expect(edge?.relations).toEqual([
+      { type: 'located_in', direction: 'in', source_count: 2, direction_disputed: true, outdated: false },
+    ]);
   });
 
   it('gives the card, the graph panels, line labels and path steps the same reading', () => {

@@ -5,9 +5,12 @@
  * so the cost does not grow with the size of the set. Reads only.
  */
 
+import type Database from 'better-sqlite3';
 import { getDb } from './db';
+import { prefersFirst, sourceDayLookup } from './relation-direction';
 import { buildNameMap, loadPages, loadRelationRows } from './relation-names';
 import { compareRelationLabels, isSymmetricRelation, relationLabel } from './relation-labels';
+import { loadOutdatedIndex, type OutdatedNote } from './relation-outdated';
 
 /** The weak relation: listed only after every specific one. */
 const RELATED_TO = 'related_to';
@@ -31,6 +34,15 @@ export interface PageRelation {
   sentence: string | null;
   /** The leading source's own sentence, checked at extraction (v30); else null. */
   quote: string | null;
+  /** Other sources state it the other way round (relation-direction.ts); null when none do. */
+  direction_dispute: DirectionDisputeIds | null;
+  /** Every source is older than a "Changed" finding about both ends (relation-outdated.ts); else null. */
+  outdated: OutdatedNote | null;
+}
+
+/** The sources, newest first, that state a relation the other way round from `from` to `to`. */
+export interface DirectionDisputeIds {
+  other_source_ids: string[];
 }
 
 /** What one source says about a relation. */
@@ -45,6 +57,10 @@ interface Found {
   toId: string;
   type: string;
   sources: Map<string, SourceSays>;
+  /** Index of its newest row (rows come newest first). */
+  firstRow: number;
+  /** The sources of the opposite reading this one won over. */
+  otherWay: string[];
 }
 
 /**
@@ -54,7 +70,8 @@ interface Found {
  * specific relation already joins. Archived pages and Saved Links are never
  * an end. Both directions of a symmetric type (competes with, contradicts,
  * related to) merge into one relation, read from a page in the set; every
- * other type, unknown ones included, keeps its stored direction.
+ * other type, unknown ones included, keeps its stored direction, and when
+ * sources state it both ways round, one of them (oneWayRound).
  */
 export function getRelationsAmong(pageIds: readonly string[], limit: number): PageRelation[] {
   const wanted = new Set(pageIds);
@@ -62,10 +79,42 @@ export function getRelationsAmong(pageIds: readonly string[], limit: number): Pa
   const db = getDb();
   const pages = loadPages(db);
   const titleOf = (id: string) => (pages.get(id) as { title: string }).title;
-  const found = gather(buildNameMap(db, pages, false), loadRelationRows(db), wanted);
+  const names = buildNameMap(db, pages, false);
+  const found = oneWayRound(db, gather(names, loadRelationRows(db), wanted));
+  const outdated = loadOutdatedIndex(db, names);
   return rank(withoutRepeatedRelated(found), wanted, titleOf)
     .slice(0, limit)
-    .map((f) => toPageRelation(f, wanted, titleOf));
+    .map((f) => ({
+      ...toPageRelation(f, wanted, titleOf),
+      outdated: outdated.check(
+        { page_id: f.fromId, name: titleOf(f.fromId) }, { page_id: f.toId, name: titleOf(f.toId) }, f.sources.keys()
+      ),
+    }));
+}
+
+/**
+ * A directed type stated both ways round between two pages keeps the
+ * reading prefersFirst picks (relation-direction.ts), which lists the
+ * other reading's sources.
+ */
+function oneWayRound(db: Database.Database, found: Found[]): Found[] {
+  const byKey = new Map(found.map((f) => [`${f.type}\u0000${f.fromId}\u0000${f.toId}`, f]));
+  const dayOf = sourceDayLookup(db);
+  const reading = (f: Found) => ({
+    sourceIds: [...f.sources.keys()],
+    quoted: [...f.sources.values()].some((s) => s.quote !== null),
+    firstRow: f.firstRow,
+  });
+  const lost = new Set<Found>();
+  for (const f of found) {
+    if (isSymmetricRelation(f.type) || lost.has(f)) continue;
+    const back = byKey.get(`${f.type}\u0000${f.toId}\u0000${f.fromId}`);
+    if (!back || back === f || lost.has(back)) continue;
+    const [kept, other] = prefersFirst(reading(f), reading(back), dayOf) ? [f, back] : [back, f];
+    kept.otherWay = [...other.sources.keys()];
+    lost.add(other);
+  }
+  return found.filter((f) => !lost.has(f));
 }
 
 /**
@@ -81,7 +130,7 @@ function withoutRepeatedRelated(found: Found[]): Found[] {
 /** The relations touching `wanted`, one per (type, ends); a symmetric type's two directions share one. */
 function gather(names: Map<string, string>, rows: ReturnType<typeof loadRelationRows>, wanted: Set<string>): Found[] {
   const found = new Map<string, Found>();
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     const fromId = names.get(row.from_canonical.toLowerCase());
     const toId = names.get(row.to_canonical.toLowerCase());
     if (fromId === undefined || toId === undefined || fromId === toId) continue;
@@ -90,7 +139,7 @@ function gather(names: Map<string, string>, rows: ReturnType<typeof loadRelation
     const key = `${type}\u0000${isSymmetricRelation(type) ? pairKey(fromId, toId) : `${fromId}\u0000${toId}`}`;
     let entry = found.get(key);
     if (!entry) {
-      entry = { fromId, toId, type, sources: new Map() };
+      entry = { fromId, toId, type, sources: new Map(), firstRow: index, otherWay: [] };
       found.set(key, entry);
     }
     const said = entry.sources.get(row.source_id);
@@ -126,7 +175,7 @@ function rank(found: Found[], wanted: Set<string>, titleOf: (id: string) => stri
   );
 }
 
-function toPageRelation(f: Found, wanted: Set<string>, titleOf: (id: string) => string): PageRelation {
+function toPageRelation(f: Found, wanted: Set<string>, titleOf: (id: string) => string): Omit<PageRelation, 'outdated'> {
   // A symmetric relation reads from the set's page when only one end is in it.
   const swap = isSymmetricRelation(f.type) && !wanted.has(f.fromId);
   const [fromId, toId] = swap ? [f.toId, f.fromId] : [f.fromId, f.toId];
@@ -140,5 +189,6 @@ function toPageRelation(f: Found, wanted: Set<string>, titleOf: (id: string) => 
     source_ids,
     sentence: lead ? lead[1].sentence : null,
     quote: lead ? lead[1].quote : null,
+    direction_dispute: f.otherWay.length > 0 ? { other_source_ids: f.otherWay } : null,
   };
 }

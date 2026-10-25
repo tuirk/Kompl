@@ -64,7 +64,7 @@ describe('GET /api/wiki/graph', () => {
       { id: 'vilnius', label: 'Vilnius', group: 'entity', category: 'Uncategorized', source_count: 1, summary: null, last_updated: expect.any(String), degree: 1 },
     ]);
     expect(body.links).toEqual([
-      { source: 'bitcoin', target: 'pow', relations: [{ type: 'uses', direction: 'out', source_count: 2 }], wikilink: true, weight: 2 },
+      { source: 'bitcoin', target: 'pow', relations: [{ type: 'uses', direction: 'out', source_count: 2, direction_disputed: false, outdated: false }], wikilink: true, weight: 2 },
       { source: 'bitcoin', target: 'vilnius', relations: [], wikilink: true, weight: 0 },
     ]);
     expect(body.missing).toEqual([{ name: 'Satoshi Nakamoto', source_count: 3, page_ids: ['bitcoin'] }]);
@@ -77,7 +77,7 @@ describe('GET /api/wiki/graph', () => {
     expect(old).toMatchObject({ archived: true, degree: 1 });
     expect(body.nodes.find((n) => n.id === 'bitcoin')).not.toHaveProperty('archived');
     expect(body.links).toContainEqual({
-      source: 'bitcoin', target: 'old-exchange', relations: [{ type: 'uses', direction: 'in', source_count: 1 }], wikilink: false, weight: 1,
+      source: 'bitcoin', target: 'old-exchange', relations: [{ type: 'uses', direction: 'in', source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1,
     });
     expect(body.nodes.find((n) => n.id === 'bitcoin')?.degree).toBe(3);
   });

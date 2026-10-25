@@ -61,6 +61,8 @@ describe('GET /api/wiki/[page_id]/connections', () => {
               type: 'created_by',
               direction: 'out',
               source_count: 1,
+              direction_dispute: null,
+              outdated: null,
               evidence: [{ source_id: 'src-1', source_title: 'Whitepaper', source_archived: false, sentence: null, quote: null }],
             },
           ],
@@ -74,6 +76,8 @@ describe('GET /api/wiki/[page_id]/connections', () => {
               type: 'uses',
               direction: 'out',
               source_count: 2,
+              direction_dispute: null,
+              outdated: null,
               evidence: [
                 { source_id: 'src-2', source_title: 'Old blog post', source_archived: true, sentence: 'Mining is proof of work.', quote: null },
                 { source_id: 'src-1', source_title: 'Whitepaper', source_archived: false, sentence: 'Bitcoin uses proof of work.', quote: null },

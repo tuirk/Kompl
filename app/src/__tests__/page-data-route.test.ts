@@ -100,6 +100,8 @@ describe('page data', () => {
               type: 'uses',
               direction: 'out',
               source_count: 1,
+              direction_dispute: null,
+              outdated: null,
               evidence: [
                 { source_id: paper, source_title: 'Bitcoin paper', source_archived: false, sentence: 'Bitcoin uses proof of work.', quote: null },
               ],

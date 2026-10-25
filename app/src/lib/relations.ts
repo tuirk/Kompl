@@ -6,16 +6,22 @@
  *
  * A relation end that resolves to no page stays a plain name (page_id null).
  * "Related to" is left out for an end a stronger relation already lists.
- * Archived pages and Saved Links are never shown as a connection.
+ * Archived pages and Saved Links are never shown as a connection. A
+ * directed type stated both ways round shows one way, with both sides
+ * listed (relation-direction.ts); a relation a later source superseded is
+ * marked as possibly outdated (relation-outdated.ts).
  */
 
 import type Database from 'better-sqlite3';
 import { getDb } from './db';
+import { prefersFirst, sourceDayLookup, type SourceDayOf } from './relation-direction';
 import { buildNameMap, loadPages, loadRelationRows } from './relation-names';
-import { compareRelationLabels, relationLabel, type RelationDirection } from './relation-labels';
+import { compareRelationLabels, isSymmetricRelation, relationLabel, type RelationDirection } from './relation-labels';
+import { loadOutdatedIndex, type OutdatedNote } from './relation-outdated';
 
 export { getRelationEdges, type EdgeRelation, type MissingPage, type RelationEdge, type RelationEdges } from './relation-edges';
-export { getRelationsAmong, type PageRelation, type RelationEnd } from './relation-among';
+export { getRelationsAmong, type DirectionDisputeIds, type PageRelation, type RelationEnd } from './relation-among';
+export type { OutdatedNote } from './relation-outdated';
 
 /** The weakest relation type: never listed for a page another relation already joins. */
 const RELATED_TO = 'related_to';
@@ -60,6 +66,33 @@ export interface ConnectionItem {
   direction: RelationDirection;
   source_count: number;
   evidence: RelationEvidence[];
+  /**
+   * Sources state this directed relation both ways round: the item reads the
+   * way more of them say (relation-direction.ts); both sides are listed.
+   * null when they agree.
+   */
+  direction_dispute: DirectionDispute | null;
+  /** Every source is older than a "Changed" finding about both ends (relation-outdated.ts); else null. */
+  outdated: OutdatedNote | null;
+}
+
+/** A source by id and title. */
+export interface SourceRef {
+  source_id: string;
+  source_title: string;
+}
+
+/** One way round a directed relation reads, from the page, and the sources saying so (newest first). */
+export interface DirectionSide {
+  label: string;
+  sources: SourceRef[];
+}
+
+export interface DirectionDispute {
+  /** The reading the item shows. */
+  kept: DirectionSide;
+  /** The opposite reading, from fewer (or equally many, weaker) sources. */
+  other: DirectionSide;
 }
 
 export interface ConnectionGroup {
@@ -99,8 +132,8 @@ export function getPageConnections(pageId: string, opts: { evidenceLimit?: numbe
   const shown = (id: string) => pages.get(id)?.archived === false;
 
   // key: other end + type + label. says: source_id -> its sentence and quote, newest first.
-  const items = new Map<string, { end: string; item: ConnectionItem; says: Map<string, SourceSays> }>();
-  for (const row of loadRelationRows(db)) {
+  const items = new Map<string, Entry>();
+  for (const [index, row] of loadRelationRows(db).entries()) {
     const fromId = names.get(row.from_canonical.toLowerCase()) ?? null;
     const toId = names.get(row.to_canonical.toLowerCase()) ?? null;
     let direction: RelationDirection;
@@ -119,7 +152,12 @@ export function getPageConnections(pageId: string, opts: { evidenceLimit?: numbe
       const title = otherId !== null ? (pages.get(otherId) as { title: string }).title : otherName;
       entry = {
         end,
-        item: { page_id: otherId, title, type, direction, source_count: 0, evidence: [] },
+        otherName,
+        firstRow: index,
+        item: {
+          page_id: otherId, title, type, direction, source_count: 0, evidence: [],
+          direction_dispute: null, outdated: null,
+        },
         says: new Map(),
       };
       items.set(key, entry);
@@ -133,16 +171,29 @@ export function getPageConnections(pageId: string, opts: { evidenceLimit?: numbe
     }
   }
 
+  const sourceRow = db.prepare('SELECT title, status FROM sources WHERE source_id = ?');
+  const titled = (ids: Iterable<string>): SourceRef[] =>
+    [...ids].flatMap((source_id) => {
+      const source = sourceRow.get(source_id) as { title: string } | undefined;
+      return source ? [{ source_id, source_title: source.title }] : [];
+    });
+  keepOneDirection(items, sourceDayLookup(db), titled);
+
   // "Related to" is the weakest relation: an end another relation already
   // lists is not listed again under it.
   const typedEnds = new Set([...items.values()].filter((e) => e.item.type !== RELATED_TO).map((e) => e.end));
 
-  const sourceRow = db.prepare('SELECT title, status FROM sources WHERE source_id = ?');
+  const outdated = loadOutdatedIndex(db, names);
   const byLabel = new Map<string, ConnectionItem[]>();
   const weight = (s: SourceSays) => (s.quote !== null ? 0 : s.sentence !== null ? 1 : 2);
-  for (const { end, item, says } of items.values()) {
+  for (const { end, otherName, item, says } of items.values()) {
     if (item.type === RELATED_TO && typedEnds.has(end)) continue;
     item.source_count = says.size;
+    item.outdated = outdated.check(
+      { page_id: pageId, name: (pages.get(pageId) as { title: string }).title },
+      { page_id: item.page_id, name: otherName },
+      says.keys()
+    );
     // Sorting is stable, so each rank stays newest first.
     const ranked = [...says].sort(([, a], [, b]) => weight(a) - weight(b));
     for (const [source_id, { sentence, quote }] of ranked) {
@@ -183,6 +234,43 @@ export function getPageConnections(pageId: string, opts: { evidenceLimit?: numbe
   }
   const linked_only = [...linked.values()].sort((x, y) => x.title.localeCompare(y.title));
   return { groups, linked_only };
+}
+
+/** A connection while its rows are gathered: `firstRow` is its newest row's index. */
+interface Entry {
+  end: string;
+  otherName: string;
+  firstRow: number;
+  item: ConnectionItem;
+  says: Map<string, SourceSays>;
+}
+
+/**
+ * Both readings of a directed type with one end ("Part of" and "Includes"
+ * the same page): keep the one prefersFirst picks and list both sides on it.
+ */
+function keepOneDirection(
+  items: Map<string, Entry>, dayOf: SourceDayOf, titled: (ids: Iterable<string>) => SourceRef[]
+): void {
+  const byEndAndType = new Map<string, Array<[string, Entry]>>();
+  for (const [key, entry] of items) {
+    if (isSymmetricRelation(entry.item.type)) continue;
+    const pairKey = `${entry.end}\u0000${entry.item.type}`;
+    byEndAndType.set(pairKey, [...(byEndAndType.get(pairKey) ?? []), [key, entry]]);
+  }
+  const reading = (e: Entry) => ({
+    sourceIds: [...e.says.keys()],
+    quoted: [...e.says.values()].some((s) => s.quote !== null),
+    firstRow: e.firstRow,
+  });
+  const side = (e: Entry): DirectionSide => ({ label: relationLabel(e.item.type, e.item.direction), sources: titled(e.says.keys()) });
+  for (const both of byEndAndType.values()) {
+    if (both.length !== 2) continue;
+    const [[keyA, a], [keyB, b]] = both;
+    const [kept, lostKey, lost] = prefersFirst(reading(a), reading(b), dayOf) ? [a, keyB, b] : [b, keyA, a];
+    kept.item.direction_dispute = { kept: side(kept), other: side(lost) };
+    items.delete(lostKey);
+  }
 }
 
 /** The other end of one connection: a page, or a name with no page yet. */

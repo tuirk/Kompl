@@ -16,6 +16,7 @@ import { relationLabel } from '../../../lib/relation-labels';
 import type { PageConnections } from '../../../lib/relations';
 import { BODY, EvidenceList, FooterLink, LINK_BUTTON, META, PanelNote, PanelShell } from './panel-parts';
 import { useConnections } from './useConnections';
+import ConnectionNotes from '../../../components/ConnectionNotes';
 
 interface Props {
   link: ModelLink;
@@ -79,6 +80,7 @@ export default function EdgePanel({ link, model, cache, onClose, onPick, returnF
           <div style={META}>
             {item.source_count} source{item.source_count === 1 ? '' : 's'}
           </div>
+          <ConnectionNotes item={item} />
           {item.evidence.length > 0 && <EvidenceList item={item} pageId={fromId} />}
         </section>
       ))}
@@ -92,6 +94,8 @@ export default function EdgePanel({ link, model, cache, onClose, onPick, returnF
             <div key={`${r.type}\u0000${r.direction}`} style={BODY}>
               <span style={{ color: 'var(--fg)', fontWeight: 600 }}>{relationLabel(r.type, direction)}</span>
               <span style={META}>{` · ${r.source_count} source${r.source_count === 1 ? '' : 's'}`}</span>
+              {r.outdated && <span style={META}>{' · may be outdated'}</span>}
+              {r.direction_disputed && <span style={META}>{' · sources disagree on direction'}</span>}
             </div>
           );
         })}

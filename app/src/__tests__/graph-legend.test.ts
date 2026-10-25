@@ -19,7 +19,7 @@ import type { WikiGraph, WikiGraphNode } from '../lib/wiki-graph';
 const page = (id: string, category: string, group = 'entity'): WikiGraphNode =>
   ({ id, label: id, group, category, source_count: 1, summary: null, last_updated: null, degree: 0 });
 const rel = (s: string, t: string, type: string): RelationEdge =>
-  ({ source: s, target: t, relations: [{ type, direction: 'out', source_count: 1 }], wikilink: false, weight: 1 });
+  ({ source: s, target: t, relations: [{ type, direction: 'out', source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1 });
 const DATA: WikiGraph = {
   nodes: [page('a', 'Travel'), page('b', 'Travel', 'concept'), page('c', 'Crypto', 'overview'), page('s', 'Crypto', 'source-summary')],
   links: [rel('a', 'b', 'uses'), rel('b', 'c', 'competes_with')],

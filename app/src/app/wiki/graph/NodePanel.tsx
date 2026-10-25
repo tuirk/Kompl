@@ -24,6 +24,7 @@ import {
   BADGE, BODY, DOT, EvidenceList, FooterButton, FooterLink, LINK_BUTTON, META, PanelNote, PanelSection, PanelShell,
 } from './panel-parts';
 import { useConnections } from './useConnections';
+import ConnectionNotes from '../../../components/ConnectionNotes';
 
 interface Props {
   node: ModelNode;
@@ -143,7 +144,10 @@ function ItemRow({ item, pageId, pageLink }: { item: ConnectionItem; pageId: str
     <div style={{ padding: '3px 0' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, ...BODY }}>
         <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
-          {item.page_id ? pageLink(item.page_id, item.title) : <span style={{ color: 'var(--fg-dim)' }}>{item.title}</span>}
+          {/* A connection a newer source superseded is dimmed; its note says why. */}
+          <span style={item.outdated ? { opacity: 0.65 } : undefined}>
+            {item.page_id ? pageLink(item.page_id, item.title) : <span style={{ color: 'var(--fg-dim)' }}>{item.title}</span>}
+          </span>
           <span style={META}>
             {item.page_id ? '' : ' · no page yet'}
             {note ? ` · ${note}` : ''}
@@ -166,6 +170,7 @@ function ItemRow({ item, pageId, pageLink }: { item: ConnectionItem; pageId: str
           </button>
         )}
       </div>
+      <ConnectionNotes item={item} style={{ margin: '0 0 2px' }} />
       {open && (
         <div style={{ margin: '2px 0 6px' }}>
           <EvidenceList item={item} pageId={pageId} />

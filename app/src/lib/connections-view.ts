@@ -1,13 +1,13 @@
 /**
  * Display rules for a page's connections card (app/wiki/[page_id]/
  * ConnectionsPanel.tsx): what the section counts, which rows show before
- * "Show all" and the small notes beside a row. Pure and free of DB imports
+ * "Show all" and the small notes beside and under a row. Pure and free of DB imports
  * (relations.ts is imported for its types only), so the graph panels can
  * reuse it.
  */
 
 import { relationLabel } from './relation-labels';
-import type { ConnectionGroup, ConnectionItem, PageConnections } from './relations';
+import type { ConnectionGroup, ConnectionItem, PageConnections, SourceRef } from './relations';
 
 /** "Also linked" rows shown before "Show all", as the old "Linked from" list. */
 export const ALSO_LINKED_VISIBLE = 8;
@@ -69,6 +69,24 @@ export function splitRows<T>(rows: readonly T[], visible: number): { shown: T[];
 /** "3 sources" beside a connection backed by more than one source; null for one. */
 export function sourcesNote(item: Pick<ConnectionItem, 'source_count'>): string | null {
   return item.source_count > 1 ? `${item.source_count} sources` : null;
+}
+
+/** Source titles named in a row's notes before "and N more". */
+export const NOTE_TITLES = 2;
+
+/**
+ * The sources of one side of a note, as the text around their links reads:
+ * the first NOTE_TITLES by title, then "and N more", and the verb that
+ * agrees ("says" for one source, else "say").
+ */
+export function namedSources(sources: readonly SourceRef[]): { shown: SourceRef[]; more: number; verb: 'says' | 'say' } {
+  const shown = sources.slice(0, NOTE_TITLES);
+  return { shown, more: sources.length - shown.length, verb: sources.length === 1 ? 'says' : 'say' };
+}
+
+/** A connection with a note under it: the sources disagree on its direction, or it may be outdated. */
+export function hasConnectionNotes(item: Pick<ConnectionItem, 'direction_dispute' | 'outdated'>): boolean {
+  return item.direction_dispute !== null || item.outdated !== null;
 }
 
 /** "+2 more sources" under the evidence when the read model kept fewer entries than sources. */

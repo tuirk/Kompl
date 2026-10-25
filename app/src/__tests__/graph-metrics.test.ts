@@ -158,7 +158,7 @@ describe('mapBridges', () => {
   const node = (id: string, category: string, group = 'entity'): WikiGraphNode =>
     ({ id, label: id, group, category, source_count: 1, summary: null, last_updated: null, degree: 0 });
   const typedLine = (source: string, target: string): RelationEdge =>
-    ({ source, target, relations: [{ type: 'uses', direction: 'out', source_count: 1 }], wikilink: false, weight: 1 });
+    ({ source, target, relations: [{ type: 'uses', direction: 'out', source_count: 1, direction_disputed: false, outdated: false }], wikilink: false, weight: 1 });
   const plainLine = (source: string, target: string): RelationEdge => ({ source, target, relations: [], wikilink: true, weight: 0 });
   // AI triangle and Travel triangle joined by "m" with typed lines; "hub" joins everything with plain links only,
   // and the source page "src" with typed lines (source pages are hidden on the default view).

@@ -33,13 +33,13 @@ const DATA: WikiGraph = {
     page('misc', UNCATEGORIZED),
   ],
   links: [
-    line('bitcoin', 'pow', [{ type: 'uses', direction: 'out', source_count: 3 }, { type: 'part_of', direction: 'in', source_count: 1 }]),
-    line('bitcoin', 'eth', [{ type: 'related_to', direction: 'out', source_count: 3 }, { type: 'competes_with', direction: 'out', source_count: 1 }]),
-    line('eth', 'pow', [{ type: 'related_to', direction: 'out', source_count: 2 }]),
+    line('bitcoin', 'pow', [{ type: 'uses', direction: 'out', source_count: 3, direction_disputed: false, outdated: false }, { type: 'part_of', direction: 'in', source_count: 1, direction_disputed: false, outdated: false }]),
+    line('bitcoin', 'eth', [{ type: 'related_to', direction: 'out', source_count: 3, direction_disputed: false, outdated: false }, { type: 'competes_with', direction: 'out', source_count: 1, direction_disputed: false, outdated: false }]),
+    line('eth', 'pow', [{ type: 'related_to', direction: 'out', source_count: 2, direction_disputed: false, outdated: false }]),
     line('bitcoin', 'btc-summary', []),
-    line('kaunas', 'vilnius', [{ type: 'competes_with', direction: 'out', source_count: 3 }]),
+    line('kaunas', 'vilnius', [{ type: 'competes_with', direction: 'out', source_count: 3, direction_disputed: false, outdated: false }]),
     line('travel-overview', 'vilnius', []),
-    line('bitcoin', 'ghost', [{ type: 'uses', direction: 'out', source_count: 1 }]),
+    line('bitcoin', 'ghost', [{ type: 'uses', direction: 'out', source_count: 1, direction_disputed: false, outdated: false }]),
   ],
   missing: [{ name: 'Satoshi', source_count: 2, page_ids: ['bitcoin'] }],
 };
@@ -199,7 +199,7 @@ describe('large graph', () => {
         const [x, y] = [`p${i}`, `p${(i + 37 * d) % 2000}`];
         const [s, t] = x < y ? [x, y] : [y, x];
         const k = i * 5 + d;
-        links.push(line(s, t, k % 3 === 0 ? [] : [{ type: types[k % 4], direction: 'out', source_count: 1 + (k % 4) }]));
+        links.push(line(s, t, k % 3 === 0 ? [] : [{ type: types[k % 4], direction: 'out', source_count: 1 + (k % 4), direction_disputed: false, outdated: false }]));
       }
     }
     const started = performance.now();

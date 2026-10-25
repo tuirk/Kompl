@@ -156,7 +156,7 @@ describe('research pack connections', () => {
     expect(getRelationsAmong(['a', 'z'], 12).map((r) => `${r.from.page_id}>${r.to.page_id}`)).toEqual(['a>z', 'b>z', 'a>b']);
   });
 
-  it('merges "related to" written both ways, keeps opposite directed relations apart, and never flips an unknown type', () => {
+  it('merges "related to" written both ways, keeps one direction of a directed type, and never flips an unknown type', () => {
     handle = setupTestDb();
     const db = handle.db;
     const [s1, s2, s3] = ['One', 'Two', 'Three'].map((title) => seedSource(db, { title }));
@@ -166,10 +166,14 @@ describe('research pack connections', () => {
     rel('Gamma', 'Alpha', 'related_to', s2, null);
     rel('Alpha', 'Beta', 'uses', s1, null);
     rel('Beta', 'Alpha', 'uses', s3, null);
+    rel('Alpha', 'Beta', 'uses', s2, null);
     rel('Ethereum', 'Vitalik Buterin', 'founded_by', s1, 'Vitalik Buterin founded Ethereum.');
 
     const ab = getRelationsAmong(['a'], 12).map((r) => `${r.from.page_id} ${r.type} ${r.to.page_id} ${r.source_ids.length}`);
-    expect(ab).toEqual(['a uses b 1', 'b uses a 1', 'a related_to g 2']);
+    // Two sources say Alpha uses Beta, one the reverse: one relation, the other side listed.
+    expect(ab).toEqual(['a uses b 2', 'a related_to g 2']);
+    expect(getRelationsAmong(['a'], 12)[0].direction_dispute).toEqual({ other_source_ids: [s3] });
+    expect(getRelationsAmong(['a'], 12)[1].direction_dispute).toBeNull();
 
     // Only the founder is in the pack: the relation still reads "Ethereum founded by Vitalik".
     const [founded] = getRelationsAmong(['vb'], 12);

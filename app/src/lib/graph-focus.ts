@@ -75,7 +75,8 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
  * sources. A missing name: the name, then how many sources name it. A line:
  * its summary, then a prompt with the source count of the relation the
  * summary names (not the line's weight, which may come from another
- * relation). Null when nothing is hovered.
+ * relation), and whether that relation may be outdated. Null when nothing
+ * is hovered.
  */
 export function hoverCardText(
   hovered: GraphFocus | null, byId: ReadonlyMap<string, ModelNode>
@@ -89,7 +90,8 @@ export function hoverCardText(
   if (hovered?.kind === 'link' && !isMissingLink(hovered.link)) {
     const named = namedRelation(hovered.link);
     const sources = named ? ` · ${plural(named.source_count, 'source')}` : '';
-    return { title: linkSummary(hovered.link, byId), detail: `Click for the evidence${sources}` };
+    const outdated = named?.outdated ? ' · may be outdated' : '';
+    return { title: linkSummary(hovered.link, byId), detail: `Click for the evidence${sources}${outdated}` };
   }
   return null;
 }

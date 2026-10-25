@@ -32,6 +32,8 @@ function item(over: Partial<ConnectionItem> & Pick<ConnectionItem, 'title'>): Co
     direction: 'out',
     source_count: 1,
     evidence: [],
+    direction_dispute: null,
+    outdated: null,
     ...over,
   };
 }
@@ -264,6 +266,42 @@ describe('ConnectionsPanel', () => {
     expect(html).not.toContain('wiki-rp-more');
     for (const r of related.slice(0, RELATED_VISIBLE)) expect(html).toContain(`>${r.title}</span>`);
     for (const p of linked.slice(0, ALSO_LINKED_VISIBLE)) expect(html).toContain(`href="/wiki/${p.page_id}"`);
+  });
+
+  it('dims a connection a newer source superseded and notes it, and names both sides of a direction conflict', () => {
+    const src = (source_id: string, source_title: string) => ({ source_id, source_title });
+    const html = render({
+      groups: [
+        {
+          label: 'Part of',
+          items: [
+            item({
+              title: 'WCAG 3.0',
+              type: 'part_of',
+              evidence: [evidence('s-dw', 'The draft mentions APCA.')],
+              outdated: { source_id: 's-ro', source_title: 'Roselli', topic: 'APCA in the WCAG 3 draft', page_id: 'wcag3' },
+            }),
+            item({
+              title: 'Polish School of Posters',
+              type: 'part_of',
+              evidence: [evidence('s-da', 'A central figure.')],
+              direction_dispute: {
+                kept: { label: 'Part of', sources: [src('s-da', 'DailyArt')] },
+                other: { label: 'Includes', sources: [src('s-bfi', 'BFI'), src('s-x', 'Other'), src('s-y', 'Third')] },
+              },
+            }),
+          ],
+        },
+      ],
+      linked_only: [],
+    });
+    expect(html).toContain('<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--fg-dim)">WCAG 3.0</span>');
+    expect(html).toContain('May be outdated');
+    expect(html).toContain('href="/source/s-ro"');
+    expect(html).toContain('says otherwise');
+    const text = html.replace(/<[^>]+>/g, '').replace(/<!-- -->/g, '');
+    expect(text).toContain('Sources disagree on direction: DailyArt says “Part of”; BFI, Other and 1 more say “Includes”.');
+    expect(html).toContain('href="/source/s-bfi"');
   });
 
   it('shows plain links alone when the page has no typed relations', () => {

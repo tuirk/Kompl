@@ -5,7 +5,9 @@
  * relation opens to its sources, each with the source's own sentence when
  * extraction found it in the source (labelled as quoted), else Kompl's
  * one-line summary of the relation (labelled as Kompl's: not a quote); long
- * groups show their first few rows. The header counts the pages
+ * groups show their first few rows. A row whose sources disagree on its
+ * direction, or that a newer source superseded (dimmed), carries a note
+ * under it (components/ConnectionNotes.tsx). The header counts the pages
  * (and names with no page yet) the page relates to, a line under it how many
  * have no page, links to the graph focused on it ("See in graph"),
  * and "Also linked" has its own count. Server component; the data comes from
@@ -21,6 +23,7 @@ import {
   ALSO_LINKED_VISIBLE,
   connectionsBreakdown,
   connectionsCount,
+  hasConnectionNotes,
   hasConnections,
   moreSourcesNote,
   sourcesNote,
@@ -31,6 +34,7 @@ import { seeInGraphHref } from '../../../lib/graph-scope';
 import type { ConnectionGroup, ConnectionItem, LinkedPage, PageConnections } from '../../../lib/relations';
 import { NOTE, PageRow, PanelSection, ROW, TRUNCATE } from './RightPanel';
 import MoreRows from './MoreRows';
+import ConnectionNotes from '../../../components/ConnectionNotes';
 
 /** A row's title and its note side by side; the title gives way first. */
 const ROW_LINE: CSSProperties = { ...ROW, display: 'flex', alignItems: 'baseline', gap: 6 };
@@ -132,9 +136,12 @@ function ConnectionRow({ label, item, compact = false }: { label: string; item: 
   const note = sourcesNote(item);
   const toggle = !compact && item.evidence.length > 0;
   const lineStyle: CSSProperties = toggle ? { ...ROW_LINE, paddingRight: TOGGLE_ROOM } : ROW_LINE;
+  // A connection a newer source superseded is dimmed; its note says why.
+  const titleStyle: CSSProperties = item.outdated ? { ...ROW_TITLE, color: 'var(--fg-dim)' } : ROW_TITLE;
+  const notes = <ConnectionNotes item={item} style={{ padding: '0 8px 4px' }} />;
   const line = item.page_id ? (
     <Link href={`/wiki/${item.page_id}`} className="wiki-rp-item" title={item.title} style={lineStyle}>
-      <span style={ROW_TITLE}>{item.title}</span>
+      <span style={titleStyle}>{item.title}</span>
       {note && <span style={ROW_NOTE}>{`· ${note}`}</span>}
     </Link>
   ) : (
@@ -143,10 +150,20 @@ function ConnectionRow({ label, item, compact = false }: { label: string; item: 
       <span style={ROW_NOTE}>{note ? `· no page yet · ${note}` : '· no page yet'}</span>
     </div>
   );
-  if (!toggle) return line;
+  if (!toggle) {
+    return hasConnectionNotes(item) ? (
+      <div>
+        {line}
+        {notes}
+      </div>
+    ) : (
+      line
+    );
+  }
   return (
     <div style={{ position: 'relative' }}>
       {line}
+      {notes}
       <details className="wiki-rp-why">
         <summary
           className="wiki-rp-item"
