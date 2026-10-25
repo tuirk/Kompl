@@ -19,6 +19,9 @@ also held here, whatever the model answers:
   Accessibility & Standards") or when it has 1-2 pages ("Design" into
   "Graphic Design"). Any other contained name is a narrower or broader
   topic, and a longer name never folds into a word it contains.
+Drafts name one field per label (2026-10-25), so a new label never moves
+into an existing combined label by being inside its name: such a label
+("Design & Accessibility") may join two fields, so the new label stays.
 
 This module NEVER opens kompl.db. rule #1 in CLAUDE.md.
 """
@@ -79,6 +82,11 @@ def merge_allowed(label: str, into: str, page_counts: Mapping[str, int], into_ex
     if not into_existing and pages is not None and into_pages is not None and pages > into_pages:
         return False
     if _inside(into, label):
+        return False
+    if into_existing and len(_parts(into)) > 1 and _inside(label, into):
+        # Drafts name one field per label; an old combined label may join
+        # two fields ("Design & Accessibility"), which names cannot show,
+        # so a label inside its name stays as it is.
         return False
     if _inside(label, into):
         is_part = len(_parts(into)) > 1 and tuple(_words(label)) in _parts(into)

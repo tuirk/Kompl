@@ -2073,9 +2073,9 @@ These name the same category; merge them:
 - an abbreviation and its full form ("AI" / "Artificial Intelligence")
 - a short form and its full form ("Crypto" / "Cryptocurrency")
 - two names for the same thing ("Films" / "Movies")
-- one part of a combined label and that combined label
-  ("Web Accessibility" / "Web Accessibility & Standards"): merge the part
-  into the combined label.
+- one part of a NEW combined label that names one field, and that combined
+  label ("Web Accessibility" / "Web Accessibility & Standards"): merge the
+  part into the combined label.
 - a label with 1 or 2 pages whose whole name is contained in the name of a
   more-used label ("Design" (1 page) / "Graphic Design" (33 pages)): merge it
   into the most-used label that contains its name.
@@ -2095,6 +2095,10 @@ except in the two contained-name cases above:
 - a subject and the people, places or organisations around it
   ("Music" / "Musicians")
 - the same word used for different things
+Never move a one-field label into a combined label that joins two fields
+("Accessibility" or "Design" / "Design & Accessibility"), nor into an
+EXISTING combined label, even in the two contained-name cases above: leave
+both as they are. Each label should name one field.
 Outside the cases listed above, do not merge. Most compiles need no merge
 at all.
 

@@ -137,11 +137,27 @@ def test_a_new_label_merges_into_the_existing_one_whatever_the_pages():
     ]
 
 
-def test_a_new_part_joins_a_smaller_existing_combined_label():
-    counts = {"Graphic Design": 33, "Typography & Graphic Design": 6}
-    merges = [_m("Graphic Design", "Typography & Graphic Design")]
-    assert _pairs(clean_label_merges(merges, ["Typography & Graphic Design"], ["Graphic Design"], counts)) == [
-        ("Graphic Design", "Typography & Graphic Design"),
+def test_a_new_one_field_label_never_joins_an_existing_combined_label():
+    # Drafts now name one field per label (2026-10-25). An old combined
+    # label from before ("Design & Accessibility") may join two fields, which
+    # the code cannot tell, so a new label naming one of its parts, or a
+    # 1-2 page label inside its name, stays as it is.
+    counts = {"Graphic Design": 33, "Accessibility": 4, "Design": 1, "Typography & Graphic Design": 6,
+              "Design & Accessibility": 92}
+    merges = [
+        _m("Graphic Design", "Typography & Graphic Design"),
+        _m("Accessibility", "Design & Accessibility"),
+        _m("Design", "Design & Accessibility"),
+    ]
+    existing = ["Typography & Graphic Design", "Design & Accessibility"]
+    assert clean_label_merges(merges, existing, ["Graphic Design", "Accessibility", "Design"], counts) == []
+
+
+def test_a_spelling_variant_still_joins_an_existing_combined_label():
+    counts = {"Design and Accessibility": 3, "Design & Accessibility": 92}
+    merges = [_m("Design and Accessibility", "Design & Accessibility", "spelling variant")]
+    assert _pairs(clean_label_merges(merges, ["Design & Accessibility"], ["Design and Accessibility"], counts)) == [
+        ("Design and Accessibility", "Design & Accessibility"),
     ]
 
 

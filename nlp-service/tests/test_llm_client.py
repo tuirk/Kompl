@@ -199,7 +199,7 @@ def test_label_merge_prompt_folds_parts_and_small_labels_into_bigger_ones():
     category; the smaller always moves into the bigger, never the reverse."""
     prompt = " ".join(llm_client._LABEL_MERGE_SYSTEM_PROMPT.split())
     for rule in ('"Web Accessibility" / "Web Accessibility & Standards"',
-                 "one part of a combined label",
+                 "one part of a NEW combined label that names one field",
                  "1 or 2 pages",
                  '"Design" (1 page) / "Graphic Design" (33 pages)',
                  "Between two NEW labels, always merge the one with fewer pages into the one with more",
@@ -209,6 +209,19 @@ def test_label_merge_prompt_folds_parts_and_small_labels_into_bigger_ones():
         assert rule in prompt, rule
     # The film run's first compile declined these merges on this line.
     assert "When in doubt, do not merge." not in prompt
+
+
+def test_label_merge_prompt_never_pushes_one_field_into_a_two_field_label():
+    """Drafts now name one field per label (2026-10-25): a one-field label
+    never moves into a combined label joining two fields, nor into an
+    EXISTING combined label, even as its part or as a 1-2 page label."""
+    prompt = " ".join(llm_client._LABEL_MERGE_SYSTEM_PROMPT.split())
+    for rule in ('"Accessibility" or "Design" / "Design & Accessibility"',
+                 "a combined label that joins two fields",
+                 "nor into an EXISTING combined label",
+                 "even in the two contained-name cases above",
+                 "leave both as they are"):
+        assert rule in prompt, rule
 
 
 def test_consolidate_labels_call_and_payload(monkeypatch):
