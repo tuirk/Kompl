@@ -6,6 +6,7 @@
  *
  * Rule #5 — three phases per page plan:
  *   Phase 2 (sync db.transaction()):
+ *     - idempotency guard: the plan must still be 'crossreffed'
  *     - insertPage()
  *     - setPendingContent() (outbox — markdown stored for boot reconciler)
  *     - draft_rules marker copied from a from-scratch plan (lib/draft-rules.ts)
@@ -16,7 +17,8 @@
  *     NO await inside this callback — better-sqlite3 is sync-only.
  *   Phase 3a (awaited):
  *     - POST /storage/write-page → flush pending_content to disk
- *     - clearPendingContent() on success
+ *     - clear pending_content on success, only if it still holds the text
+ *       written (lib/outbox-flush.ts)
  *   Phase 3b (fire-and-forget):
  *     - alias canonical backfill
  *     - Vector upsert (retried 3× before queuing for backfill)
@@ -52,12 +54,11 @@ import {
   getCurrentPageHash,
   incrementPageSourceCount,
   setPendingContent,
-  clearPendingContent,
-  getPendingFlushPages,
+  pruneDeletedPlanSources,
   backfillAliasCanonicalPageId,
 } from '../../../../lib/db';
 import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from '../../../../lib/draft-rules';
-import { flushPendingPage } from '../../../../lib/flush-pending';
+import { flushOutboxPage, reconcileOutbox } from '../../../../lib/outbox-flush';
 import { recordNewDisputes } from '../../../../lib/page-disputes';
 import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
 import { syncPageWikilinks } from '../../../../lib/wikilinks';
@@ -107,17 +108,20 @@ function getSessionCommittedPageIds(session_id: string): Set<string> {
 // empty-plans path too: a retry after a flush failure finds all plans
 // already 'committed', so this pass is the only thing that recovers the
 // stranded files without a server restart.
-async function reconcileSessionFlushes(sessionPageIds: ReadonlySet<string>): Promise<number> {
-  let remaining = 0;
-  for (const row of getPendingFlushPages()) {
-    const result = await flushPendingPage(row.page_id, row.pending_content);
-    if (result.ok) {
-      clearPendingContent(row.page_id, result.previousPath);
-    } else if (sessionPageIds.has(row.page_id)) {
-      remaining++;
-    }
-  }
-  return remaining;
+function reconcileSessionFlushes(session_id: string): Promise<number> {
+  return reconcileOutbox(getSessionCommittedPageIds(session_id));
+}
+
+// Idempotency guard (CLAUDE.md rule 5), read inside each commit transaction.
+// Two commits of one session can overlap: a run whose commit call timed out
+// fails the session while the commit keeps going, and the retry starts a
+// second one. Only the first to reach a plan may commit it; committing it
+// twice doubled its provenance and activity rows.
+function planStillCrossreffed(plan_id: string): boolean {
+  const row = getDb()
+    .prepare('SELECT draft_status FROM page_plans WHERE plan_id = ?')
+    .get(plan_id) as { draft_status: string } | undefined;
+  return row?.draft_status === 'crossreffed';
 }
 
 // Strip YAML frontmatter (--- ... ---) from the top of a markdown string.
@@ -144,7 +148,7 @@ async function commitSession(session_id: string): Promise<Response> {
   if (plans.length === 0) {
     // Retry-after-flush-failure lands here (all plans already 'committed').
     // The reconcile pass is what actually re-flushes the stranded files.
-    const flushFailures = await reconcileSessionFlushes(getSessionCommittedPageIds(session_id));
+    const flushFailures = await reconcileSessionFlushes(session_id);
     return NextResponse.json(
       { session_id, committed: 0, failed: 0, pages_created: 0, pages_updated: 0, sources_activated: 0, flush_failures: flushFailures },
       { status: 200 }
@@ -202,7 +206,15 @@ async function commitSession(session_id: string): Promise<Response> {
       'running',
       `${i}/${plans.length} pages committed`,
     );
-    const sourceIds: string[] = JSON.parse(plan.source_ids);
+    // Sources deleted while the session compiled are dropped here (a plan
+    // left with none is deleted). No await between this and the plan's
+    // transaction, so no delete can slip in between.
+    const plannedSourceIds: string[] = JSON.parse(plan.source_ids);
+    const sourceIds = pruneDeletedPlanSources(plan.plan_id, plannedSourceIds);
+    if (sourceIds.length < plannedSourceIds.length) {
+      console.log(JSON.stringify({ ts: new Date().toISOString(), event: 'commit_deleted_sources_dropped', session_id, plan_id: plan.plan_id, dropped: plannedSourceIds.length - sourceIds.length, plan_dropped: sourceIds.length === 0 }));
+      if (sourceIds.length === 0) continue;
+    }
     sourceIds.forEach((s) => allSourceIds.add(s));
 
     if (plan.action === 'provenance-only') {
@@ -210,7 +222,8 @@ async function commitSession(session_id: string): Promise<Response> {
       try {
         const existingPageId = plan.existing_page_id!;
         const pageHash = getCurrentPageHash(existingPageId); // sync filesystem read before transaction
-        db.transaction(() => {
+        const done = db.transaction((): boolean => {
+          if (!planStillCrossreffed(plan.plan_id)) return false;
           for (const sid of sourceIds) {
             insertProvenance({
               source_id: sid,
@@ -223,8 +236,9 @@ async function commitSession(session_id: string): Promise<Response> {
           // Inside transaction — crash between commit and this call previously
           // left plan stuck as 'crossreffed'. Now atomic with the provenance write.
           updatePlanStatus(plan.plan_id, 'committed');
+          return true;
         })();
-        committed++;
+        if (done) committed++;
       } catch (txErr) {
         const txMsg = txErr instanceof Error ? txErr.message : String(txErr);
         console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'db_transaction_error', context: 'provenance_only_commit', plan_id: plan.plan_id, session_id, error: txMsg }));
@@ -302,8 +316,10 @@ async function commitSession(session_id: string): Promise<Response> {
     // File is NOT written yet. pending_content stores the markdown so the boot
     // reconciler can re-attempt the flush if Phase 3a crashes.
     // updatePlanStatus('committed') is inside the transaction (Gap 3 fix).
+    let done: boolean;
     try {
-      db.transaction(() => {
+      done = db.transaction((): boolean => {
+        if (!planStillCrossreffed(plan.plan_id)) return false;
         insertPage({
           page_id,
           title: plan.title,
@@ -311,7 +327,7 @@ async function commitSession(session_id: string): Promise<Response> {
           category,
           summary,
           content_path: expectedPath,
-          previous_content_path: null, // set by clearPendingContent after Phase 3a
+          previous_content_path: null, // set when Phase 3a clears the outbox
         });
 
         // Outbox: store markdown for Phase 3a flush + crash recovery.
@@ -368,6 +384,7 @@ async function commitSession(session_id: string): Promise<Response> {
         // Plan status inside transaction — crash between txn commit and here
         // previously left plan stuck as 'crossreffed'. Now atomic with the page write.
         updatePlanStatus(plan.plan_id, 'committed');
+        return true;
       })();
     } catch (txErr) {
       const txMsg = txErr instanceof Error ? txErr.message : String(txErr);
@@ -376,14 +393,14 @@ async function commitSession(session_id: string): Promise<Response> {
       failed++;
       continue;
     }
+    // Another commit of this session got there first and owns its Phase 3.
+    if (!done) continue;
 
     // Phase 3a (awaited): flush pending_content to disk via nlp-service.
     // pending_content stays populated until this succeeds, so the boot reconciler
-    // can re-attempt if Phase 3a crashes before clearPendingContent runs.
-    const flushResult = await flushPendingPage(page_id, markdown);
-    if (flushResult.ok) {
-      clearPendingContent(page_id, flushResult.previousPath);
-    } else {
+    // can re-attempt if Phase 3a crashes before it is cleared. The flush
+    // re-reads the outbox and clears it compare-and-set (lib/outbox-flush.ts).
+    if (!(await flushOutboxPage(page_id))) {
       console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'file_flush_failed', context: 'session_commit', plan_id: plan.plan_id, page_id, session_id }));
       // Plan is already committed in DB. pending_content stays populated —
       // the post-loop reconcileSessionFlushes() pass re-attempts it, and
@@ -475,7 +492,7 @@ async function commitSession(session_id: string): Promise<Response> {
   // 'completed' is never signalled while .md.gz files are missing from disk.
   // getSessionCommittedPageIds is read AFTER the loop so it includes plans
   // committed in this run as well as prior runs of the same session.
-  const flushFailures = await reconcileSessionFlushes(getSessionCommittedPageIds(session_id));
+  const flushFailures = await reconcileSessionFlushes(session_id);
 
   return NextResponse.json(
     {

@@ -13,6 +13,38 @@ export const DIRECTION_AGNOSTIC_RELATIONS: ReadonlySet<string> = new Set(['compe
 /** Longest description kept; the extract prompt asks for one sentence. */
 export const RELATION_DESCRIPTION_MAX_CHARS = 300;
 
+/** The types the extract prompt lists (nlp-service llm_client.py). */
+const PROMPT_RELATIONS: ReadonlySet<string> = new Set([
+  'uses', 'competes_with', 'part_of', 'created_by', 'related_to', 'contradicts',
+]);
+
+/**
+ * Other wordings of the prompt types, after the folding in
+ * normalizeRelationType. Inverse wordings (used_by, includes) are left out:
+ * mapping them would flip the relation's direction.
+ */
+const RELATION_SYNONYMS: ReadonlyMap<string, string> = new Map([
+  ['use', 'uses'], ['utilize', 'uses'], ['utilizes', 'uses'], ['utilises', 'uses'],
+  ['partof', 'part_of'], ['is_part_of', 'part_of'], ['component_of', 'part_of'],
+  ['createdby', 'created_by'], ['is_created_by', 'created_by'], ['made_by', 'created_by'],
+  ['competeswith', 'competes_with'], ['competes', 'competes_with'], ['competes_against', 'competes_with'],
+  ['competitor', 'competes_with'], ['competitor_of', 'competes_with'],
+  ['contradict', 'contradicts'], ['contradicted_by', 'contradicts'], ['conflicts_with', 'contradicts'],
+  ['related', 'related_to'], ['relatedto', 'related_to'], ['relates_to', 'related_to'], ['is_related_to', 'related_to'],
+]);
+
+/**
+ * A prompt type however the LLM spelled it ("Competes with", "PART-OF",
+ * "utilizes"); the LLM's JSON mode does not enforce the type list. Any other
+ * type is kept as written (trimmed), and relation-labels.ts reads it as before.
+ */
+export function normalizeRelationType(type: string): string {
+  const written = type.trim();
+  const folded = written.toLowerCase().replace(/[\s_-]+/g, '_');
+  if (PROMPT_RELATIONS.has(folded)) return folded;
+  return RELATION_SYNONYMS.get(folded) ?? written;
+}
+
 export interface RelationRow {
   from_canonical: string;
   to_canonical: string;
@@ -78,9 +110,13 @@ export function readLlmRelations(relationships: unknown): LlmRelation[] {
 
 /**
  * Rows for one source's `llm_output.relationships`. `pin` maps a raw name to
- * its canonical spelling (the aliases table). One row per (from, to, type):
+ * its canonical spelling (the aliases table); a prompt type is stored in its
+ * canonical spelling (normalizeRelationType). One row per (from, to, type):
  * the first entry wins, and a later duplicate only supplies the description
  * when the first had none.
+ *
+ * The description backfill reads llm_output with readLlmRelations alone, so
+ * it still finds older rows under the type as the LLM wrote it.
  */
 export function buildRelationRows(
   relationships: unknown,
@@ -89,8 +125,9 @@ export function buildRelationRows(
 ): RelationRow[] {
   const rows = new Map<string, RelationRow>();
   for (const rel of readLlmRelations(relationships)) {
-    const [from, to] = orderRelationPair(rel.type, pin(rel.from), pin(rel.to));
-    const key = relationKey(from, to, rel.type);
+    const type = normalizeRelationType(rel.type);
+    const [from, to] = orderRelationPair(type, pin(rel.from), pin(rel.to));
+    const key = relationKey(from, to, type);
     const seen = rows.get(key);
     if (seen) {
       seen.description ??= rel.description;
@@ -99,7 +136,7 @@ export function buildRelationRows(
     rows.set(key, {
       from_canonical: from,
       to_canonical: to,
-      relationship_type: rel.type,
+      relationship_type: type,
       source_id: sourceId,
       description: rel.description,
     });

@@ -37,6 +37,7 @@ import type { ActivityEventType } from './activity-events';
 import { DEFAULT_COMPILE_MODEL, isLlmModel, type LlmModel } from './llm-models';
 import { buildFtsQuery } from './fts-query';
 import { numericConflict } from './name-guard';
+import { sortDirectionAgnosticRelations } from './relation-order';
 
 // Model registry lives in llm-models.ts (client-safe, no DB imports);
 // re-exported here so server code keeps importing it from '@/lib/db'.
@@ -983,6 +984,26 @@ export function deleteRelationshipMentionsForSource(sourceId: string): void {
 }
 
 /**
+ * Swap a source's entity_mentions and relationship_mentions for a new
+ * extraction's, in one transaction: a failure part-way keeps the old rows
+ * instead of leaving the source with none while its extraction row stays
+ * (the next compile would not extract it again). The inserts' own
+ * transactions run as savepoints inside this one.
+ */
+export function replaceSourceMentions(
+  sourceId: string,
+  entities: Parameters<typeof insertEntityMentions>[0],
+  relations: Parameters<typeof insertRelationshipMentions>[0]
+): void {
+  openDb().transaction(() => {
+    deleteEntityMentionsForSource(sourceId);
+    deleteRelationshipMentionsForSource(sourceId);
+    insertEntityMentions(entities);
+    insertRelationshipMentions(relations);
+  })();
+}
+
+/**
  * COUNT(DISTINCT source_id) for a specific relationship pair+type.
  * Callers pass from/to already sorted (for direction-agnostic types).
  */
@@ -1363,6 +1384,9 @@ export function normalizeSessionMentionsToCanonical(
       keepRelDescriptionTo.run(canonical, alias, ...sourceIds);
       updRelTo.run(canonical, alias, ...sourceIds);
     }
+    // A renamed end can put a competes_with / contradicts pair out of the
+    // sorted order plan Rule 4 counts by; sort those rows again.
+    sortDirectionAgnosticRelations(db, sourceIds);
   })();
 }
 
@@ -2520,6 +2544,44 @@ export function cleanupPendingPlansForDeletedSource(
 }
 
 /**
+ * Drop the ids of deleted sources from a plan about to be committed, and
+ * return the ids that remain. Deleting a source is not blocked while a
+ * compile runs; an id left in the plan fails the provenance foreign key and
+ * rolls back the whole page update, new sources included. The shrunk list is
+ * written back, so a draft queued for approval stays approvable. A plan left
+ * with no sources is deleted, as cleanupPendingPlansForDeletedSource does for
+ * queued drafts, so a deleted source's page is never created. Only a plan
+ * still 'crossreffed' is touched; one another commit already took is left
+ * as it is.
+ */
+export function pruneDeletedPlanSources(planId: string, sourceIds: string[]): string[] {
+  if (sourceIds.length === 0) return sourceIds;
+  const db = openDb();
+  const existing = new Set(
+    (
+      db
+        .prepare(
+          `SELECT j.value AS source_id
+             FROM json_each(?) j
+             JOIN sources s ON s.source_id = j.value`
+        )
+        .all(JSON.stringify(sourceIds)) as Array<{ source_id: string }>
+    ).map((r) => r.source_id)
+  );
+  const remaining = sourceIds.filter((id) => existing.has(id));
+  if (remaining.length === sourceIds.length) return sourceIds;
+  if (remaining.length === 0) {
+    db.prepare(`DELETE FROM page_plans WHERE plan_id = ? AND draft_status = 'crossreffed'`).run(planId);
+  } else {
+    db.prepare(`UPDATE page_plans SET source_ids = ? WHERE plan_id = ? AND draft_status = 'crossreffed'`).run(
+      JSON.stringify(remaining),
+      planId
+    );
+  }
+  return remaining;
+}
+
+/**
  * Return all provenance rows for a given page_id.
  * Used by recompilePage to discover remaining sources after one is deleted.
  */
@@ -3255,6 +3317,36 @@ export function clearPendingContent(pageId: string, previousContentPath: string 
       'UPDATE pages SET pending_content = NULL, previous_content_path = ? WHERE page_id = ?'
     )
     .run(previousContentPath, pageId);
+}
+
+/** A page's outbox text, or null when nothing is waiting to be flushed. */
+export function getPendingContent(pageId: string): string | null {
+  const row = openDb()
+    .prepare('SELECT pending_content FROM pages WHERE page_id = ?')
+    .get(pageId) as { pending_content: string | null } | undefined;
+  return row?.pending_content ?? null;
+}
+
+/**
+ * Compare-and-set clearPendingContent: clears the outbox only while it still
+ * holds `writtenContent`, the text the flush just wrote. Another writer can
+ * replace pending_content while a flush is in flight; clearing it anyway
+ * would drop that newer text from the outbox while the file holds the older
+ * one. Returns true when the row was cleared.
+ */
+export function clearPendingContentIfUnchanged(
+  pageId: string,
+  previousContentPath: string | null,
+  writtenContent: string
+): boolean {
+  return (
+    openDb()
+      .prepare(
+        `UPDATE pages SET pending_content = NULL, previous_content_path = ?
+          WHERE page_id = ? AND pending_content = ?`
+      )
+      .run(previousContentPath, pageId, writtenContent).changes > 0
+  );
 }
 
 /**

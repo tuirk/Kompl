@@ -192,7 +192,15 @@ async function callCrossref(sessionId: string, planCount: number): Promise<{ wik
   return res.json() as Promise<{ wikilinks_added: number }>;
 }
 
-async function callCommit(sessionId: string, planCount: number): Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number; flush_failures: number }> {
+interface CommitResult {
+  committed: number;
+  failed: number;
+  thin_drafts_skipped: number;
+  sources_activated: number;
+  flush_failures: number;
+}
+
+async function callCommit(sessionId: string, planCount: number): Promise<CommitResult> {
   // Dynamic timeout sized to planCount × per-plan (DB tx + write-page +
   // vector-upsert) cost. See compile-timeouts.ts:computeCommitMs.
   const timeoutMs = computeCommitMs(planCount);
@@ -205,7 +213,7 @@ async function callCommit(sessionId: string, planCount: number): Promise<{ commi
     dispatcher: makeDispatcher(timeoutMs),
   });
   await throwOnError('commit', res, sessionId);
-  return res.json() as Promise<{ committed: number; thin_drafts_skipped: number; sources_activated: number; flush_failures: number }>;
+  return res.json() as Promise<CommitResult>;
 }
 
 async function callSchema(sessionId: string): Promise<unknown> {
@@ -246,6 +254,118 @@ async function timed<T>(sessionId: string, step: string, fn: () => Promise<T>): 
   const r = await fn();
   console.log('[compile:%s] %s %dms', sanitizeLogValue(sessionId), step, Date.now() - t);
   return r;
+}
+
+async function runDraftStep(sessionId: string, planCount: number): Promise<void> {
+  updateCompileStep(sessionId, 'draft', 'running');
+  const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId, planCount));
+  updateCompileStep(
+    sessionId,
+    'draft',
+    'done',
+    draftResult.failed > 0
+      ? `${draftResult.drafted} drafts generated, ${draftResult.failed} failed — retry to re-attempt`
+      : `${draftResult.drafted} drafts generated`
+  );
+  assertNotCancelled(sessionId);
+}
+
+// Commit gate (CLAUDE.md rule #5): never signal completion while a page is
+// missing. Two ways a page can be missing after commit:
+//   - flush_failures: DB rows ARE committed (pages remain readable via
+//     pending_content + boot reconciler), but the .md.gz file is not on disk.
+//   - failed: the page's commit transaction rolled back; the plan is marked
+//     'failed' with the cause in page_plans.draft_error.
+// Either way the session ends 'failed' so the UI/n8n don't treat it as done.
+// Retry recovers: commit always re-runs and its reconcile pass re-flushes,
+// and failed plans are re-drafted and committed again.
+function assertCommitComplete(sessionId: string, r: CommitResult): void {
+  const problems: string[] = [];
+  if (r.failed > 0) problems.push(`${r.failed} page(s) failed to commit`);
+  if (r.flush_failures > 0) problems.push(`${r.flush_failures} page file(s) failed to flush to disk`);
+  if (problems.length === 0) return;
+  updateCompileStep(
+    sessionId,
+    'commit',
+    'failed',
+    `${r.committed} pages committed to DB, but ${problems.join(' and ')} — retry to re-attempt`
+  );
+  throw new Error(`commit failed: ${problems.join('; ')} (committed pages are durable in the DB; retry re-attempts the rest)`);
+}
+
+// Steps 6-8, then completion.
+async function finishPipeline(sessionId: string, planCount: number): Promise<void> {
+  // Step 6: crossref — ALWAYS re-run.
+  // Reads page_plans WHERE draft_status='drafted'. If draft was skipped and
+  // plans are already 'crossreffed' (commit-failure retry), this returns 0
+  // wikilinks as a safe no-op — plans stay 'crossreffed' for commit to consume.
+  updateCompileStep(sessionId, 'crossref', 'running');
+  const crossrefResult = await timed(sessionId, 'crossref', () => callCrossref(sessionId, planCount));
+  updateCompileStep(sessionId, 'crossref', 'done', `${crossrefResult.wikilinks_added} wikilinks added`);
+  assertNotCancelled(sessionId);
+
+  // Step 7: commit — ALWAYS re-run (no LLM, DB + disk writes, idempotent).
+  // Pass 5 is a synchronous better-sqlite3 transaction — cancel is blocked at
+  // the route level once this step is 'running'. No mid-transaction abort.
+  updateCompileStep(sessionId, 'commit', 'running');
+  const commitResult = await timed(sessionId, 'commit', () => callCommit(sessionId, planCount));
+  assertCommitComplete(sessionId, commitResult);
+
+  const thinMsg = commitResult.thin_drafts_skipped > 0 ? `, ${commitResult.thin_drafts_skipped} thin drafts skipped` : '';
+  updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages, ${commitResult.sources_activated} sources committed${thinMsg}`);
+
+  // Step 8: schema — ALWAYS re-run (idempotent, schema route handles already_exists).
+  updateCompileStep(sessionId, 'schema', 'running');
+  await timed(sessionId, 'schema', () => callSchema(sessionId));
+  updateCompileStep(sessionId, 'schema', 'done');
+
+  completeCompileProgress(sessionId);
+}
+
+// No source of the session still needs compiling. Two kinds of session get here:
+//   - saved-link-only sessions: every staged item was a media-only tweet
+//     (connector='saved-link'), so the prelude wrote ingest_failures rows but
+//     no `sources`;
+//   - retries of a session whose sources are already 'active'. Commit marks
+//     sources active BEFORE its flush pass, and a source goes active through
+//     any one of its plans, so a retry after a flush failure, or a
+//     /retry-failed after some drafts failed, lands here with page files or
+//     plans still unfinished.
+// So "nothing left to do" is decided from page_plans and the outbox, never
+// from sources.compile_status: plans still to draft are drafted, and commit
+// always runs, because its reconcile pass is what writes the page files an
+// earlier run left in pending_content.
+async function resumeWithoutSources(sessionId: string): Promise<void> {
+  const skippedDetail = 'skipped (no sources)';
+  updateCompileStep(sessionId, 'extract', 'done', skippedDetail);
+  updateCompileStep(sessionId, 'resolve', 'done', skippedDetail);
+  updateCompileStep(sessionId, 'match',   'done', skippedDetail);
+  updateCompileStep(sessionId, 'plan',    'done', skippedDetail);
+
+  const planCounts = countPagePlansByStatus(sessionId);
+  const planCount = Object.values(planCounts).reduce((sum, c) => sum + c, 0);
+
+  if (planCount === 0) {
+    // Saved-link-only session: nothing to draft or link, and no page of its
+    // own to flush. Commit still runs its reconcile pass.
+    updateCompileStep(sessionId, 'draft',    'done', skippedDetail);
+    updateCompileStep(sessionId, 'crossref', 'done', skippedDetail);
+    updateCompileStep(sessionId, 'commit',   'running');
+    assertCommitComplete(sessionId, await timed(sessionId, 'commit', () => callCommit(sessionId, 0)));
+    updateCompileStep(sessionId, 'commit',   'done', skippedDetail);
+    updateCompileStep(sessionId, 'schema',   'done', skippedDetail);
+    completeCompileProgress(sessionId);
+    return;
+  }
+
+  const pendingDraftCount = (planCounts.planned ?? 0) + (planCounts.failed ?? 0);
+  if (pendingDraftCount > 0) {
+    console.log('[compile:%s] %d plans pending, sources already active — re-drafting', sanitizeLogValue(sessionId), pendingDraftCount);
+    await runDraftStep(sessionId, planCount);
+  } else {
+    updateCompileStep(sessionId, 'draft', 'done', 'skipped (no drafts left to write)');
+  }
+  await finishPipeline(sessionId, planCount);
 }
 
 async function runCompilePipeline(sessionId: string): Promise<void> {
@@ -301,24 +421,11 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     updateCompileStep(sessionId, 'ingest_texts', 'done', 'skipped (no items)');
   }
 
-  // Saved-link-only sessions: every staged item was a media-only tweet
-  // (connector='saved-link'), so the prelude wrote ingest_failures rows but
-  // no `sources`. Extract..schema have nothing to compile — short-circuit to
-  // success with every downstream step marked skipped so the UI shows the
-  // session as completed (not failed) and the Saved Links page reflects the
-  // captured URLs.
+  // No source left to compile: saved-link-only sessions, and retries of
+  // sessions whose sources are already 'active' (see resumeWithoutSources).
   const preludeSources = getSourcesBySession(sessionId);
   if (preludeSources.length === 0) {
-    const skippedDetail = 'skipped (no sources)';
-    updateCompileStep(sessionId, 'extract',  'done', skippedDetail);
-    updateCompileStep(sessionId, 'resolve',  'done', skippedDetail);
-    updateCompileStep(sessionId, 'match',    'done', skippedDetail);
-    updateCompileStep(sessionId, 'plan',     'done', skippedDetail);
-    updateCompileStep(sessionId, 'draft',    'done', skippedDetail);
-    updateCompileStep(sessionId, 'crossref', 'done', skippedDetail);
-    updateCompileStep(sessionId, 'commit',   'done', skippedDetail);
-    updateCompileStep(sessionId, 'schema',   'done', skippedDetail);
-    completeCompileProgress(sessionId);
+    await resumeWithoutSources(sessionId);
     return;
   }
 
@@ -515,17 +622,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     updateCompileStep(sessionId, 'plan', 'done', `${planCount} pages planned`);
     assertNotCancelled(sessionId);
 
-    updateCompileStep(sessionId, 'draft', 'running');
-    const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId, planCount));
-    updateCompileStep(
-      sessionId,
-      'draft',
-      'done',
-      draftResult.failed > 0
-        ? `${draftResult.drafted} drafts generated, ${draftResult.failed} failed — retry to re-attempt`
-        : `${draftResult.drafted} drafts generated`
-    );
-    assertNotCancelled(sessionId);
+    await runDraftStep(sessionId, planCount);
   } else if (pendingDraftCount > 0) {
     // Retry path: plans exist, some are still 'planned' or were marked
     // 'failed' on a prior Gemini error. Re-draft only those.
@@ -533,17 +630,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     // crossref/commit timeouts size to the whole plan set, not just pending.
     planCount = Object.values(planCounts).reduce((sum, c) => sum + c, 0);
     console.log('[compile:%s] %d plans pending — re-drafting without re-planning', sanitizeLogValue(sessionId), pendingDraftCount);
-    updateCompileStep(sessionId, 'draft', 'running');
-    const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId, planCount));
-    updateCompileStep(
-      sessionId,
-      'draft',
-      'done',
-      draftResult.failed > 0
-        ? `${draftResult.drafted} drafts generated, ${draftResult.failed} failed — retry to re-attempt`
-        : `${draftResult.drafted} drafts generated`
-    );
-    assertNotCancelled(sessionId);
+    await runDraftStep(sessionId, planCount);
   } else {
     // No plan work to do; downstream still runs against committed plans, so
     // crossref/commit need a planCount sized to the full plan set.
@@ -551,47 +638,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     console.log('[compile:%s] plan+draft already complete — skipping both', sanitizeLogValue(sessionId));
   }
 
-  // Step 6: crossref — ALWAYS re-run.
-  // Reads page_plans WHERE draft_status='drafted'. If draft was skipped and
-  // plans are already 'crossreffed' (commit-failure retry), this returns 0
-  // wikilinks as a safe no-op — plans stay 'crossreffed' for commit to consume.
-  updateCompileStep(sessionId, 'crossref', 'running');
-  const crossrefResult = await timed(sessionId, 'crossref', () => callCrossref(sessionId, planCount));
-  updateCompileStep(sessionId, 'crossref', 'done', `${crossrefResult.wikilinks_added} wikilinks added`);
-  assertNotCancelled(sessionId);
-
-  // Step 7: commit — ALWAYS re-run (no LLM, DB + disk writes, idempotent).
-  // Pass 5 is a synchronous better-sqlite3 transaction — cancel is blocked at
-  // the route level once this step is 'running'. No mid-transaction abort.
-  updateCompileStep(sessionId, 'commit', 'running');
-  const commitResult = await timed(sessionId, 'commit', () => callCommit(sessionId, planCount));
-
-  // Durability gate (CLAUDE.md rule #5): never signal completion while page
-  // files are missing from disk. DB rows ARE committed (pages remain readable
-  // via pending_content + boot reconciler), but the session must end 'failed'
-  // so the UI/n8n don't treat it as fully durable. Retry recovers: commit
-  // re-runs, finds 0 crossreffed plans, and its reconcile pass re-flushes.
-  if (commitResult.flush_failures > 0) {
-    updateCompileStep(
-      sessionId,
-      'commit',
-      'failed',
-      `${commitResult.committed} pages committed to DB, but ${commitResult.flush_failures} page file(s) failed to flush to disk — retry to re-attempt`
-    );
-    throw new Error(
-      `commit failed: ${commitResult.flush_failures} page file(s) pending disk flush (DB rows are durable; retry re-flushes)`
-    );
-  }
-
-  const thinMsg = commitResult.thin_drafts_skipped > 0 ? `, ${commitResult.thin_drafts_skipped} thin drafts skipped` : '';
-  updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages, ${commitResult.sources_activated} sources committed${thinMsg}`);
-
-  // Step 8: schema — ALWAYS re-run (idempotent, schema route handles already_exists).
-  updateCompileStep(sessionId, 'schema', 'running');
-  await timed(sessionId, 'schema', () => callSchema(sessionId));
-  updateCompileStep(sessionId, 'schema', 'done');
-
-  completeCompileProgress(sessionId);
+  await finishPipeline(sessionId, planCount);
 }
 
 export async function POST(request: Request) {

@@ -29,8 +29,6 @@
 
 import { NextResponse } from 'next/server';
 import {
-  deleteEntityMentionsForSource,
-  deleteRelationshipMentionsForSource,
   getAliases,
   getAllPageIds,
   getEffectiveCompileModel,
@@ -38,11 +36,10 @@ import {
   getPageCount,
   getSource,
   logActivity,
-  insertEntityMentions,
   insertExtraction,
-  insertRelationshipMentions,
   markSourceExtracted,
   readRawMarkdown,
+  replaceSourceMentions,
   updateSourceTitle,
 } from '../../../../lib/db';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
@@ -397,9 +394,8 @@ export async function POST(request: Request) {
     // prior sessions ("GPT4" → "GPT-4") collapse to the existing canonical at
     // write time. New aliases minted by this session's resolve apply to
     // subsequent sources, not this one — the usual incremental-graph tradeoff.
-    // Re-extraction wipes + reinserts so the mention set reflects latest llm_output.
-    deleteEntityMentionsForSource(source_id);
-    deleteRelationshipMentionsForSource(source_id);
+    // Re-extraction wipes + reinserts so the mention set reflects latest
+    // llm_output; replaceSourceMentions does both in one transaction.
     const aliasMap = new Map<string, string>();
     for (const { alias, canonical_name } of getAliases()) {
       aliasMap.set(alias.toLowerCase(), canonical_name);
@@ -435,13 +431,12 @@ export async function POST(request: Request) {
       seen.add(key);
       mentionRows.push({ canonical_name: canonical, source_id, entity_type: 'CONCEPT' });
     }
-    insertEntityMentions(mentionRows);
 
     // Relationship mentions (lib/relation-rows.ts). Direction-agnostic types
     // (competes_with, contradicts) are stored with from/to sorted lowercase so
     // "A vs B" and "B vs A" share one PK; directional types keep their natural
     // order. Each row carries the LLM's one-sentence description (v28).
-    insertRelationshipMentions(buildRelationRows(llm.relationships, source_id, pin));
+    replaceSourceMentions(source_id, mentionRows, buildRelationRows(llm.relationships, source_id, pin));
 
     logActivity('extraction_complete', {
       source_id,

@@ -342,21 +342,48 @@ export function buildDossier(
 
   const parts: string[] = [];
 
+  type Item = Record<string, unknown>;
+  const findNamed = (list: unknown): Item | undefined =>
+    ((list as Item[] | undefined) ?? []).find((x) => matchesName(x.name));
+  const entityLines = (e: Item): string[] => {
+    const out: string[] = [];
+    if (e.type) out.push(`  Type: ${e.type}`);
+    if (e.mentions) out.push(`  Mentions: ${e.mentions}`);
+    if (e.context) out.push(`  Context: ${e.context}`);
+    return out;
+  };
+  const conceptLines = (c: Item): string[] => {
+    const out: string[] = [];
+    // Pydantic ExtractionConcept emits { name, description }; `definition`
+    // is still read for older extraction rows.
+    const definition = c.description ?? c.definition;
+    if (definition) out.push(`  Definition: ${definition}`);
+    if (c.context) out.push(`  Context: ${c.context}`);
+    return out;
+  };
+  // What this source says the subject is. An update keeps the page's type
+  // (plan/route.ts updatePageType), so a source may list the subject under
+  // the other kind; that list is read when the page's own kind has no match.
+  // null when the source lists the subject under neither.
+  const subjectLines = (ext: Item): string[] | null => {
+    const entity = findNamed(ext.entities);
+    const concept = findNamed(ext.concepts);
+    const asEntity = entity ? entityLines(entity) : null;
+    const asConcept = concept ? conceptLines(concept) : null;
+    return plan.page_type === 'entity' ? asEntity ?? asConcept : asConcept ?? asEntity;
+  };
+  // Every non-empty per-source block starts with `From source {sid}:` —
+  // capDossierByRelevance ranks and attributes blocks by that header.
+  const pushSourceBlock = (sid: string, subject: string[] | null, extra: string[]) => {
+    if (subject || extra.length > 0) parts.push([`From source ${sid}:`, ...(subject ?? []), ...extra].join('\n'));
+  };
+
   if (plan.page_type === 'entity') {
     for (const sid of sourceIds) {
       const ext = extractionsBySource.get(sid);
       if (!ext) continue;
+      const subject = subjectLines(ext);
       const lines: string[] = [];
-
-      const entityData = ((ext.entities as Array<Record<string, unknown>>) ?? []).find(
-        (e) => matchesName(e.name)
-      );
-      if (entityData) {
-        lines.push(`From source ${sid}:`);
-        if (entityData.type) lines.push(`  Type: ${entityData.type}`);
-        if (entityData.mentions) lines.push(`  Mentions: ${entityData.mentions}`);
-        if (entityData.context) lines.push(`  Context: ${entityData.context}`);
-      }
 
       // Pydantic ExtractionRelationship emits { from_entity, to, type, description } —
       // the dossier must match those field names, not r.source/r.target which never exist.
@@ -392,7 +419,7 @@ export function buildDossier(
         );
       }
 
-      if (lines.length > 0) parts.push(lines.join('\n'));
+      pushSourceBlock(sid, subject, lines);
     }
   }
 
@@ -400,19 +427,8 @@ export function buildDossier(
     for (const sid of sourceIds) {
       const ext = extractionsBySource.get(sid);
       if (!ext) continue;
+      const subject = subjectLines(ext);
       const lines: string[] = [];
-
-      const conceptData = ((ext.concepts as Array<Record<string, unknown>>) ?? []).find(
-        (c) => matchesName(c.name)
-      );
-      if (conceptData) {
-        lines.push(`From source ${sid}:`);
-        // Pydantic ExtractionConcept emits { name, description }; `definition`
-        // is still read for older extraction rows.
-        const definition = conceptData.description ?? conceptData.definition;
-        if (definition) lines.push(`  Definition: ${definition}`);
-        if (conceptData.context) lines.push(`  Context: ${conceptData.context}`);
-      }
 
       const claims = ((ext.claims as Array<Record<string, unknown>>) ?? []).filter(
         (c) => matchesSubstring(c.claim)
@@ -421,7 +437,7 @@ export function buildDossier(
         lines.push(`  Claim: ${claim.claim}`);
       }
 
-      if (lines.length > 0) parts.push(lines.join('\n'));
+      pushSourceBlock(sid, subject, lines);
     }
   }
 

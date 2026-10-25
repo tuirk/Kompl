@@ -169,6 +169,72 @@ def test_three_writes_within_same_second_preserve_two_distinct_archives(isolated
     )
 
 
+def test_rewriting_identical_content_keeps_the_real_history(isolated_pages_dir):
+    """The outbox flushes at least once: a retry, the commit reconcile pass
+    and the boot reconciler can each write the same text again. Archiving an
+    identical copy used to push the real previous versions out of the
+    MAX_ARCHIVED_VERSIONS window."""
+    current, _ = file_store.write_page("bitcoin", "v1")
+    base = os.path.getmtime(current) - 100
+    os.utime(current, (base, base))
+    _, archive_v1 = file_store.write_page("bitcoin", "v2")
+    os.utime(current, (base + 10, base + 10))
+    _, archive_v2 = file_store.write_page("bitcoin", "v3")
+    before = sorted(p.name for p in isolated_pages_dir.glob("bitcoin.*.md.gz"))
+
+    for n in range(3):
+        os.utime(current, (base + 20 + n, base + 20 + n))
+        again, previous = file_store.write_page("bitcoin", "v3")
+        assert again == current
+        # The page's previous version is unchanged, so the caller keeps
+        # pointing at the same archive.
+        assert previous == archive_v2
+
+    assert sorted(p.name for p in isolated_pages_dir.glob("bitcoin.*.md.gz")) == before
+    assert _read_gz(archive_v1) == "v1"
+    assert _read_gz(archive_v2) == "v2"
+    assert _read_gz(current) == "v3"
+
+
+def test_identical_rewrite_of_a_page_without_archives_returns_no_previous(isolated_pages_dir):
+    file_store.write_page("doge", "only version")
+    current, previous = file_store.write_page("doge", "only version")
+    assert previous is None
+    assert _read_gz(current) == "only version"
+    assert list(isolated_pages_dir.glob("doge.*.md.gz")) == []
+
+
+def test_unreadable_current_file_is_replaced_not_compared(isolated_pages_dir):
+    (isolated_pages_dir / "ada.md.gz").write_bytes(b"not gzip")
+    current, previous = file_store.write_page("ada", "fresh")
+    assert _read_gz(current) == "fresh"
+    assert previous is not None  # the unreadable file is archived, never deleted
+
+
+def test_new_file_reaches_disk_before_it_replaces_the_page(isolated_pages_dir, monkeypatch):
+    """Durability: the temp file is fsynced before the rename makes it the
+    page, and on POSIX the directory is fsynced after it, so a power loss
+    can't leave an empty file under the final name or lose the rename."""
+    events: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd):
+        events.append("fsync")
+        real_fsync(fd)
+
+    def replace(src, dst):
+        events.append("replace-tmp" if str(src).endswith(".tmp.gz") else "replace-archive")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(file_store.os, "fsync", fsync)
+    monkeypatch.setattr(file_store.os, "replace", replace)
+
+    file_store.write_page("cardano", "v1")
+    assert events.index("fsync") < events.index("replace-tmp")
+    if os.name == "posix":
+        assert events[-1] == "fsync", "directory entry must be synced after the rename"
+
+
 def test_read_page_returns_decompressed_content(isolated_pages_dir):
     file_store.write_page("solana", "Solana page body.")
     assert file_store.read_page("solana") == "Solana page body."
