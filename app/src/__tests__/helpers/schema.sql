@@ -1,4 +1,4 @@
--- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=29.
+-- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=30.
 -- If migrate.py changes, update this file. Tests will fail loudly on drift.
 
 CREATE TABLE sources (
@@ -118,7 +118,10 @@ CREATE TABLE page_plans (
   draft_error TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   -- v27: writing rules the draft was made under; NULL for pre-v0.4 drafts.
-  draft_rules TEXT
+  draft_rules TEXT,
+  -- v30: the page's version when an update draft read it; NULL for new
+  -- pages and pre-v30 drafts.
+  base_version TEXT
 );
 
 CREATE TABLE compile_progress (
@@ -241,6 +244,6 @@ CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id
 CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '29');
+INSERT INTO settings (key, value) VALUES ('schema_version', '30');
 -- v26: fresh installs get an explicit compile_model row (DEFAULT_COMPILE_MODEL).
 INSERT INTO settings (key, value) VALUES ('compile_model', 'deepseek-flash');

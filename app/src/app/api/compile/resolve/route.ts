@@ -19,6 +19,8 @@
  *              a cap, ranked by lib/resolve-ranking.ts; verdicts come back
  *              by pair_id and 'same' verdicts fold into the groups
  *   5. bulkInsertAliases() — persist alias → canonical mappings
+ *   6. rebuildSessionMentions() — this session's mention rows, rebuilt from
+ *              the extractions through the groups
  *
  * The resolved canonical list is the ephemeral output consumed by 2c's
  * page planner. Sources stay 'extracted'. No new status changes here.
@@ -45,11 +47,14 @@ import {
   getEffectiveCompileModel,
   getEntityAndConceptPageTitles,
   getExtractionsBySession,
+  getResolverPageTitles,
   logActivity,
-  normalizeSessionMentionsToCanonical,
+  rebuildSessionMentions,
 } from '../../../../lib/db';
 import { computeDisambiguateMs } from '../../../../lib/compile-timeouts';
 import { makeDispatcher } from '../../../../lib/long-http-agent';
+import { buildMentionPin, KIND_FAMILIES } from '../../../../lib/mention-pin';
+import { sessionMentionRows } from '../../../../lib/mention-rows';
 import { numericConflict } from '../../../../lib/name-guard';
 import { MAX_DISAMBIGUATE_PAIRS, rankForLayer3 } from '../../../../lib/resolve-ranking';
 
@@ -71,10 +76,6 @@ const GROUP_SENTINEL_PREFIX = '__group__:';
 // Groups bound to a known canonical (an existing page title or a stored
 // alias). Mirrors _ANCHORED_METHODS in nlp-service/routers/resolution.py.
 const ANCHORED_METHODS = new Set(['existing_page_title', 'existing_alias']);
-
-// Kinds a group may hold together. Mirrors _COMPATIBLE_TYPE_GROUPS in
-// nlp-service/routers/resolution.py.
-const KIND_FAMILIES: string[][] = [['ORG', 'PRODUCT'], ['CONCEPT', 'OTHER']];
 
 // ── Type definitions (mirror nlp-service Pydantic models) ─────────────────────
 
@@ -243,6 +244,19 @@ export async function POST(request: Request) {
     );
   }
 
+  // The last step: this session's entity_mentions and relationship_mentions
+  // are rebuilt from each source's extraction, mapped through the resolver's
+  // groups (lib/mention-rows.ts); names no group holds are pinned as extract
+  // pins them, with the aliases this run stored. Plan counts sources from
+  // these rows, so they follow the resolver: a merge a rerun no longer makes
+  // leaves them, a rerun gives the same rows, and a source extracted without
+  // rows gets them. Other sessions' rows are not touched.
+  const rebuildMentions = (groups: ResolvedGroup[]) =>
+    rebuildSessionMentions(
+      session_id,
+      sessionMentionRows(extractions, groups, buildMentionPin(getEntityAndConceptPageTitles(), getAliases()))
+    );
+
   // Flatten all entities + concepts across all sources into the same input pool.
   // Concepts are injected as synthetic EntityInputs with type='CONCEPT' and
   // context=description so they ride the same 3-layer pipeline as entities.
@@ -277,6 +291,7 @@ export async function POST(request: Request) {
   });
 
   if (allEntities.length === 0) {
+    rebuildMentions([]);
     return NextResponse.json({
       session_id,
       canonical_entities: [],
@@ -294,8 +309,9 @@ export async function POST(request: Request) {
 
   // Step 2b: get existing entity/concept page titles so the resolver can match
   // session entities against the wiki cross-session — closes the split-session
-  // duplicate gap that the alias drawer alone can't cover.
-  const existingPageTitles: ExistingPageTitle[] = getEntityAndConceptPageTitles();
+  // duplicate gap that the alias drawer alone can't cover. New pages waiting
+  // for approval count as pages here (plan 1.8).
+  const existingPageTitles: ExistingPageTitle[] = getResolverPageTitles();
 
   try {
     // Layer 1 — fuzzy
@@ -602,17 +618,11 @@ export async function POST(request: Request) {
     const aliasesToInsert = allCanonical.flatMap((g) =>
       g.aliases.map((a) => ({ alias: a, canonical: g.canonical, method: g.method, session_id }))
     );
-    if (aliasesToInsert.length > 0) {
-      bulkInsertAliases(aliasesToInsert);
-      // Re-canonicalise this session's mention rows to the resolver-chosen
-      // canonicals. Extract-commit pinned via historical aliases only; the
-      // resolver just minted NEW aliases (e.g. cross-session page-title
-      // anchors) that invalidate those initial pins for this session's
-      // sources. Without this, plan's threshold counts + source_ids lookups
-      // miss the current session's contribution when its extraction used a
-      // variant spelling that the resolver has now canonicalised.
-      normalizeSessionMentionsToCanonical(session_id, aliasesToInsert);
-    }
+    if (aliasesToInsert.length > 0) bulkInsertAliases(aliasesToInsert);
+
+    // Step 6: extract pinned this session's mention rows through the aliases
+    // it knew then; rebuild them through the groups just formed.
+    rebuildMentions(allCanonical);
 
     // Pairs Layer 3 never judged (over the cap, or in a failed LLM batch)
     // may be duplicates left as separate pages; say so where the user looks.

@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -786,6 +786,24 @@ def migrate():
         ):
             if col not in alias_cols:
                 conn.execute(f"ALTER TABLE aliases ADD COLUMN {ddl}")
+
+    if current < 30:
+        print("  applying migration v30 (page_plans.base_version)...")
+        # Drafts waiting for approval (auto-approve off). Approving one that
+        # updates a page must not overwrite what the page gained after the
+        # draft was written:
+        #   base_version  the page's version when the draft read it
+        #                 (app/src/lib/page-rewrite.ts pageVersionToken);
+        #                 NULL for new pages and for drafts made before v30
+        # Additive only, no backfill: approving an older update draft
+        # compares the page's last update with the plan's created_at instead
+        # (app/src/lib/approve-plan.ts).
+        plan_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(page_plans)").fetchall()
+        }
+        if "base_version" not in plan_cols:
+            conn.execute("ALTER TABLE page_plans ADD COLUMN base_version TEXT")
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

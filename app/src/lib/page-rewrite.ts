@@ -48,6 +48,29 @@ export function pageVersionToken(pageId: string): string {
   return JSON.stringify([page?.last_updated ?? null, page?.pending ?? null, prov.n, prov.max_id]);
 }
 
+/**
+ * pageVersionToken for a draft waiting for approval (auto-approve off,
+ * lib/approve-plan.ts), which can wait for days. It changes whenever the
+ * page's text is rewritten: every rewrite bumps last_updated, and every
+ * compile or approval that writes the page adds a 'created' or 'updated'
+ * provenance row. It leaves out what does not touch the text the draft
+ * updates: the outbox flag (the boot reconciler writing the file out) and
+ * 'mentioned' rows (a source linked to the page without rewriting it).
+ */
+export function pageTextVersionToken(pageId: string): string {
+  const db = getDb();
+  const page = db
+    .prepare('SELECT last_updated FROM pages WHERE page_id = ?')
+    .get(pageId) as { last_updated: string | null } | undefined;
+  const prov = db
+    .prepare(
+      `SELECT COUNT(*) AS n, MAX(id) AS max_id FROM provenance
+        WHERE page_id = ? AND contribution_type != 'mentioned'`,
+    )
+    .get(pageId) as { n: number; max_id: number | null };
+  return JSON.stringify([page?.last_updated ?? null, prov.n, prov.max_id]);
+}
+
 export type RewriteResult = { ok: true; flushed: boolean } | { ok: false; reason: 'page_changed' | 'page_not_found' };
 
 async function writePageFile(pageId: string, markdown: string): Promise<{ previous_path: string | null }> {

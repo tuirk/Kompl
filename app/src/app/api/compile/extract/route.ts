@@ -11,7 +11,8 @@
  *   5. Fan out to method endpoints in parallel:
  *        - rake, keybert, textrank, yake, tfidf-overlap (as per profile)
  *   6. POST /pipeline/extract-llm   → structured knowledge extraction via Gemini
- *   7. insertExtraction() + markSourceExtracted()
+ *   7. saveExtraction(): the extraction, the 'extracted' status and the
+ *      source's mention rows, in one transaction
  *
  * After this route succeeds, the source has compile_status = 'extracted'.
  * The session-compile workflow will pick up 'extracted' sources.
@@ -37,15 +38,13 @@ import {
   getPageCount,
   getSource,
   logActivity,
-  insertExtraction,
-  markSourceExtracted,
   readRawMarkdown,
-  replaceSourceMentions,
+  saveExtraction,
   updateSourceTitle,
 } from '../../../../lib/db';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
 import { buildMentionPin } from '../../../../lib/mention-pin';
-import { buildRelationRows } from '../../../../lib/relation-rows';
+import { buildSourceMentionRows } from '../../../../lib/mention-rows';
 
 // "Garbage" source titles — what we get when MarkItDown can't pull a title
 // from PDF metadata and the cascade falls through to the filename stub.
@@ -334,16 +333,30 @@ export async function POST(request: Request) {
       compile_model: getEffectiveCompileModel(source.onboarding_session_id),
     });
 
-    // Step 7: persist
-    insertExtraction({
-      source_id,
-      ner_output: nerResult,
-      profile: routeResult.profile,
-      keyphrase_output: Object.keys(keyphraseOutput).length > 0 ? keyphraseOutput : null,
-      tfidf_output: tfidfOutput,
-      llm_output: llmOutput,
-    });
-    markSourceExtracted(source_id);
+    // Step 7: persist the extraction, the 'extracted' status and the source's
+    // entity/concept and relation mentions (wiki-wide threshold counting) in
+    // one transaction (saveExtraction): a crash in between left a source
+    // extracted with no mention rows, and the next compile skips extracted
+    // sources. Each name is pinned to an existing page's exact title first,
+    // then through the active aliases (lib/mention-pin.ts), so variants
+    // discovered in prior sessions ("GPT4" → "GPT-4") collapse to the
+    // existing canonical at write time. This session's resolve then rebuilds
+    // these rows through its own groups (db.ts rebuildSessionMentions).
+    // Re-extraction swaps the rows for the latest llm_output's; relation
+    // rows come from lib/relation-rows.ts (type spelling, sorted
+    // competes_with / contradicts, the LLM's one-sentence description, v28).
+    const pin = buildMentionPin(getEntityAndConceptPageTitles(), getAliases());
+    saveExtraction(
+      {
+        source_id,
+        ner_output: nerResult,
+        profile: routeResult.profile,
+        keyphrase_output: Object.keys(keyphraseOutput).length > 0 ? keyphraseOutput : null,
+        tfidf_output: tfidfOutput,
+        llm_output: llmOutput,
+      },
+      buildSourceMentionRows(llmOutput, source_id, pin)
+    );
 
     // Step 7a: title rescue (phase 2). MarkItDown's PDF path doesn't extract
     // a title, so the ingest cascade falls through to the filename stub —
@@ -390,52 +403,6 @@ export async function POST(request: Request) {
         },
       });
     }
-
-    // Step 7b: record entity/concept mentions for wiki-wide threshold counting.
-    // Pin each name to an existing page's exact title first, then through the
-    // active aliases (lib/mention-pin.ts), so variants discovered in prior
-    // sessions ("GPT4" → "GPT-4") collapse to the existing canonical at write
-    // time. New aliases minted by this session's resolve apply to subsequent
-    // sources, not this one — the usual incremental-graph tradeoff.
-    // Re-extraction wipes + reinserts so the mention set reflects latest
-    // llm_output; replaceSourceMentions does both in one transaction.
-    const pin = buildMentionPin(getEntityAndConceptPageTitles(), getAliases());
-
-    const llm = llmOutput as {
-      entities?: Array<{ name?: string; type?: string }>;
-      concepts?: Array<{ name?: string }>;
-      relationships?: unknown;
-    };
-    const mentionRows: Array<{ canonical_name: string; source_id: string; entity_type: string | null }> = [];
-    const seen = new Set<string>();
-    for (const ent of llm.entities ?? []) {
-      const raw = (ent.name ?? '').trim();
-      if (!raw) continue;
-      const canonical = pin(raw);
-      const key = canonical.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      mentionRows.push({
-        canonical_name: canonical,
-        source_id,
-        entity_type: (ent.type ?? '').trim() || null,
-      });
-    }
-    for (const con of llm.concepts ?? []) {
-      const raw = (con.name ?? '').trim();
-      if (!raw) continue;
-      const canonical = pin(raw);
-      const key = canonical.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      mentionRows.push({ canonical_name: canonical, source_id, entity_type: 'CONCEPT' });
-    }
-
-    // Relationship mentions (lib/relation-rows.ts). Direction-agnostic types
-    // (competes_with, contradicts) are stored with from/to sorted lowercase so
-    // "A vs B" and "B vs A" share one PK; directional types keep their natural
-    // order. Each row carries the LLM's one-sentence description (v28).
-    replaceSourceMentions(source_id, mentionRows, buildRelationRows(llm.relationships, source_id, pin));
 
     logActivity('extraction_complete', {
       source_id,

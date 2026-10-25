@@ -560,6 +560,9 @@ function PendingDrafts() {
   const [bulkResult, setBulkResult] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadError, setLoadError] = useState(false);
+  // Why a draft was not applied (e.g. its page changed since it was written);
+  // the draft stays in the list.
+  const [refused, setRefused] = useState<Record<string, string>>({});
 
   function toggleExpand(planId: string) {
     setExpanded(prev => {
@@ -586,9 +589,20 @@ function PendingDrafts() {
 
   async function approve(planId: string) {
     setBusy(planId);
-    await fetch(`/api/drafts/${planId}/approve`, { method: 'POST' });
-    setDrafts((prev) => prev.filter((d) => d.plan_id !== planId));
-    setBusy(null);
+    try {
+      const res = await fetch(`/api/drafts/${planId}/approve`, { method: 'POST' });
+      if (res.ok) {
+        setDrafts((prev) => prev.filter((d) => d.plan_id !== planId));
+      } else {
+        const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
+        const reason = body?.message ?? `Not applied (${body?.error ?? res.status}).`;
+        setRefused((prev) => ({ ...prev, [planId]: reason }));
+      }
+    } catch {
+      setRefused((prev) => ({ ...prev, [planId]: 'Not applied: the request failed. Try again.' }));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function reject(planId: string) {
@@ -616,8 +630,18 @@ function PendingDrafts() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: latestCompileSessionId }),
       });
-      const data = (await res.json()) as { approved: number; failed: number; total: number };
-      setBulkResult(`Approved ${data.approved} of ${data.total}${data.failed > 0 ? ` (${data.failed} failed)` : ''}`);
+      const data = (await res.json()) as {
+        approved: number;
+        failed: number;
+        total: number;
+        errors: Array<{ plan_id: string; error: string; message?: string }>;
+      };
+      setBulkResult(`Approved ${data.approved} of ${data.total}${data.failed > 0 ? ` (${data.failed} not applied)` : ''}`);
+      setRefused((prev) => {
+        const next = { ...prev };
+        for (const e of data.errors) next[e.plan_id] = e.message ?? `Not applied (${e.error}).`;
+        return next;
+      });
       refresh();
     } catch (err) {
       setBulkResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -705,6 +729,11 @@ function PendingDrafts() {
                 >
                   {d.draft_content_preview}
                 </div>
+              )}
+              {refused[d.plan_id] && (
+                <p role="alert" style={{ marginTop: '0.4rem', marginBottom: 0, fontSize: 12, color: 'var(--danger)' }}>
+                  {refused[d.plan_id]}
+                </p>
               )}
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>

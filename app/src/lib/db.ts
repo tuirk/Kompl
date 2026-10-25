@@ -37,7 +37,8 @@ import type { ActivityEventType } from './activity-events';
 import { DEFAULT_COMPILE_MODEL, isLlmModel, type LlmModel } from './llm-models';
 import { buildFtsQuery } from './fts-query';
 import { numericConflict } from './name-guard';
-import { sortDirectionAgnosticRelations } from './relation-order';
+import { relationKey } from './relation-rows';
+import type { SourceMentionRows } from './mention-rows';
 
 // Model registry lives in llm-models.ts (client-safe, no DB imports);
 // re-exported here so server code keeps importing it from '@/lib/db'.
@@ -819,6 +820,23 @@ export function insertExtraction(data: {
     });
 }
 
+/**
+ * Store a new extraction, mark its source extracted and swap in its mention
+ * rows, in one transaction (the extract route). A crash part-way leaves none
+ * of it, so the next compile extracts the source again instead of finding it
+ * extracted with no mention rows.
+ */
+export function saveExtraction(
+  data: Parameters<typeof insertExtraction>[0],
+  mentions: Pick<SourceMentionRows, 'entities' | 'relations'>
+): void {
+  openDb().transaction(() => {
+    insertExtraction(data);
+    markSourceExtracted(data.source_id);
+    replaceSourceMentions(data.source_id, mentions.entities, mentions.relations);
+  })();
+}
+
 /** Fetch one extraction row by source_id. Returns null if not found. */
 export function getExtraction(sourceId: string): ExtractionRow | null {
   const row = openDb()
@@ -882,19 +900,27 @@ export function getExtractionsBySourceIds(sourceIds: string[]): ExtractionRow[] 
 /**
  * Bulk insert (canonical_name, source_id, entity_type) rows. Uses INSERT OR
  * IGNORE so a re-extracted source can't double-count (PRIMARY KEY is the
- * (canonical, source) pair). Runs in a single transaction.
+ * (canonical, source) pair). Runs in a single transaction. first_seen_at
+ * defaults to now; the resolve rebuild passes the old row's.
  */
 export function insertEntityMentions(
-  mentions: Array<{ canonical_name: string; source_id: string; entity_type: string | null }>
+  mentions: Array<{ canonical_name: string; source_id: string; entity_type: string | null; first_seen_at?: string | null }>
 ): void {
   if (mentions.length === 0) return;
   const db = openDb();
   const stmt = db.prepare(
-    `INSERT OR IGNORE INTO entity_mentions (canonical_name, source_id, entity_type)
-     VALUES (@canonical_name, @source_id, @entity_type)`
+    `INSERT OR IGNORE INTO entity_mentions (canonical_name, source_id, entity_type, first_seen_at)
+     VALUES (@canonical_name, @source_id, @entity_type, COALESCE(@first_seen_at, CURRENT_TIMESTAMP))`
   );
   db.transaction((rows: typeof mentions) => {
-    for (const row of rows) stmt.run(row);
+    for (const row of rows) {
+      stmt.run({
+        canonical_name: row.canonical_name,
+        source_id: row.source_id,
+        entity_type: row.entity_type,
+        first_seen_at: row.first_seen_at ?? null,
+      });
+    }
   })(mentions);
 }
 
@@ -945,7 +971,8 @@ export function getSourceIdsMentioning(canonicalName: string): string[] {
  * and "B vs A" to one row (lib/relation-rows.ts does both).
  *
  * An existing row keeps its other columns (first_seen_at included); only its
- * description (v28) is refreshed, and only by a non-null one.
+ * description (v28) is refreshed, and only by a non-null one. A new row's
+ * first_seen_at defaults to now; the resolve rebuild passes the old row's.
  */
 export function insertRelationshipMentions(
   mentions: Array<{
@@ -954,14 +981,16 @@ export function insertRelationshipMentions(
     relationship_type: string;
     source_id: string;
     description?: string | null;
+    first_seen_at?: string | null;
   }>
 ): void {
   if (mentions.length === 0) return;
   const db = openDb();
   const stmt = db.prepare(
     `INSERT INTO relationship_mentions
-       (from_canonical, to_canonical, relationship_type, source_id, description)
-     VALUES (@from_canonical, @to_canonical, @relationship_type, @source_id, @description)
+       (from_canonical, to_canonical, relationship_type, source_id, description, first_seen_at)
+     VALUES (@from_canonical, @to_canonical, @relationship_type, @source_id, @description,
+             COALESCE(@first_seen_at, CURRENT_TIMESTAMP))
      ON CONFLICT(from_canonical, to_canonical, relationship_type, source_id)
        DO UPDATE SET description = COALESCE(excluded.description, description)`
   );
@@ -973,6 +1002,7 @@ export function insertRelationshipMentions(
         relationship_type: row.relationship_type,
         source_id: row.source_id,
         description: row.description ?? null,
+        first_seen_at: row.first_seen_at ?? null,
       });
     }
   })(mentions);
@@ -1003,6 +1033,76 @@ export function replaceSourceMentions(
     insertEntityMentions(entities);
     insertRelationshipMentions(relations);
   })();
+}
+
+/**
+ * Rewrite a session's mention rows after resolve. Each source's rows, rebuilt
+ * from its extraction through the resolver's groups (lib/mention-rows.ts
+ * sessionMentionRows), replace its old ones through replaceSourceMentions,
+ * all in one transaction. The rows follow the resolver's latest groups, so a
+ * merge a rerun no longer makes leaves the counts, and a rerun with the same
+ * groups gives the same rows.
+ *
+ * A row keeps the first_seen_at of the old row with its key, else the
+ * source's earliest old row (a renamed row was seen when its source was),
+ * else the extraction's created_at (a source extracted without rows). A
+ * relation without a sentence keeps the old row's. A source outside the
+ * session is skipped, so other sessions' rows never change. Returns the
+ * number of sources rewritten.
+ */
+export function rebuildSessionMentions(sessionId: string, sources: SourceMentionRows[]): number {
+  const db = openDb();
+  const inSession = db.prepare('SELECT 1 FROM sources WHERE source_id = ? AND onboarding_session_id = ?');
+  const oldEntities = db.prepare('SELECT canonical_name, first_seen_at FROM entity_mentions WHERE source_id = ?');
+  const oldRelations = db.prepare(
+    `SELECT from_canonical, to_canonical, relationship_type, first_seen_at, description
+       FROM relationship_mentions WHERE source_id = ?`
+  );
+  const extractedAt = db.prepare('SELECT created_at FROM extractions WHERE source_id = ?');
+  // canonical_name is COLLATE NOCASE, which folds ASCII letters only.
+  const nocase = (name: string) => name.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  type OldRelation = {
+    from_canonical: string;
+    to_canonical: string;
+    relationship_type: string;
+    first_seen_at: string | null;
+    description: string | null;
+  };
+
+  let rebuilt = 0;
+  db.transaction(() => {
+    for (const { source_id, entities, relations } of sources) {
+      if (!inSession.get(source_id, sessionId)) continue;
+      const entitySeen = new Map<string, string | null>();
+      for (const r of oldEntities.all(source_id) as Array<{ canonical_name: string; first_seen_at: string | null }>) {
+        entitySeen.set(nocase(r.canonical_name), r.first_seen_at);
+      }
+      const relationOld = new Map<string, OldRelation>();
+      for (const r of oldRelations.all(source_id) as OldRelation[]) {
+        relationOld.set(relationKey(r.from_canonical, r.to_canonical, r.relationship_type), r);
+      }
+      const earliest = [...entitySeen.values(), ...[...relationOld.values()].map((r) => r.first_seen_at)]
+        .filter((d): d is string => !!d)
+        .sort()[0];
+      const seenAt =
+        earliest ?? (extractedAt.get(source_id) as { created_at: string | null } | undefined)?.created_at ?? null;
+      replaceSourceMentions(
+        source_id,
+        entities.map((e) => ({ ...e, source_id, first_seen_at: entitySeen.get(nocase(e.canonical_name)) ?? seenAt })),
+        relations.map((r) => {
+          const old = relationOld.get(relationKey(r.from_canonical, r.to_canonical, r.relationship_type));
+          return {
+            ...r,
+            source_id,
+            description: r.description ?? old?.description ?? null,
+            first_seen_at: old?.first_seen_at ?? seenAt,
+          };
+        })
+      );
+      rebuilt += 1;
+    }
+  })();
+  return rebuilt;
 }
 
 /**
@@ -1358,105 +1458,6 @@ export function getPageContradictions(pageId: string): PageContradiction[] {
   return out;
 }
 
-/**
- * Re-canonicalise the current session's entity_mentions + relationship_mentions
- * rows after resolve writes new aliases. Extract-commit pins mention rows via
- * the aliases table as it stood at extract time; resolve may later mint new
- * aliases (e.g. "GPT 4" → "GPT-4" via existing-page-title match) that the
- * extract pass couldn't know about yet.
- *
- * Without this pass, countSourcesMentioning and getSourceIdsMentioning miss
- * the current session's contribution when its LLM extraction used a variant
- * spelling — plan emits source_ids that don't include the session's own
- * sources, and commit writes no provenance rows for them.
- *
- * Scoped to this session's source_ids so prior sessions' history stays as it
- * was (historical faithfulness — if an older source was committed under the
- * old canonical, that's part of the wiki's evolution).
- */
-export function normalizeSessionMentionsToCanonical(
-  sessionId: string,
-  aliasToCanonical: Array<{ alias: string; canonical: string }>
-): void {
-  if (!aliasToCanonical.length) return;
-  const db = openDb();
-  const sources = db
-    .prepare(
-      `SELECT source_id FROM sources WHERE onboarding_session_id = ?`
-    )
-    .all(sessionId) as Array<{ source_id: string }>;
-  if (sources.length === 0) return;
-  const sourceIds = sources.map((s) => s.source_id);
-  const placeholders = sourceIds.map(() => '?').join(',');
-
-  // UPDATE OR REPLACE handles the case where the same source has BOTH the alias
-  // and the canonical extracted as separate entity_mentions rows (e.g. a source
-  // text mentioning both "OpenAI" and "OpenAI API" — resolver fuzzy-merges them
-  // via substring into a single group, then this helper tries to fold the alias
-  // row into the canonical for the same source and hits a PRIMARY KEY
-  // (canonical_name, source_id) conflict). OR REPLACE resolves by deleting the
-  // conflicting target row and applying the UPDATE — net result: one row
-  // under the canonical per source. Same pattern for relationship_mentions.
-  const updEntity = db.prepare(
-    `UPDATE OR REPLACE entity_mentions SET canonical_name = ?
-       WHERE canonical_name = ? COLLATE NOCASE
-         AND source_id IN (${placeholders})`
-  );
-  const updRelFrom = db.prepare(
-    `UPDATE OR REPLACE relationship_mentions SET from_canonical = ?
-       WHERE from_canonical = ? COLLATE NOCASE
-         AND source_id IN (${placeholders})`
-  );
-  const updRelTo = db.prepare(
-    `UPDATE OR REPLACE relationship_mentions SET to_canonical = ?
-       WHERE to_canonical = ? COLLATE NOCASE
-         AND source_id IN (${placeholders})`
-  );
-  // The REPLACE deletes the canonical row the alias row collides with; when
-  // the alias row has no description (v28), first copy the canonical row's
-  // over, so the relation keeps its sentence.
-  const keepRelDescriptionFrom = db.prepare(
-    `UPDATE relationship_mentions SET description = (
-        SELECT c.description FROM relationship_mentions c
-         WHERE c.source_id = relationship_mentions.source_id
-           AND c.relationship_type = relationship_mentions.relationship_type
-           AND c.from_canonical = ? COLLATE NOCASE
-           AND c.to_canonical = relationship_mentions.to_canonical
-           AND c.description IS NOT NULL
-           AND c.rowid != relationship_mentions.rowid)
-       WHERE from_canonical = ? COLLATE NOCASE
-         AND description IS NULL
-         AND source_id IN (${placeholders})`
-  );
-  const keepRelDescriptionTo = db.prepare(
-    `UPDATE relationship_mentions SET description = (
-        SELECT c.description FROM relationship_mentions c
-         WHERE c.source_id = relationship_mentions.source_id
-           AND c.relationship_type = relationship_mentions.relationship_type
-           AND c.to_canonical = ? COLLATE NOCASE
-           AND c.from_canonical = relationship_mentions.from_canonical
-           AND c.description IS NOT NULL
-           AND c.rowid != relationship_mentions.rowid)
-       WHERE to_canonical = ? COLLATE NOCASE
-         AND description IS NULL
-         AND source_id IN (${placeholders})`
-  );
-
-  db.transaction(() => {
-    for (const { alias, canonical } of aliasToCanonical) {
-      if (alias.toLowerCase() === canonical.toLowerCase()) continue;
-      updEntity.run(canonical, alias, ...sourceIds);
-      keepRelDescriptionFrom.run(canonical, alias, ...sourceIds);
-      updRelFrom.run(canonical, alias, ...sourceIds);
-      keepRelDescriptionTo.run(canonical, alias, ...sourceIds);
-      updRelTo.run(canonical, alias, ...sourceIds);
-    }
-    // A renamed end can put a competes_with / contradicts pair out of the
-    // sorted order plan Rule 4 counts by; sort those rows again.
-    sortDirectionAgnosticRelations(db, sourceIds);
-  })();
-}
-
 
 // ============================================================================
 // Page plan helpers (Part 2c-i)
@@ -1607,16 +1608,40 @@ export function getPagesForSession(
 /**
  * Store a plan's draft. `draftRules` records the writing rules an LLM draft
  * was made under (lib/draft-rules.ts CURRENT_DRAFT_RULES); null for drafts
- * that are not LLM-written (original-source passthroughs).
+ * that are not LLM-written (original-source passthroughs). `baseVersion`
+ * (v30) is the version of the page an update draft read
+ * (lib/page-rewrite.ts pageTextVersionToken); null for a new page.
  */
-export function updatePlanDraft(planId: string, draftContent: string, draftRules: string | null): void {
+export function updatePlanDraft(
+  planId: string,
+  draftContent: string,
+  draftRules: string | null,
+  baseVersion: string | null = null,
+): void {
   openDb()
     .prepare(
       `UPDATE page_plans
-          SET draft_content = ?, draft_status = 'drafted', draft_rules = ?
+          SET draft_content = ?, draft_status = 'drafted', draft_rules = ?, base_version = ?
         WHERE plan_id = ?`
     )
-    .run(draftContent, draftRules, planId);
+    .run(draftContent, draftRules, baseVersion, planId);
+}
+
+/**
+ * Was the page rewritten after `since` (a page_plans.created_at)? Approving
+ * an update draft made before v30, which records no base_version, falls
+ * back to this (lib/approve-plan.ts). Every rewrite bumps last_updated.
+ * Both are whole seconds: a page last written in the plan's own second was
+ * written before planning read it (planning writes no pages), so it counts
+ * as unchanged. A missing page counts as changed.
+ */
+export function pageRewrittenSince(pageId: string, since: string): boolean {
+  const row = openDb()
+    .prepare(
+      `SELECT julianday(last_updated) > julianday(?) AS changed FROM pages WHERE page_id = ?`
+    )
+    .get(since, pageId) as { changed: number | null } | undefined;
+  return row === undefined || row.changed !== 0;
 }
 
 export function updatePlanCrossref(planId: string, draftContent: string): void {
@@ -1660,6 +1685,116 @@ export function getPageByTitle(title: string): PageRow | null {
     )
     .get(title) as PageRow | undefined;
   return row ?? null;
+}
+
+const PLAN_PAGE_COLUMNS = `p.page_id, p.title, p.page_type, p.category, p.summary, p.content_path,
+              p.previous_content_path, p.last_updated, p.source_count, p.created_at`;
+
+/**
+ * A source's own page (plan Rule 1): the source-summary or original-source
+ * page whose provenance holds the source. Titles are not unique and match
+ * any page type, so a title lookup turned the "Ethereum" entity page into a
+ * summary, and two sources titled "Introduction" shared one page. When
+ * several pages hold the source, the one holding the fewest sources wins
+ * (its own page, not one an old bug overwrote), then the oldest.
+ *
+ * A source page with no provenance at all is still found by its title, so a
+ * page written before provenance existed keeps being updated, not duplicated.
+ */
+export function getSourcePage(sourceId: string, title: string): PageRow | null {
+  const db = openDb();
+  const own = db
+    .prepare(
+      `SELECT ${PLAN_PAGE_COLUMNS}
+         FROM pages p
+        WHERE p.page_type IN ('source-summary', 'original-source')
+          AND EXISTS (SELECT 1 FROM provenance pr WHERE pr.page_id = p.page_id AND pr.source_id = ?)
+        ORDER BY (SELECT COUNT(DISTINCT pr.source_id) FROM provenance pr WHERE pr.page_id = p.page_id),
+                 p.created_at, p.page_id
+        LIMIT 1`
+    )
+    .get(sourceId) as PageRow | undefined;
+  if (own) return own;
+  const untracked = db
+    .prepare(
+      `SELECT ${PLAN_PAGE_COLUMNS}
+         FROM pages p
+        WHERE p.title = ? COLLATE NOCASE
+          AND p.page_type IN ('source-summary', 'original-source')
+          AND NOT EXISTS (SELECT 1 FROM provenance pr WHERE pr.page_id = p.page_id)
+        ORDER BY p.created_at, p.page_id
+        LIMIT 1`
+    )
+    .get(title) as PageRow | undefined;
+  return untracked ?? null;
+}
+
+/**
+ * The page a canonical name updates (plan Rules 2 and 3): an entity,
+ * concept, comparison or overview page with that title. Source pages and
+ * archived pages are left out, so a source titled "Ethereum" never becomes
+ * the Ethereum page. An entity or concept page wins, then the oldest.
+ */
+export function getTopicPageByTitle(title: string): PageRow | null {
+  const row = openDb()
+    .prepare(
+      `SELECT ${PLAN_PAGE_COLUMNS}
+         FROM pages p
+        WHERE p.title = ? COLLATE NOCASE
+          AND p.page_type IN ('entity', 'concept', 'comparison', 'overview')
+        ORDER BY CASE WHEN p.page_type IN ('entity', 'concept') THEN 0 ELSE 1 END,
+                 p.created_at, p.page_id
+        LIMIT 1`
+    )
+    .get(title) as PageRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * Is a draft waiting for approval (auto-approve off) going to create a page
+ * with this title, of one of `pageTypes`? The plan step plans no second
+ * "create" of such a page while one waits (plan 1.8): approving both made
+ * two pages.
+ */
+export function hasPendingCreate(title: string, pageTypes: readonly string[]): boolean {
+  if (pageTypes.length === 0) return false;
+  const types = pageTypes.map(() => '?').join(', ');
+  return (
+    openDb()
+      .prepare(
+        `SELECT 1 FROM page_plans
+          WHERE draft_status = 'pending_approval' AND action = 'create'
+            AND title = ? COLLATE NOCASE AND page_type IN (${types})
+          LIMIT 1`
+      )
+      .get(title, ...pageTypes) !== undefined
+  );
+}
+
+/**
+ * Titles the resolver matches session names against: entity and concept
+ * pages, plus the new entity and concept pages drafts waiting for approval
+ * will create, so a name binds to such a page as it would once approved
+ * (plan 1.8). Sorted like getEntityAndConceptPageTitles.
+ */
+export function getResolverPageTitles(): Array<{ title: string; page_type: string }> {
+  return openDb()
+    .prepare(
+      `SELECT title, page_type FROM pages WHERE page_type IN ('entity', 'concept')
+       UNION
+       SELECT title, page_type FROM page_plans
+        WHERE draft_status = 'pending_approval' AND action = 'create'
+          AND page_type IN ('entity', 'concept')
+       ORDER BY title, page_type`
+    )
+    .all() as Array<{ title: string; page_type: string }>;
+}
+
+/** Each source's stored kind for a canonical name: entity_mentions.entity_type ('CONCEPT' for concepts). */
+export function getMentionKinds(canonicalName: string): Array<{ source_id: string; entity_type: string | null }> {
+  return openDb()
+    .prepare(`SELECT source_id, entity_type FROM entity_mentions WHERE canonical_name = ? ORDER BY source_id`)
+    .all(canonicalName) as Array<{ source_id: string; entity_type: string | null }>;
 }
 
 /**
@@ -3850,6 +3985,11 @@ export interface PagePlanExportRow {
   draft_rules: string | null;
 }
 
+/**
+ * Plans for a backup. base_version (v30) is left out: it counts provenance
+ * row ids, which an import renumbers, so a restored draft waiting for
+ * approval is checked by date instead (lib/approve-plan.ts).
+ */
 export function getAllPagePlans(): PagePlanExportRow[] {
   return openDb()
     .prepare(

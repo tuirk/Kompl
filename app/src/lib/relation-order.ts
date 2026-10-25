@@ -1,9 +1,11 @@
 /**
  * Keeps competes_with / contradicts rows (DIRECTION_AGNOSTIC_RELATIONS) in the
  * sorted from/to order the extract route writes them in (relation-rows.ts).
- * Renaming one end afterwards (normalizeSessionMentionsToCanonical in db.ts)
- * can leave a row out of order, and plan Rule 4 then misses its source: it
- * counts with an exact sorted match (countSourcesForRelationship).
+ * Renaming one end afterwards in place can leave a row out of order, and plan
+ * Rule 4 then misses its source: it counts with an exact sorted match
+ * (countSourcesForRelationship). Resolve no longer renames in place: it
+ * rebuilds the session's rows through buildRelationRows (db.ts
+ * rebuildSessionMentions), so this is left for rows an older resolve renamed.
  */
 
 import type Database from 'better-sqlite3';

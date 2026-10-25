@@ -49,6 +49,7 @@ import {
 import { getSourceTitleSet } from '../../../../lib/page-sources';
 import { normalizeFrontmatter, SOURCE_PAGE_TYPES, sourceOnlyTitles } from '../../../../lib/draft-cleanup';
 import { CURRENT_DRAFT_RULES } from '../../../../lib/draft-rules';
+import { pageTextVersionToken } from '../../../../lib/page-rewrite';
 import { removeEmptyContradictionSections } from '../../../../lib/page-sections';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -361,9 +362,9 @@ export function buildDossier(
     if (c.context) out.push(`  Context: ${c.context}`);
     return out;
   };
-  // What this source says the subject is. An update keeps the page's type
-  // (plan/route.ts updatePageType), so a source may list the subject under
-  // the other kind; that list is read when the page's own kind has no match.
+  // What this source says the subject is. A page's kind follows most of its
+  // sources (lib/page-kind.ts), so a source may list the subject under the
+  // other kind; that list is read when the page's own kind has no match.
   // null when the source lists the subject under neither.
   const subjectLines = (ext: Item): string[] | null => {
     const entity = findNamed(ext.entities);
@@ -710,6 +711,13 @@ export async function POST(request: Request) {
         throw new Error(`no_readable_sources for plan ${plan.plan_id}`);
       }
 
+      // The version of the page this update reads. Approving the draft later
+      // (auto-approve off) refuses if the page changed since
+      // (lib/approve-plan.ts). Nothing below awaits before the page is read
+      // (readPageMarkdown), so the version and the text read agree.
+      const baseVersion =
+        plan.action === 'update' && plan.existing_page_id ? pageTextVersionToken(plan.existing_page_id) : null;
+
       // Raw passthrough for 'original-source' pages — no LLM call.
       // Category + summary derived from existing NLP extraction (already ran at collect time).
       if (plan.page_type === 'original-source') {
@@ -728,7 +736,7 @@ export async function POST(request: Request) {
         const summaryText = (firstClaim ?? firstConcept ?? src.markdown.slice(0, 120).replace(/\n/g, ' ')).trim();
         const rawDraft = `---\ntitle: ${yamlDoubleQuote(plan.title)}\ncategory: ${category}\nsummary: ${yamlDoubleQuote(summaryText)}\n---\n\n${src.markdown}`;
         // The user's own text: no writing rules apply (lib/draft-rules.ts).
-        updatePlanDraft(plan.plan_id, rawDraft, null);
+        updatePlanDraft(plan.plan_id, rawDraft, null, baseVersion);
         return { pageType: plan.page_type, markdown: rawDraft };
       }
 
@@ -826,7 +834,7 @@ export async function POST(request: Request) {
 
       // Drafted by this version's prompt and cleanup. The commit copies the
       // marker to the page only when the plan drafted from scratch.
-      updatePlanDraft(plan.plan_id, markdown, CURRENT_DRAFT_RULES);
+      updatePlanDraft(plan.plan_id, markdown, CURRENT_DRAFT_RULES, baseVersion);
       return { pageType: plan.page_type, markdown };
     });
 

@@ -10,21 +10,20 @@
  *     and competes_with/contradicts sorted as before
  *   - insertRelationshipMentions stores it, and a re-insert refreshes it
  *     without touching the other columns
- *   - normalizeSessionMentionsToCanonical keeps it through the rename, also
- *     when an alias row without one collapses onto the canonical row
+ *   - the resolve mention rebuild keeps it through the rename, also when a
+ *     variant without one collapses onto the canonical row
  *   - the backup export includes it
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  getAllRelationshipMentions,
-  insertRelationshipMentions,
-  normalizeSessionMentionsToCanonical,
-} from '../lib/db';
+import { getAllRelationshipMentions, insertRelationshipMentions } from '../lib/db';
 import { buildRelationRows, cleanRelationDescription, RELATION_DESCRIPTION_MAX_CHARS } from '../lib/relation-rows';
-import { seedSource, setupTestDb, type TestDbHandle } from './helpers/test-db';
+import { rebuildMentionsLikeResolve } from './helpers/rebuild-mentions';
+import { seedExtraction, seedSource, setupTestDb, type TestDbHandle } from './helpers/test-db';
+
+const gpt4Group = (source_id: string) => ({ canonical: 'GPT-4', type: 'PRODUCT', aliases: ['GPT 4'], source_ids: [source_id] });
 
 let handle: TestDbHandle | null = null;
 
@@ -161,34 +160,44 @@ describe('insertRelationshipMentions with description', () => {
     expect(descriptions()[0].description).toBe('Refreshed.');
   });
 
-  it('normalizeSessionMentionsToCanonical keeps the description through the rename', () => {
+  it('the resolve rebuild keeps the description through the rename', () => {
     handle = setupTestDb();
     const source_id = seedSource(handle.db, { onboarding_session_id: 'sess-1' });
-    insertRelationshipMentions([
-      { from_canonical: 'GPT 4', to_canonical: 'OpenAI', relationship_type: 'created_by', source_id, description: 'GPT 4 was made by OpenAI.' },
-    ]);
-    normalizeSessionMentionsToCanonical('sess-1', [{ alias: 'GPT 4', canonical: 'GPT-4' }]);
+    seedExtraction(handle.db, {
+      source_id,
+      llm_output: {
+        entities: [{ name: 'GPT 4', type: 'PRODUCT' }, { name: 'OpenAI', type: 'ORG' }],
+        relationships: [{ from_entity: 'GPT 4', to: 'OpenAI', type: 'created_by', description: 'GPT 4 was made by OpenAI.' }],
+      },
+    });
+    rebuildMentionsLikeResolve('sess-1', [gpt4Group(source_id)]);
     expect(descriptions()).toEqual([{ from: 'GPT-4', to: 'OpenAI', description: 'GPT 4 was made by OpenAI.' }]);
   });
 
-  it('normalizeSessionMentionsToCanonical keeps the canonical row sentence when the alias row collapses onto it', () => {
+  it('the resolve rebuild keeps a sentence when a variant collapses onto the canonical row', () => {
     handle = setupTestDb();
     const source_id = seedSource(handle.db, { onboarding_session_id: 'sess-1' });
-    insertRelationshipMentions([
-      // from side: alias row without a sentence collides with the canonical row
-      { from_canonical: 'GPT-4', to_canonical: 'OpenAI', relationship_type: 'created_by', source_id, description: 'OpenAI made GPT-4.' },
-      { from_canonical: 'GPT 4', to_canonical: 'OpenAI', relationship_type: 'created_by', source_id },
-      // to side: same, on the other end
-      { from_canonical: 'Azure', to_canonical: 'GPT-4', relationship_type: 'uses', source_id, description: 'Azure uses GPT-4.' },
-      { from_canonical: 'Azure', to_canonical: 'gpt 4', relationship_type: 'uses', source_id },
-      // an alias row with its own sentence keeps it (OR REPLACE keeps the alias row)
-      { from_canonical: 'GPT-4', to_canonical: 'Bing', relationship_type: 'part_of', source_id, description: 'Canonical sentence.' },
-      { from_canonical: 'GPT 4', to_canonical: 'Bing', relationship_type: 'part_of', source_id, description: 'Alias sentence.' },
-    ]);
-    normalizeSessionMentionsToCanonical('sess-1', [{ alias: 'GPT 4', canonical: 'GPT-4' }]);
+    seedExtraction(handle.db, {
+      source_id,
+      llm_output: {
+        entities: [{ name: 'GPT-4', type: 'PRODUCT' }, { name: 'GPT 4', type: 'PRODUCT' }],
+        relationships: [
+          // from side: the variant without a sentence collapses onto the canonical
+          { from_entity: 'GPT-4', to: 'OpenAI', type: 'created_by', description: 'OpenAI made GPT-4.' },
+          { from_entity: 'GPT 4', to: 'OpenAI', type: 'created_by' },
+          // to side: a later entry's sentence fills the first one's gap
+          { from_entity: 'Azure', to: 'gpt 4', type: 'uses' },
+          { from_entity: 'Azure', to: 'GPT-4', type: 'uses', description: 'Azure uses GPT-4.' },
+          // both have one: the first entry's stays (buildRelationRows)
+          { from_entity: 'GPT-4', to: 'Bing', type: 'part_of', description: 'Canonical sentence.' },
+          { from_entity: 'GPT 4', to: 'Bing', type: 'part_of', description: 'Variant sentence.' },
+        ],
+      },
+    });
+    rebuildMentionsLikeResolve('sess-1', [gpt4Group(source_id)]);
     expect(descriptions()).toEqual([
       { from: 'Azure', to: 'GPT-4', description: 'Azure uses GPT-4.' },
-      { from: 'GPT-4', to: 'Bing', description: 'Alias sentence.' },
+      { from: 'GPT-4', to: 'Bing', description: 'Canonical sentence.' },
       { from: 'GPT-4', to: 'OpenAI', description: 'OpenAI made GPT-4.' },
     ]);
   });

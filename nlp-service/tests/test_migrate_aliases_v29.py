@@ -41,13 +41,14 @@ def _version(conn: sqlite3.Connection) -> str:
 
 
 def _v28_database(db_path: Path, *, extra_alias_columns: str = "") -> None:
-    """The tables the v29 step reads, as a v28 install has them."""
+    """The tables the v29 and later steps read, as a v28 install has them."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.executescript(
         f"""
         CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         INSERT INTO settings (key, value) VALUES ('schema_version', '28');
+        CREATE TABLE page_plans (plan_id TEXT PRIMARY KEY, draft_rules TEXT);
         CREATE TABLE aliases (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           alias TEXT NOT NULL,
@@ -63,9 +64,9 @@ def _v28_database(db_path: Path, *, extra_alias_columns: str = "") -> None:
     conn.close()
 
 
-def test_schema_version_is_29(migrate):
+def test_schema_version_is_at_least_29(migrate):
     module, _ = migrate
-    assert module.SCHEMA_VERSION == 29
+    assert module.SCHEMA_VERSION >= 29
 
 
 def test_fresh_install_has_the_alias_columns(migrate):
@@ -76,7 +77,7 @@ def test_fresh_install_has_the_alias_columns(migrate):
     assert all(c in cols for c in NEW_COLUMNS)
     assert all(cols[c][0] == 0 for c in NEW_COLUMNS)  # all nullable
     assert cols["status"][1] == "'active'"
-    assert _version(conn) == "29"
+    assert _version(conn) == str(module.SCHEMA_VERSION)
     conn.close()
 
 
@@ -86,7 +87,7 @@ def test_v28_upgrade_keeps_every_row_active_and_reruns_change_nothing(migrate):
 
     module.migrate()
     conn = sqlite3.connect(db_path)
-    assert _version(conn) == "29"
+    assert _version(conn) == str(module.SCHEMA_VERSION)
     rows = conn.execute(
         "SELECT alias, canonical_name, canonical_page_id, method, score, session_id, status, status_reason, status_at"
         " FROM aliases ORDER BY id"

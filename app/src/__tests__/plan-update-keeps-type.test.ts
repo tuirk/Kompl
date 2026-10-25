@@ -1,5 +1,7 @@
 /**
- * An update plan keeps the existing page's own type.
+ * An update plan keeps the existing page's own type unless most sources say
+ * otherwise (D6: the other kind needs two thirds of the sources and at least
+ * three; plan-page-kind.test.ts covers the flip).
  *
  * Commit writes plan.page_type onto the page, and sources disagree on kind.
  * 2026-10-17, session e55c740b: "APCA" (entity page) was re-drafted by a

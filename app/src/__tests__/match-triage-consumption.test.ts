@@ -313,11 +313,11 @@ describe('Rule 4 — non-canonical relationship endpoint survives filter', () =>
       });
     }
 
-    // Simulate what normalizeSessionMentionsToCanonical does in production
-    // after resolve mints the alias "gpt 4" → "GPT-4": rewrite the
-    // relationship_mentions rows to carry the canonical spelling. The
-    // seedExtraction test helper writes raw spellings; production's resolve
-    // step canonicalises them before plan runs.
+    // Simulate what resolve's mention rebuild does in production after it
+    // groups "gpt 4" under "GPT-4": the relationship_mentions rows carry the
+    // canonical spelling. The seedExtraction test helper writes raw
+    // spellings; production's resolve step canonicalises them before plan
+    // runs.
     db.prepare(
       `UPDATE relationship_mentions
           SET from_canonical = 'GPT-4'

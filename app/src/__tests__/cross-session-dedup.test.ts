@@ -26,7 +26,8 @@ import {
   seedCompileProgress,
   type TestDbHandle,
 } from './helpers/test-db';
-import { bulkInsertAliases, getAllAliases, normalizeSessionMentionsToCanonical } from '../lib/db';
+import { bulkInsertAliases, getAllAliases } from '../lib/db';
+import { rebuildMentionsLikeResolve } from './helpers/rebuild-mentions';
 
 let handle: TestDbHandle | null = null;
 
@@ -296,11 +297,11 @@ function mockNlpFetch(): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Normalization — session mention rows retargeted to resolver-chosen canonical
+// Rebuild — session mention rows follow the resolver's canonicals
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('normalizeSessionMentionsToCanonical — plan threshold + source_ids accuracy', () => {
-  it('updates entity_mentions for the current session when resolve writes a new alias', async () => {
+describe('resolve mention rebuild — plan threshold + source_ids accuracy', () => {
+  it('moves the session rows to the canonical the resolver picked', async () => {
     handle = setupTestDb();
     const { db } = handle;
     const sessionId = 'sess-norm-1';
@@ -327,10 +328,10 @@ describe('normalizeSessionMentionsToCanonical — plan threshold + source_ids ac
       llm_output: { entities: [{ name: 'GPT-4', type: 'PRODUCT' }], concepts: [], relationships: [] },
     });
 
-    // Resolver just decided "GPT 4" → "GPT-4". Simulate the alias write.
+    // Resolver just decided "GPT 4" → "GPT-4".
     bulkInsertAliases([{ alias: 'GPT 4', canonical: 'GPT-4' }]);
 
-    // Pre-normalization: entity_mentions has split rows.
+    // Before the rebuild: entity_mentions has split rows.
     const preGptDash = db.prepare(
       `SELECT COUNT(*) AS n FROM entity_mentions WHERE canonical_name = 'GPT-4' COLLATE NOCASE`
     ).get() as { n: number };
@@ -341,9 +342,11 @@ describe('normalizeSessionMentionsToCanonical — plan threshold + source_ids ac
     expect(preGptSpace.n).toBe(1);  // session B's row, not yet canonicalised
 
     // Act.
-    normalizeSessionMentionsToCanonical(sessionId, [{ alias: 'GPT 4', canonical: 'GPT-4' }]);
+    rebuildMentionsLikeResolve(sessionId, [
+      { canonical: 'GPT-4', type: 'PRODUCT', aliases: ['GPT 4'], source_ids: [sourceId] },
+    ]);
 
-    // Post-normalization: session B's row is now under "GPT-4".
+    // After: session B's row is now under "GPT-4".
     const postGptDash = db.prepare(
       `SELECT COUNT(*) AS n FROM entity_mentions WHERE canonical_name = 'GPT-4' COLLATE NOCASE`
     ).get() as { n: number };
@@ -364,46 +367,48 @@ describe('normalizeSessionMentionsToCanonical — plan threshold + source_ids ac
       compile_status: 'active',
       raw_markdown: 'y'.repeat(600),
     });
-    // A historic row using what is now an alias — should NOT be rewritten.
-    db.prepare(
-      `INSERT INTO entity_mentions (canonical_name, source_id, entity_type) VALUES (?, ?, ?)`
-    ).run('Old Name', priorSource, 'PRODUCT');
+    // A historic row using what is now an alias — should NOT be rewritten,
+    // even when a group of this session lists the older source.
+    seedExtraction(db, {
+      source_id: priorSource,
+      llm_output: { entities: [{ name: 'Old Name', type: 'PRODUCT' }], concepts: [], relationships: [] },
+    });
 
-    // Current session's source contributes nothing interesting (no mentions) —
-    // we're just checking the cross-session protection.
-    seedSource(db, {
+    const current = seedSource(db, {
       onboarding_session_id: sessionId,
       compile_status: 'extracted',
       raw_markdown: 'z'.repeat(600),
     });
+    seedExtraction(db, {
+      source_id: current,
+      llm_output: { entities: [{ name: 'Old Name', type: 'PRODUCT' }], concepts: [], relationships: [] },
+    });
 
-    normalizeSessionMentionsToCanonical(sessionId, [{ alias: 'Old Name', canonical: 'Canonical Name' }]);
+    rebuildMentionsLikeResolve(sessionId, [
+      { canonical: 'Canonical Name', type: 'PRODUCT', aliases: ['Old Name'], source_ids: [current, priorSource] },
+    ]);
 
-    // Historic row still exists with old canonical.
-    const historic = db.prepare(
-      `SELECT canonical_name FROM entity_mentions WHERE source_id = ?`
-    ).get(priorSource) as { canonical_name: string } | undefined;
-    expect(historic?.canonical_name).toBe('Old Name');
+    // Historic row still exists with old canonical; the session's moved.
+    const nameOf = (sid: string) =>
+      (db.prepare(`SELECT canonical_name FROM entity_mentions WHERE source_id = ?`).get(sid) as { canonical_name: string } | undefined)
+        ?.canonical_name;
+    expect(nameOf(priorSource)).toBe('Old Name');
+    expect(nameOf(current)).toBe('Canonical Name');
   });
 
-  it('no-ops when no aliases are provided', async () => {
+  it('changes nothing for a session without extractions', async () => {
     handle = setupTestDb();
     const { db } = handle;
     const sessionId = 'sess-norm-3';
     seedSource(db, { onboarding_session_id: sessionId, compile_status: 'extracted', raw_markdown: 'x'.repeat(600) });
-    // Should not throw, should not touch db.
-    normalizeSessionMentionsToCanonical(sessionId, []);
-    // sanity: helper exists and returned without error
-    expect(true).toBe(true);
-    void db;
+    expect(rebuildMentionsLikeResolve(sessionId)).toBe(0);
   });
 
-  it('survives collision when alias AND canonical both exist for the same source', async () => {
+  it('writes one row when a source names both a group alias and its canonical', async () => {
     // Regression for the UNIQUE constraint crash found during manual e2e:
-    // if a single source's extraction produced both "OpenAI" and "OpenAI API"
-    // as entity_mentions rows, and the resolver fuzzy-merges them into a
-    // single group (canonical="OpenAI", aliases=["OpenAI API"]), the helper
-    // must not throw on the resulting UPDATE collision.
+    // a single source's extraction produced both "OpenAI" and "OpenAI API",
+    // and the resolver fuzzy-merged them into a single group
+    // (canonical="OpenAI", aliases=["OpenAI API"]).
     handle = setupTestDb();
     const { db } = handle;
     const sessionId = 'sess-norm-collision';
@@ -413,18 +418,18 @@ describe('normalizeSessionMentionsToCanonical — plan threshold + source_ids ac
       compile_status: 'extracted',
       raw_markdown: 'x'.repeat(600),
     });
-    // Both rows pre-existing — the scenario that triggered the crash.
-    db.prepare(
-      `INSERT INTO entity_mentions (canonical_name, source_id, entity_type) VALUES (?, ?, ?)`
-    ).run('OpenAI', sid, 'ORG');
-    db.prepare(
-      `INSERT INTO entity_mentions (canonical_name, source_id, entity_type) VALUES (?, ?, ?)`
-    ).run('OpenAI API', sid, 'PRODUCT');
+    seedExtraction(db, {
+      source_id: sid,
+      llm_output: {
+        entities: [{ name: 'OpenAI', type: 'ORG' }, { name: 'OpenAI API', type: 'PRODUCT' }],
+        concepts: [],
+        relationships: [],
+      },
+    });
 
-    // Resolver decided these are the same thing; canonical = 'OpenAI'.
     expect(() =>
-      normalizeSessionMentionsToCanonical(sessionId, [
-        { alias: 'OpenAI API', canonical: 'OpenAI' },
+      rebuildMentionsLikeResolve(sessionId, [
+        { canonical: 'OpenAI', type: 'ORG', aliases: ['OpenAI API'], source_ids: [sid] },
       ])
     ).not.toThrow();
 

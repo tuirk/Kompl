@@ -3,6 +3,9 @@
  *
  * Commits a single pending_approval draft to the wiki via the shared
  * commitSinglePlan helper. Bulk equivalent: POST /api/drafts/approve-all.
+ *
+ * 409 { error: 'page_changed' | 'page_exists', message } when the page
+ * changed since the draft was written; the draft stays pending, unchanged.
  */
 
 import { NextResponse } from 'next/server';
@@ -18,7 +21,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
 
   if (!result.ok) {
     return NextResponse.json(
-      { error: result.error },
+      result.message ? { error: result.error, message: result.message } : { error: result.error },
       { status: result.status ?? 500 }
     );
   }

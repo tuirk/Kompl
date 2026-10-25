@@ -1,18 +1,19 @@
 /**
  * competes_with / contradicts rows are stored with from/to sorted lowercase
  * (relation-rows.ts), and plan Rule 4 counts them with an exact sorted match
- * (countSourcesForRelationship). When resolve renames one end
- * (normalizeSessionMentionsToCanonical), the row must be sorted again, or
- * that source drops out of the count.
+ * (countSourcesForRelationship). When resolve maps one end to another name
+ * (the mention rebuild, db.ts rebuildSessionMentions), the row must still be
+ * sorted, or that source drops out of the count.
  *
  * Covers:
- *   - the rename re-sorts the session's direction-agnostic rows and keeps
- *     their sentence, also when the re-sorted row lands on an existing one;
- *     directional rows and other sessions' rows are left alone
+ *   - the rebuild keeps the session's direction-agnostic rows sorted and
+ *     keeps their sentence, also when a renamed row lands on an existing one;
+ *     directional rows keep their order, and other sessions' rows are left
+ *     alone
  *   - Rule 4 then counts all three sources and plans the comparison page
- *   - the description backfill finds the re-sorted rows
+ *   - the description backfill finds rows an older rename re-sorted
  *   - sortDirectionAgnosticRelations over every row (the one-time repair for
- *     rows renamed before this fix; not run at boot)
+ *     rows renamed before the re-sort; not run at boot)
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -21,11 +22,11 @@ import {
   countSourcesForRelationship,
   getSourceIdsForRelationship,
   insertRelationshipMentions,
-  normalizeSessionMentionsToCanonical,
 } from '../lib/db';
 import { sortDirectionAgnosticRelations } from '../lib/relation-order';
 import { backfillRelationDescriptions } from '../lib/relation-backfill';
 import { POST as planPOST } from '../app/api/compile/plan/route';
+import { rebuildMentionsLikeResolve } from './helpers/rebuild-mentions';
 import { seedExtraction, seedSource, setupTestDb, type TestDbHandle } from './helpers/test-db';
 
 let handle: TestDbHandle | null = null;
@@ -47,19 +48,30 @@ function rows(): Row[] {
 }
 
 const BARD_IS_GEMINI = [{ alias: 'Bard', canonical: 'Google Gemini' }];
+const geminiGroup = (source_ids: string[]) => ({ canonical: 'Google Gemini', type: 'PRODUCT', aliases: ['Bard'], source_ids });
 
-describe('normalizeSessionMentionsToCanonical re-sorts direction-agnostic rows', () => {
-  it('re-sorts a renamed competes_with / contradicts row and keeps its sentence', () => {
+/** A session source whose extraction lists these relations (and their ends as products). */
+function seedRelations(source_id: string, session: string, relationships: Array<Record<string, string>>): string {
+  const names = [...new Set(relationships.flatMap((r) => [r.from_entity, r.to]))];
+  seedSource(handle!.db, { source_id, onboarding_session_id: session });
+  seedExtraction(handle!.db, {
+    source_id,
+    llm_output: { entities: names.map((name) => ({ name, type: 'PRODUCT' })), concepts: [], relationships },
+  });
+  return source_id;
+}
+
+describe('the resolve mention rebuild keeps direction-agnostic rows sorted', () => {
+  it('sorts a renamed competes_with / contradicts row and keeps its sentence', () => {
     handle = setupTestDb();
-    const s1 = seedSource(handle.db, { source_id: 's1', onboarding_session_id: 'sess' });
-    insertRelationshipMentions([
-      { from_canonical: 'Bard', to_canonical: 'ChatGPT', relationship_type: 'competes_with', source_id: s1, description: 'Bard rivals ChatGPT.' },
-      { from_canonical: 'Bard', to_canonical: 'Claude', relationship_type: 'contradicts', source_id: s1, description: 'They disagree.' },
+    const s1 = seedRelations('s1', 'sess', [
+      { from_entity: 'Bard', to: 'ChatGPT', type: 'competes_with', description: 'Bard rivals ChatGPT.' },
+      { from_entity: 'Bard', to: 'Claude', type: 'contradicts', description: 'They disagree.' },
       // directional: keeps its natural order after the rename
-      { from_canonical: 'Bard', to_canonical: 'ChatGPT', relationship_type: 'uses', source_id: s1, description: 'Directional.' },
+      { from_entity: 'Bard', to: 'ChatGPT', type: 'uses', description: 'Directional.' },
     ]);
 
-    normalizeSessionMentionsToCanonical('sess', BARD_IS_GEMINI);
+    rebuildMentionsLikeResolve('sess', [geminiGroup([s1])]);
 
     expect(rows()).toEqual([
       { from: 'ChatGPT', to: 'Google Gemini', type: 'competes_with', source_id: 's1', description: 'Bard rivals ChatGPT.' },
@@ -70,17 +82,16 @@ describe('normalizeSessionMentionsToCanonical re-sorts direction-agnostic rows',
 
   it('collapses onto a row the source already has, keeping a sentence', () => {
     handle = setupTestDb();
-    const s1 = seedSource(handle.db, { source_id: 's1', onboarding_session_id: 'sess' });
-    insertRelationshipMentions([
+    const s1 = seedRelations('s1', 'sess', [
       // renamed row without a sentence: takes the existing row's
-      { from_canonical: 'Bard', to_canonical: 'ChatGPT', relationship_type: 'competes_with', source_id: s1 },
-      { from_canonical: 'ChatGPT', to_canonical: 'Google Gemini', relationship_type: 'competes_with', source_id: s1, description: 'Existing sentence.' },
-      // renamed row with its own sentence keeps it (as the rename itself does)
-      { from_canonical: 'Bard', to_canonical: 'Claude', relationship_type: 'contradicts', source_id: s1, description: 'Renamed sentence.' },
-      { from_canonical: 'Claude', to_canonical: 'Google Gemini', relationship_type: 'contradicts', source_id: s1, description: 'Older sentence.' },
+      { from_entity: 'Bard', to: 'ChatGPT', type: 'competes_with' },
+      { from_entity: 'ChatGPT', to: 'Google Gemini', type: 'competes_with', description: 'Existing sentence.' },
+      // the first entry's own sentence stays
+      { from_entity: 'Bard', to: 'Claude', type: 'contradicts', description: 'Renamed sentence.' },
+      { from_entity: 'Claude', to: 'Google Gemini', type: 'contradicts', description: 'Older sentence.' },
     ]);
 
-    normalizeSessionMentionsToCanonical('sess', BARD_IS_GEMINI);
+    rebuildMentionsLikeResolve('sess', [geminiGroup([s1])]);
 
     expect(rows()).toEqual([
       { from: 'ChatGPT', to: 'Google Gemini', type: 'competes_with', source_id: 's1', description: 'Existing sentence.' },
@@ -91,8 +102,8 @@ describe('normalizeSessionMentionsToCanonical re-sorts direction-agnostic rows',
   it("leaves other sessions' rows as they are", () => {
     handle = setupTestDb();
     const old = seedSource(handle.db, { source_id: 'old', onboarding_session_id: 'earlier' });
-    seedSource(handle.db, { source_id: 's1', onboarding_session_id: 'sess' });
-    // An unsorted row from before this fix, in another session.
+    const s1 = seedRelations('s1', 'sess', []);
+    // An unsorted row from before the re-sort, in another session.
     handle.db
       .prepare(
         `INSERT INTO relationship_mentions (from_canonical, to_canonical, relationship_type, source_id)
@@ -100,7 +111,7 @@ describe('normalizeSessionMentionsToCanonical re-sorts direction-agnostic rows',
       )
       .run(old);
 
-    normalizeSessionMentionsToCanonical('sess', BARD_IS_GEMINI);
+    rebuildMentionsLikeResolve('sess', [geminiGroup([s1, old])]);
 
     expect(rows()).toEqual([{ from: 'Zeta', to: 'Alpha', type: 'competes_with', source_id: 'old', description: null }]);
   });
@@ -131,12 +142,12 @@ describe('Rule 4 after a rename (audit scenario)', () => {
     seed('resort-3', 'Google Gemini', 'ChatGPT'); // stored sorted: (ChatGPT, Google Gemini)
 
     // What resolve does: Bard is an alias of Google Gemini.
+    const all = ['resort-1', 'resort-2', 'resort-3'];
     bulkInsertAliases(BARD_IS_GEMINI);
-    normalizeSessionMentionsToCanonical(session_id, BARD_IS_GEMINI);
+    rebuildMentionsLikeResolve(session_id, [geminiGroup(all)]);
 
     expect(countSourcesForRelationship('ChatGPT', 'Google Gemini', 'competes_with')).toBe(3);
 
-    const all = ['resort-1', 'resort-2', 'resort-3'];
     const res = await planPOST(
       new Request('http://test/api/compile/plan', {
         method: 'POST',
@@ -163,7 +174,7 @@ describe('Rule 4 after a rename (audit scenario)', () => {
   });
 });
 
-describe('description backfill after a rename', () => {
+describe('description backfill after an older rename', () => {
   it('fills the re-sorted rows from llm_output', () => {
     handle = setupTestDb();
     const s1 = seedSource(handle.db, { source_id: 's1', onboarding_session_id: 'sess' });
@@ -179,13 +190,13 @@ describe('description backfill after a rename', () => {
           ],
         })
       );
-    // Rows from before v28: no sentence yet.
+    // Rows from before v28, renamed (Bard -> Google Gemini) and re-sorted by an
+    // older resolve: no sentence yet.
     insertRelationshipMentions([
-      { from_canonical: 'Bard', to_canonical: 'ChatGPT', relationship_type: 'competes_with', source_id: s1 },
-      { from_canonical: 'Bard', to_canonical: 'Copilot', relationship_type: 'competes_with', source_id: s1 },
+      { from_canonical: 'ChatGPT', to_canonical: 'Google Gemini', relationship_type: 'competes_with', source_id: s1 },
+      { from_canonical: 'Copilot', to_canonical: 'Google Gemini', relationship_type: 'competes_with', source_id: s1 },
     ]);
     bulkInsertAliases(BARD_IS_GEMINI);
-    normalizeSessionMentionsToCanonical('sess', BARD_IS_GEMINI);
 
     expect(backfillRelationDescriptions(handle.db)).toEqual({ filled: 2, unmatched: 0 });
     expect(rows().map((r) => [r.from, r.to, r.description])).toEqual([
