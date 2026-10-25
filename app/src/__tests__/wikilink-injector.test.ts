@@ -35,3 +35,13 @@ describe('injectWikilinks', () => {
     expect(out.markdown).toBe('[[Bitcoin network|Bitcoin]] uses proof-of-work. Bitcoin is old.');
   });
 });
+
+describe('a one-word name written with a capital', () => {
+  it('links where the text capitalises it, not the common word (film run 2026-10-25)', () => {
+    const targets = [{ title: 'Vertigo' }, { title: 'contrast ratio' }, { title: 'Saul Bass' }];
+    const md = 'Benign paroxysmal positional vertigo (BPPV) is common. Hitchcock made Vertigo; saul bass and Contrast Ratio.';
+    expect(injectWikilinks(md, targets).markdown).toBe(
+      'Benign paroxysmal positional vertigo (BPPV) is common. Hitchcock made [[Vertigo]]; [[Saul Bass]] and [[contrast ratio]].',
+    );
+  });
+});

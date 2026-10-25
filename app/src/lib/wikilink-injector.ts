@@ -39,16 +39,27 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function buildSurfaceMap(targets: WikilinkTarget[]): Map<string, string> {
+/**
+ * A one-word name written with a capital ("Vertigo", the film) links only
+ * where the text writes it with a capital too: lowercase "vertigo" is the
+ * common word ("benign paroxysmal positional vertigo" linked the film,
+ * film run 2026-10-25). Names of several words keep matching in any case.
+ */
+function sameSense(surface: string, match: string): boolean {
+  const capital = /^\p{Lu}/u;
+  return /\s/.test(surface) || !capital.test(surface) || capital.test(match);
+}
+
+function buildSurfaceMap(targets: WikilinkTarget[]): Map<string, { title: string; surface: string }> {
   // surfaceForm(lowercase) -> canonical title. First writer wins. Every page
   // title registers before any alias, so an alias can never shadow another
   // page's own title (a stored "Python" → "Python 2" alias must not hijack a
   // "Python" page); among aliases the caller controls ordering.
-  const map = new Map<string, string>();
+  const map = new Map<string, { title: string; surface: string }>();
   const register = (surface: string | undefined, title: string) => {
     if (!surface || surface.length < MIN_SURFACE_LEN) return;
     const key = surface.toLowerCase();
-    if (!map.has(key)) map.set(key, title);
+    if (!map.has(key)) map.set(key, { title, surface });
   };
   for (const t of targets) if (t.title) register(t.title, t.title);
   for (const t of targets) {
@@ -121,7 +132,7 @@ function tokenizeLine(line: string): Segment[] {
 function injectIntoLine(
   line: string,
   pattern: RegExp,
-  surfaceMap: Map<string, string>,
+  surfaceMap: Map<string, { title: string; surface: string }>,
   used: Set<string>
 ): { line: string; added: number } {
   const segments = tokenizeLine(line);
@@ -130,9 +141,9 @@ function injectIntoLine(
     if (!seg.linkable) continue;
     pattern.lastIndex = 0;
     seg.text = seg.text.replace(pattern, (match) => {
-      const key = match.toLowerCase();
-      const canonical = surfaceMap.get(key);
-      if (!canonical) return match;
+      const entry = surfaceMap.get(match.toLowerCase());
+      if (!entry || !sameSense(entry.surface, match)) return match;
+      const canonical = entry.title;
       // Self-link guard — pages should not link to themselves. Callers can
       // pre-filter the surfaceMap to exclude the current page's own surfaces
       // if stricter guarantees are needed.

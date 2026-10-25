@@ -815,7 +815,9 @@ Return JSON with these fields:
        part_of        from is a part, member or component of to, the whole
                       (from_entity "Chrome DevTools", to "Google Chrome")
        created_by     from was created, founded, written or built by to, the maker
-                      (from_entity "Linux", to "Linus Torvalds")
+                      of the whole of it (from_entity "Linux", to "Linus Torvalds").
+                      Someone who made only a part of it (its poster, title
+                      sequence, score, cover or one chapter) is related_to.
        competes_with  from and to are rival alternatives; order does not matter
                       (from_entity "Firefox", to "Google Chrome")
        contradicts    from and to make claims that cannot both be true; order
