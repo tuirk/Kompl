@@ -135,13 +135,13 @@ describe('POST /api/wiki/lint-pass', () => {
     expect(contras[0].claim).toBe('X vs Y');
   });
 
-  it('finds missing cross-refs from extractions', async () => {
+  it('finds missing cross-refs: names the extraction found in 3+ sources', async () => {
     const entity = 'Shared Entity Name';
     for (let i = 0; i < 3; i++) {
       const source_id = seedSource(handle.db, { source_id: `src-xref-${i}` });
       seedExtraction(handle.db, {
         source_id,
-        ner_output: { entities: [{ text: entity }] },
+        llm_output: { entities: [{ name: entity, type: 'CONCEPT' }] },
       });
     }
     const { body } = await postLint();
@@ -159,13 +159,13 @@ describe('POST /api/wiki/lint-pass', () => {
       const source_id = seedSource(handle.db, { source_id: `src-covered-${i}` });
       seedExtraction(handle.db, {
         source_id,
-        ner_output: {
+        llm_output: {
           entities: [
-            { text: 'bitcoin', label: 'ORG' },
-            { text: 'eth', label: 'ORG' },
-            { text: 'second', label: 'ORDINAL' },
-            { text: '2009', label: 'DATE' },
-            { text: 'Satoshi Nakamoto', label: 'PERSON' },
+            { name: 'bitcoin', type: 'ORG' },
+            { name: 'eth', type: 'ORG' },
+            { name: 'second', type: 'ORDINAL' },
+            { name: '2009', type: 'DATE' },
+            { name: 'Satoshi Nakamoto', type: 'PERSON' },
           ],
         },
       });

@@ -10,10 +10,15 @@
  * Automatic fits happen only on the first load, on a change of focus or
  * depth (`fitKey`), for a found path and on the fit button: an early fit once
  * the warm-up has placed the pages, then a refinement when the layout
- * settles. Once the viewer zooms, pans or drags (`markMoved`), a pending
- * automatic fit is dropped: their view wins. Until then, when the filter
- * panel expands, collapses or is resized, the map glides sideways (pan only)
- * to stay centred in the new free area; after a viewer's move it stays put.
+ * settles. Once the viewer zooms, pans, drags or picks a page or line
+ * (`markMoved`), a pending automatic fit is dropped: their view wins. Until
+ * then, when the filter panel expands, collapses or is resized, the map
+ * glides sideways (pan only) to stay centred in the new free area; after a
+ * viewer's move it stays put.
+ *
+ * Every view move runs here, one at a time: a new one (or the viewer taking
+ * over) stops the one running, so a fit's glide never undoes a later zoom
+ * press. With reduced motion the moves jump (lib/graph-motion.ts).
  * Client-only.
  */
 
@@ -23,6 +28,7 @@ import {
   autoFit, centerFor, fitView, LAYOUT_SCALE, panView, recentrePan, zoomAnchor, zoomAround, type GraphView, type ViewInsets,
 } from '../../../lib/graph-layout';
 import type { GraphModel, ModelNode } from '../../../lib/graph-model';
+import { easeInOut, motionMs, tweenView } from '../../../lib/graph-motion';
 
 /** What the page can ask of the canvas. */
 export interface GraphControls {
@@ -53,24 +59,68 @@ export function useCanvasControls(
   controlsRef: MutableRefObject<GraphControls | null>,
   /** The point zoom buttons zoom about (the selection), read when pressed. */
   aboutRef: MutableRefObject<() => Point | null>,
-  /** When the canvas has its forces in, the scope key, how many pages it draws, and the free area's left edge. */
-  auto: { ready: boolean; fitKey: string; nodeCount: () => number; insetLeft: number }
+  /** When the canvas has its forces in, the scope key, how many pages it draws, the free area's left edge, and reduced motion. */
+  auto: { ready: boolean; fitKey: string; nodeCount: () => number; insetLeft: number; reducedMotion: boolean }
 ) {
+  const reduced = useRef(auto.reducedMotion);
+  reduced.current = auto.reducedMotion;
+  /** The running view move (one animation frame request at a time). */
   const glide = useRef(0);
   /** Where a running sideways glide is heading, so a further change continues from there. */
   const panTarget = useRef<Point | null>(null);
+  /** Where a running move or zoom is heading. */
+  const heading = useRef<GraphView | null>(null);
   const stopGlide = useCallback(() => {
     cancelAnimationFrame(glide.current);
     panTarget.current = null;
+    heading.current = null;
   }, []);
   useEffect(() => stopGlide, [stopGlide]);
-  /** The viewer zoomed, panned or dragged since the last fit. */
+  /** The viewer zoomed, panned, dragged or picked something since the last fit. */
   const userMoved = useRef(false);
+  /** The viewer takes over: a running move stops and a pending automatic fit will be dropped. */
   const markMoved = useCallback(() => {
     userMoved.current = true;
-  }, []);
+    stopGlide();
+  }, [stopGlide]);
   const fitPending = useRef(false);
   const fittedOnce = useRef(false);
+
+  /** Glide the view to `to` (at once with reduced motion), stopping any move still running. */
+  const moveTo = useCallback((to: GraphView, ms: number) => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    stopGlide();
+    const show = (v: GraphView) => {
+      fg.zoom(v.k);
+      fg.centerAt(v.x, v.y);
+    };
+    const duration = motionMs(ms, reduced.current);
+    if (duration <= 0) {
+      show(to);
+      return;
+    }
+    const now = fg.centerAt();
+    const from: GraphView = { x: now.x, y: now.y, k: fg.zoom() };
+    const began = performance.now();
+    heading.current = to;
+    const step = (t0: number) => {
+      const t = Math.max(0, Math.min(1, (t0 - began) / duration));
+      show(tweenView(from, to, easeInOut(t)));
+      if (t < 1) glide.current = requestAnimationFrame(step);
+      else heading.current = null;
+    };
+    glide.current = requestAnimationFrame(step);
+  }, [fgRef, stopGlide]);
+
+  /** The view once the running move or zoom ends (the current view when none runs). */
+  const viewTarget = useCallback((): GraphView | null => {
+    const fg = fgRef.current;
+    if (!fg) return null;
+    if (heading.current) return heading.current;
+    const now = fg.centerAt();
+    return { x: now.x, y: now.y, k: fg.zoom() };
+  }, [fgRef]);
 
   /** zoomToFit, but into the free area between the legend and the panel. An explicit fit: the viewer's moves are forgotten. */
   const fitMap = useCallback((ms: number) => {
@@ -78,13 +128,10 @@ export function useCanvasControls(
     const bbox = fg?.getGraphBbox();
     if (!fg || !bbox) return;
     const { width: w, height: h, insets } = viewRef.current;
-    const view = fitView(bbox, w, h, insets);
-    stopGlide();
-    fg.centerAt(view.x, view.y, ms);
-    fg.zoom(view.k, ms);
+    moveTo(fitView(bbox, w, h, insets), ms);
     userMoved.current = false;
     fittedOnce.current = true;
-  }, [fgRef, viewRef, stopGlide]);
+  }, [fgRef, viewRef, moveTo]);
 
   // The settle fit is armed for the first model with pages only; a later model (e.g. archived pages
   // shown) keeps the viewer's view.
@@ -115,12 +162,22 @@ export function useCanvasControls(
     const fg = fgRef.current;
     const dx = recentrePan(from, insetLeft, userMoved.current);
     if (!fg || !fittedOnce.current || dx === 0) return;
+    // A fit still gliding ends shifted instead, at its own zoom.
+    if (heading.current) {
+      moveTo(panView(heading.current, dx), RECENTRE_MS);
+      return;
+    }
     const base = panTarget.current;
     cancelAnimationFrame(glide.current);
     const k = fg.zoom();
     const now = fg.centerAt();
     const start = { x: now.x, y: now.y };
     const to = panView({ ...(base ?? start), k }, dx);
+    if (reduced.current) {
+      panTarget.current = null;
+      fg.centerAt(to.x, start.y);
+      return;
+    }
     panTarget.current = to;
     const began = performance.now();
     const step = (t0: number) => {
@@ -130,13 +187,12 @@ export function useCanvasControls(
         return;
       }
       const t = Math.max(0, Math.min(1, (t0 - began) / RECENTRE_MS));
-      const eased = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
-      fg.centerAt(start.x + (to.x - start.x) * eased, start.y);
+      fg.centerAt(start.x + (to.x - start.x) * easeInOut(t), start.y);
       if (t < 1) glide.current = requestAnimationFrame(step);
       else panTarget.current = null;
     };
     glide.current = requestAnimationFrame(step);
-  }, [insetLeft, fgRef]);
+  }, [insetLeft, fgRef, moveTo]);
 
   const onEngineStop = useCallback(() => {
     const next = autoFit(fitPending.current, userMoved.current, nodeCount());
@@ -154,9 +210,7 @@ export function useCanvasControls(
         if (!node || !fg) return;
         const { width: w, height: h, insets } = viewRef.current;
         const k = Math.max(fg.zoom(), FOCUS_ZOOM);
-        const at = centerFor(node.x, node.y, k, w, h, insets);
-        fg.centerAt(at.x, at.y, 600);
-        fg.zoom(k, 600);
+        moveTo({ ...centerFor(node.x, node.y, k, w, h, insets), k }, 600);
         // The viewer asked to go to this page: a pending automatic fit must not undo it.
         userMoved.current = true;
       },
@@ -171,9 +225,7 @@ export function useCanvasControls(
           y: [Math.min(...ys) - FIT_NODES_PAD, Math.max(...ys) + FIT_NODES_PAD] as [number, number],
         };
         const { width: w, height: h, insets } = viewRef.current;
-        const view = fitView(bbox, w, h, insets, FIT_NODES_MAX_ZOOM);
-        fg.centerAt(view.x, view.y, 600);
-        fg.zoom(view.k, 600);
+        moveTo(fitView(bbox, w, h, insets, FIT_NODES_MAX_ZOOM), 600);
         userMoved.current = false;
         fitPending.current = false;
       },
@@ -181,7 +233,7 @@ export function useCanvasControls(
     return () => {
       controlsRef.current = null;
     };
-  }, [controlsRef, model, fgRef, viewRef]);
+  }, [controlsRef, model, fgRef, viewRef, moveTo]);
 
   const zoomBy = useCallback((factor: number) => {
     const fg = fgRef.current;
@@ -193,18 +245,26 @@ export function useCanvasControls(
     const { width: w, height: h, insets } = viewRef.current;
     const about = zoomAnchor(from, w, h, insets, aboutRef.current());
     const to = zoomAround(from, about, from.k * factor);
-    const start = performance.now();
     // Zoom on a log scale with the anchor held still; centerAt and zoom each animated alone would drift.
-    const step = (now: number) => {
-      const t = Math.min(1, (now - start) / ZOOM_MS);
-      const eased = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
-      const view = zoomAround(from, about, from.k * (to.k / from.k) ** eased);
+    const show = (k: number) => {
+      const view = zoomAround(from, about, k);
       fg.zoom(view.k);
       fg.centerAt(view.x, view.y);
+    };
+    if (reduced.current) {
+      show(to.k);
+      return;
+    }
+    const start = performance.now();
+    heading.current = to;
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / ZOOM_MS);
+      show(from.k * (to.k / from.k) ** easeInOut(t));
       if (t < 1) glide.current = requestAnimationFrame(step);
+      else heading.current = null;
     };
     glide.current = requestAnimationFrame(step);
   }, [fgRef, viewRef, aboutRef, stopGlide]);
 
-  return { fitMap, zoomBy, markMoved, onEngineStop };
+  return { fitMap, zoomBy, markMoved, onEngineStop, moveTo, viewTarget };
 }

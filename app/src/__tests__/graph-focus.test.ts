@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  closesPanelOnEscape, focusHighlight, hoverCardText, limitsLinePointer, linkSummary, nodeHighlight, POINTER_LINES_MAX,
+  acceptHover, closesPanelOnEscape, focusHighlight, hoverCardText, limitsLinePointer, linkSummary, nodeHighlight, POINTER_LINES_MAX,
   readingOrder, relationsBetween, takesPointer,
 } from '../lib/graph-focus';
 import { buildMissingLayer } from '../lib/graph-missing';
@@ -151,5 +151,20 @@ describe('line pointer areas', () => {
     const line = [...layer.linksOf.values()][0][0];
     expect(takesPointer(line, false)).toBe(false);
     expect(hoverCardText({ kind: 'link', link: line }, model.byId)).toBeNull();
+  });
+});
+
+describe('acceptHover', () => {
+  it('shows what force-graph hovers only while the pointer is over the canvas', () => {
+    const a = { kind: 'node', id: 'a' } as const;
+    const b = { kind: 'node', id: 'b' } as const;
+    // Over the canvas: the page under the pointer lights up.
+    expect(acceptHover(true, a)).toBe(a);
+    // Off onto the side panel: force-graph keeps testing its last point as the map glides under it.
+    expect(acceptHover(false, b)).toBeNull();
+    expect(acceptHover(false, null)).toBeNull();
+    // Back over the canvas: what force-graph holds there now.
+    expect(acceptHover(true, b)).toBe(b);
+    expect(acceptHover(true, null)).toBeNull();
   });
 });

@@ -75,6 +75,59 @@ export function resizeStep(key: string, grip: 'legend' | 'panel'): [number, numb
   }
 }
 
+/** A grip's width now and its limits: read out by screen readers, and where Home and End go. */
+export interface GripRange {
+  value: number;
+  min: number;
+  max: number;
+}
+
+export function panelRange(width: number, canvasWidth: number): GripRange {
+  return { value: width, min: PANEL_MIN_WIDTH, max: clampPanel(Infinity, canvasWidth) };
+}
+
+export function legendRange(width: number): GripRange {
+  return { value: width, min: LEGEND_MIN.width, max: LEGEND_MAX_WIDTH };
+}
+
+/**
+ * How a key moves a resize grip, [dWidth, dHeight]: the arrow keys as
+ * resizeStep, Home and End to the narrowest and widest (the window splitter
+ * pattern). Null for any other key.
+ */
+export function gripKeyStep(key: string, grip: 'legend' | 'panel', range: GripRange): [number, number] | null {
+  if (key === 'Home') return [range.min - range.value, 0];
+  if (key === 'End') return [range.max - range.value, 0];
+  return resizeStep(key, grip);
+}
+
+/** Where a grip drag began, and with which pointer. */
+export interface GripDrag {
+  x: number;
+  y: number;
+  pointerId: number;
+}
+
+/** The bits of a pointer event a grip drag reads (a PointerEvent fits). */
+export interface GripPointer {
+  type: string;
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+}
+
+/**
+ * The change since the drag began that a pointer event applies, [dx, dy]:
+ * none for another pointer or after the drag, and none when the drag is
+ * cancelled or loses its pointer capture. A cancel's coordinates can be 0,0,
+ * which would snap the panel to a limit and save that.
+ */
+export function gripDragDelta(drag: GripDrag | null, e: GripPointer): [number, number] | null {
+  if (drag === null || e.pointerId !== drag.pointerId) return null;
+  if (e.type === 'pointercancel' || e.type === 'lostpointercapture') return null;
+  return [e.clientX - drag.x, e.clientY - drag.y];
+}
+
 const isSize = (v: unknown, min: number): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min / 2 && v < 10_000;
 
 /** The stored sizes, falling back to the defaults for anything missing, corrupt or absurd. */
@@ -111,6 +164,22 @@ export function canvasInsets(legendOpen: boolean, legendWidth: number, panelOpen
     right: panelOpen ? panelWidth + 24 : 64,
     bottom: 40,
   };
+}
+
+/**
+ * Where keyboard focus goes when a details panel closes: back to what had it
+ * before the panel opened (or `fallback`, the canvas, when that is gone or
+ * was the page itself), but only when focus was inside the panel or is lost
+ * to the page. Focus the viewer moved elsewhere, e.g. to a legend checkbox
+ * that hid the selected page, stays there (null).
+ */
+export function focusTargetOnClose(
+  active: Element | null, body: HTMLElement, panel: Pick<Node, 'contains'> | null,
+  before: HTMLElement | null, fallback: HTMLElement | null
+): HTMLElement | null {
+  const lost = active === null || active === body || (panel !== null && panel.contains(active));
+  if (!lost) return null;
+  return before !== null && before !== body && before.isConnected ? before : fallback;
 }
 
 /** Whether the legend is expanded, kept per viewer like the wiki sidebar's sections. */

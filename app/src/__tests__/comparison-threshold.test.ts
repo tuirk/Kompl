@@ -169,6 +169,28 @@ describe('Comparison page threshold', () => {
     expect(body.stats.comparison_pages).toBe(1);
   });
 
+  it("reads a variant spelling like 'competes-with' as competes_with", async () => {
+    handle = setupTestDb();
+    const session_id = 'sess-cmp-variant';
+    // The helper builds source ids from the type, and ids are lowercase only.
+    const ids = seedSourcesWithRelationship(handle.db, session_id, 3, {
+      from_entity: 'Alpha',
+      to: 'Beta',
+      type: 'competes-with',
+    });
+
+    const res = await planPOST(
+      planRequestWith(session_id, [
+        { ...ALPHA, source_ids: ids },
+        { ...BETA, source_ids: ids },
+      ])
+    );
+    const body = (await res.json()) as PlanResponse;
+
+    expect(body.stats.comparison_pages).toBe(1);
+    expect(body.pages.find((p) => p.page_type === 'comparison')?.title).toBe('Alpha vs Beta');
+  });
+
   it("collapses 'A vs B' and 'B vs A' into one bucket", async () => {
     handle = setupTestDb();
     const session_id = 'sess-cmp-bidir';

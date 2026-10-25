@@ -174,7 +174,7 @@ function seedWiki(h: TestDbHandle): { paper: string; blog: string } {
   // A name several sources mention with no page yet.
   for (let i = 0; i < 3; i++) {
     const source_id = seedSource(db, { title: `Mention ${i}` });
-    seedExtraction(db, { source_id, ner_output: { entities: [{ text: 'Bitcoin Core', label: 'PRODUCT' }] } });
+    seedExtraction(db, { source_id, llm_output: { entities: [{ name: 'Bitcoin Core', type: 'PRODUCT' }] } });
   }
 
   db.prepare(

@@ -10,12 +10,12 @@
  */
 
 import Link from 'next/link';
-import { useId, useState, type CSSProperties, type RefObject } from 'react';
+import { useId, useMemo, useState, type CSSProperties, type RefObject } from 'react';
 import { ArrowUpDown } from 'lucide-react';
 import { relationsBetween } from '../../../lib/graph-focus';
 import type { GraphModel, ModelNode } from '../../../lib/graph-model';
 import {
-  findByTitle, pathSteps, pickerLabel, type GraphPath, type PathQuery, type PathStep,
+  findByTitle, pathSteps, pickerLabel, pickerLabels, type GraphPath, type PathQuery, type PathStep,
 } from '../../../lib/graph-path';
 import type { PageConnections } from '../../../lib/relations';
 import { BODY, DOT, KICKER, LINK_BUTTON, META, PanelNote, PanelShell } from './panel-parts';
@@ -48,6 +48,7 @@ const RAIL: CSSProperties = { margin: '0 0 0 3px', padding: '4px 0 6px 14px', bo
 export default function PathPanel(props: Props) {
   const { pages, model, query, onQuery, path, onShowAllLines, cache, onClose, onPick, returnFocusTo } = props;
   const listId = useId();
+  const labels = useMemo(() => pickerLabels(pages), [pages]);
   const title = (id: string | null) => (id ? (model.byId.get(id)?.label ?? id) : '');
   const complete = query.from !== null && query.to !== null;
   const steps = complete && path ? pathSteps(path) : [];
@@ -61,13 +62,13 @@ export default function PathPanel(props: Props) {
     >
       <datalist id={listId}>
         {pages.map((n) => (
-          <option key={n.id} value={pickerLabel(n)} />
+          <option key={n.id} value={labels.get(n.id)} />
         ))}
       </datalist>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
-          <Picker label="From" listId={listId} pages={pages} model={model} value={query.from} onChange={(from) => onQuery({ ...query, from })} />
-          <Picker label="To" listId={listId} pages={pages} model={model} value={query.to} onChange={(to) => onQuery({ ...query, to })} />
+          <Picker label="From" listId={listId} pages={pages} labels={labels} model={model} value={query.from} onChange={(from) => onQuery({ ...query, from })} />
+          <Picker label="To" listId={listId} pages={pages} labels={labels} model={model} value={query.to} onChange={(to) => onQuery({ ...query, to })} />
         </div>
         <button
           type="button"
@@ -121,21 +122,22 @@ export default function PathPanel(props: Props) {
   );
 }
 
-/** A labelled title picker; the page is set once the text matches a title. */
+/** A labelled title picker; the page is set once the text matches a label, or a title only one page has. */
 function Picker(props: {
-  label: string; listId: string; pages: readonly ModelNode[]; model: GraphModel; value: string | null; onChange(id: string | null): void;
+  label: string; listId: string; pages: readonly ModelNode[]; labels: ReadonlyMap<string, string>; model: GraphModel;
+  value: string | null; onChange(id: string | null): void;
 }) {
-  const { label, listId, pages, model, value, onChange } = props;
+  const { label, listId, pages, labels, model, value, onChange } = props;
   const labelOf = (id: string | null) => {
     const node = id ? model.byId.get(id) : undefined;
-    return node ? pickerLabel(node) : '';
+    return node ? (labels.get(node.id) ?? pickerLabel(node)) : '';
   };
   const [text, setText] = useState(() => labelOf(value));
   const [seen, setSeen] = useState(value);
   // The page changed from outside (a click on the map, swap): show its title, unless the text already names it.
   if (value !== seen) {
     setSeen(value);
-    if (findByTitle(pages, text) !== value) setText(labelOf(value));
+    if (findByTitle(pages, text, labels) !== value) setText(labelOf(value));
   }
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -149,7 +151,7 @@ function Picker(props: {
         spellCheck={false}
         onChange={(e) => {
           setText(e.target.value);
-          const id = findByTitle(pages, e.target.value);
+          const id = findByTitle(pages, e.target.value, labels);
           if (id !== value) onChange(id);
         }}
         style={{ fontFamily: 'var(--font-body)', fontSize: 13, padding: '7px 10px', background: 'var(--bg-card-hover)', color: 'var(--fg)' }}

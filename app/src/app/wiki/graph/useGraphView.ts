@@ -4,19 +4,19 @@
  * Everything the graph page derives from the payload and its controls, each
  * worked out only when its inputs change: the model, the map the legend lets
  * through, the focused view (lib/graph-scope.ts), the missing names on top
- * (graph-missing.ts), the bridge pages (graph-bridges.ts: once per load,
- * on the default view, whatever the legend and the focus) and a path being
- * connected (graph-path.ts, over the map the legend shows, never through a
- * missing name).
+ * (graph-missing.ts), the bridge pages (useBridges.ts: once per load, in a
+ * Web Worker, on the default view, whatever the legend and the focus) and a
+ * path being connected (graph-path.ts, over the map the legend shows, never
+ * through a missing name).
  */
 
-import { useDeferredValue, useMemo } from 'react';
-import { mapBridges } from '../../../lib/graph-bridges';
+import { useMemo } from 'react';
 import { buildMissingLayer, withMissing } from '../../../lib/graph-missing';
 import { buildGraphModel, filterGraph, type GraphFilters, type ModelNode } from '../../../lib/graph-model';
 import { pathHighlight, shortestPath, type PathQuery } from '../../../lib/graph-path';
 import { focusGraph, type GraphScope } from '../../../lib/graph-scope';
 import type { WikiGraph } from '../../../lib/wiki-graph';
+import { useBridges } from './useBridges';
 
 const NO_DATA: WikiGraph = { nodes: [], links: [], missing: [] };
 
@@ -35,9 +35,8 @@ export function useGraphView(
   const visible = useMemo(() => (showMissing ? withMissing(scoped, layer) : scoped), [showMissing, scoped, layer]);
   const lookup = useMemo(() => new Map<string, ModelNode>([...model.byId, ...layer.byId]), [model, layer]);
 
-  // Betweenness is O(pages x lines): once per load, after the first paint, never on a legend toggle.
-  const loaded = useDeferredValue(model);
-  const bridges = useMemo(() => mapBridges(loaded), [loaded]);
+  // Betweenness is O(pages x lines): once per load, off the main thread, never on a legend toggle.
+  const bridges = useBridges(model);
   const bridgeIds = useMemo(() => new Set(bridges.keys()), [bridges]);
 
   const path = useMemo(() => {

@@ -3,12 +3,13 @@
 /**
  * /wiki/graph — the knowledge graph as a topic map. CLIENT component.
  *
- * Loads /api/wiki/graph (pages, one line per page pair with its typed
- * relations, plain links, names with no page yet) and derives the views from
- * it (useGraphView.ts). Pages are coloured and grouped into islands by
- * category; lines are coloured by relation. Click a page for its
+ * Loads /api/wiki/graph (useGraphData.ts: pages, one line per page pair with
+ * its typed relations, plain links, names with no page yet) and derives the
+ * views from it (useGraphView.ts). Pages are coloured and grouped into
+ * islands by category; lines are coloured by relation. Click a page for its
  * connections, a line for the evidence behind it. ?focus=<page_id>&depth=1|2
- * shows one page with its neighbours; "Connect two pages" finds the chain
+ * shows one page with its neighbours, each focus a history entry
+ * (scope-url.ts); "Connect two pages" finds the chain
  * between two pages; the legend can add the missing pages; bridge pages carry
  * a badge. The side panel lies over the canvas, so opening it never moves
  * the map.
@@ -22,9 +23,8 @@ import { placeMissing } from '../../../lib/graph-missing';
 import { DEFAULT_FILTERS, type GraphFilters } from '../../../lib/graph-model';
 import { CANVAS_BG } from '../../../lib/graph-palette';
 import { fillPath, pathKey, type PathQuery } from '../../../lib/graph-path';
-import { FULL_MAP, revealFilters, sameScope, type GraphScope } from '../../../lib/graph-scope';
+import { canvasLabel, FULL_MAP, missingFocusAction, revealFilters } from '../../../lib/graph-scope';
 import type { PageConnections } from '../../../lib/relations';
-import type { WikiGraph } from '../../../lib/wiki-graph';
 import { CanvasHint } from './canvas-overlays';
 import EdgePanel from './EdgePanel';
 import GraphCanvas, { type GraphControls } from './GraphCanvas';
@@ -34,30 +34,21 @@ import NodePanel from './NodePanel';
 import { PanelWidthContext } from './panel-parts';
 import { usePanelSizes } from './usePanelSizes';
 import PathPanel from './PathPanel';
-import { readScope, writeScope } from './scope-url';
+import { useScopeAddress } from './scope-url';
+import { useGraphData } from './useGraphData';
 import { useGraphView } from './useGraphView';
 
 const MESSAGE = { color: 'var(--fg-muted)', padding: '3rem', textAlign: 'center' } as const;
 
-async function loadGraph(includeArchived: boolean, signal: AbortSignal): Promise<WikiGraph> {
-  const r = await fetch(includeArchived ? '/api/wiki/graph?include_archived=true' : '/api/wiki/graph', { signal });
-  if (!r.ok) throw new Error(`graph fetch failed: ${r.status}`);
-  return (await r.json()) as WikiGraph;
-}
-
 export default function WikiGraphPage() {
-  const [data, setData] = useState<WikiGraph | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
-  /** True when every page is archived: the legend stays up so "Show archived" can be turned on. */
-  const [archivedOnly, setArchivedOnly] = useState(false);
   const [filters, setFilters] = useState<GraphFilters>(DEFAULT_FILTERS);
   const [selected, setSelected] = useState<GraphFocus | null>(null);
-  const [scope, setScope] = useState<GraphScope>(FULL_MAP);
+  const { data, error, archivedOnly, loaded } = useGraphData(includeArchived, setSelected);
+  const { scope, changeScope, notice, setNotice } = useScopeAddress();
   /** Non-null while "Connect two pages" is open. */
   const [pathQuery, setPathQuery] = useState<PathQuery | null>(null);
   const [showMissing, setShowMissing] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const boxRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<GraphControls | null>(null);
@@ -65,27 +56,10 @@ export default function WikiGraphPage() {
   pathOpen.current = pathQuery !== null;
 
   useEffect(() => {
-    const abort = new AbortController();
-    (async () => {
-      const graph = await loadGraph(includeArchived, abort.signal);
-      // An empty map may only mean every page is archived; ask once more to tell.
-      const hidden = !includeArchived && graph.nodes.length === 0
-        ? (await loadGraph(true, abort.signal)).nodes.length > 0
-        : false;
-      setData(graph);
-      setArchivedOnly(hidden);
-      setError(null);
-      setSelected(null);
-    })().catch((e: unknown) => {
-      if (!abort.signal.aborted) setError(e instanceof Error ? e.message : 'failed to load graph');
-    });
-    return () => abort.abort();
-  }, [includeArchived]);
-
-  useEffect(() => {
     const box = boxRef.current;
     if (!box) return;
-    const measure = () => setSize({ width: box.offsetWidth, height: Math.max(400, box.offsetHeight) });
+    // The canvas is exactly its box: taller, a short screen would clip its zoom buttons and fitted map.
+    const measure = () => setSize({ width: box.offsetWidth, height: box.offsetHeight });
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(box);
@@ -107,35 +81,29 @@ export default function WikiGraphPage() {
   // A fresh cache per load, so panels never show connections from before a reload.
   const connectionsCache = useMemo(() => new Map<string, PageConnections>(), [model]);
 
-  const changeScope = useCallback((next: GraphScope) => {
-    setScope((prev) => (sameScope(prev, next) ? prev : next));
-    setNotice(null);
-    writeScope(next);
-  }, []);
-  // The address's ?focus= once, when the page opens.
-  // ...and again on Back / Forward between graph addresses, so the view follows the address.
+  // Entering a focus: a page the filters hide is let through, and an archived one turns archived pages on
+  // (its article's "See in graph"); a page not on the map says so. A reload in flight is waited for.
+  const lookedFor = useRef<string | null>(null);
+  const archivedForLook = useRef(false);
   useEffect(() => {
-    setScope(readScope());
-    const onPop = () => {
-      setScope(readScope());
-      setNotice(null);
-    };
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, []);
-
-  // Entering a focus: a page the filters hide is let through; a page not on the map says so.
-  useEffect(() => {
-    if (scope.focus === null || data === null) return;
+    if (scope.focus === null) lookedFor.current = null;
+    if (scope.focus === null || !loaded) return;
+    const firstLook = lookedFor.current !== scope.focus;
+    lookedFor.current = scope.focus;
     const node = model.byId.get(scope.focus);
-    if (!node) {
-      changeScope(FULL_MAP);
-      setNotice('That page is not on the map.');
+    if (node) {
+      archivedForLook.current = false;
+      setPathQuery(null);
+      setFilters((f) => revealFilters(f, node));
       return;
     }
-    setPathQuery(null);
-    setFilters((f) => revealFilters(f, node));
-  }, [scope.focus, model, data, changeScope]);
+    const action = missingFocusAction(firstLook, includeArchived, archivedForLook.current);
+    archivedForLook.current = action === 'show-archived';
+    if (action !== 'leave') setIncludeArchived(action === 'show-archived');
+    if (action === 'show-archived') return;
+    changeScope(FULL_MAP, 'replace');
+    setNotice('That page is not on the map.');
+  }, [scope.focus, model, loaded, includeArchived, changeScope, setNotice]);
 
   // A found path fits into view once: a filter change recomputes `path` but not its pages.
   const fitPath = pathKey(path);
@@ -148,6 +116,13 @@ export default function WikiGraphPage() {
   const selectedLink =
     selected?.kind === 'link' && visible.linksOf.get(selected.link.a)?.includes(selected.link) ? selected.link : null;
   const panelOpen = pathQuery !== null || selectedNode !== null || selectedLink !== null;
+  // The selection whose panel has taken keyboard focus: when a filter hides the selected page or line and
+  // shows it again, its panel comes back without pulling focus away from the legend.
+  const [focusedFor, setFocusedFor] = useState<GraphFocus | null>(null);
+  const panelFor = selectedNode !== null || selectedLink !== null ? selected : null;
+  useEffect(() => {
+    if (panelFor) setFocusedFor(panelFor);
+  }, [panelFor]);
   // The legend and the details panel can be resized; the map keeps clear of their current sizes.
   const panels = usePanelSizes(size.width, size.height);
   const { legendOpen, setLegendOpen } = panels;
@@ -210,6 +185,8 @@ export default function WikiGraphPage() {
           pathOpen={pathQuery !== null}
           onPath={togglePath}
           notice={notice ?? (scope.focus && !focusId && model.byId.has(scope.focus) ? 'The focused page is hidden by the legend’s filters.' : null)}
+          findPages={scoped.nodes}
+          onFind={pick}
         />
 
         {/* tabIndex -1: focus comes back here when a panel closes and its opener is gone. */}
@@ -242,6 +219,7 @@ export default function WikiGraphPage() {
                   focusId={focusId}
                   fitKey={focusId ? `${focusId}\u0000${scope.depth}` : ''}
                   controlsRef={controlsRef}
+                  label={canvasLabel(scoped.nodes.length, scoped.links.length, focusId ? (model.byId.get(focusId)?.label ?? null) : null)}
                 />
               )}
               {!hasPages && (
@@ -280,12 +258,12 @@ export default function WikiGraphPage() {
               )}
               {pathQuery === null && selectedNode && (
                 <NodePanel key={selectedNode.id} node={selectedNode} isShown={isShown} cache={connectionsCache}
-                  onClose={close} onPick={pick} returnFocusTo={boxRef} bridge={bridges.get(selectedNode.id) ?? null}
+                  onClose={close} onPick={pick} returnFocusTo={boxRef} takeFocus={focusedFor !== selected} bridge={bridges.get(selectedNode.id) ?? null}
                   onFocus={focusId === selectedNode.id ? undefined : (id) => changeScope({ focus: id, depth: scope.depth })} />
               )}
               {pathQuery === null && selectedLink && (
                 <EdgePanel key={`${selectedLink.a}\u0000${selectedLink.b}`} link={selectedLink} model={model}
-                  cache={connectionsCache} onClose={close} onPick={pick} returnFocusTo={boxRef} />
+                  cache={connectionsCache} onClose={close} onPick={pick} returnFocusTo={boxRef} takeFocus={focusedFor !== selected} />
               )}
               </PanelWidthContext.Provider>
             </>

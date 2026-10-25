@@ -1,14 +1,18 @@
 /**
  * Page-level edges for the graph: one per unordered page pair, carrying the
  * typed relations between the two pages and whether a wikilink joins them.
- * Plus the most-named relation ends that have no page yet. Reads only.
+ * Plus the missing pages (missing-pages.ts) named with a shown page, which
+ * the graph joins to those pages. Reads only.
  */
 
 import { getDb } from './db';
+import { namedWithPages, rankMissingPages, type MissingPage } from './missing-pages';
 import { buildNameMap, loadPages, loadRelationRows } from './relation-names';
 import { compareRelationLabels, isSymmetricRelation, relationLabel, type RelationDirection } from './relation-labels';
 
-/** Missing-page names returned, and the sources (entity_mentions) each needs. */
+export type { MissingPage } from './missing-pages';
+
+/** Missing-page names returned, and the sources each needs (wiki_status asks for 3: wiki-health.ts). */
 const MISSING_MAX = 40;
 const MISSING_MIN_SOURCES = 2;
 
@@ -29,15 +33,9 @@ export interface RelationEdge {
   weight: number;
 }
 
-export interface MissingPage {
-  name: string;
-  source_count: number;
-  page_ids: string[];
-}
-
 export interface RelationEdges {
   edges: RelationEdge[];
-  /** Names typed-linked to a shown page, with no page at all, named in 2+ sources. */
+  /** Missing pages named with a shown page, from 2 sources; most pages, then most sources first. */
   missing: MissingPage[];
 }
 
@@ -69,34 +67,21 @@ export function getRelationEdges(opts: { includeArchived?: boolean } = {}): Rela
     }
     return pair;
   };
-  const missing = new Map<string, { name: string; pageIds: Set<string> }>();
-
-  for (const row of loadRelationRows(db)) {
+  const rows = loadRelationRows(db);
+  for (const row of rows) {
     const fromId = names.get(row.from_canonical.toLowerCase()) ?? null;
     const toId = names.get(row.to_canonical.toLowerCase()) ?? null;
+    if (fromId === null || toId === null || fromId === toId) continue;
     const type = row.relationship_type;
-    if (fromId !== null && toId !== null) {
-      if (fromId === toId) continue;
-      const pair = pairOf(fromId, toId);
-      const direction: RelationDirection = fromId === pair.source ? 'out' : 'in';
-      const key = isSymmetricRelation(type) ? type : `${type}\u0000${direction}`;
-      let rel = pair.relations.get(key);
-      if (!rel) {
-        rel = { type, direction, sources: new Set() };
-        pair.relations.set(key, rel);
-      }
-      rel.sources.add(row.source_id);
-    } else if (fromId !== null || toId !== null) {
-      const name = fromId !== null ? row.to_canonical : row.from_canonical;
-      const key = name.toLowerCase();
-      if (anyPage.has(key)) continue; // it has a page, just not a shown one
-      let entry = missing.get(key);
-      if (!entry) {
-        entry = { name, pageIds: new Set() };
-        missing.set(key, entry);
-      }
-      entry.pageIds.add((fromId ?? toId) as string);
+    const pair = pairOf(fromId, toId);
+    const direction: RelationDirection = fromId === pair.source ? 'out' : 'in';
+    const key = isSymmetricRelation(type) ? type : `${type}\u0000${direction}`;
+    let rel = pair.relations.get(key);
+    if (!rel) {
+      rel = { type, direction, sources: new Set() };
+      pair.relations.set(key, rel);
     }
+    rel.sources.add(row.source_id);
   }
 
   const links = db
@@ -126,18 +111,10 @@ export function getRelationEdges(opts: { includeArchived?: boolean } = {}): Rela
     })
     .sort((x, y) => (x.source < y.source ? -1 : x.source > y.source ? 1 : x.target < y.target ? -1 : x.target > y.target ? 1 : 0));
 
-  const mentionCount = db.prepare(
-    'SELECT COUNT(DISTINCT source_id) AS n FROM entity_mentions WHERE canonical_name = ?'
-  );
-  const missingPages = [...missing.values()]
-    .map((m) => ({
-      name: m.name,
-      source_count: (mentionCount.get(m.name) as { n: number }).n,
-      page_ids: [...m.pageIds].sort(),
-    }))
-    .filter((m) => m.source_count >= MISSING_MIN_SOURCES)
-    .sort((x, y) => y.source_count - x.source_count || x.name.localeCompare(y.name))
-    .slice(0, MISSING_MAX);
-
-  return { edges, missing: missingPages };
+  const missing = rankMissingPages(db, namedWithPages(rows, names), anyPage, {
+    minSources: MISSING_MIN_SOURCES,
+    limit: MISSING_MAX,
+    linkedOnly: true,
+  });
+  return { edges, missing };
 }

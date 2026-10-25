@@ -11,7 +11,8 @@ import { OVERVIEW_NAMES } from '../lib/graph-labels';
 import { buildMissingLayer, isMissingLink, isMissingNode, missingId, placeMissing, withMissing } from '../lib/graph-missing';
 import { buildGraphModel, DEFAULT_FILTERS, filterGraph, type GraphFilters } from '../lib/graph-model';
 import {
-  focusGraph, focusHint, focusHintAction, FULL_MAP, hopsFrom, parseScope, revealFilters, sameScope, scopeQuery, seeInGraphHref,
+  focusGraph, focusHint, focusHintAction, FULL_MAP, historyMode, hopsFrom, missingFocusAction, parseScope, revealFilters, sameScope,
+  scopeQuery, seeInGraphHref,
 } from '../lib/graph-scope';
 import type { RelationEdge } from '../lib/relation-edges';
 import type { WikiGraph, WikiGraphNode } from '../lib/wiki-graph';
@@ -61,6 +62,23 @@ describe('scope URL', () => {
   it('links a page to the graph focused on it', () => {
     expect(seeInGraphHref('bitcoin-network-1c140c9e')).toBe('/wiki/graph?focus=bitcoin-network-1c140c9e');
     expect(seeInGraphHref('a&b')).toBe('/wiki/graph?focus=a%26b');
+  });
+
+  it('adds a history entry when the focus changes, and replaces it when only the depth does', () => {
+    expect(historyMode(FULL_MAP, { focus: 'vilnius', depth: 1 })).toBe('push'); // Focus
+    expect(historyMode({ focus: 'vilnius', depth: 1 }, { focus: 'gate', depth: 1 })).toBe('push'); // another page
+    expect(historyMode({ focus: 'vilnius', depth: 2 }, FULL_MAP)).toBe('push'); // Full map
+    expect(historyMode({ focus: 'vilnius', depth: 1 }, { focus: 'vilnius', depth: 2 })).toBe('replace'); // 1 / 2 hops
+  });
+
+  it('turns archived pages on once for a focused page the map has not loaded, then gives up', () => {
+    // "See in graph" from an archived page's article: the map loads without archived pages first.
+    expect(missingFocusAction(true, false, false)).toBe('show-archived');
+    // Not there with archived pages either (a deleted page): leave, and turn them off again.
+    expect(missingFocusAction(false, true, true)).toBe('leave-hide-archived');
+    // Archived pages were already on, or the viewer turned them off later: just leave.
+    expect(missingFocusAction(true, true, false)).toBe('leave');
+    expect(missingFocusAction(false, false, false)).toBe('leave');
   });
 });
 

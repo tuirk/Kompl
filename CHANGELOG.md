@@ -168,9 +168,9 @@ ship with a `migrate.py` step that runs at boot.
   pages" in the legend (off by default) adds names that several sources
   mention but that have no page yet, as dashed circles beside the pages they
   are named with; this is a report, with no actions. Up to five pages that
-  lie on many of the shortest ways between others on the default view
-  (typed relations, no source pages), with neighbours in two or more
-  topics, carry a "bridge" badge on the map and in their panel; the badges
+  lie on many of the shortest ways between pages of different topics on the
+  default view (typed relations, no source pages, no archived pages), with
+  neighbours in two or more topics, carry a "bridge" badge on the map and in their panel; the badges
   do not change with the legend. The zoom buttons zoom about the selected
   page or line, else the focused page, else the middle of the free part of
   the map. With more than 3,000 lines on screen, only typed lines respond to

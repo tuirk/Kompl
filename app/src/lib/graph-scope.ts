@@ -1,8 +1,9 @@
 /**
  * Focus mode on the knowledge graph: /wiki/graph?focus=<page_id>&depth=1|2
  * shows one page and the pages within one or two lines of it, over the
- * lines the legend shows. The URL form, the "See in graph" link, the pages
- * kept, and the legend change that reveals a focused page the filters hide.
+ * lines the legend shows. The URL form and its history entries, the "See in
+ * graph" link, the pages kept, and the legend changes that reveal a focused
+ * page the filters hide (archived pages included).
  * Pure; the URL helpers are server-safe too (the page's Connections card
  * links here).
  */
@@ -37,6 +38,39 @@ export function scopeQuery(scope: GraphScope): string {
 
 export function sameScope(x: GraphScope, y: GraphScope): boolean {
   return x.focus === y.focus && x.depth === y.depth;
+}
+
+/**
+ * How a scope change goes into the browser history: entering, changing or
+ * leaving a focus adds an entry, so Back returns to the view before; a depth
+ * change replaces the current one, so history keeps one entry per focus.
+ */
+export function historyMode(prev: GraphScope, next: GraphScope): 'push' | 'replace' {
+  return prev.focus === next.focus ? 'replace' : 'push';
+}
+
+/**
+ * What to do when the focused page is not in the loaded map. On the first
+ * look without archived pages, turn them on and look again: "See in graph"
+ * from an archived page, a reload or Back to it. Otherwise leave the focus,
+ * turning archived pages off again when they were turned on only for this
+ * look (`archivedForLook`); after the viewer turned them off, they stay off.
+ */
+export function missingFocusAction(
+  firstLook: boolean, includeArchived: boolean, archivedForLook: boolean
+): 'show-archived' | 'leave' | 'leave-hide-archived' {
+  if (firstLook && !includeArchived) return 'show-archived';
+  return archivedForLook ? 'leave-hide-archived' : 'leave';
+}
+
+/**
+ * The map canvas's accessible name: what it shows, counted as the header
+ * counts it, and the keyboard's way to a page (the canvas takes no focus).
+ */
+export function canvasLabel(pages: number, lines: number, focusTitle: string | null): string {
+  const map = focusTitle === null ? 'Knowledge graph' : `Knowledge graph focused on ${focusTitle}`;
+  const counts = `${pages} page${pages === 1 ? '' : 's'} and ${lines} connection${lines === 1 ? '' : 's'}`;
+  return `${map}: ${counts}. Use “Find a page” to open a page and its connections by keyboard.`;
 }
 
 /** The graph focused on a page (the Connections card's "See in graph"). */

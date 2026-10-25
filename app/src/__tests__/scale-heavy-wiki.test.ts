@@ -54,6 +54,7 @@ const BUDGET = {
   explore: 300, // best ~11 / ~13: a path across the map, a 2-hop focus on the busiest page, the missing names
   researchConnections: 1500, // ~85 / ~140 (2026-10-17): MCP research_topic, relations around a 10-page pack of hubs
   graphReportCold: 5000, // ~440 / ~1040: MCP wiki_status topic clusters + bridges, uncached
+  graphReportBlock: 2000, // ~195 alone (2026-10-23): the part of a cold wiki_status report that holds the event loop (reads, model; betweenness runs in a worker thread)
   graphReportCached: 100, // ~1 / ~1: the same from the cache (only the version stamp query runs)
 } as const;
 /** Warm runs for the slower explore measures (betweenness is O(pages x lines)). */
@@ -256,18 +257,29 @@ describe('heavy wiki scale', { timeout: 60_000 }, () => {
     expect(p95, fmt('getRelationsAmong p95', p95, BUDGET.researchConnections)).toBeLessThan(BUDGET.researchConnections);
   });
 
-  it('reports topic clusters and bridges fast, and faster from the cache', () => {
+  it('reports topic clusters and bridges fast, and faster from the cache', async () => {
     dropArchivedCache();
     const cold = timed(() => buildGraphReport());
     expect(cold.value.clusters.top).toHaveLength(6);
     expect(cold.value.bridges.length).toBeGreaterThan(0);
-    const first = timed(() => graphReportCached(handle.db));
-    const samples = Array.from({ length: RUNS }, () => timed(() => graphReportCached(handle.db)));
+    // As wiki_status calls it: the reads on this thread, the betweenness pass in a worker thread.
+    // `blocked` is the part that holds the event loop (stamp, payload, model, the pass's arrays).
+    dropArchivedCache();
+    const t0 = performance.now();
+    const pending = graphReportCached(handle.db);
+    const blocked = performance.now() - t0;
+    const first = { value: await pending, ms: performance.now() - t0 };
+    expect(first.value).toEqual(cold.value);
+    const samples: Array<{ ms: number; value: unknown }> = [];
+    for (let k = 0; k < RUNS; k++) samples.push(await timedAsync(() => graphReportCached(handle.db)));
     expect(samples.every((s) => s.value === first.value)).toBe(true);
     const { p50, p95 } = percentiles(samples.map((s) => s.ms));
-    summary.push(`graphReport cold=${cold.ms.toFixed(1)} firstCached=${first.ms.toFixed(1)} cached p50=${p50.toFixed(1)} p95=${p95.toFixed(1)}`);
+    summary.push(
+      `graphReport cold=${cold.ms.toFixed(1)} firstCached=${first.ms.toFixed(1)} blocked=${blocked.toFixed(1)} cached p50=${p50.toFixed(1)} p95=${p95.toFixed(1)}`
+    );
     expect(cold.ms, fmt('buildGraphReport cold', cold.ms, BUDGET.graphReportCold)).toBeLessThan(BUDGET.graphReportCold);
     expect(first.ms, fmt('graphReportCached first', first.ms, BUDGET.graphReportCold)).toBeLessThan(BUDGET.graphReportCold);
+    expect(blocked, fmt('graphReportCached event-loop block', blocked, BUDGET.graphReportBlock)).toBeLessThan(BUDGET.graphReportBlock);
     expect(p95, fmt('graphReportCached p95', p95, BUDGET.graphReportCached)).toBeLessThan(BUDGET.graphReportCached);
   });
 });

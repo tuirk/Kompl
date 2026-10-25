@@ -90,7 +90,7 @@ function clusterLines(clusters: NonNullable<WikiStatus['clusters']>): string[] {
 function bridgeLines(bridges: NonNullable<WikiStatus['bridges']>): string[] {
   if (!bridges.length) return ['**Bridge pages:** none yet (no page sits between pages of two or more topics).'];
   return [
-    '**Bridge pages** (on many of the shortest ways between other pages, with connections in several topics)',
+    '**Bridge pages** (on many of the shortest ways between pages of different topics)',
     ...bridges.map((b) => `• ${b.title} (\`${b.page_id}\`, ${b.category}) joins ${topicList(b.joins)}`),
   ];
 }

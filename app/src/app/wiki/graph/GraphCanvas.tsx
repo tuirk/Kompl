@@ -3,11 +3,13 @@
 /**
  * The knowledge graph's canvas: react-force-graph-2d with the topic-map
  * forces (graph-forces.ts), page, name and island drawing (graph-draw.ts,
- * graph-islands.ts), hover highlighting, the hover card, click-to-select
- * pages and lines, and the view controls (useCanvasControls.ts). Fitting and
- * centring keep to the part of the canvas the legend and the side panel
- * leave free (`insets`). The data arrives prepared (lib/graph-model.ts,
- * graph-scope.ts, graph-missing.ts); the canvas callbacks only read it.
+ * graph-islands.ts), hover highlighting (useCanvasHover.ts), the hover card,
+ * click-to-select pages and lines, and the view controls
+ * (useCanvasControls.ts). Fitting and centring keep to the part of the
+ * canvas the legend and the side panel leave free (`insets`). The data
+ * arrives prepared (lib/graph-model.ts, graph-scope.ts, graph-missing.ts);
+ * the canvas callbacks only read it. For screen readers the canvas is an
+ * image named by what it shows; keyboards reach pages by "Find a page".
  */
 
 import dynamic from 'next/dynamic';
@@ -17,6 +19,7 @@ import { LAYOUT, warmupTicks, type ViewInsets } from '../../../lib/graph-layout'
 import { focusHighlight, hoverCardText, type GraphFocus, type Highlight } from '../../../lib/graph-focus';
 import { isMissingLink, isMissingNode } from '../../../lib/graph-missing';
 import type { GraphModel, ModelLink, ModelNode, VisibleGraph } from '../../../lib/graph-model';
+import { reducedMotionTicks } from '../../../lib/graph-motion';
 import { CANVAS_BG } from '../../../lib/graph-palette';
 import { HoverCard, moveCard, ZoomButtons } from './canvas-overlays';
 import { applyLayoutForces } from './graph-forces';
@@ -27,7 +30,9 @@ import { drawClusterLabels, newClusterBuffer } from './graph-islands';
 import { drawLineLabels } from './graph-line-labels';
 import { beginLineFrame, newLineFrame } from './graph-lines';
 import { useCanvasControls, type GraphControls } from './useCanvasControls';
+import { useCanvasHover } from './useCanvasHover';
 import { LINK_HOVER_PX, useLinePaint } from './useLinePaint';
+import { useReducedMotion } from './useReducedMotion';
 
 export type { GraphControls } from './useCanvasControls';
 
@@ -80,6 +85,8 @@ interface Props {
   /** Changes when the view should fit again (focus entered, left, its depth changed). */
   fitKey?: string;
   controlsRef: MutableRefObject<GraphControls | null>;
+  /** The map's accessible name (lib/graph-scope.ts canvasLabel). */
+  label: string;
 }
 
 function cssFont(name: string, fallback: string): string {
@@ -90,7 +97,7 @@ function cssFont(name: string, fallback: string): string {
 
 export default function GraphCanvas({
   model, visible, lookup, width, height, insets, coveredLeft, coveredRight, controlsRight, selected, onSelect,
-  pinned = null, marked = null, bridges = NO_BRIDGES, focusId = null, fitKey = '', controlsRef,
+  pinned = null, marked = null, bridges = NO_BRIDGES, focusId = null, fitKey = '', controlsRef, label,
 }: Props) {
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const visibleRef = useRef(visible);
@@ -101,7 +108,7 @@ export default function GraphCanvas({
   const anchorRef = useRef<{ x: number; y: number } | null>(null);
   anchorRef.current = focusNode ? { x: focusNode.anchorX, y: focusNode.anchorY } : null;
   const [ready, setReady] = useState(false);
-  const [hovered, setHovered] = useState<GraphFocus | null>(null);
+  const { hovered, hoverNode, hoverLink, track } = useCanvasHover();
   const cardRef = useRef<HTMLDivElement>(null);
   const frame = useRef(newFrameState('Inter, system-ui, sans-serif', 'system-ui, sans-serif'));
   const clusterBuf = useMemo(() => newClusterBuffer(model.categories.length), [model]);
@@ -117,8 +124,10 @@ export default function GraphCanvas({
   // Automatic fits (first load, scope changes), the guard that keeps a viewer's zoom live there, and the
   // sideways glide that keeps a fitted map centred when the filter panel changes.
   const nodeCount = useCallback(() => visibleRef.current.nodes.length, []);
-  const { fitMap, zoomBy, markMoved, onEngineStop } = useCanvasControls(
-    fgRef, viewRef, model, controlsRef, aboutRef, { ready, fitKey, nodeCount, insetLeft: insets.left }
+  // Reduced motion: view moves jump, and the layout settles before the first paint, then stays still.
+  const reducedMotion = useReducedMotion();
+  const { fitMap, zoomBy, markMoved, onEngineStop, moveTo, viewTarget } = useCanvasControls(
+    fgRef, viewRef, model, controlsRef, aboutRef, { ready, fitKey, nodeCount, insetLeft: insets.left, reducedMotion }
   );
 
   // Forces go in before the first data, so the very first layout is the topic map.
@@ -129,19 +138,19 @@ export default function GraphCanvas({
     setReady(true);
   }, []);
 
-  // The panel lies over the canvas, so the map stays put when it opens; only a
-  // selection that would end up under the panel glides left into view (resizing it never moves the map).
+  // The panel lies over the canvas, so the map stays put when it opens; only a selection that would end up
+  // under the panel (where the view is heading, e.g. a move to a picked page) glides left into view
+  // (resizing it never moves the map).
   useEffect(() => {
-    const fg = fgRef.current;
-    if (!fg || !selected) return;
+    const view = viewTarget();
+    if (!view || !selected) return;
     const point = selected.kind === 'node' ? model.byId.get(selected.id) : midpoint(selected.link, model);
     if (!point) return;
-    const screen = fg.graph2ScreenCoords(point.x, point.y);
+    const screenX = viewRef.current.width / 2 + (point.x - view.x) * view.k;
     const limit = viewRef.current.width - viewRef.current.insets.right - REVEAL_MARGIN;
-    if (screen.x <= limit) return;
-    const center = fg.centerAt();
-    fg.centerAt(center.x + (screen.x - limit) / fg.zoom(), center.y, 400);
-  }, [selected, model]);
+    if (screenX <= limit) return;
+    moveTo({ ...view, x: view.x + (screenX - limit) / view.k }, 400);
+  }, [selected, model, viewTarget, moveTo]);
 
   const graphData = useMemo(
     () => (ready ? ({ nodes: visible.nodes, links: visible.links } as unknown as typeof EMPTY) : EMPTY),
@@ -206,74 +215,78 @@ export default function GraphCanvas({
     [visible, nameFirst, view, labelBuf, model, clusterBuf, highlight, styles, lines]
   );
 
-  const hoverNode = useCallback(
-    (node: object | null) => setHovered(node ? { kind: 'node', id: (node as ModelNode).id } : null),
-    []
-  );
-  const hoverLink = useCallback(
-    (link: object | null) => setHovered(link && !isMissingLink(link as ModelLink) ? { kind: 'link', link: link as ModelLink } : null),
-    []
-  );
-  // Missing names are report-only: hover shows what they are; a click does nothing.
+  // Missing names are report-only: hover shows what they are; a click does nothing. Picking a page or line is
+  // the viewer taking over the view: a pending automatic fit must not re-fit the map as its panel opens.
   const clickNode = useCallback(
     (node: object) => {
-      if (!isMissingNode(node as ModelNode)) onSelect({ kind: 'node', id: (node as ModelNode).id });
+      if (isMissingNode(node as ModelNode)) return;
+      markMoved();
+      onSelect({ kind: 'node', id: (node as ModelNode).id });
     },
-    [onSelect]
+    [onSelect, markMoved]
   );
   const clickLink = useCallback(
     (link: object) => {
-      if (!isMissingLink(link as ModelLink)) onSelect({ kind: 'link', link: link as ModelLink });
+      if (isMissingLink(link as ModelLink)) return;
+      markMoved();
+      onSelect({ kind: 'link', link: link as ModelLink });
     },
-    [onSelect]
+    [onSelect, markMoved]
   );
   const clickBackground = useCallback(() => onSelect(null), [onSelect]);
-  const clearHover = useCallback(() => setHovered(null), []);
 
   return (
-    // force-graph keeps its hover when the pointer leaves the canvas; drop ours so the card and highlight go.
+    // Hover counts only over the canvas itself, not the zoom buttons or what lies over the canvas (useCanvasHover.ts).
     <div
       style={{ position: 'absolute', left: 0, top: 0, width, height }}
-      onMouseMove={(e) => moveCard(cardRef.current, e.clientX, e.clientY)}
-      onMouseLeave={clearHover}
+      onPointerMove={(e) => {
+        track(e.target instanceof HTMLCanvasElement);
+        moveCard(cardRef.current, e.clientX, e.clientY);
+      }}
+      onPointerDown={(e) => track(e.target instanceof HTMLCanvasElement)}
+      onPointerLeave={() => track(false)}
       // Capture phase: d3-zoom stops wheel and pan events at the canvas, before they could bubble here.
       onWheelCapture={markMoved}
       onPointerMoveCapture={(e) => {
         if (e.buttons) markMoved();
       }}
     >
-      <ForceGraph2D
-        ref={attach as unknown as MutableRefObject<ForceGraphMethods | undefined>}
-        graphData={graphData}
-        width={width}
-        height={height}
-        backgroundColor={CANVAS_BG}
-        nodeId="id"
-        nodeLabel={NO_LABEL}
-        linkLabel={NO_LABEL}
-        nodeVal={NODE_VAL}
-        nodeCanvasObject={paintNode}
-        linkColor={linkColor}
-        linkWidth={lineWidth}
-        linkLineDash={dash}
-        linkCanvasObjectMode={linkMode}
-        linkCanvasObject={linkObject}
-        linkHoverPrecision={LINK_HOVER_PX}
-        linkPointerAreaPaint={pointerArea}
-        onRenderFramePre={framePre}
-        onRenderFramePost={framePost}
-        onNodeHover={hoverNode}
-        onLinkHover={hoverLink}
-        onNodeClick={clickNode}
-        onLinkClick={clickLink}
-        onBackgroundClick={clickBackground}
-        d3AlphaDecay={LAYOUT.alphaDecay}
-        d3VelocityDecay={LAYOUT.velocityDecay}
-        d3AlphaMin={LAYOUT.alphaMin}
-        warmupTicks={warmupTicks(visible.nodes.length)}
-        cooldownTime={COOLDOWN_MS}
-        onEngineStop={onEngineStop}
-      />
+      {/* The canvas alone is the image: the zoom buttons stay outside it, reachable. */}
+      <div role="img" aria-label={label}>
+        <ForceGraph2D
+          ref={attach as unknown as MutableRefObject<ForceGraphMethods | undefined>}
+          graphData={graphData}
+          width={width}
+          height={height}
+          backgroundColor={CANVAS_BG}
+          nodeId="id"
+          nodeLabel={NO_LABEL}
+          linkLabel={NO_LABEL}
+          nodeVal={NODE_VAL}
+          nodeCanvasObject={paintNode}
+          linkColor={linkColor}
+          linkWidth={lineWidth}
+          linkLineDash={dash}
+          linkCanvasObjectMode={linkMode}
+          linkCanvasObject={linkObject}
+          linkHoverPrecision={LINK_HOVER_PX}
+          linkPointerAreaPaint={pointerArea}
+          onRenderFramePre={framePre}
+          onRenderFramePost={framePost}
+          onNodeHover={hoverNode}
+          onLinkHover={hoverLink}
+          onNodeClick={clickNode}
+          onLinkClick={clickLink}
+          onBackgroundClick={clickBackground}
+          d3AlphaDecay={LAYOUT.alphaDecay}
+          d3VelocityDecay={LAYOUT.velocityDecay}
+          d3AlphaMin={LAYOUT.alphaMin}
+          warmupTicks={reducedMotion ? reducedMotionTicks(visible.nodes.length) : warmupTicks(visible.nodes.length)}
+          cooldownTicks={reducedMotion ? 0 : Infinity}
+          cooldownTime={COOLDOWN_MS}
+          onEngineStop={onEngineStop}
+        />
+      </div>
       <HoverCard cardRef={cardRef} card={hoverCardText(hovered, lookup)} />
       <ZoomButtons right={controlsRight} onZoom={zoomBy} onFit={() => fitMap(400)} />
     </div>

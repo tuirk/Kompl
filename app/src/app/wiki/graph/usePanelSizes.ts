@@ -11,8 +11,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  clampSizes, DEFAULT_SIZES, LEGEND_OPEN_KEY, PANEL_SIZES_KEY, parseSizes, readStoredOpen, serializeSizes, writeStoredOpen,
-  type LegendSize, type PanelSizes,
+  clampSizes, DEFAULT_SIZES, LEGEND_OPEN_KEY, PANEL_SIZES_KEY, panelRange, parseSizes, readStoredOpen, serializeSizes,
+  writeStoredOpen, type LegendSize, type PanelSizes,
 } from '../../../lib/graph-panels';
 
 export function usePanelSizes(canvasWidth: number, canvasHeight: number) {
@@ -55,7 +55,10 @@ export function usePanelSizes(canvasWidth: number, canvasHeight: number) {
   }, [saves]);
 
   /** What the details panel's shell reads (PanelWidthContext). */
-  const panelContext = useMemo(() => ({ width: sizes.panel, onWidth: setPanel, onDone: save }), [sizes.panel, setPanel, save]);
+  const panelContext = useMemo(
+    () => ({ width: sizes.panel, range: panelRange(sizes.panel, canvasWidth), onWidth: setPanel, onDone: save }),
+    [sizes.panel, canvasWidth, setPanel, save]
+  );
 
   return { sizes, setLegend, save, panelContext, legendOpen, setLegendOpen };
 }

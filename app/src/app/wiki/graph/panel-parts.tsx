@@ -9,14 +9,14 @@
  */
 
 import Link from 'next/link';
-import { createContext, useContext, useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { createContext, useContext, useEffect, useId, useRef, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { moreSourcesNote } from '../../../lib/connections-view';
-import { PANEL_DEFAULT_WIDTH } from '../../../lib/graph-panels';
+import { focusTargetOnClose, PANEL_DEFAULT_WIDTH, type GripRange } from '../../../lib/graph-panels';
 import type { ConnectionItem } from '../../../lib/relations';
 import ResizeGrip from './ResizeGrip';
 
-/** The details panel's width, and how its grip changes it (the page keeps the size). */
-export const PanelWidthContext = createContext<{ width: number; onWidth?(width: number): void; onDone?(): void }>({
+/** The details panel's width and its limits, and how its grip changes it (the page keeps the size). */
+export const PanelWidthContext = createContext<{ width: number; range?: GripRange; onWidth?(width: number): void; onDone?(): void }>({
   width: PANEL_DEFAULT_WIDTH,
 });
 
@@ -45,10 +45,14 @@ export function PanelShell(props: {
   footer?: ReactNode;
   /** Where focus goes on close when the element focused before the panel opened is gone. */
   returnFocusTo: RefObject<HTMLElement | null>;
+  /** False when the panel comes back because a filter showed its page again: focus stays where it is. */
+  takeFocus?: boolean;
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const { returnFocusTo } = props;
-  const { width, onWidth, onDone } = useContext(PanelWidthContext);
+  const asideRef = useRef<HTMLElement>(null);
+  const { returnFocusTo, takeFocus = true } = props;
+  const { width, range, onWidth, onDone } = useContext(PanelWidthContext);
+  const panelId = useId();
   const start = useRef(width);
   // The panel grows leftwards: a drag to the left (negative dx) widens it.
   const resize = (dx: number, _dy: number, begin: boolean) => {
@@ -56,17 +60,22 @@ export function PanelShell(props: {
     else onWidth?.(start.current - dx);
   };
   // Opening moves focus to the heading, so keyboard users land in the panel;
-  // closing (or switching to another page's panel) hands it back.
+  // closing (or switching to another page's panel) hands it back, unless the
+  // viewer has put focus elsewhere (lib/graph-panels.ts focusTargetOnClose).
   useEffect(() => {
+    const panel = asideRef.current;
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    headingRef.current?.focus({ preventScroll: true });
+    if (takeFocus) headingRef.current?.focus({ preventScroll: true });
     return () => {
-      const back = before && before !== document.body && before.isConnected ? before : returnFocusTo.current;
-      back?.focus({ preventScroll: true });
+      focusTargetOnClose(document.activeElement, document.body, panel, before, returnFocusTo.current)?.focus({ preventScroll: true });
     };
+    // `takeFocus` counts when the panel opens only; a later change must not move focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [returnFocusTo]);
   return (
     <aside
+      ref={asideRef}
+      id={panelId}
       aria-label="Graph details"
       style={{
         position: 'absolute', right: 0, top: 0, bottom: 0, width, zIndex: 20,
@@ -110,7 +119,10 @@ export function PanelShell(props: {
           {props.footer}
         </div>
       )}
-      {onWidth && <ResizeGrip label="Resize panel" grip="panel" onResize={resize} onDone={() => onDone?.()} />}
+      {onWidth && range && (
+        <ResizeGrip label="Resize panel" grip="panel" range={range} controls={panelId} valueText={`${width} px wide`}
+          onResize={resize} onDone={() => onDone?.()} />
+      )}
     </aside>
   );
 }

@@ -37,6 +37,7 @@ import {
   logActivity,
   readRawMarkdown,
 } from '../../../../lib/db';
+import { normalizeRelationType } from '../../../../lib/relation-rows';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -338,7 +339,9 @@ export async function POST(request: Request) {
   const candidatePairs = new Map<string, { from: string; to: string; type: string }>();
   for (const ext of extractionMap.values()) {
     for (const rel of ext.relationships) {
-      if (rel.type !== 'competes_with' && rel.type !== 'contradicts') continue;
+      // Same spelling the stored rows use ("Competes with" → competes_with).
+      const relType = normalizeRelationType(rel.type);
+      if (relType !== 'competes_with' && relType !== 'contradicts') continue;
 
       // Canonicalise FIRST so all downstream filters/keys/titles use the
       // same identity. entityNameSet holds canonical names in lowercase,
@@ -354,9 +357,9 @@ export async function POST(request: Request) {
       const [nameA, nameB] = fromCanonical.toLowerCase() <= toCanonical.toLowerCase()
         ? [fromCanonical, toCanonical]
         : [toCanonical, fromCanonical];
-      const key = `${nameA.toLowerCase()}|||${nameB.toLowerCase()}|||${rel.type}`;
+      const key = `${nameA.toLowerCase()}|||${nameB.toLowerCase()}|||${relType}`;
       if (!candidatePairs.has(key)) {
-        candidatePairs.set(key, { from: nameA, to: nameB, type: rel.type });
+        candidatePairs.set(key, { from: nameA, to: nameB, type: relType });
       }
     }
   }

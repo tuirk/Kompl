@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  addCircle, buildGrid, forcePlace, newLabelSpace, placeName, resetSpace, tryPlace, wantsName,
+  addCircle, buildGrid, forcePlace, hitsPlaced, newLabelSpace, placeName, resetSpace, tryPlace, wantsName,
   ALL_NAMES_ZOOM, LABEL_ZOOM, NAME_ABOVE, NAME_BELOW, NAME_LEFT, NAME_RIGHT, NEAR_PLACES, OVERVIEW_NAMES, type LabelSpace,
 } from '../lib/graph-labels';
 
@@ -55,6 +55,48 @@ describe('label space', () => {
       const expected = circles.some((c) => overlapsCircle(box, c));
       expect(tryPlace(s, box[0], box[1], box[2], box[3], NaN, NaN)).toBe(!expected);
     }
+  });
+
+  it('finds every placed box a new box overlaps, wide or small, whatever the cell size', () => {
+    // Boxes of mixed sizes (one very wide, like an island title) against brute force.
+    let seed = 7;
+    const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+    for (const cell of [8, 64, 2000]) {
+      const s = newLabelSpace(1, 400);
+      resetSpace(s, -500, -500, 500, 500, cell);
+      buildGrid(s);
+      const placed: number[][] = [[-480, -20, 480, 20]];
+      forcePlace(s, -480, -20, 480, 20);
+      for (let i = 0; i < 300; i++) {
+        const [x, y, w, h] = [rand() * 1000 - 500, rand() * 1000 - 500, 4 + rand() * 120, 4 + rand() * 30];
+        placed.push([x, y, x + w, y + h]);
+        forcePlace(s, x, y, x + w, y + h);
+      }
+      let hits = 0;
+      for (let k = 0; k < 400; k++) {
+        const [x, y, w, h] = [rand() * 1100 - 550, rand() * 1100 - 550, 2 + rand() * 80, 2 + rand() * 20];
+        const expected = placed.some((b) => !(x + w < b[0] || x > b[2] || y + h < b[1] || y > b[3]));
+        expect(hitsPlaced(s, x, y, x + w, y + h)).toBe(expected);
+        if (expected) hits += 1;
+      }
+      expect(hits).toBeGreaterThan(50); // both answers were tested
+      expect(hits).toBeLessThan(350);
+    }
+  });
+
+  it('checks a new name only against the names near it', () => {
+    // 6,000 names over a crowded field, 5,000 of them placed. Scanning every placed name for every
+    // place tried took 550-800 ms (2026-10-23); through the grid it takes 30-40 ms.
+    const s = newLabelSpace(1, 6000);
+    resetSpace(s, 0, 0, 2800, 2800, 32);
+    buildGrid(s);
+    let seed = 3;
+    const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+    const t0 = performance.now();
+    for (let i = 0; i < 6000; i++) placeName(s, rand() * 2800, rand() * 2800, 6, 30, 12);
+    const ms = performance.now() - t0;
+    expect(s.placed).toBe(5012);
+    expect(ms, `${ms.toFixed(0)} ms for 6,000 names (budget 200 ms)`).toBeLessThan(200);
   });
 
   it('places every name that fits, and none over a foreign circle or another name', () => {

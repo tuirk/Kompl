@@ -111,6 +111,16 @@ export function takesPointer(link: ModelLink, limited: boolean): boolean {
   return !isMissingLink(link) && (!limited || link.kind === 'typed');
 }
 
+/**
+ * The hover to show: what force-graph reports, only while the pointer is
+ * over the canvas. force-graph keeps testing its last pointer position after
+ * the pointer leaves (onto a panel, the legend or a zoom button), so the map
+ * gliding under that point would otherwise light pages nobody points at.
+ */
+export function acceptHover<T>(overCanvas: boolean, hovered: T | null): T | null {
+  return overCanvas ? hovered : null;
+}
+
 /** The bits of a keyboard event the Escape rule reads (a KeyboardEvent fits). */
 export interface EscapeKeyEvent {
   key: string;

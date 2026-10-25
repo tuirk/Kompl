@@ -7,6 +7,7 @@
  */
 
 import { forcePlace } from '../../../lib/graph-labels';
+import { isMissingNode } from '../../../lib/graph-missing';
 import type { CategoryInfo, ModelNode } from '../../../lib/graph-model';
 import { CANVAS_BG } from '../../../lib/graph-palette';
 import { CLUSTER_PX, CLUSTER_SPACING, type FrameState, type LabelBuffer } from './graph-draw';
@@ -42,7 +43,8 @@ export function clusterLabelAlpha(scale: number): number {
 /**
  * Each island's name, centred over its pages and just above the topmost one
  * (or two spreads above the centre, when one page strays far out). Islands
- * of one page are left to that page's own name. While clearly shown, the
+ * of one page are left to that page's own name; missing names in `nodes`
+ * are left out. While clearly shown, the
  * names claim their boxes in the label space (call after prepareLabels).
  */
 export function drawClusterLabels(
@@ -55,6 +57,8 @@ export function drawClusterLabels(
   const claims = !dimmed && alpha >= ISLAND_CLAIM_ALPHA;
   buf.count.fill(0); buf.sumX.fill(0); buf.sumY.fill(0); buf.sumSq.fill(0); buf.top.fill(Infinity);
   for (const n of nodes) {
+    // A missing name wears its home page's island but is not a page: it never titles or moves one.
+    if (isMissingNode(n)) continue;
     const i = n.catIndex;
     buf.count[i] += 1;
     buf.sumX[i] += n.x;

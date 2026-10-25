@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { __setDbForTesting, DATA_ROOT } from '../../lib/db';
+import { normalizeRelationType } from '../../lib/relation-rows';
 
 const SCHEMA_SQL = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
 
@@ -138,7 +139,7 @@ export function seedExtraction(db: Database.Database, args: SeedExtractionArgs):
   for (const rel of llm.relationships ?? []) {
     const fromRaw = (rel.from_entity ?? '').trim();
     const toRaw = (rel.to ?? '').trim();
-    const type = (rel.type ?? '').trim();
+    const type = normalizeRelationType((rel.type ?? '').trim());
     if (!fromRaw || !toRaw || !type) continue;
     let from = fromRaw;
     let to = toRaw;

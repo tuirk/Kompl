@@ -7,7 +7,7 @@
  * Client-only.
  */
 
-import { forcePlace, type LabelSpace } from '../../../lib/graph-labels';
+import { forcePlace, hitsPlaced, type LabelSpace } from '../../../lib/graph-labels';
 import { LINE_LABEL_ZOOM, LINE_LABELS_MAX, LINE_PX, uprightAngle, type LineStyle } from '../../../lib/graph-line-style';
 import { isMissingLink } from '../../../lib/graph-missing';
 import type { ModelLink, ModelNode } from '../../../lib/graph-model';
@@ -137,10 +137,7 @@ export function placeTurned(
   const x1 = cx + hx;
   const y1 = cy + hy;
   if (space.placed * 4 >= space.boxes.length || x0 < space.limitMinX || x1 > space.limitMaxX) return false;
-  const b = space.boxes;
-  for (let i = 0; i < space.placed * 4; i += 4) {
-    if (!(x1 < b[i] || x0 > b[i + 2] || y1 < b[i + 1] || y0 > b[i + 3])) return false;
-  }
+  if (hitsPlaced(space, x0, y0, x1, y1)) return false;
   if (space.circles > 0) {
     const reach = Math.max(0, halfW - halfH);
     const c0 = gridCol(space, x0 - space.maxR);

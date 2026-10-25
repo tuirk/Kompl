@@ -1,10 +1,15 @@
 /**
  * Measures over the knowledge graph's pages and lines: betweenness
  * centrality (how often a page lies on the shortest way between two others)
- * and the "bridge" pages it picks out, the most between pages whose
- * neighbours span two or more topics. Pure, with no DOM or DB imports, so
- * the graph page and server code (the MCP wiki_status report) share it.
+ * and the "bridge" pages: those whose neighbours span two or more topics,
+ * ranked by betweenness counted only over pairs of pages in two different
+ * topics, so a hub that is busy inside its own topic does not outrank the
+ * page that joins two. Pure, with no DOM or DB imports, so the graph page
+ * and server code (the MCP wiki_status report) share it; the pass itself
+ * (graph-betweenness.ts) can also run in a worker.
  */
+
+import { crossTopicKernel, type BetweennessJob } from './graph-betweenness';
 
 /**
  * Neighbours of every node. Edges are undirected: listing one from either
@@ -20,7 +25,7 @@ export const BRIDGE_MIN_TOPICS = 2;
 
 export interface Bridge {
   id: string;
-  /** Its betweenness. */
+  /** Its betweenness over pairs of pages in two different topics. */
   score: number;
   /** The topics its neighbours belong to, most neighbours first (then A-Z). */
   topics: string[];
@@ -57,58 +62,48 @@ function compact(adjacency: Adjacency): { ids: string[]; start: Int32Array; next
  * node, the sum over pairs of other nodes of the share of their shortest
  * paths that pass through it. Each unordered pair counts once, so the middle
  * of a three-node path scores 1 and the hub of a star with k leaves scores
- * k(k-1)/2. O(nodes x lines) time; nothing is allocated per step.
+ * k(k-1)/2. O(nodes x lines): the cross-topic pass with every node its own topic.
  */
 export function betweenness(adjacency: Adjacency): Map<string, number> {
   const { ids, start, next } = compact(adjacency);
-  const n = ids.length;
-  const score = new Float64Array(n);
-  const sigma = new Float64Array(n);
-  const delta = new Float64Array(n);
-  const dist = new Int32Array(n).fill(-1);
-  const order = new Int32Array(n);
-  for (let s = 0; s < n; s++) {
-    sigma[s] = 1;
-    dist[s] = 0;
-    order[0] = s;
-    // Breadth-first from s; `order` doubles as the queue and, read backwards, the stack.
-    let head = 0;
-    let tail = 1;
-    while (head < tail) {
-      const v = order[head++];
-      for (let e = start[v]; e < start[v + 1]; e++) {
-        const w = next[e];
-        if (dist[w] < 0) {
-          dist[w] = dist[v] + 1;
-          order[tail++] = w;
-        }
-        if (dist[w] === dist[v] + 1) sigma[w] += sigma[v];
-      }
-    }
-    for (let i = tail - 1; i > 0; i--) {
-      const w = order[i];
-      const share = (1 + delta[w]) / sigma[w];
-      for (let e = start[w]; e < start[w + 1]; e++) {
-        const v = next[e];
-        if (dist[v] === dist[w] - 1) delta[v] += sigma[v] * share;
-      }
-      score[w] += delta[w];
-    }
-    // Reset only what this source reached, ready for the next.
-    for (let i = 0; i < tail; i++) {
-      const v = order[i];
-      sigma[v] = 0;
-      delta[v] = 0;
-      dist[v] = -1;
-    }
-  }
-  // Every pair was counted from both of its ends.
-  return new Map(ids.map((id, i) => [id, score[i] / 2]));
+  return scoresById(ids, crossTopicKernel(start, next, Int32Array.from(ids, (_, i) => i)));
+}
+
+/** A cross-topic pass (graph-betweenness.ts) plus the page id of each node it numbers. */
+export interface BridgeJob extends BetweennessJob {
+  ids: string[];
+}
+
+/** The pass for a graph: its CSR arrays and topic numbers (-1 where topicOf gives null). */
+export function bridgeJob(adjacency: Adjacency, topicOf: (id: string) => string | null): BridgeJob {
+  const { ids, start, next } = compact(adjacency);
+  const numbers = new Map<string, number>();
+  const topic = Int32Array.from(ids, (id) => {
+    const name = topicOf(id);
+    if (name === null) return -1;
+    if (!numbers.has(name)) numbers.set(name, numbers.size);
+    return numbers.get(name) as number;
+  });
+  return { ids, start, next, topic };
+}
+
+/** A pass's scores keyed by page id. */
+export function scoresById(ids: readonly string[], scores: Float64Array): Map<string, number> {
+  return new Map(ids.map((id, i) => [id, scores[i]]));
 }
 
 /**
- * The bridge pages: the highest betweenness scores (above 0) among nodes
- * whose neighbours span at least BRIDGE_MIN_TOPICS topics. `topicOf` returns
+ * Betweenness over pairs of pages in two different topics only: a page
+ * with no topic ends no counted pair, but shortest ways may pass through it.
+ */
+export function crossTopicBetweenness(adjacency: Adjacency, topicOf: (id: string) => string | null): Map<string, number> {
+  const job = bridgeJob(adjacency, topicOf);
+  return scoresById(job.ids, crossTopicKernel(job.start, job.next, job.topic));
+}
+
+/**
+ * The bridge pages: the highest scores (above 0) among nodes whose
+ * neighbours span at least BRIDGE_MIN_TOPICS topics. `topicOf` returns
  * null for a node with no topic (e.g. "Uncategorized"), which then counts
  * toward none. Ties go to the lower id.
  */
@@ -145,7 +140,7 @@ export function topicList(topics: readonly string[]): string {
   return `${topics.slice(0, -1).join(', ')} and ${topics[topics.length - 1]}`;
 }
 
-/** betweenness() then pickBridges(): the bridge pages of a graph. */
+/** crossTopicBetweenness() then pickBridges(): the bridge pages of a graph. */
 export function findBridges(adjacency: Adjacency, topicOf: (id: string) => string | null, limit = BRIDGE_LIMIT): Bridge[] {
-  return pickBridges(betweenness(adjacency), adjacency, topicOf, limit);
+  return pickBridges(crossTopicBetweenness(adjacency, topicOf), adjacency, topicOf, limit);
 }

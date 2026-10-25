@@ -103,7 +103,7 @@ describe('research pack', () => {
     page('thin', 'Danksharding plans', `Ethereum plans danksharding with Vitalik [^${only}].`, [only]);
     for (let i = 0; i < 3; i++) {
       const s = seedSource(db, { title: `Mention ${i}` });
-      seedExtraction(db, { source_id: s, ner_output: { entities: [{ text: 'Vitalik', label: 'PERSON' }, { text: 'Catan', label: 'ORG' }] } });
+      seedExtraction(db, { source_id: s, llm_output: { entities: [{ name: 'Vitalik', type: 'PERSON' }, { name: 'Catan', type: 'ORG' }] } });
     }
     stubVectors();
 
@@ -123,7 +123,7 @@ describe('research pack', () => {
     db.prepare('UPDATE pages SET summary = ? WHERE page_id = ?').run('Uses [[Proof of work|PoW]] for mining.', 'note');
     for (let i = 0; i < 3; i++) {
       const s = seedSource(db, { title: `Mention ${i}` });
-      seedExtraction(db, { source_id: s, ner_output: { entities: [{ text: 'AI', label: 'ORG' }] } });
+      seedExtraction(db, { source_id: s, llm_output: { entities: [{ name: 'AI', type: 'ORG' }] } });
     }
     page('said', 'Said page', 'He said mining again.', [paper]);
     stubVectors();

@@ -58,7 +58,7 @@ describe('wiki status', () => {
     vi.stubGlobal('fetch', fetchMock);
     for (let i = 0; i < 3; i++) {
       const source_id = seedSource(handle!.db, { title: `Mention ${i}` });
-      seedExtraction(handle!.db, { source_id, ner_output: { entities: [{ text: 'Vitalik Buterin', label: 'PERSON' }] } });
+      seedExtraction(handle!.db, { source_id, llm_output: { entities: [{ name: 'Vitalik Buterin', type: 'PERSON' }] } });
     }
     const activityBefore = getActivityCounts(handle!.db);
     const settingsBefore = handle!.db.prepare('SELECT COUNT(*) AS n FROM settings').get();

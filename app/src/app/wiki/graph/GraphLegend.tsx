@@ -20,7 +20,7 @@ import { SlidersHorizontal, X } from 'lucide-react';
 import { RING_PAGE_TYPES, type GraphFilters, type GraphModel, type VisibleGraph } from '../../../lib/graph-model';
 import { changedFilters, legendCategoryGroups, legendPageTypes, type CategoryGroup } from '../../../lib/graph-legend';
 import { MISSING_HEX } from '../../../lib/graph-missing';
-import { LEGEND_LEFT, LEGEND_TOP, type LegendSize } from '../../../lib/graph-panels';
+import { LEGEND_LEFT, LEGEND_TOP, legendRange, type LegendSize } from '../../../lib/graph-panels';
 import { PAGE_TYPE_LABELS, type PageType } from '../../../lib/page-type-palette';
 import { Dot, FilterRow, FiltersButton, ICON_BUTTON, LEGEND_HEADING } from './legend-parts';
 import LegendKey from './LegendKey';
@@ -175,7 +175,11 @@ export default function GraphLegend(props: Props) {
             {pointerLimited && ' Many lines on screen: only typed lines respond to the pointer.'}
           </span>
         </div>
-        {open && <ResizeGrip label="Resize filters" grip="legend" onResize={resize} onDone={onSizeDone} />}
+        {open && (
+          <ResizeGrip label="Resize filters" grip="legend" range={legendRange(size.width)} controls={panelId}
+            valueText={`${size.width} px wide, ${size.height === null ? 'as tall as its content' : `${size.height} px tall`}`}
+            onResize={resize} onDone={onSizeDone} />
+        )}
       </section>
     </>
   );

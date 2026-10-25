@@ -11,6 +11,7 @@ import { relationLabel } from './relation-labels';
 import { namedRelation, type Highlight } from './graph-focus';
 import { isMissingLink } from './graph-missing';
 import type { EdgeKind, ModelLink, ModelNode, VisibleGraph } from './graph-model';
+import { PAGE_TYPE_LABELS, type PageType } from './page-type-palette';
 
 export const EDGE_COST: Readonly<Record<EdgeKind, number>> = { typed: 1, plain: 2, related: 3 };
 
@@ -153,12 +154,46 @@ export function pickerLabel(node: Pick<ModelNode, 'label' | 'archived'>): string
   return node.archived ? `${node.label} (archived)` : node.label;
 }
 
-/** The page whose picker label (or title) is `text`, any case; null when none. */
-export function findByTitle(nodes: readonly ModelNode[], text: string): string | null {
+type PickerPage = Pick<ModelNode, 'id' | 'label' | 'archived' | 'pageType' | 'category'>;
+
+/** How many of `labels` read the same, whatever the case. */
+function sameCounts(labels: Iterable<string>): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const label of labels) counts.set(label.toLowerCase(), (counts.get(label.toLowerCase()) ?? 0) + 1);
+  return counts;
+}
+
+/**
+ * The picker label of every page, by id. Titles are not unique, so where
+ * two labels read the same (any case) each names its page type and topic
+ * ("Bitcoin (source summary, Crypto)"), then its id if those match too.
+ */
+export function pickerLabels(nodes: readonly PickerPage[]): Map<string, string> {
+  const labels = new Map(nodes.map((n) => [n.id, pickerLabel(n)]));
+  const qualified = (n: PickerPage, withId: boolean) => {
+    const type = PAGE_TYPE_LABELS[n.pageType as PageType] ?? n.pageType.replace(/-/g, ' ');
+    const parts = [type, n.category, n.archived ? 'archived' : '', withId ? n.id : ''].filter(Boolean);
+    return `${n.label} (${parts.join(', ')})`;
+  };
+  const shared = sameCounts(labels.values());
+  const clashing = nodes.filter((n) => (shared.get((labels.get(n.id) as string).toLowerCase()) ?? 0) > 1);
+  const byKind = sameCounts(clashing.map((n) => qualified(n, false)));
+  for (const n of clashing) labels.set(n.id, qualified(n, (byKind.get(qualified(n, false).toLowerCase()) ?? 0) > 1));
+  return labels;
+}
+
+/**
+ * The page whose picker label is `text`, any case; else the one page with
+ * that title. Null when none, or when the title names more than one page.
+ */
+export function findByTitle(
+  nodes: readonly PickerPage[], text: string, labels: ReadonlyMap<string, string> = pickerLabels(nodes)
+): string | null {
   const want = text.trim().toLowerCase();
   if (!want) return null;
-  const hit = nodes.find((n) => pickerLabel(n).toLowerCase() === want) ?? nodes.find((n) => n.label.toLowerCase() === want);
-  return hit?.id ?? null;
+  for (const [id, label] of labels) if (label.toLowerCase() === want) return id;
+  const titled = nodes.filter((n) => n.label.toLowerCase() === want);
+  return titled.length === 1 ? titled[0].id : null;
 }
 
 /** The two pages being connected; either may still be empty. */

@@ -7,7 +7,9 @@
 
 import { describe, expect, it } from 'vitest';
 import { mapBridges } from '../lib/graph-bridges';
-import { betweenness, BRIDGE_LIMIT, findBridges, pickBridges, topicList, type Adjacency } from '../lib/graph-metrics';
+import {
+  betweenness, BRIDGE_LIMIT, crossTopicBetweenness, findBridges, pickBridges, topicList, type Adjacency,
+} from '../lib/graph-metrics';
 import { buildGraphModel, DEFAULT_FILTERS, filterGraph } from '../lib/graph-model';
 import type { RelationEdge } from '../lib/relation-edges';
 import type { WikiGraph, WikiGraphNode } from '../lib/wiki-graph';
@@ -66,15 +68,22 @@ describe('betweenness', () => {
     expect(scoresOf(graph(['a', 'b', 'c', 'd'], ['a-b', 'c-d']))).toEqual({ a: 0, b: 0, c: 0, d: 0 });
   });
 
-  it('runs in well under a second on a 1,500-page graph', () => {
+  it('scores a 1,500-page graph (3,489 lines) in about half a second', { timeout: 30_000 }, () => {
     const nodes = Array.from({ length: 1500 }, (_, i) => `p${i}`);
     const adj = new Map(nodes.map((n) => [n, [] as string[]]));
     for (let i = 0; i < 1500; i++) {
       for (const j of [i + 1, i + 7, i * 3 + 11]) if (j < 1500) (adj.get(`p${i}`) as string[]).push(`p${j}`);
     }
-    const start = performance.now();
-    betweenness(adj);
-    expect(performance.now() - start).toBeLessThan(5000);
+    // Best of 3, as in scale-heavy-wiki.test.ts: a busy machine stretches single runs, not the best.
+    // ~330-500 ms locally (2026-10-23); the budget fails a 3x slowdown, not a slow runner.
+    const best = Math.min(
+      ...[0, 1, 2].map(() => {
+        const start = performance.now();
+        betweenness(adj);
+        return performance.now() - start;
+      })
+    );
+    expect(best, `best of 3: ${best.toFixed(0)} ms (budget 1500 ms)`).toBeLessThan(1500);
   });
 });
 
@@ -105,6 +114,36 @@ describe('bridges', () => {
     expect(found).toHaveLength(BRIDGE_LIMIT);
     expect(found.map((b) => b.id)).toEqual(['p0', 'p1', 'q0', 'q1', 'q2']);
     expect(found.some((b) => b.id === 'p2')).toBe(false);
+  });
+
+  it('ranks the one page joining two islands above a big hub with one line out', () => {
+    // Crypto: "hub" with 20 leaves and one line to "fin" (Finance), which leads nowhere else.
+    // Travel and AI: two islands of 6 pages each, joined only through "p" (Travel).
+    const leaves = Array.from({ length: 20 }, (_, i) => `c${i}`);
+    const travel = Array.from({ length: 6 }, (_, i) => `t${i}`);
+    const ai = Array.from({ length: 6 }, (_, i) => `a${i}`);
+    const clique = (ids: string[]) => ids.flatMap((x, i) => ids.slice(i + 1).map((y) => `${x}-${y}`));
+    const adj = graph(
+      ['hub', 'fin', 'p', ...leaves, ...travel, ...ai],
+      [...leaves.map((c) => `hub-${c}`), 'hub-fin', ...clique(travel), ...clique(ai), 'p-t0', 'p-a0']
+    );
+    const topicOf = (id: string) =>
+      id === 'fin' ? 'Finance' : id === 'hub' || id.startsWith('c') ? 'Crypto' : id === 'p' || id.startsWith('t') ? 'Travel' : 'AI';
+    // Plain betweenness puts the hub far ahead: its leaves' 190 pairs all pass through it.
+    const plain = betweenness(adj);
+    expect(plain.get('hub')).toBe(210);
+    expect(plain.get('p')).toBe(36);
+    // Counting only pairs from two different topics: the hub joins 20 (each leaf with fin), p joins 36.
+    const found = findBridges(adj, topicOf);
+    expect(found.map((b) => [b.id, b.score])).toEqual([['p', 36], ['a0', 35], ['hub', 20]]);
+    expect(found[0].topics).toEqual(['AI', 'Travel']);
+  });
+
+  it('counts no pair with a topic-less end, but lets paths run through topic-less pages', () => {
+    // a (AI) - u (no topic) - x (Travel) - y (no topic)
+    const adj = graph(['a', 'u', 'x', 'y'], ['a-u', 'u-x', 'x-y']);
+    const topicOf = (id: string) => (id === 'a' ? 'AI' : id === 'x' ? 'Travel' : null);
+    expect(Object.fromEntries(crossTopicBetweenness(adj, topicOf))).toEqual({ a: 0, u: 1, x: 0, y: 0 });
   });
 
   it('lists topics as words', () => {
@@ -143,6 +182,18 @@ describe('mapBridges', () => {
     expect(bridges.has('hub')).toBe(false);
     expect(bridges.has('src')).toBe(false);
     expect(bridges.get('m')?.topics).toEqual(['AI', 'Travel']);
+  });
+
+  it('leaves archived pages out, so "include archived" changes no badge', () => {
+    // "old" (archived) would join the AI and Travel triangles a second time.
+    const withArchived: WikiGraph = {
+      ...data,
+      nodes: [...data.nodes, { ...node('old', 'Crypto'), archived: true }],
+      links: [...data.links, typedLine('a1', 'old'), typedLine('old', 't3')],
+    };
+    const bridges = mapBridges(buildGraphModel(withArchived));
+    expect(bridges.has('old')).toBe(false);
+    expect([...bridges.values()]).toEqual([...mapBridges(buildGraphModel(data)).values()]);
   });
 
   it('is the same whatever the legend later shows', () => {

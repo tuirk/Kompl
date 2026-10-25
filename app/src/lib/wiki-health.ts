@@ -10,6 +10,7 @@
 import type Database from 'better-sqlite3';
 import { getAllArchivedPageIds } from './db';
 import type { LintDeadProvenance, LintMissingCrossRef, LintOrphanPage, LintStalePage } from './lint-result';
+import { findMissingPages } from './missing-pages';
 import { SYNTHESIZED_PAGE_TYPES } from './page-sections';
 
 export interface HealthChecks {
@@ -27,29 +28,28 @@ export interface ThinPage {
   backlinks: number;
 }
 
-/**
- * Entity labels that name amounts, dates and positions ("2009", "second",
- * "40%") rather than things a page could be about.
- */
-const NON_TOPIC_LABELS = ['DATE', 'TIME', 'PERCENT', 'MONEY', 'QUANTITY', 'ORDINAL', 'CARDINAL'];
-
 /** missing_cross_refs lists at most this many names. */
 export const MISSING_NAMES_LIMIT = 50;
+/** Sources a name needs for missing_cross_refs (the graph shows names from 2: relation-edges.ts). */
+export const MISSING_NAMES_MIN_SOURCES = 3;
 /** How long wiki_status reuses a result while the tables keep their size. */
 const CACHE_MS = 60_000;
 const cache = new WeakMap<Database.Database, { key: string; at: number; checks: HealthChecks }>();
 
 /**
  * runHealthChecks for frequent readers (wiki_status): the names check reads
- * every extraction, so a result is reused for a minute unless a row was
- * added to or removed from the tables the checks read.
+ * every mention and relation, so a result is reused for a minute unless a
+ * row was added to or removed from the tables the checks read, or a source
+ * was archived.
  */
 export function runHealthChecksCached(db: Database.Database): HealthChecks {
   const { key } = db
     .prepare(
-      `SELECT (SELECT COUNT(*) FROM extractions) || ':' || (SELECT COUNT(*) FROM pages) || ':' ||
+      `SELECT (SELECT COUNT(*) FROM entity_mentions) || ':' || (SELECT COUNT(*) FROM relationship_mentions) || ':' ||
+              (SELECT COUNT(*) FROM pages) || ':' || (SELECT COUNT(*) FROM pages WHERE page_type = 'archived') || ':' ||
               (SELECT COUNT(*) FROM aliases) || ':' || (SELECT COUNT(*) FROM page_links) || ':' ||
-              (SELECT COUNT(*) FROM provenance) || ':' || (SELECT COUNT(*) FROM sources) AS key`
+              (SELECT COUNT(*) FROM provenance) || ':' || (SELECT COUNT(*) FROM sources) || ':' ||
+              (SELECT COUNT(*) FROM sources WHERE status = 'archived') AS key`
     )
     .get() as { key: string };
   const hit = cache.get(db);
@@ -81,27 +81,11 @@ export function runHealthChecks(db: Database.Database): HealthChecks {
     )
     .all() as LintStalePage[];
 
-  // Names mentioned in 3+ sources that no page covers yet. A name counts as
-  // covered by any page title or page alias, whatever the case: "bitcoin"
-  // is covered by a "Bitcoin" concept page, not only by an entity page.
-  const missing_cross_refs = db
-    .prepare(
-      `SELECT json_extract(value, '$.text') AS entity_text,
-              COUNT(DISTINCT e.source_id) AS mention_count
-         FROM extractions e, json_each(json_extract(e.ner_output, '$.entities'))
-        WHERE COALESCE(json_extract(value, '$.label'), '') NOT IN (${NON_TOPIC_LABELS.map(() => '?').join(', ')})
-          AND lower(json_extract(value, '$.text')) NOT IN (
-                SELECT lower(title) FROM pages WHERE page_type != 'archived'
-              )
-          AND lower(json_extract(value, '$.text')) NOT IN (
-                SELECT lower(alias) FROM aliases WHERE canonical_page_id IS NOT NULL
-              )
-        GROUP BY lower(json_extract(value, '$.text'))
-       HAVING COUNT(DISTINCT e.source_id) >= 3
-        ORDER BY mention_count DESC, entity_text COLLATE NOCASE
-        LIMIT ?`,
-    )
-    .all(...NON_TOPIC_LABELS, MISSING_NAMES_LIMIT) as LintMissingCrossRef[];
+  // Names the sources keep naming that no page covers yet, as the graph's
+  // "Show missing pages" defines them (missing-pages.ts), from 3 sources.
+  const missing_cross_refs = findMissingPages(db, { minSources: MISSING_NAMES_MIN_SOURCES, limit: MISSING_NAMES_LIMIT }).map(
+    (m): LintMissingCrossRef => ({ entity_text: m.name, mention_count: m.source_count })
+  );
 
   const dead_provenance = db
     .prepare(

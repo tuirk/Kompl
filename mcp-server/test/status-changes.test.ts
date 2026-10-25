@@ -89,7 +89,7 @@ describe('wiki_status', () => {
       '• Travel: 25 pages, 18 connections inside',
       '• Board Games: 1 page, 1 connection inside',
       '• and 6 more topics',
-      '**Bridge pages** (on many of the shortest ways between other pages, with connections in several topics)',
+      '**Bridge pages** (on many of the shortest ways between pages of different topics)',
       '• Bitcoin network (`btc`, Crypto) joins Crypto, AI and Travel',
       '• Claude (`claude`, AI) joins AI and Crypto',
     ]);

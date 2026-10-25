@@ -34,6 +34,8 @@ interface Props {
   /** Select a page on the map and move to it. */
   onPick(pageId: string): void;
   returnFocusTo: RefObject<HTMLElement | null>;
+  /** False when the panel comes back because a filter showed the page again (PanelShell). */
+  takeFocus?: boolean;
   /** Set when the page is one of the map's bridges. */
   bridge?: Bridge | null;
   /** Show the page with its neighbours only; absent when the map is already focused on it. */
@@ -48,7 +50,7 @@ function typeBadge(pageType: string): { label: string; color: string } {
   };
 }
 
-export default function NodePanel({ node, isShown, cache, onClose, onPick, returnFocusTo, bridge = null, onFocus }: Props) {
+export default function NodePanel({ node, isShown, cache, onClose, onPick, returnFocusTo, takeFocus, bridge = null, onFocus }: Props) {
   const state = useConnections(node.id, cache);
   const badge = typeBadge(node.pageType);
   const pageLink = (id: string, title: string, muted = false): ReactNode =>
@@ -74,6 +76,7 @@ export default function NodePanel({ node, isShown, cache, onClose, onPick, retur
       title={node.label}
       onClose={onClose}
       returnFocusTo={returnFocusTo}
+      takeFocus={takeFocus}
       footer={
         <>
           {onFocus && (
@@ -97,7 +100,7 @@ export default function NodePanel({ node, isShown, cache, onClose, onPick, retur
       </div>
       {bridge && (
         <p style={{ ...META, margin: 0, color: 'var(--fg-secondary)' }}>
-          <span style={BADGE}>Bridge</span> Joins {topicList(bridge.topics)}: many of the shortest ways between pages on the map pass through it.
+          <span style={BADGE}>Bridge</span> Joins {topicList(bridge.topics)}: many of the shortest ways between pages of different topics pass through it.
         </p>
       )}
       {node.summary && <p style={{ ...BODY, margin: 0 }}>{node.summary}</p>}

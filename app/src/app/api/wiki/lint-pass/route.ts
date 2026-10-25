@@ -6,9 +6,9 @@
  * Checks performed:
  *   1. Orphan pages — no inbound or outbound page_links
  *   2. Stale source-summaries — source_count==1 AND last_updated > 30 days ago
- *   3. Missing cross-refs — names in extractions.ner_output mentioned across 3+
- *      sources that no page title or alias covers (case-insensitive; dates,
- *      amounts and ordinals are not names)
+ *   3. Missing cross-refs — names the extraction found in 3+ sources that no
+ *      page title or alias covers (lib/missing-pages.ts, the same names as
+ *      the graph's missing pages; dates, amounts and numbers are not names)
  *   4. Dead provenance — provenance rows referencing deleted sources
  *   5. Contradiction detection (LLM-assisted, best-effort) via nlp-service
  *

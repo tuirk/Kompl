@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildGraphModel, DEFAULT_FILTERS, filterGraph, type GraphFilters } from '../lib/graph-model';
 import {
-  EDGE_COST, fillPath, findByTitle, pathHighlight, pathSteps, pickerLabel, shortestPath,
+  EDGE_COST, fillPath, findByTitle, pathHighlight, pathSteps, pickerLabel, pickerLabels, shortestPath,
 } from '../lib/graph-path';
 import { buildMissingLayer, withMissing } from '../lib/graph-missing';
 import type { RelationEdge } from '../lib/relation-edges';
@@ -137,6 +137,38 @@ describe('title pickers', () => {
     expect(findByTitle(model.nodes, 'Kaunas')).toBe('old');
     expect(findByTitle(model.nodes, 'Vil')).toBeNull();
     expect(findByTitle(model.nodes, '')).toBeNull();
+  });
+
+  it('tells apart pages that share a title, and waits for a choice when a bare title names several', () => {
+    const shared = visibleOf({
+      nodes: [
+        page('btc', { label: 'Bitcoin', category: 'Crypto' }),
+        page('btc-summary', { label: 'Bitcoin', group: 'source-summary', category: 'Crypto' }),
+        page('btc-2', { label: 'bitcoin', category: 'Crypto' }), // same type and topic as btc
+        page('eth', { label: 'Ethereum', category: 'Crypto' }),
+      ],
+      links: [],
+      missing: [],
+    }).model;
+    const labels = pickerLabels(shared.nodes);
+    expect(Object.fromEntries(labels)).toEqual({
+      btc: 'Bitcoin (entity, Crypto, btc)',
+      'btc-summary': 'Bitcoin (source summary, Crypto)',
+      'btc-2': 'bitcoin (entity, Crypto, btc-2)',
+      eth: 'Ethereum',
+    });
+    expect(findByTitle(shared.nodes, 'bitcoin (source summary, crypto)', labels)).toBe('btc-summary');
+    expect(findByTitle(shared.nodes, 'Bitcoin (entity, Crypto, btc-2)', labels)).toBe('btc-2');
+    expect(findByTitle(shared.nodes, 'Bitcoin', labels)).toBeNull();
+    expect(findByTitle(shared.nodes, 'ethereum')).toBe('eth');
+    // A title shared only with an archived page already reads apart.
+    const archived = visibleOf({
+      nodes: [page('kaunas', { label: 'Kaunas' }), page('old', { label: 'Kaunas', archived: true })],
+      links: [],
+      missing: [],
+    }).model;
+    expect(Object.fromEntries(pickerLabels(archived.nodes))).toEqual({ kaunas: 'Kaunas', old: 'Kaunas (archived)' });
+    expect(findByTitle(archived.nodes, 'kaunas')).toBe('kaunas');
   });
 
   it('fills the start, then the end, then replaces the end on map clicks', () => {

@@ -3,13 +3,17 @@
  * categories on the map's default view, with their pages and the typed
  * lines inside each) and the bridge pages the map badges (graph-bridges.ts).
  * Built from the same payload and model as the graph page, so the report
- * names the same pages. Reads only; report-only.
+ * names the same pages. The bridges' betweenness pass runs in a worker
+ * thread (graph-worker-node.ts); the database reads stay on this one, the
+ * only one holding the database. Reads only; report-only.
  */
 
 import type Database from 'better-sqlite3';
-import { mapBridges } from './graph-bridges';
+import { crossTopicKernel, type BetweennessJob, type BetweennessRunner } from './graph-betweenness';
+import { bridgeWork } from './graph-bridges';
 import { UNCATEGORIZED } from './graph-layout';
 import { buildGraphModel, DEFAULT_FILTERS, filterGraph } from './graph-model';
+import { runInWorkerThread } from './graph-worker-node';
 import { getWikiGraph } from './wiki-graph';
 
 /** Clusters listed; the rest are counted. */
@@ -37,7 +41,8 @@ export interface GraphReport {
   bridges: BridgePage[];
 }
 
-export function buildGraphReport(): GraphReport {
+/** The report read from the database, waiting on the bridges' betweenness pass. */
+function readGraphReport(): { job: BetweennessJob; finish(scores: Float64Array): GraphReport } {
   const model = buildGraphModel(getWikiGraph(false));
   const visible = filterGraph(model, DEFAULT_FILTERS);
   const clusters = new Map<string, TopicCluster>();
@@ -55,11 +60,30 @@ export function buildGraphReport(): GraphReport {
   const ranked = [...clusters.values()].sort(
     (x, y) => y.pages - x.pages || y.connections - x.connections || x.name.localeCompare(y.name)
   );
-  const bridges = [...mapBridges(model).values()].map((b): BridgePage => {
-    const node = model.byId.get(b.id);
-    return { page_id: b.id, title: node?.label ?? b.id, category: node?.category ?? UNCATEGORIZED, joins: b.topics };
-  });
-  return { clusters: { count: ranked.length, top: ranked.slice(0, CLUSTERS_SHOWN) }, bridges };
+  const work = bridgeWork(model);
+  const clusterList = { count: ranked.length, top: ranked.slice(0, CLUSTERS_SHOWN) };
+  return {
+    job: work.job,
+    finish: (scores) => {
+      const bridges = [...work.finish(scores).values()].map((b): BridgePage => {
+        const node = model.byId.get(b.id);
+        return { page_id: b.id, title: node?.label ?? b.id, category: node?.category ?? UNCATEGORIZED, joins: b.topics };
+      });
+      return { clusters: clusterList, bridges };
+    },
+  };
+}
+
+/** The report with the betweenness pass on this thread (tests and the scale gate). */
+export function buildGraphReport(): GraphReport {
+  const { job, finish } = readGraphReport();
+  return finish(crossTopicKernel(job.start, job.next, job.topic));
+}
+
+/** The report with the betweenness pass handed to `run`. */
+export async function buildGraphReportWith(run: BetweennessRunner): Promise<GraphReport> {
+  const { job, finish } = readGraphReport();
+  return finish(await run(job));
 }
 
 /**
@@ -68,14 +92,19 @@ export function buildGraphReport(): GraphReport {
  */
 const CACHE_MS = 5 * 60_000;
 const cache = new WeakMap<Database.Database, { key: string; at: number; report: GraphReport }>();
+/** The build under way for a stamp: callers who ask meanwhile wait for it instead of starting another. */
+const building = new WeakMap<Database.Database, { key: string; report: Promise<GraphReport> }>();
 
 /**
- * buildGraphReport for frequent readers (wiki_status): betweenness takes
- * a few hundred ms on a large wiki, so a result is reused while the rows the
- * graph reads keep their counts and the pages their newest update, as in
- * runHealthChecksCached (wiki-health.ts).
+ * The report for frequent readers (wiki_status): betweenness takes seconds
+ * on a large wiki, so it runs in a worker thread (`run`; the app's default),
+ * and a result is reused while the rows the graph reads keep their counts
+ * and the pages their newest update, as in runHealthChecksCached
+ * (wiki-health.ts). A failed build is not kept: the next call tries again.
  */
-export function graphReportCached(db: Database.Database): GraphReport {
+export async function graphReportCached(
+  db: Database.Database, run: BetweennessRunner = runInWorkerThread
+): Promise<GraphReport> {
   const { key } = db
     .prepare(
       `SELECT (SELECT COUNT(*) FROM pages) || ':' || (SELECT COUNT(*) FROM pages WHERE page_type = 'archived') || ':' ||
@@ -87,7 +116,16 @@ export function graphReportCached(db: Database.Database): GraphReport {
     .get() as { key: string };
   const hit = cache.get(db);
   if (hit && hit.key === key && Date.now() - hit.at < CACHE_MS) return hit.report;
-  const report = buildGraphReport();
-  cache.set(db, { key, at: Date.now(), report });
-  return report;
+  const pending = building.get(db);
+  if (pending && pending.key === key) return pending.report;
+  const report = buildGraphReportWith(run).then((built) => {
+    cache.set(db, { key, at: Date.now(), report: built });
+    return built;
+  });
+  building.set(db, { key, report });
+  try {
+    return await report;
+  } finally {
+    if (building.get(db)?.report === report) building.delete(db);
+  }
 }

@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GET } from '../app/api/wiki/research/route';
 import { getRelationsAmong } from '../lib/relations';
+import { runHealthChecksCached } from '../lib/wiki-health';
 import { seedPage, seedProvenance, seedSource, setupTestDb, type TestDbHandle } from './helpers/test-db';
 
 let handle: TestDbHandle | null = null;
@@ -117,9 +118,11 @@ describe('research pack connections', () => {
   it('reads the relation rows once, however many pages the pack holds', async () => {
     seedWiki();
     stubVectors();
+    // The pack's missing names (wiki-health.ts) read the rows too, once a minute at most: warm that cache first.
+    runHealthChecksCached(handle!.db);
     const prepare = vi.spyOn(handle!.db, 'prepare');
     await research('bitcoin');
-    const reads = prepare.mock.calls.filter(([sql]) => /FROM\s+relationship_mentions/i.test(String(sql)));
+    const reads = prepare.mock.calls.filter(([sql]) => /SELECT\s+from_canonical[\s\S]*FROM\s+relationship_mentions/i.test(String(sql)));
     expect(reads).toHaveLength(1);
   });
 

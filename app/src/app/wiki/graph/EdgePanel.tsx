@@ -25,11 +25,13 @@ interface Props {
   /** Select a page on the map and move to it. */
   onPick(pageId: string): void;
   returnFocusTo: RefObject<HTMLElement | null>;
+  /** False when the panel comes back because a filter showed the line again (PanelShell). */
+  takeFocus?: boolean;
 }
 
 const ELLIPSIS: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 };
 
-export default function EdgePanel({ link, model, cache, onClose, onPick, returnFocusTo }: Props) {
+export default function EdgePanel({ link, model, cache, onClose, onPick, returnFocusTo, takeFocus }: Props) {
   const [fromId, toId] = readingOrder(link);
   const from = model.byId.get(fromId)?.label ?? fromId;
   const to = model.byId.get(toId)?.label ?? toId;
@@ -47,6 +49,7 @@ export default function EdgePanel({ link, model, cache, onClose, onPick, returnF
       title={`${from} ↔ ${to}`}
       onClose={onClose}
       returnFocusTo={returnFocusTo}
+      takeFocus={takeFocus}
       footer={
         <>
           <FooterLink href={`/wiki/${fromId}`}>

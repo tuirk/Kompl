@@ -3,15 +3,17 @@
 /**
  * The graph page's header: title and counts, the focus controls when the map
  * is focused on a page (its name, a 1 / 2 hops switch, back to the full
- * map), "Connect two pages", and the Wiki / Graph switch (its Graph tab
- * leaves a focus). Inline styles and
+ * map), "Find a page" (FindPage.tsx), "Connect two pages", and the Wiki /
+ * Graph switch (its Graph tab leaves a focus). Inline styles and
  * CSS vars; buttons show the keyboard focus (globals.css .graph-header-btn).
  */
 
 import type { CSSProperties, MouseEvent } from 'react';
 import { Route, X } from 'lucide-react';
 import WikiViewToggle from '../../../components/WikiViewToggle';
+import type { ModelNode } from '../../../lib/graph-model';
 import type { FocusDepth } from '../../../lib/graph-scope';
+import FindPage from './FindPage';
 
 interface Props {
   pages: number;
@@ -25,6 +27,9 @@ interface Props {
   onPath(): void;
   /** A one-line note, e.g. a focus link to a page that is not on the map. */
   notice: string | null;
+  /** The pages on the map, for "Find a page", and what choosing one does. */
+  findPages: readonly ModelNode[];
+  onFind(pageId: string): void;
 }
 
 const SMALL_CAPS: CSSProperties = {
@@ -50,11 +55,13 @@ function leaveFocusOnGraphTab(e: MouseEvent<HTMLDivElement>, focused: boolean, o
   onFullMap();
 }
 
-export default function GraphHeader({ pages, lines, focusTitle, depth, onDepth, onFullMap, pathOpen, onPath, notice }: Props) {
+export default function GraphHeader(props: Props) {
+  const { pages, lines, focusTitle, depth, onDepth, onFullMap, pathOpen, onPath, notice, findPages, onFind } = props;
   return (
+    // Wraps onto more lines on narrow screens, so the path finder and the Wiki / Graph switch stay reachable.
     <header
       style={{
-        display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.75rem 1.5rem', zIndex: 30, minWidth: 0,
+        display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem 1rem', padding: '0.75rem 1.5rem', zIndex: 30, minWidth: 0,
         borderBottom: '1px solid rgba(71,72,74,0.15)', background: 'rgba(36,38,41,0.6)', backdropFilter: 'blur(12px)',
       }}
     >
@@ -68,7 +75,7 @@ export default function GraphHeader({ pages, lines, focusTitle, depth, onDepth, 
       {focusTitle !== null && (
         <>
           {DIVIDER}
-          <div role="group" aria-label="Focus" style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <div role="group" aria-label="Focus" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <span style={SMALL_CAPS}>Focus</span>
             <span
               title={focusTitle}
@@ -99,7 +106,8 @@ export default function GraphHeader({ pages, lines, focusTitle, depth, onDepth, 
         </>
       )}
       {notice && <span role="status" style={{ ...SMALL_CAPS, textTransform: 'none', letterSpacing: 0, fontSize: 12 }}>{notice}</span>}
-      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+        {findPages.length > 0 && <FindPage pages={findPages} onFind={onFind} />}
         <button
           type="button"
           className="graph-header-btn"
@@ -116,7 +124,7 @@ export default function GraphHeader({ pages, lines, focusTitle, depth, onDepth, 
           {pathOpen ? <X size={12} aria-hidden /> : <Route size={12} aria-hidden />}
           {pathOpen ? 'Close path finder' : 'Connect two pages'}
         </button>
-        {/* The active Graph tab while focused leaves the focus in place (no navigation, no history entry). */}
+        {/* The active Graph tab while focused leaves the focus as "Full map" does, without a navigation. */}
         <div onClickCapture={(e) => leaveFocusOnGraphTab(e, focusTitle !== null, onFullMap)}>
           <WikiViewToggle active="graph" />
         </div>

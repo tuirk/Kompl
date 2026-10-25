@@ -2,20 +2,29 @@
 
 /**
  * A resize grip for the graph's floating panels: three diagonal lines in a
- * corner, as on a textarea. Drag it (pointer capture, so the drag keeps
- * going outside the grip) or focus it and use the arrow keys (16 px a
- * press, lib/graph-panels.ts resizeStep). `onResize` gets the change in
- * pixels since the drag started; `onDone` fires when a drag or a key press
- * ends, for saving the size.
+ * corner, as on a textarea, and a focusable window splitter for keyboards
+ * and screen readers (role="separator" with the width and its limits). Drag
+ * it (pointer capture, so the drag keeps going outside the grip) or focus it
+ * and use the arrow keys (16 px a press) or Home / End (narrowest / widest),
+ * lib/graph-panels.ts. `onResize` gets the change in pixels since the drag
+ * started; `onDone` fires when a drag or a key press ends, for saving the
+ * size. A cancelled drag, or one that loses its capture, stops at the size
+ * last shown.
  */
 
 import { useRef, type KeyboardEvent, type PointerEvent } from 'react';
-import { resizeStep } from '../../../lib/graph-panels';
+import { gripDragDelta, gripKeyStep, type GripDrag, type GripRange } from '../../../lib/graph-panels';
 
 interface Props {
   label: string;
   /** 'legend': bottom-right corner, both ways; 'panel': bottom-left corner, width only. */
   grip: 'legend' | 'panel';
+  /** The width it sets now and its limits. */
+  range: GripRange;
+  /** The id of the panel it resizes. */
+  controls?: string;
+  /** How the size reads out, e.g. "360 px wide". */
+  valueText: string;
   /**
    * Called with `start` true when a drag or a key step begins (the parent notes
    * the size then), then with [dx, dy] since that start for each change.
@@ -24,30 +33,32 @@ interface Props {
   onDone(): void;
 }
 
-export default function ResizeGrip({ label, grip, onResize, onDone }: Props) {
-  const from = useRef<{ x: number; y: number; id: number } | null>(null);
+export default function ResizeGrip({ label, grip, range, controls, valueText, onResize, onDone }: Props) {
+  const from = useRef<GripDrag | null>(null);
   const corner = grip === 'legend' ? { right: 0, bottom: 0 } : { left: 0, bottom: 0 };
 
-  const down = (e: PointerEvent<HTMLButtonElement>) => {
+  const down = (e: PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    from.current = { x: e.clientX, y: e.clientY, id: e.pointerId };
+    from.current = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
     onResize(0, 0, true);
   };
-  const move = (e: PointerEvent<HTMLButtonElement>) => {
-    if (from.current?.id !== e.pointerId) return;
-    onResize(e.clientX - from.current.x, e.clientY - from.current.y, false);
+  const move = (e: PointerEvent<HTMLDivElement>) => {
+    const d = gripDragDelta(from.current, e);
+    if (d) onResize(d[0], d[1], false);
   };
-  const up = (e: PointerEvent<HTMLButtonElement>) => {
-    if (from.current?.id !== e.pointerId) return;
-    // The last step goes in with onDone, in one update, so what is saved is what is shown.
-    onResize(e.clientX - from.current.x, e.clientY - from.current.y, false);
+  // A release applies its last step with onDone, in one update, so what is saved is what is shown;
+  // a cancel or a lost capture applies none (its coordinates can be 0,0).
+  const end = (e: PointerEvent<HTMLDivElement>) => {
+    if (from.current?.pointerId !== e.pointerId) return;
+    const d = gripDragDelta(from.current, e);
+    if (d) onResize(d[0], d[1], false);
     from.current = null;
-    e.currentTarget.releasePointerCapture(e.pointerId);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
     onDone();
   };
-  const key = (e: KeyboardEvent<HTMLButtonElement>) => {
-    const step = resizeStep(e.key, grip);
+  const key = (e: KeyboardEvent<HTMLDivElement>) => {
+    const step = gripKeyStep(e.key, grip, range);
     if (!step) return;
     e.preventDefault();
     onResize(0, 0, true);
@@ -57,15 +68,23 @@ export default function ResizeGrip({ label, grip, onResize, onDone }: Props) {
   };
 
   return (
-    <button
-      type="button"
+    <div
+      role="separator"
+      tabIndex={0}
       className="graph-header-btn"
       aria-label={label}
+      aria-orientation="vertical"
+      aria-valuenow={range.value}
+      aria-valuemin={range.min}
+      aria-valuemax={range.max}
+      aria-valuetext={valueText}
+      aria-controls={controls}
       title={`${label} (drag, or use the arrow keys)`}
       onPointerDown={down}
       onPointerMove={move}
-      onPointerUp={up}
-      onPointerCancel={up}
+      onPointerUp={end}
+      onPointerCancel={end}
+      onLostPointerCapture={end}
       onKeyDown={key}
       style={{
         position: 'absolute', ...corner, width: 18, height: 18, padding: 0, border: 'none', background: 'none',
@@ -75,6 +94,6 @@ export default function ResizeGrip({ label, grip, onResize, onDone }: Props) {
       <svg width={18} height={18} viewBox="0 0 18 18" aria-hidden style={{ display: 'block', transform: grip === 'panel' ? 'scaleX(-1)' : undefined }}>
         <path d="M16 6 L6 16 M16 10 L10 16 M16 14 L14 16" stroke="var(--fg-muted)" strokeWidth={1.25} strokeLinecap="round" />
       </svg>
-    </button>
+    </div>
   );
 }

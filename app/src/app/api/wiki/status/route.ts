@@ -8,8 +8,9 @@
  *   - contradictions found by the last manual health check, which is the
  *     only check that uses the LLM;
  *   - the knowledge graph's topic clusters and bridge pages, as the map's
- *     default view shows them (lib/graph-report.ts; cached, report-only;
- *     left out, and logged, if building it fails).
+ *     default view shows them (lib/graph-report.ts; cached, report-only,
+ *     betweenness in a worker thread; left out, and logged, if building it
+ *     fails).
  *
  * Never writes, and never calls the LLM or the NLP service.
  */
@@ -50,7 +51,7 @@ export async function GET() {
   const thresholdDays = getStaleThresholdDays();
   const lastCheck = normalizeLintResult(getLastLintResult());
   const running = getRunningCompileSession();
-  const graph = graphReport(db);
+  const graph = await graphReport(db);
 
   return NextResponse.json({
     stats: getWikiStats(),
@@ -96,10 +97,10 @@ export async function GET() {
   });
 }
 
-/** The graph part is an extra: if it throws, the rest of the snapshot still answers. */
-function graphReport(db: ReturnType<typeof getDb>): GraphReport | null {
+/** The graph part is an extra: if it fails, the rest of the snapshot still answers. */
+async function graphReport(db: ReturnType<typeof getDb>): Promise<GraphReport | null> {
   try {
-    return graphReportCached(db);
+    return await graphReportCached(db);
   } catch (err) {
     console.error(
       JSON.stringify({
