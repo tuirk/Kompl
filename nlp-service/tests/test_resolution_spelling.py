@@ -4,8 +4,10 @@ Levenshtein ≤ 2 and Jaro-Winkler ≥ 0.92 over whole names merged "NVDA" /
 "NAVA", "WebKit" / "WebAIM", "vestibular motion triggers" / "vestibular
 motion disorders" and "anti-aliasing and font weight" / "Antialiasing and
 font smoothing" (2026-10-17, offline replay of session 61c8bb37). These
-tests pin the stricter rules: skeleton, simple plural, one slip in a long
-word, near-spellings that keep the head word, and the acronym rule.
+tests pin the stricter rules: skeleton, simple plural, near-spellings that
+keep the head word, and "Full Name (ABBR)". Since 2026-10-23 a one-letter
+slip in a single word and a bare acronym are asked of Layer 3 instead
+(test_resolution_layer1_strict.py).
 """
 
 from __future__ import annotations
@@ -80,10 +82,12 @@ def test_spellings_of_one_name_still_merge(client):
         frozenset({"CSS media query", "CSS media queries"}): "plural",
         frozenset({"Colour contrast ratio", "Color contrast ratio"}): "levenshtein",
         frozenset({"WCAG 2", "WCAG 2.0"}): "levenshtein",
-        frozenset({"Kubernetes", "Kubernetis"}): "levenshtein",
-        frozenset({"API", "Application Programming Interface"}): "acronym",
     }
-    assert data["unresolved"] == []
+    # A one-letter slip in a single word and an acronym are asked of Layer 3
+    # since 2026-10-23 (test_resolution_layer1_strict.py).
+    assert sorted(e["name"] for e in data["unresolved"]) == [
+        "API", "Application Programming Interface", "Kubernetes", "Kubernetis",
+    ]
 
 
 def test_skeleton_keeps_symbols_that_name_a_language(client):
@@ -121,10 +125,12 @@ def test_cross_session_matcher_uses_the_layer_1_rules(name, title, method):
     assert _fuzzy_method(name, title) == method
 
 
-def test_capitalised_acronym_binds_its_page_whatever_the_kind(client):
-    """Sources type "WCAG" ORG or PRODUCT and the guidelines CONCEPT; the
-    acronym still lands on the existing page. A word that happens to spell
-    initials ("Web") does not."""
+def test_a_bare_acronym_binds_no_page(client):
+    """"WCAG" bound the page "Web Content Accessibility Guidelines" here
+    until the owner decision of 2026-10-23: a bare acronym binds nothing in
+    Layer 1, and Layer 2 asks Layer 3 about it whatever the kinds
+    (test_resolution_layer2_gate.py). A word that happens to spell initials
+    ("Web") is not asked about either."""
     data = _fuzzy(
         client,
         [_entity("WCAG", "ORG", "s1"), _entity("Web", "CONCEPT", "s2")],
@@ -133,10 +139,8 @@ def test_capitalised_acronym_binds_its_page_whatever_the_kind(client):
             {"title": "World Economic Bank", "page_type": "entity"},
         ],
     )
-    assert [(g["canonical"], g["aliases"], g["method"]) for g in data["resolved"]] == [
-        ("Web Content Accessibility Guidelines", ["WCAG"], "existing_page_title"),
-    ]
-    assert [e["name"] for e in data["unresolved"]] == ["Web"]
+    assert data["resolved"] == []
+    assert [e["name"] for e in data["unresolved"]] == ["WCAG", "Web"]
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +199,7 @@ def test_bracketed_page_binds_its_full_name_within_its_kind_only(client):
 
 def test_people_one_letter_apart_stay_apart(client):
     """"Anderson" / "Andersen" are two surnames, not a slip."""
-    data = _fuzzy(client, [_entity("Anderson", "PERSON", "s1"), _entity("Andersen", "PERSON", "s2"),
-                           _entity("Kubernetes", "PRODUCT", "s3"), _entity("Kubernetis", "PRODUCT", "s4")])
-    assert [sorted([g["canonical"], *g["aliases"]]) for g in data["resolved"]] == [["Kubernetes", "Kubernetis"]]
+    data = _fuzzy(client, [_entity("Anderson", "PERSON", "s1"), _entity("Andersen", "PERSON", "s2")])
+    assert data["resolved"] == []
     page = _fuzzy(client, [_entity("Andersen", "PERSON", "s1")], page_titles=[{"title": "Anderson", "page_type": "entity"}])
     assert page["resolved"] == []

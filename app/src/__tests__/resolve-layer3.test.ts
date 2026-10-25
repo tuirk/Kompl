@@ -27,11 +27,15 @@ afterEach(() => {
 
 interface Ent { name: string; type: string; source_id: string; context: string }
 interface Group { canonical: string; type: string; aliases: string[]; source_ids: string[]; method: string }
-interface Pair { entity_a: Ent; entity_b: Ent; similarity: number; name_similarity: number; pair_id?: string }
-interface Stats { llm_pairs: number; llm_pairs_over_cap: number; llm_pairs_failed: number }
+interface Pair {
+  entity_a: Ent; entity_b: Ent; similarity: number; name_similarity: number;
+  same_source: boolean; abbreviation: boolean; pair_id?: string;
+}
+interface Stats { llm_pairs: number; llm_pairs_over_cap: number; llm_pairs_failed: number; llm_pairs_rerouted: number }
 
 const ent = (name: string, source_id: string, type = 'CONCEPT'): Ent => ({ name, type, source_id, context: '' });
-const pair = (a: Ent, b: Ent, sim: number): Pair => ({ entity_a: a, entity_b: b, similarity: sim, name_similarity: sim });
+const pair = (a: Ent, b: Ent, sim: number): Pair =>
+  ({ entity_a: a, entity_b: b, similarity: sim, name_similarity: sim, same_source: false, abbreviation: false });
 
 /** Runs the route with mocked layers; `decide` answers each pair sent to Layer 3. */
 async function resolveWith(args: {
@@ -39,6 +43,7 @@ async function resolveWith(args: {
   ambiguous: Pair[];
   decide?: (p: Pair) => { decision: string; canonical: string | null; pair_id?: string | null };
   failedPairs?: number;
+  rerouted?: number;
 }) {
   handle = setupTestDb();
   const session_id = 'sess-layer3';
@@ -51,7 +56,7 @@ async function resolveWith(args: {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     if (url.endsWith('/resolve/fuzzy')) return Response.json({ resolved: args.groups ?? [], unresolved: body.entities });
     if (url.endsWith('/resolve/embedding')) {
-      return Response.json({ resolved: args.groups ?? [], ambiguous: args.ambiguous, unresolved: [] });
+      return Response.json({ resolved: args.groups ?? [], ambiguous: args.ambiguous, unresolved: [], rerouted: args.rerouted ?? 0 });
     }
     if (url.endsWith('/resolve/disambiguate')) {
       const pairs = body.pairs as Pair[];
@@ -77,7 +82,10 @@ async function resolveWith(args: {
   const activity = handle.db
     .prepare("SELECT action_type, details, step_key FROM activity_log WHERE action_type = 'resolution_pairs_unchecked'")
     .all() as Array<{ action_type: string; details: string; step_key: string }>;
-  return { ...json, sent, activity };
+  const complete = handle.db
+    .prepare("SELECT details FROM activity_log WHERE action_type = 'resolution_complete'")
+    .all() as Array<{ details: string }>;
+  return { ...json, sent, activity, complete: complete.map((r) => JSON.parse(r.details) as Record<string, unknown>) };
 }
 
 it('gives pairs across sources and against pages their slots before a list article\'s pairs', async () => {
@@ -97,6 +105,32 @@ it('gives pairs across sources and against pages their slots before a list artic
   expect(activity).toHaveLength(1);
   expect(activity[0].step_key).toBe('resolve');
   expect(JSON.parse(activity[0].details)).toMatchObject({ over_cap: 13, llm_failed: 0, cap: MAX_DISAMBIGUATE_PAIRS });
+});
+
+it('asks a flagged acronym pair first and hands every pair\'s hints on to Layer 3', async () => {
+  const { sent } = await resolveWith({
+    ambiguous: [
+      pair(ent('Gas fee', 's1'), ent('Transaction fee', 's2'), 0.9),
+      // "LLMs" reads as no abbreviation; Layer 2 flags the pair through the group's "LLM".
+      { ...pair(ent('LLMs', 's3'), ent('Large Language Model', 's4'), 0.2), abbreviation: true },
+      { ...pair(ent('Kaunas Castle', 's5'), ent('Kaunas Fortress', 's5'), 0.85), same_source: true },
+    ],
+  });
+  expect(sent.map((p) => [p.entity_a.name, p.same_source, p.abbreviation])).toEqual([
+    ['LLMs', false, true],
+    ['Gas fee', false, false],
+    ['Kaunas Castle', true, false],
+  ]);
+});
+
+it('counts the pairs Layer 2 sent to Layer 3 instead of merging them', async () => {
+  const { stats, complete } = await resolveWith({
+    ambiguous: [pair(ent('North Korea', 's1'), ent('South Korea', 's2'), 0.96)],
+    rerouted: 1,
+  });
+  expect(stats.llm_pairs_rerouted).toBe(1);
+  expect(complete).toHaveLength(1);
+  expect(complete[0]).toMatchObject({ llm_pairs_rerouted: 1 });
 });
 
 it('logs nothing extra when every pair was asked', async () => {

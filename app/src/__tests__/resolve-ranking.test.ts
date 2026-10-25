@@ -42,4 +42,16 @@ describe('rankForLayer3', () => {
       'JS', 'Kaunas Castle', 'Dutch auction', 'Set collection',
     ]);
   });
+
+  it('ranks an acronym pair Layer 2 flags with the abbreviations, within its tier', () => {
+    const pairs = [
+      pair('Gas fee', 'Transaction fee', 0.75),
+      { ...pair('LLMs', 'Large Language Model', 0.2, 0.2), abbreviation: true },
+      { ...pair('PM', 'Project Manager', 0.3, 0.3, true), abbreviation: true },
+      pair('Kaunas Castle', 'Kaunas Fortress', 0.88, 0.88, true),
+    ];
+    expect(rankForLayer3(pairs, (p) => p.oneSource).map((p) => p.entity_a.name)).toEqual([
+      'LLMs', 'Gas fee', 'PM', 'Kaunas Castle',
+    ]);
+  });
 });

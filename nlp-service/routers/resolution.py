@@ -4,9 +4,9 @@ Three-layer cascading matcher that resolves entity duplicates across sources
 in a session:
 
   POST /resolve/fuzzy         — Layer 1: spellings of one name (exact,
-                                  skeleton, plural, near-spelling, acronym,
-                                  "Full Name (ABBR)"), existing aliases and
-                                  page titles
+                                  skeleton, plural, near-spelling, "Full
+                                  Name (ABBR)"), existing aliases and page
+                                  titles
   POST /resolve/embedding     — Layer 2: sentence-transformers cosine similarity
   POST /resolve/disambiguate  — Layer 3: Gemini LLM for 0.7–0.9 ambiguous band
 
@@ -19,7 +19,13 @@ Implementation notes:
   - Union-Find groups entities that match on ANY of the fuzzy criteria, but
     names whose numbers differ (Python 2 / Python 3) never merge, and names
     where one only adds words to the other (Ethereum / Ethereum Foundation)
-    are left to Layers 2/3 unless both are people.
+    are left to Layers 2/3 unless both are people. Every group is a set of
+    names that all match one another (complete linkage).
+  - An acronym or ticker and its expansion ("ML" / "Machine Learning",
+    "ETH" / "Ethereum") and single words one letter apart ("Wikipedia" /
+    "Wikimedia") never merge on spelling (_layer3_only_method); Layer 2
+    asks Layer 3 about them, and about a name that adds words to a page
+    title ("APCA contrast algorithm" / "APCA"), whatever their similarity.
   - Canonical name = the name most sources use; for people, the fullest name.
   - Embedding model is a lazy singleton — loaded once on first /resolve/embedding call.
   - Compatible types for cross-type matching: {ORG, PRODUCT} and {CONCEPT, OTHER}.
@@ -40,6 +46,16 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
+from routers.resolution_rules import (
+    WordBagIndex,
+    content_words_agree,
+    hubs,
+    is_ticker,
+    majority_kind,
+    ticker_abbreviates,
+    ticker_initials,
+    ticker_prefixes,
+)
 from services.llm_models import LLMModel
 
 logger = logging.getLogger(__name__)
@@ -87,7 +103,7 @@ class ResolvedGroup(BaseModel):
     type: str
     aliases: list[str]
     source_ids: list[str]
-    method: str   # "exact"|"skeleton"|"plural"|"levenshtein"|"jaro_winkler"|"acronym"|"parenthetical"|"person_subset"|"person_initials"|"existing_alias"|"embedding"|"existing_page_title"
+    method: str   # "exact"|"skeleton"|"plural"|"levenshtein"|"jaro_winkler"|"parenthetical"|"person_subset"|"person_initials"|"existing_alias"|"embedding"|"existing_page_title"
 
 
 class ExistingPageTitle(BaseModel):
@@ -179,9 +195,11 @@ def _initials(name: str) -> str | None:
 
 
 def _is_acronym(short: str, long: str) -> bool:
-    """Return True if short (uppercase) is the acronym of long."""
+    """`short`, written in capitals, spells the initials of `long`: "ML" /
+    "Machine Learning". In lower case it is usually a word ("it" /
+    "Information Technology", "art" / "Adaptive Resonance Theory")."""
     initials = _initials(long)
-    return initials is not None and short.upper() == initials
+    return initials is not None and short.isupper() and short.upper() == initials
 
 
 # ---------------------------------------------------------------------------
@@ -351,33 +369,69 @@ def _same_words_but_spelling(ta: list[str], tb: list[str]) -> bool:
 def _spelling_method(a: str, b: str, *, person: bool = False) -> str | None:
     """How a and b spell one name, or None. Callers have already ruled out
     equal names, names whose numbers differ and names that extend one
-    another. For people a one-letter slip is a different surname
-    ("Anderson" / "Andersen"), so the single-word edit rule is off."""
+    another. People match only by skeleton: a plural or a one-letter edit
+    inside a name is another person ("John Edward" / "John Edwards",
+    "Louis Martin" / "Louise Martin"). An acronym and a single word one
+    letter off are not spellings either: see _layer3_only_method."""
     from rapidfuzz.distance import JaroWinkler, Levenshtein
 
     sa, sb = _skeleton(a), _skeleton(b)
     if sa and sa == sb:
         return "skeleton"
+    if person:
+        return None
     if _is_simple_plural(a, b):
         return "plural"
 
     ta, tb = _name_tokens(a), _name_tokens(b)
     al, bl = a.lower(), b.lower()
-    if len(ta) >= 2 and len(tb) >= 2:
-        if _same_words_but_spelling(ta, tb):
-            if Levenshtein.distance(al, bl) <= 2:
-                return "levenshtein"
-            if JaroWinkler.similarity(al, bl) >= 0.92:
-                return "jaro_winkler"
-    elif not person and len(sa) >= 8 and len(sb) >= 8 and Levenshtein.distance(sa, sb) == 1:
-        # One word: a single slip in a long name ("Kubernetes" / "Kubernetis").
-        # Short words one letter apart are usually two things ("Chrome" /
-        # "Chroma").
-        return "levenshtein"
+    if len(ta) >= 2 and len(tb) >= 2 and _same_words_but_spelling(ta, tb):
+        if Levenshtein.distance(al, bl) <= 2:
+            return "levenshtein"
+        if JaroWinkler.similarity(al, bl) >= 0.92:
+            return "jaro_winkler"
+    return None
 
-    if _is_acronym(a, b) or _is_acronym(b, a):
+
+def _is_acronym_pair(a: str, b: str) -> bool:
+    """An acronym or ticker and its expansion, either way round: a name in
+    capitals that spells the initials of the other's words ("ML" / "Machine
+    Learning", "LOTR" / "Lord of the Rings"), or two to six capitals that
+    spell the initials of its words without stopwords ("UNESCO") or start
+    its first word ("ETH" / "Ethereum"). Never a spelling, a plural, a name
+    plus words ("AI" / "AI Act") or names whose numbers differ. The alias
+    screen keeps exactly these pairs for Layer 3 (acronymPair in
+    app/src/lib/alias-shapes.ts); tests/fixtures/acronym_pair_cases.json
+    holds the two to the same cases."""
+    if not (_is_acronym(a, b) or _is_acronym(b, a) or ticker_abbreviates(a, b) or ticker_abbreviates(b, a)):
+        return False
+    return not (_skeleton(a) == _skeleton(b) or _numeric_conflict(a, b) or _is_simple_plural(a, b)
+                or _is_token_extension(a, b))
+
+
+def _layer3_only_method(a: str, b: str, *, person: bool = False) -> str | None:
+    """Pairs Layer 1 merged on spelling alone until 2026-10-23 and now only
+    asks Layer 3 about, whatever their similarity (resolve_embedding):
+      - "acronym": an acronym or ticker and its expansion (_is_acronym_pair:
+        "ML" / "Machine Learning", "ETH" / "Ethereum"). Most acronyms stand
+        for several things ("CI" is Continuous Integration and Confidence
+        Interval), and a bare match chained them into one group (owner
+        decision 2026-10-23);
+      - "slip": two long single words one letter apart ("Wikipedia" /
+        "Wikimedia", "Columbia" / "Colombia"), usually two things. Not for
+        people, whose names never match by an edit.
+    Names whose numbers differ are left out; _block_keys finds both kinds."""
+    from rapidfuzz.distance import Levenshtein
+
+    sa, sb = _skeleton(a), _skeleton(b)
+    if sa == sb or _numeric_conflict(a, b):
+        return None
+    if _is_acronym_pair(a, b):
         return "acronym"
-
+    if person or (len(_name_tokens(a)) >= 2 and len(_name_tokens(b)) >= 2):
+        return None
+    if len(sa) >= 8 and len(sb) >= 8 and Levenshtein.distance(sa, sb) == 1:
+        return "slip"
     return None
 
 
@@ -418,7 +472,13 @@ def _parenthetical_match(a: str, b: str) -> str | None:
     session 61c8bb37). "abbreviation" when the other name is the short
     form, "expansion" when it is the full name, else None. Two names that
     both end in a bracket never match here ("Mercury (planet)" / "Mercury
-    (element)"), and neither does a bracket holding a year or a qualifier."""
+    (element)"), and neither does a bracket holding a year or a qualifier.
+
+    The source defined one abbreviation for one full name, so only those
+    two match: the abbreviation as written in capitals, and the full name
+    or a spelling of it. "Continuous Integration (CI)" is not "Confidence
+    Interval" and "Machine Learning (ML)" is not "Maximum Likelihood"
+    (audit 2026-10-23); a bare initials match goes to Layer 3."""
     if not (a.rstrip().endswith(")") or b.rstrip().endswith(")")):
         return None
     pa, pb = _split_parenthetical(a), _split_parenthetical(b)
@@ -427,9 +487,9 @@ def _parenthetical_match(a: str, b: str) -> str | None:
     (base, inner), other = (pa, b) if pa is not None else (pb, a)
     if not _is_abbreviation(inner, base):
         return None
-    if _skeleton(other) == _skeleton(inner) or _is_acronym(other, base):
+    if other.isupper() and _skeleton(other) == _skeleton(inner):
         return "abbreviation"
-    if _skeleton(other) == _skeleton(base) or _is_acronym(inner, other):
+    if _skeleton(other) == _skeleton(base) or _spelling_method(other, base):
         return "expansion"
     return None
 
@@ -482,9 +542,9 @@ def _cross_session_method(a: str, b: str, *, person: bool = False) -> str | None
     as in-session grouping apply, without the person rules, and "Full Name
     (ABBR)" binds its full name and its abbreviation (_parenthetical_match).
 
-    Layer 2 embedding similarity handles the legitimate cross-session cases
-    (e.g. "Andrej Karpathy" ↔ existing "Karpathy" page) semantically,
-    sending borderline pairs to Layer 3 LLM disambiguation.
+    Layer 2 sends the legitimate cross-session cases to Layer 3: a name that
+    adds words to a page title ("Andrej Karpathy" ↔ existing "Karpathy"
+    page) is asked about whatever its similarity (_extension_node_pairs).
     """
     if a.lower() == b.lower():
         return "exact"
@@ -502,19 +562,17 @@ def _cross_session_method(a: str, b: str, *, person: bool = False) -> str | None
 
 
 def _cross_kind_acronym(name: str, title: str) -> bool:
-    """A capitalised acronym and the page title it abbreviates, or the other
-    way round ("WCAG" / "Web Content Accessibility Guidelines"), also when
-    the long form carries it in brackets ("Web Content Accessibility
+    """A capitalised abbreviation and the page title that defines it in
+    brackets, or the other way round ("WCAG" / "Web Content Accessibility
     Guidelines (WCAG)"). Binds across kinds: sources type the short form ORG
-    or PRODUCT and the long one CONCEPT."""
+    or PRODUCT and the long one CONCEPT. A bare initials match ("WCAG" /
+    "Web Content Accessibility Guidelines") binds nothing: Layer 2 asks
+    Layer 3 about it (_layer3_only_method)."""
     short, long = sorted((name, title), key=len)
     if not short.isupper():
         return False
-    if _is_acronym(short, long):
-        return _cross_session_method(name, title) == "acronym"
-    if _parenthetical_match(short, long) == "abbreviation":
-        return _cross_session_method(name, title) == "parenthetical"
-    return False
+    return (_parenthetical_match(short, long) == "abbreviation"
+            and _cross_session_method(name, title) == "parenthetical")
 
 
 # ---------------------------------------------------------------------------
@@ -543,17 +601,23 @@ def _singulars(skeleton: str) -> list[str]:
 
 
 def _block_keys(name: str, *, person: bool = False) -> set[tuple[str, str]]:
-    """Keys that let _partner_key find every name _fuzzy_method or
-    _cross_session_method can match with this one:
+    """Keys that let _partner_key find every name _fuzzy_method,
+    _cross_session_method or _layer3_only_method can match with this one:
       - exact, skeleton and plural: the lower-case name, the skeleton and
         the skeleton without a plural ending;
       - two or more words: the word count and the head word without a
         plural ending (_same_words_but_spelling);
-      - one slip in a long name: the skeleton with any one letter dropped;
-      - acronym: the name in capitals ("caps"), which meets the initials of
-        a longer name ("init");
+      - one slip in a long name (Layer 3 only): the skeleton with any one
+        letter dropped;
+      - acronym (Layer 3 only): the name in capitals ("caps"), which meets
+        the initials of a longer name ("init");
+      - ticker (Layer 3 only): two to six capitals ("tick"), which meet the
+        initials of a name's words without stopwords and the starts of its
+        first word ("tock");
       - "Full Name (ABBR)": the same keys for the bracket and the full name;
       - people (person=True): each word, for surname and initial matches.
+    A name that adds words to a page title is found by WordBagIndex
+    instead (_extension_node_pairs).
     """
     keys = {("lower", name.lower())}
     skeleton = _skeleton(name)
@@ -574,17 +638,25 @@ def _block_keys(name: str, *, person: bool = False) -> set[tuple[str, str]]:
         initials.append(_initials(base))
     keys.update(("caps", c) for c in caps if c)
     keys.update(("init", c) for c in initials if c)
+    if is_ticker(name):
+        keys.add(("tick", name.strip().lower()))
+    ticker_initial = ticker_initials(name)
+    keys.update(("tock", t) for t in ([ticker_initial] if ticker_initial else []) + ticker_prefixes(name))
     if person:
         keys.update(("token", t) for t in tokens)
     return keys
 
 
+_PARTNER_KINDS = {"caps": "init", "init": "caps", "tick": "tock", "tock": "tick"}
+
+
 def _partner_key(key: tuple[str, str]) -> tuple[str, str]:
     """The key a matching name carries: the same one, except that a name in
-    capitals meets the initials of another and the other way round. Two
-    long names with the same initials are never compared for it."""
+    capitals meets the initials of another and a ticker the start of
+    another, and the other way round. Two long names with the same initials
+    are never compared for it."""
     kind, value = key
-    return ({"caps": "init", "init": "caps"}.get(kind, kind), value)
+    return (_PARTNER_KINDS.get(kind, kind), value)
 
 
 def _title_key(name: str) -> str:
@@ -631,9 +703,14 @@ def _all_person(entities: list[EntityInput], members: list[int]) -> bool:
 
 
 class _GuardedUnion:
-    """Union-Find that refuses merges a pairwise check can't see: chains that
-    would put "Python 2" and "Python 3" in one group, two groups anchored to
-    different pages, or two different people who share a surname."""
+    """Union-Find with a complete-linkage veto: two groups join only when
+    every name of one matches every name of the other, so a chain can't put
+    "Python 2" and "Python 3", "Paul Graham" and "Paul Allen", or two
+    different people who share a surname in one group. A group bound to an
+    existing page (`anchors`) takes in only names that match that page, or
+    a name bound to it, by the strict cross-session rules: "Paul Allen"
+    joined the page "Paul" through an in-session "Paul" (audit 2026-10-23).
+    Two groups bound to different pages never join."""
 
     def __init__(self, entities: list[EntityInput], anchors: dict[int, str] | None = None) -> None:
         self.entities = entities
@@ -641,9 +718,32 @@ class _GuardedUnion:
         self.members: dict[int, list[int]] = {i: [i] for i in range(len(entities))}
         self.anchor: dict[int, str | None] = {i: (anchors or {}).get(i) for i in range(len(entities))}
         self.methods: dict[int, set[str]] = {i: set() for i in range(len(entities))}
+        self.bound = set(anchors or {})
+        self._links: dict[tuple[int, int], bool] = {}
 
     def find(self, i: int) -> int:
         return self.uf.find(i)
+
+    def linked(self, x: int, y: int) -> bool:
+        """Two names Layer 1 would merge on their own."""
+        key = (x, y) if x < y else (y, x)
+        if key not in self._links:
+            a, b = self.entities[x], self.entities[y]
+            person = a.type == "PERSON" and b.type == "PERSON"
+            self._links[key] = _types_compatible(a.type, b.type) and \
+                _fuzzy_method(a.name, b.name, person_pair=person) is not None
+        return self._links[key]
+
+    def _matches_anchor(self, anchored: int, joining: int) -> bool:
+        """Every name of the joining group matches the anchored group's page
+        title, or a name bound to it, as _cross_session_method allows."""
+        anchor = self.anchor[anchored]
+        assert anchor is not None
+        targets = {anchor, *(self.entities[k].name for k in self.members[anchored] if k in self.bound)}
+        return all(
+            any(_cross_session_method(e.name, t, person=e.type == "PERSON") for t in targets)
+            for e in (self.entities[k] for k in self.members[joining])
+        )
 
     def try_union(self, i: int, j: int, method: str) -> bool:
         ri, rj = self.find(i), self.find(j)
@@ -655,14 +755,12 @@ class _GuardedUnion:
             # Both already resolve to an existing page: same page → same group.
             if ai != aj:
                 return False
-        else:
-            names_i = [self.entities[k].name for k in self.members[ri]]
-            names_j = [self.entities[k].name for k in self.members[rj]]
-            if any(_numeric_conflict(x, y) for x in names_i for y in names_j):
+        elif ai is not None or aj is not None:
+            anchored, joining = (ri, rj) if ai is not None else (rj, ri)
+            if not self._matches_anchor(anchored, joining):
                 return False
-            if _all_person(self.entities, self.members[ri]) and _all_person(self.entities, self.members[rj]):
-                if any(_person_names_clash(x, y) for x in names_i for y in names_j):
-                    return False
+        elif not all(self.linked(x, y) for x in self.members[ri] for y in self.members[rj]):
+            return False
         self.uf.union(ri, rj)
         root = self.find(ri)
         other = rj if root == ri else ri
@@ -798,25 +896,43 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
         for j in indices[1:]:
             guard.try_union(indices[0], j, alias_method.get(indices[0], "existing_alias"))
 
-    # Pairwise fuzzy matching over the pairs that share a blocking key, in
-    # (i, j) order. The guard refuses merges that would chain different
-    # versions, different existing pages or different people into one group.
+    # Pairwise fuzzy matching over the pairs that share a blocking key. A
+    # name that matches two names which do not match each other (a hub:
+    # "Paul" between "Paul Graham" and "Paul Allen") joins neither, so the
+    # groups do not depend on which pair comes first; its exact duplicates
+    # still join it. Pairs touching a page go first, then (i, j) order, and
+    # the guard refuses any union that is not complete linkage.
     keys = [_block_keys(e.name, person=e.type == "PERSON") for e in entities]
     by_key: dict[tuple[str, str], list[int]] = {}
     for i, own in enumerate(keys):
         for key in own:
             by_key.setdefault(key, []).append(i)
+    links: dict[int, dict[int, str]] = {i: {} for i in range(n)}
     for i in range(n):
         partners = {j for key in keys[i] for j in by_key.get(_partner_key(key), ()) if j > i}
         for j in sorted(partners):
-            if guard.find(i) == guard.find(j):
-                continue  # already same group
             if not _types_compatible(entities[i].type, entities[j].type):
                 continue
             person_pair = entities[i].type == "PERSON" and entities[j].type == "PERSON"
             method = _fuzzy_method(entities[i].name, entities[j].name, person_pair=person_pair)
             if method:
-                guard.try_union(i, j, method)
+                links[i][j] = links[j][i] = method
+
+    def linked(j: int, k: int) -> bool:
+        aj, ak = alias_canonical.get(j), alias_canonical.get(k)
+        if aj is not None and ak is not None:
+            return aj == ak
+        return k in links[j]
+
+    hub = hubs({i: sorted(j for j, m in links[i].items() if m != "exact") for i in range(n)}, linked)
+    edges = sorted(
+        ((i, j, m) for i in range(n) for j, m in links[i].items()
+         if i < j and (m == "exact" or not ({i, j} & hub))),
+        key=lambda e: (e[0] not in alias_canonical and e[1] not in alias_canonical, e[0], e[1]),
+    )
+    for i, j, method in edges:
+        if guard.find(i) != guard.find(j):
+            guard.try_union(i, j, method)
 
     resolved: list[ResolvedGroup] = []
     unresolved: list[EntityInput] = []
@@ -859,14 +975,16 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
         # it's authoritative (the target already exists in the wiki).
         method_priority = [
             "existing_page_title", "existing_alias", "exact", "skeleton", "plural", "levenshtein", "jaro_winkler",
-            "person_subset", "person_initials", "acronym", "parenthetical",
+            "person_subset", "person_initials", "parenthetical",
         ]
         used_methods = guard.methods[root]
         best_method = next((m for m in method_priority if m in used_methods), "fuzzy")
 
         resolved.append(ResolvedGroup(
             canonical=canon,
-            type=entities[members[0]].type,
+            # The kind most of its names carry, not the first one's: input
+            # order decided between a concept page and an entity page.
+            type=majority_kind((entities[i].type, 1) for i in members),
             aliases=aliases,
             source_ids=source_ids,
             method=best_method,
@@ -889,6 +1007,14 @@ class AmbiguousPair(BaseModel):
     # alike only in context never takes a Layer 3 slot from one whose names
     # are alike (see resolve_embedding). /resolve/disambiguate does not need it.
     name_similarity: float = 0.0
+    # One source names both sides. Layer 3 reads it as a hint: such a source
+    # usually tells two things apart, but it can also give one thing's full
+    # name and its abbreviation. Optional, so older callers still validate.
+    same_source: bool = False
+    # One side's names hold an acronym of the other's ("ML" / "Machine
+    # Learning"). Layer 1 no longer merges these; the pair is asked whatever
+    # its similarity and ranks with the abbreviations (_layer3_rank).
+    abbreviation: bool = False
 
 
 class GroupInput(BaseModel):
@@ -918,6 +1044,9 @@ class EmbeddingResolveResponse(BaseModel):
     resolved: list[ResolvedGroup]
     ambiguous: list[AmbiguousPair]
     unresolved: list[EntityInput]
+    # Pairs (and page anchors) similar enough to merge that went to Layer 3
+    # instead, because their content words differ or a side has no context.
+    rerouted: int = 0
 
 
 # Sentinel source_id for synthetic EntityInput representing an existing wiki page
@@ -988,12 +1117,39 @@ def _layer3_rank(pair: AmbiguousPair, one_source: bool) -> tuple[bool, bool, flo
     ("Kaunas Castle / Cathedral / Town Hall / Fortress ...") gives many of
     those, usually different things, and they used to push out the rest.
     Within a tier an abbreviation and its long form first, since their
-    names score low ("ETH" / "Ethereum"); then name similarity, so a pair
+    names score low ("ETH" / "Ethereum"), also when the acronym is another
+    name of a group (`abbreviation`); then name similarity, so a pair
     alike only in context ("Set collection" / "Route planning", 0.98 by
     context, 0.10 by name) never buys a slot; then similarity."""
     a, b = pair.entity_a.name, pair.entity_b.name
-    abbreviation = _is_abbreviation(a, b) or _is_abbreviation(b, a)
+    abbreviation = pair.abbreviation or _is_abbreviation(a, b) or _is_abbreviation(b, a)
     return (one_source, not abbreviation, -pair.name_similarity, -pair.similarity)
+
+
+def _layer3_only_kind(names_a: list[str], type_a: str, names_b: list[str], type_b: str) -> str | None:
+    """_layer3_only_method between two nodes: "acronym" when any name of
+    one is an acronym of a name of the other and the kinds may meet in
+    Layer 2 (a concept and a named thing included), else "slip" for a
+    one-letter slip between kinds that may merge, else None."""
+    person = type_a == "PERSON" and type_b == "PERSON"
+    kinds = {_layer3_only_method(x, y, person=person) for x in names_a for y in names_b}
+    if "acronym" in kinds and (_types_compatible(type_a, type_b) or _kinds_cross(type_a, type_b)):
+        return "acronym"
+    if "slip" in kinds and _types_compatible(type_a, type_b):
+        return "slip"
+    return None
+
+
+def _layer3_only_page_kind(names: list[str], type_: str, page: ExistingPageTitle) -> str | None:
+    """_layer3_only_method between a node and a page title: an acronym
+    whatever the kinds (sources type "WCAG" ORG and the guidelines CONCEPT),
+    a one-letter slip only against a page of the node's kind."""
+    kinds = {_layer3_only_method(x, page.title, person=type_ == "PERSON") for x in names}
+    if "acronym" in kinds:
+        return "acronym"
+    if "slip" in kinds and _entity_matches_page_type(type_, page.page_type):
+        return "slip"
+    return None
 
 
 @dataclass
@@ -1096,9 +1252,108 @@ def _final_group(nodes: list[_Node], members: list[int], anchor: str | None) -> 
     aliases = [x for x in dict.fromkeys(x for nd in ordered for x in nd.names) if x != canonical]
     source_ids = list(dict.fromkeys(s for nd in ordered for s in nd.source_ids))
     context = next((nd.context for nd in ordered if nd.context), "")
+    kind = majority_kind((nd.type, max(1, len(nd.source_ids))) for nd in picked)  # the kind most sources give
     return ResolvedGroup(
-        canonical=canonical, type=lead.type, aliases=aliases, source_ids=source_ids, method=method,
+        canonical=canonical, type=kind, aliases=aliases, source_ids=source_ids, method=method,
     ), context
+
+
+def _extensions(names: list[str], index: WordBagIndex, titles: list[str]) -> list[int]:
+    """The titles (indexed in `index`) that one of `names` adds words to,
+    numbers alike, in index order: "APCA contrast algorithm" / "APCA". A
+    number only one name carries reads as a version ("Python 3 release" /
+    "Python"): left to similarity, like the acronym pairs."""
+    return sorted({k for x in names for k in index.contained_in(_name_tokens(x))
+                   if not _numeric_conflict(x, titles[k])})
+
+
+def _extension_node_pairs(nodes: list[_Node]) -> list[tuple[int, int]]:
+    """Node pairs whose unanchored side has a name that adds words to the
+    page title, or stored alias's canonical, the other side is bound to:
+    "APCA contrast algorithm" against the group bound to the page "APCA".
+    Its names score low against so short a title (0.53 by name, 0.57 with
+    contexts: replay gate, 2026-10-23), so the pair is asked about whatever
+    its similarity, for kinds that meet in Layer 2. Never merged without
+    Layer 3: the same shape took "Ethereum" into "Ethereum Foundation" and
+    "LLM" into "LLM draft path"."""
+    bound = [(k, nd.anchor) for k, nd in enumerate(nodes) if nd.anchor is not None]
+    anchors = [anchor for _k, anchor in bound]
+    index = WordBagIndex([_name_tokens(t) for t in anchors])
+    out: list[tuple[int, int]] = []
+    for i, nd in enumerate(nodes):
+        if nd.anchor is not None:
+            continue
+        for m in _extensions(nd.names, index, anchors):
+            k = bound[m][0]
+            if _types_compatible(nd.type, nodes[k].type) or _kinds_cross(nd.type, nodes[k].type):
+                out.append((min(i, k), max(i, k)))
+    return out
+
+
+def _forced_node_pairs(nodes: list[_Node]) -> dict[tuple[int, int], str]:
+    """Node pairs Layer 3 is asked about whatever their similarity, in node
+    order: acronyms and slips (see _layer3_only_kind), found through the
+    blocking keys, and names that add words to a page another node is bound
+    to ("extension", _extension_node_pairs). Two nodes bound to pages are
+    left out: two pages never meet."""
+    keys = [set().union(*(_block_keys(x) for x in nd.names)) for nd in nodes]
+    by_key: dict[tuple[str, str], list[int]] = {}
+    for i, own in enumerate(keys):
+        for key in own:
+            by_key.setdefault(key, []).append(i)
+    out: dict[tuple[int, int], str] = {}
+    for i, a in enumerate(nodes):
+        for j in sorted({j for key in keys[i] for j in by_key.get(_partner_key(key), ()) if j > i}):
+            b = nodes[j]
+            if a.anchor is not None and b.anchor is not None:
+                continue
+            kind = _layer3_only_kind(a.names, a.type, b.names, b.type)
+            if kind is not None:
+                out[(i, j)] = kind
+    for key in _extension_node_pairs(nodes):
+        out.setdefault(key, "extension")
+    return dict(sorted(out.items()))
+
+
+def _forced_page_pairs(nodes: list[_Node], pages: list[ExistingPageTitle]) -> list[tuple[int, int, str]]:
+    """(node, page, kind) for each unanchored node and page title Layer 3 is
+    asked about whatever their similarity: an acronym or slip (see
+    _layer3_only_page_kind), "CI" against both "Continuous Integration" and
+    "Confidence Interval"; and a name that adds words to the title
+    ("extension": "APCA contrast algorithm" / "APCA", see
+    _extension_node_pairs)."""
+    titles_by_key: dict[tuple[str, str], list[int]] = {}
+    for k, pt in enumerate(pages):
+        for key in _block_keys(pt.title):
+            titles_by_key.setdefault(key, []).append(k)
+    titles = [pt.title for pt in pages]
+    index = WordBagIndex([_name_tokens(t) for t in titles])
+    out: list[tuple[int, int, str]] = []
+    for i, nd in enumerate(nodes):
+        if nd.anchor is not None:
+            continue
+        forced: dict[int, str] = {}
+        near = {k for x in nd.names for key in _block_keys(x) for k in titles_by_key.get(_partner_key(key), ())}
+        for k in sorted(near):
+            kind = _layer3_only_page_kind(nd.names, nd.type, pages[k])
+            if kind is not None:
+                forced[k] = kind
+        for k in _extensions(nd.names, index, titles):
+            if _entity_matches_page_type(nd.type, pages[k].page_type) or _page_kinds_cross(nd.type, pages[k].page_type):
+                forced.setdefault(k, "extension")
+        out.extend((i, k, kind) for k, kind in sorted(forced.items()))
+    return out
+
+
+def _same_words_with_context(a: _Node, names_b: list[str], context_b: str | None, type_b: str) -> bool:
+    """What a Layer 2 auto-merge needs besides similarity: both sides carry
+    a context (without one, "name: context" is the name again and the two
+    signals are one), and the names say the same content words
+    (routers/resolution_rules.py). A page title has no context of its own
+    (`context_b` None); the node's context still has to be there."""
+    if not a.context.strip() or (context_b is not None and not context_b.strip()):
+        return False
+    return content_words_agree(a.names, names_b, person=a.type == "PERSON" and type_b == "PERSON")
 
 
 @router.post("/resolve/embedding", response_model=EmbeddingResolveResponse)
@@ -1113,18 +1368,28 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     sessions demo-p2 and demo-p1), so:
 
       - merge: both similarities > 0.9, same or compatible kinds, no source
-        in common, and no difference in numbers or extra words;
+        in common, no difference in numbers or extra words, both sides with
+        a context, and names that say the same content words ("Zurich" /
+        "Zürich"). Similarity alone merged "North Korea" / "South Korea"
+        shaped pairs (audit 2026-10-23); a pair that passes everything but
+        the last two goes to Layer 3 and is counted in `rerouted`;
       - ambiguous (Layer 3): otherwise, when either similarity is ≥ 0.7; a
         CONCEPT against ORG/PRODUCT/PERSON/LOCATION/EVENT when the names
-        alone are;
+        alone are; and, whatever the similarity, an acronym or ticker and
+        its expansion or a one-letter slip (_layer3_only_method), which
+        Layer 1 no longer merges, and a name that adds words to a page
+        title or a stored alias's canonical, against that page
+        (_extension_node_pairs);
       - different: the rest, and two people who share only a surname.
 
     Cross-session: an unanchored node whose best page title passes the merge
-    test (kinds must match) is anchored to it, method 'existing_page_title';
-    a borderline page comes back as an AmbiguousPair whose entity_b carries
-    EXISTING_PAGE_SENTINEL. Groups Layer 1 anchored (existing_page_title or
-    existing_alias) are not compared with page titles again, and two nodes
-    anchored to different pages are never merged or paired.
+    test (kinds must match; the node needs a context) is anchored to it,
+    method 'existing_page_title'; a borderline page comes back as an
+    AmbiguousPair whose entity_b carries EXISTING_PAGE_SENTINEL, and so
+    does every page an acronym could stand for. Groups Layer 1 anchored
+    (existing_page_title or existing_alias) are not compared with page
+    titles again, and two nodes anchored to different pages are never
+    merged or paired.
 
     `resolved` holds the final state of every group passed in (unchanged if
     nothing joined it), followed by the groups Layer 2 formed. A group in an
@@ -1133,7 +1398,9 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     (_layer3_rank): pairs against the wiki or across sources before pairs
     one source names both sides of; within each, abbreviations first, then
     name similarity, then similarity. Context likeness alone, the signal
-    behind the wrong merges, never buys a slot.
+    behind the wrong merges, never buys a slot. Each pair says whether one
+    source names both sides (`same_source`) and whether it is an acronym
+    pair (`abbreviation`).
     """
     import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
@@ -1168,15 +1435,19 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     # Cross-session: compare each unanchored node with the existing page
     # titles; the page asked about is the one whose title is most like the name.
     page_pairs: list[tuple[float, float, int, ExistingPageTitle]] = []  # (name sim, sim, node, page)
+    rerouted = 0
+    name_page: Any = None
+    ctx_page: Any = None
     if pages:
         page_vecs = vectors[[row[pt.title] for pt in pages]]
-        name_page: Any = sklearn_cosine(name_vecs, page_vecs)
-        ctx_page: Any = sklearn_cosine(ctx_vecs, page_vecs)
+        name_page = sklearn_cosine(name_vecs, page_vecs)
+        ctx_page = sklearn_cosine(ctx_vecs, page_vecs)
         for i, nd in enumerate(nodes):
             if nd.anchor is not None:
                 continue
             anchor_to: tuple[float, ExistingPageTitle] | None = None
             ask_about: tuple[float, float, ExistingPageTitle] | None = None
+            refused = False
             for j, pt in enumerate(pages):
                 same_kind = _entity_matches_page_type(nd.type, pt.page_type)
                 if not same_kind and not _page_kinds_cross(nd.type, pt.page_type):
@@ -1188,15 +1459,20 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
                 guard = _names_guard(nd.names, [pt.title])
                 if guard == "hard":
                     continue  # a page for a different version is never the same topic
-                if same_kind and guard is None and min(ns, cs) > _MERGE_SIMILARITY:
+                similar = same_kind and guard is None and min(ns, cs) > _MERGE_SIMILARITY
+                if similar and _same_words_with_context(nd, [pt.title], None, nd.type):
                     if anchor_to is None or min(ns, cs) > anchor_to[0]:
                         anchor_to = (min(ns, cs), pt)
-                elif ask_about is None or (ns, sim) > ask_about[:2]:
-                    ask_about = (ns, sim, pt)
+                else:
+                    refused = refused or similar
+                    if ask_about is None or (ns, sim) > ask_about[:2]:
+                        ask_about = (ns, sim, pt)
             if anchor_to is not None:
                 nd.anchor = anchor_to[1].title
-            elif ask_about is not None:
-                page_pairs.append((ask_about[0], ask_about[1], i, ask_about[2]))
+            else:
+                rerouted += refused
+                if ask_about is not None:
+                    page_pairs.append((ask_about[0], ask_about[1], i, ask_about[2]))
 
     union = _NodeUnion(nodes)
     first_on_page: dict[str, int] = {}
@@ -1233,10 +1509,12 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
         if a.type == "PERSON" and b.type == "PERSON" and \
                 any(_person_names_clash(x, y) for x in a.names for y in b.names):
             continue  # two people who share a surname ("George Steiner" / "Thomas Steiner")
-        if same_kind and guard is None and min(ns, cs) > _MERGE_SIMILARITY \
-                and not set(a.source_ids) & set(b.source_ids):
+        similar = same_kind and guard is None and min(ns, cs) > _MERGE_SIMILARITY \
+            and not set(a.source_ids) & set(b.source_ids)
+        if similar and _same_words_with_context(a, b.names, b.context, b.type):
             merges.append((min(ns, cs), max(ns, cs), ns, i, j))
         else:
+            rerouted += similar
             pairs.append((max(ns, cs) if same_kind else ns, ns, i, j))
     for _score, sim, ns, i, j in sorted(merges, key=lambda m: (-m[0], m[3], m[4])):
         if not union.try_union(i, j):
@@ -1271,12 +1549,17 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
         old = best.get(key)
         best[key] = (sim, ns) if old is None else (max(old[0], sim), max(old[1], ns))
 
+    def key_of(ra: int, rb: int) -> tuple[int, int]:
+        return (ra, rb) if union.members[ra][0] < union.members[rb][0] else (rb, ra)
+
     for sim, ns, i, j in pairs:
         ri, rj = union.find(i), union.find(j)
         if ri == rj or (union.anchor[ri] is not None and union.anchor[rj] is not None):
             continue
-        note((ri, rj) if union.members[ri][0] < union.members[rj][0] else (rj, ri), sim, ns)
+        note(key_of(ri, rj), sim, ns)
     on_page = {anchor.lower(): root for root, anchor in union.anchor.items() if anchor is not None}
+    # Page pairs: root, page title (lower case) → (name sim, sim, page, abbreviation).
+    page_asks: dict[tuple[int, str], tuple[float, float, ExistingPageTitle, bool]] = {}
     page_best: dict[int, tuple[float, float, ExistingPageTitle]] = {}  # root → (name sim, sim, page)
     for ns, sim, i, pt in page_pairs:
         root = union.find(i)
@@ -1285,9 +1568,42 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
         holder = on_page.get(pt.title.lower())
         if holder is not None:
             # Another node was anchored to that page here: ask about its group.
-            note((root, holder) if union.members[root][0] < union.members[holder][0] else (holder, root), sim, ns)
+            note(key_of(root, holder), sim, ns)
         elif root not in page_best or (ns, sim) > page_best[root][:2]:
             page_best[root] = (ns, sim, pt)
+    for root, (ns, sim, pt) in page_best.items():
+        page_asks[(root, pt.title.lower())] = (ns, sim, pt, False)
+
+    # Acronyms, one-letter slips and names that add words to a page title
+    # are asked about whatever their similarity: Layer 1 no longer merges
+    # them, and their names score low ("ML" / "Machine Learning", "APCA" /
+    # "APCA contrast algorithm"), so a similarity band would drop them.
+    acronym: set[tuple[int, int]] = set()
+    for (i, j), kind in _forced_node_pairs(nodes).items():
+        ri, rj = union.find(i), union.find(j)
+        if ri == rj or (union.anchor[ri] is not None and union.anchor[rj] is not None):
+            continue
+        ns, cs = float(name_sim[i][j]), float(ctx_sim[i][j])
+        note(key_of(ri, rj), max(ns, cs) if _types_compatible(nodes[i].type, nodes[j].type) else ns, ns)
+        if kind == "acronym":
+            acronym.add(key_of(ri, rj))
+    for i, k, kind in _forced_page_pairs(nodes, pages):
+        root, pt = union.find(i), pages[k]
+        if union.anchor[root] is not None:
+            continue
+        ns, cs = float(name_page[i][k]), float(ctx_page[i][k])
+        sim = max(ns, cs) if _entity_matches_page_type(nodes[i].type, pt.page_type) else ns
+        holder = on_page.get(pt.title.lower())
+        if holder is not None:
+            note(key_of(root, holder), sim, ns)
+            if kind == "acronym":
+                acronym.add(key_of(root, holder))
+            continue
+        old = page_asks.get((root, pt.title.lower()))
+        page_asks[(root, pt.title.lower())] = (
+            (ns, sim, pt, kind == "acronym") if old is None
+            else (max(old[0], ns), max(old[1], sim), pt, old[3] or kind == "acronym")
+        )
 
     def sources(root: int) -> set[str]:
         return {s for k in union.members[root] for s in nodes[k].source_ids}
@@ -1298,7 +1614,8 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
         return not bound and bool(sources(ra) & sources(rb))
 
     ranked: list[tuple[AmbiguousPair, bool]] = [
-        (AmbiguousPair(entity_a=ref(ra), entity_b=ref(rb), similarity=round(sim, 4), name_similarity=round(ns, 4)),
+        (AmbiguousPair(entity_a=ref(ra), entity_b=ref(rb), similarity=round(sim, 4), name_similarity=round(ns, 4),
+                       same_source=bool(sources(ra) & sources(rb)), abbreviation=(ra, rb) in acronym),
          one_source(ra, rb))
         for (ra, rb), (sim, ns) in best.items()
     ] + [
@@ -1308,21 +1625,22 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
                                  source_id=EXISTING_PAGE_SENTINEL, context=""),
             similarity=round(sim, 4),
             name_similarity=round(ns, 4),
+            abbreviation=abbreviation,
         ), False)
-        for root, (ns, sim, pt) in page_best.items()
+        for (root, _title), (ns, sim, pt, abbreviation) in page_asks.items()
     ]
     # Layer 3 answers a capped number of pairs (DISAMBIGUATE_MAX_PAIRS, cut
     # again in the route), so the order decides who is asked.
     ranked.sort(key=lambda t: _layer3_rank(*t))
     ambiguous = [pair for pair, _one_source in ranked]
 
-    paired = {root for key in best for root in key} | set(page_best)
+    paired = {root for key in best for root in key} | {root for root, _title in page_asks}
     unresolved: list[EntityInput] = []
     for root in sorted(union.members, key=lambda r: union.members[r][0]):
         entity = nodes[root].entity
         if root not in slot and root not in paired and entity is not None:
             unresolved.append(entity)
-    return EmbeddingResolveResponse(resolved=resolved, ambiguous=ambiguous, unresolved=unresolved)
+    return EmbeddingResolveResponse(resolved=resolved, ambiguous=ambiguous, unresolved=unresolved, rerouted=rerouted)
 
 
 # ---------------------------------------------------------------------------
@@ -1479,6 +1797,7 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
                 {
                     "entity_a": {"name": p.entity_a.name, "type": p.entity_a.type, "context": p.entity_a.context},
                     "entity_b": {"name": p.entity_b.name, "type": p.entity_b.type, "context": p.entity_b.context},
+                    "same_source": p.same_source,
                 }
                 for p in (req.pairs[k] for k in batch)
             ]

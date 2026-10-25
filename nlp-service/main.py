@@ -19,6 +19,7 @@ Part 2b additions (entity resolution):
   - POST /resolve/fuzzy         — Levenshtein/Jaro-Winkler/substring/acronym/alias grouping
   - POST /resolve/embedding     — sentence-transformers cosine similarity (>0.9/0.7-0.9/<0.7)
   - POST /resolve/disambiguate  — Gemini LLM disambiguation for 0.7–0.9 ambiguous band
+  - POST /resolve/name-similarity — name-only cosine for the app's alias screen
 
 Commit 7 additions (vector store):
   - POST /vectors/upsert        — embed a wiki page and store in Chroma
@@ -55,6 +56,7 @@ from routers.conversion import router as conversion_router
 from routers.extraction import router as extraction_router
 from routers.llm import router as llm_router
 from routers.metadata_peek import router as metadata_peek_router
+from routers.name_similarity import router as name_similarity_router
 from routers.pipeline import router as pipeline_router
 from routers.resolution import router as resolution_router
 from routers.storage import router as storage_router
@@ -86,6 +88,7 @@ app.include_router(conversion_router)
 app.include_router(extraction_router)
 app.include_router(llm_router)
 app.include_router(metadata_peek_router)
+app.include_router(name_similarity_router)
 app.include_router(pipeline_router)
 app.include_router(resolution_router)
 app.include_router(storage_router)

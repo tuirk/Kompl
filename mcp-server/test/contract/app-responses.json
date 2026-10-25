@@ -129,7 +129,7 @@
     "route": "/api/wiki/index",
     "body": {
       "total_pages": 1,
-      "categories": { "Cryptocurrency": ["btc"] },
+      "categories": { "*": ["btc"] },
       "pages": [
         {
           "page_id": "btc",

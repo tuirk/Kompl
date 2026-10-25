@@ -110,6 +110,7 @@ export async function graphReportCached(
       `SELECT (SELECT COUNT(*) FROM pages) || ':' || (SELECT COUNT(*) FROM pages WHERE page_type = 'archived') || ':' ||
               COALESCE((SELECT MAX(last_updated) FROM pages), '') || ':' || (SELECT COUNT(*) FROM page_links) || ':' ||
               (SELECT COUNT(*) FROM relationship_mentions) || ':' || (SELECT COUNT(*) FROM aliases) || ':' ||
+              (SELECT COUNT(*) FROM aliases WHERE COALESCE(status, 'active') = 'active') || ':' ||
               (SELECT COUNT(*) FROM provenance) || ':' || (SELECT COUNT(*) FROM sources) || ':' ||
               (SELECT COUNT(*) FROM sources WHERE status = 'archived') AS key`
     )

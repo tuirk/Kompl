@@ -117,16 +117,27 @@ def test_context_alone_never_merges(client, encoder, a, type_a, b, type_b, name_
 
 def test_a_source_naming_both_keeps_them_apart(client, encoder):
     """Alike by name and context, but one source names both: Layer 3 decides."""
-    encoder(_pair("Vilnius City Hall", "Vilnius Town Hall", 0.95, 0.95, 0))
-    same = _embedding(client, [_entity("Vilnius City Hall", "ORG", "s1", "a"), _entity("Vilnius Town Hall", "ORG", "s1", "b")])
+    encoder(_pair("Zurich Opera House", "Zürich Opera House", 0.95, 0.95, 0))
+    same = _embedding(client, [_entity("Zurich Opera House", "ORG", "s1", "a"), _entity("Zürich Opera House", "ORG", "s1", "b")])
     assert same["resolved"] == []
     assert len(same["ambiguous"]) == 1
 
-    apart = _embedding(client, [_entity("Vilnius City Hall", "ORG", "s1", "a"), _entity("Vilnius Town Hall", "ORG", "s2", "b")])
+    apart = _embedding(client, [_entity("Zurich Opera House", "ORG", "s1", "a"), _entity("Zürich Opera House", "ORG", "s2", "b")])
     assert [(g["canonical"], g["aliases"], g["method"]) for g in apart["resolved"]] == [
-        ("Vilnius City Hall", ["Vilnius Town Hall"], "embedding"),
+        ("Zurich Opera House", ["Zürich Opera House"], "embedding"),
     ]
     assert apart["ambiguous"] == []
+
+
+def test_city_hall_and_town_hall_are_asked_about_even_from_two_sources(client, encoder):
+    """"City" / "Town" (synonyms) and "North" / "South" (opposites) have the
+    same shape; only the cosine told them apart, so neither merges here
+    (audit 2026-10-23; more in test_resolution_layer2_gate.py)."""
+    encoder(_pair("Vilnius City Hall", "Vilnius Town Hall", 0.95, 0.95, 0))
+    apart = _embedding(client, [_entity("Vilnius City Hall", "ORG", "s1", "a"), _entity("Vilnius Town Hall", "ORG", "s2", "b")])
+    assert apart["resolved"] == []
+    assert len(apart["ambiguous"]) == 1
+    assert apart["rerouted"] == 1
 
 
 def test_alike_names_reach_layer_3_whatever_the_context(client, encoder):
@@ -203,18 +214,18 @@ def test_groups_reach_layer_2_and_come_back(client, encoder):
 
 
 def test_a_group_takes_in_a_name_from_another_source(client, encoder):
-    vectors = _pair("Machine translation", "Automatic translation", 0.95, 0.95, 0)
+    vectors = _pair("Machine translation", "Machine translations", 0.95, 0.95, 0)
     vectors["Translation software"] = [0.93, 0, 0, 0, math.sqrt(1 - 0.93 ** 2)] + [0.0] * (DIM - 5)
     vectors["Translation software: b"] = [0, 0, 0.93, 0, 0, math.sqrt(1 - 0.93 ** 2)] + [0.0] * (DIM - 6)
     encoder(vectors)
     data = _embedding(
         client,
-        [_entity("Automatic translation", "CONCEPT", "s3", "b"), _entity("Translation software", "CONCEPT", "s1", "b")],
+        [_entity("Machine translations", "CONCEPT", "s3", "b"), _entity("Translation software", "CONCEPT", "s1", "b")],
         groups=[_group("Machine translation", "CONCEPT", ["s1", "s2"], aliases=["machine translation"], context="a")],
     )
     assert data["resolved"] == [{
         "canonical": "Machine translation", "type": "CONCEPT",
-        "aliases": ["machine translation", "Automatic translation"],
+        "aliases": ["machine translation", "Machine translations"],
         "source_ids": ["s1", "s2", "s3"], "method": "embedding",
     }]
     # "Translation software" shares source s1 with the group: Layer 3 decides.
@@ -222,12 +233,12 @@ def test_a_group_takes_in_a_name_from_another_source(client, encoder):
 
 
 def test_a_group_layer_2_forms_is_named_in_pairs(client, encoder):
-    vectors = _pair("Large language model", "Foundation model", 0.95, 0.95, 0)
+    vectors = _pair("Large language model", "Large-language model", 0.95, 0.95, 0)
     vectors["Language model"] = [0.8, 0, 0, 0, 0, 0.6] + [0.0] * (DIM - 6)        # 0.8 / 0.76 to the two
     vectors["Language model: b"] = [0, 0, 0.8, 0, 0, 0, 0.6] + [0.0] * (DIM - 7)
     encoder(vectors)
     data = _embedding(client, [_entity("Large language model", "CONCEPT", "s1", "a"),
-                               _entity("Foundation model", "CONCEPT", "s2", "b"),
+                               _entity("Large-language model", "CONCEPT", "s2", "b"),
                                _entity("Language model", "CONCEPT", "s3", "b")])
     assert [g["source_ids"] for g in data["resolved"]] == [["s1", "s2"]]
     assert [(a, sid, b) for a, sid, b, _ in _pairs(data)] == [(data["resolved"][0]["canonical"], "__group__:0", "Language model")]
@@ -235,20 +246,20 @@ def test_a_group_layer_2_forms_is_named_in_pairs(client, encoder):
 
 def test_anchored_groups_skip_pages_and_never_pair(client, encoder):
     same = _like(1.0, 0)
-    encoder({t: same for t in ["Ethereum", "Ethereum Foundation", "Ethereum network", "ETH",
-                               "Ethereum: a", "Ethereum Foundation: a", "ETH: b"]})
+    encoder({t: same for t in ["Ethereum", "Ethereum Foundation", "Ethereum network", "Ethereum-network",
+                               "Ethereum: a", "Ethereum Foundation: a", "Ethereum-network: b"]})
     groups = [
         _group("Ethereum", "ORG", ["s1"], method="existing_page_title", aliases=["Ethereum"], context="a"),
         _group("Ethereum Foundation", "ORG", ["s2"], method="existing_alias", aliases=["EF"], context="a"),
     ]
     data = _embedding(
-        client, [_entity("ETH", "ORG", "s3", "b")], groups=groups,
+        client, [_entity("Ethereum-network", "ORG", "s3", "b")], groups=groups,
         pages=[{"title": "Ethereum", "page_type": "entity"}, {"title": "Ethereum Foundation", "page_type": "entity"},
                {"title": "Ethereum network", "page_type": "entity"}],
     )
     assert data["resolved"][:2] == [{k: v for k, v in g.items() if k != "context"} for g in groups]
-    # "ETH" binds to the one page no group holds, and is then bound too.
-    assert data["resolved"][2:] == [{"canonical": "Ethereum network", "type": "ORG", "aliases": ["ETH"],
+    # "Ethereum-network" binds to the one page no group holds, and is then bound too.
+    assert data["resolved"][2:] == [{"canonical": "Ethereum network", "type": "ORG", "aliases": ["Ethereum-network"],
                                      "source_ids": ["s3"], "method": "existing_page_title"}]
     assert data["ambiguous"] == []
     assert data["unresolved"] == []

@@ -162,8 +162,11 @@ def test_people_merge_by_surname_and_initials(client):
         ],
     )
     by_canonical = {g["canonical"]: g for g in data["resolved"]}
-    assert set(by_canonical["Andrej Karpathy"]["aliases"]) == {"Karpathy", "A. Karpathy"}
+    # "Karpathy" matches Andrej and Bob Karpathy, two people: it joins
+    # neither (test_resolution_layer1_strict.py).
+    assert set(by_canonical["Andrej Karpathy"]["aliases"]) == {"A. Karpathy"}
     assert all("Bob Karpathy" not in ({g["canonical"], *g["aliases"]}) for g in data["resolved"])
+    assert all("Karpathy" not in ({g["canonical"], *g["aliases"]}) for g in data["resolved"])
     assert by_canonical["Satoshi Nakamoto"]["aliases"] == ["Satoshi"]
     assert by_canonical["Vitalik Buterin"]["aliases"] == ["Buterin"]
     assert by_canonical["Satoshi Nakamoto"]["method"] == "person_subset"
@@ -271,9 +274,9 @@ def test_embedding_sends_guarded_pairs_to_layer_3(client, encoder, a, b):
 
 def test_embedding_still_merges_close_unguarded_names(client, encoder):
     encoder({"Large Language Model": _unit(1.0), "Large Language Models": _unit(0.95)})
-    data = _embedding(
-        client, [_entity("Large Language Model", "CONCEPT", "s1"), _entity("Large Language Models", "CONCEPT", "s2")]
-    )
+    # Layer 2 merges only names that carry a context (test_resolution_layer2_gate.py).
+    data = _embedding(client, [{**_entity("Large Language Model", "CONCEPT", "s1"), "context": "a"},
+                               {**_entity("Large Language Models", "CONCEPT", "s2"), "context": "b"}])
     assert len(data["resolved"]) == 1
     assert data["resolved"][0]["method"] == "embedding"
 

@@ -128,6 +128,19 @@ async function backfillRelationsOnce(): Promise<void> {
 }
 
 /**
+ * Set aside stored aliases with a clearly wrong shape (lib/alias-screen.ts).
+ * Runs here when it needs no nlp-service call; otherwise in the background
+ * once nlp-service answers, so a slow model load never delays boot.
+ */
+async function screenAliasesAfterBoot(): Promise<void> {
+  if (process.env.NEXT_RUNTIME === 'edge') return;
+
+  const { getDb } = await import('./lib/db');
+  const { screenAliasesNowOrLater } = await import('./lib/alias-screen');
+  await screenAliasesNowOrLater(getDb(), 'boot');
+}
+
+/**
  * A restart ends any bulk page update (its state lived in the old process),
  * so its CLAUDE.md rule-7 flag goes back to off; the next run needs a new
  * confirmation in Settings > Wiki health (lib/page-upgrade.ts).
@@ -197,6 +210,20 @@ export async function register(): Promise<void> {
       JSON.stringify({
         ts: new Date().toISOString(),
         event: 'relation_descriptions_backfill_failed',
+        error: msg,
+      })
+    );
+  }
+
+  try {
+    await screenAliasesAfterBoot();
+  } catch (err) {
+    // Non-fatal: aliases keep their status; the next boot or import retries.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: 'alias_screen_failed',
         error: msg,
       })
     );

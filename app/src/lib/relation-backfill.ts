@@ -9,8 +9,9 @@ import { orderRelationPair, readLlmRelations, relationKey, type LlmRelation } fr
  *
  * Each LLM relation is looked up under the names its row could carry: each
  * end pinned through the aliases table as the extract route pins it today,
- * through every alias row (older extractions also used aliases that
- * getAliases() now leaves out, e.g. "Python" -> "Python 2"), or as the LLM
+ * through every active alias row (older extractions also used aliases that
+ * getAliases() now leaves out for their numbers, e.g. "Python" -> "Python
+ * 2"; suspended and retired aliases are skipped, as there), or as the LLM
  * wrote it (a row keeps its spelling when an alias is added later), ordered
  * as the extract route orders them (relation-rows.ts). Then, within one
  * source and type, when exactly one row and one LLM relation are left
@@ -24,7 +25,11 @@ import { orderRelationPair, readLlmRelations, relationKey, type LlmRelation } fr
  */
 export function backfillRelationDescriptions(db: Database.Database): { filled: number; unmatched: number } {
   const aliasRows = db
-    .prepare('SELECT alias, canonical_name FROM aliases WHERE canonical_name IS NOT NULL ORDER BY id')
+    .prepare(
+      `SELECT alias, canonical_name FROM aliases
+        WHERE canonical_name IS NOT NULL AND COALESCE(status, 'active') = 'active'
+        ORDER BY id`
+    )
     .all() as Array<{ alias: string; canonical_name: string }>;
   // The same rows getAliases() returns: those whose names carry the same numbers.
   const current = aliasLookup(aliasRows.filter((a) => numericConflict(a.alias, a.canonical_name) === null));

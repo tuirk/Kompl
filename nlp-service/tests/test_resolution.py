@@ -292,7 +292,8 @@ def patched_embed_model(monkeypatch):
 class TestEmbeddingExistingPageTitles:
     def test_high_similarity_anchors_to_page_title(self, resolution_client, patched_embed_model):
         """cosine > 0.9 → emit ResolvedGroup with canonical=page title, method=existing_page_title.
-        The session entity is NOT dropped into the ambiguous bucket.
+        The session entity is NOT dropped into the ambiguous bucket. (It needs
+        a context and the same content words: test_resolution_layer2_gate.py.)
         """
         # Two vectors that are nearly identical (sim ≈ 1.0):
         patched_embed_model({
@@ -301,7 +302,7 @@ class TestEmbeddingExistingPageTitles:
         })
         body = {
             "entities": [
-                {"name": "GPT 4", "type": "PRODUCT", "source_id": "src_b", "context": ""}
+                {"name": "GPT 4", "type": "PRODUCT", "source_id": "src_b", "context": "OpenAI's model"}
             ],
             "existing_page_titles": [{"title": "GPT-4", "page_type": "entity"}],
         }

@@ -889,18 +889,42 @@ class DisambiguationResponse(BaseModel):
     results: list[DisambiguationResult]
 
 
+# Shared by both disambiguation prompts: how to read a pair's same_source.
+_DISAMBIGUATION_SAME_SOURCE = """\
+Each pair also carries same_source: true when one source names both. Treat
+it as a hint, not a rule: a source that names two things side by side is
+usually telling them apart, but a source can also introduce one thing by its
+full name and its abbreviation.
+"""
+
+
 _DISAMBIGUATION_SYSTEM_PROMPT = """\
 You are an entity resolution assistant. For each pair of entities, decide
 whether they refer to the same real-world entity or concept.
 
+""" + _DISAMBIGUATION_SAME_SOURCE + """
 For each pair return:
   entity_a   — name of the first entity (copy from input)
   entity_b   — name of the second entity (copy from input)
   decision   — "same" (they are the same entity), "different" (distinct),
                or "ambiguous" (cannot determine from context)
-  canonical  — if "same", the better canonical name (more complete / commonly used).
-               Set to null for "different" or "ambiguous".
+  canonical  — if "same", one of the two names exactly as given: the more
+               complete / commonly used one. Set to null for "different"
+               or "ambiguous".
   reason     — brief explanation (1 sentence)
+
+Return "different" when the two are related but not one thing:
+  - a part and its whole ("Old Town" / the city it is in)
+  - a place and something located in it ("London Eye" / "London")
+  - a parent organisation and its subsidiary, division or foundation
+    ("Alphabet" / "Google", "Mozilla" / "Mozilla Foundation")
+  - a product and its maker ("iPhone" / "Apple")
+  - a founder or leader and the organisation ("Sam Altman" / "OpenAI")
+  - siblings that differ by one modifier ("North Dakota" / "South Dakota",
+    "Oslo City Hall" / "Oslo City Museum")
+  - versions or editions of one thing ("Python 2" / "Python 3",
+    "GPT-4" / "GPT-4o")
+  - two people who share a surname or a first name
 
 Be conservative: only return "same" if you are confident. Prefer "ambiguous"
 over a wrong "same" call. Do not hallucinate.
@@ -917,20 +941,22 @@ vocabulary even when they are different concepts — "Transformer Architecture"
 and "Self-Attention" both talk about transformers, but attention is one
 mechanism inside the architecture, not the architecture itself.
 
+""" + _DISAMBIGUATION_SAME_SOURCE + """
 For each pair return:
   entity_a   — name of the first concept (copy from input)
   entity_b   — name of the second concept (copy from input)
   decision   — "same" (truly the same concept, not merely related),
                "different" (distinct concepts, even if related),
                or "ambiguous" (cannot determine from context)
-  canonical  — if "same", the clearer name (prefer the more complete / canonical form).
+  canonical  — if "same", one of the two names exactly as given: the
+               clearer one (prefer the more complete / canonical form).
                Set to null for "different" or "ambiguous".
   reason     — brief explanation (1 sentence)
 
 STRICTNESS RULES for this task:
   - Return "same" ONLY for:
       * paraphrases (e.g. "Chain of Thought Prompting" ≡ "CoT reasoning")
-      * acronym/expansion pairs (e.g. "ML" ≡ "Machine Learning")
+      * acronym/expansion pairs (e.g. "NLP" ≡ "Natural Language Processing")
       * historical rename of exactly the same concept
   - Return "different" whenever one concept is a sub-topic, mechanism, component,
     application, or technique of the other — even when they appear together often.
@@ -949,7 +975,8 @@ def disambiguate_entities(
 
     Accepts up to 10 pairs per call (caller is responsible for batching).
     Each pair is a dict with keys entity_a and entity_b, each a dict with
-    at least: name (str), type (str), context (str).
+    at least: name (str), type (str), context (str); and same_source
+    (bool), which both prompts read as a hint.
 
     Raises:
         LLMRateLimitedError  — bucket exhausted after 60s wait

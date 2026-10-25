@@ -1147,33 +1147,75 @@ export function resetSourceForRecompile(sourceId: string): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * Alias status (schema v29). Compiles use 'active' rows only (getAliases).
+ * 'suspended' rows are set aside until confirmed (lib/alias-screen.ts sets
+ * them); a new resolver match re-activates one. 'retired' rows were judged
+ * wrong and are never used or re-added. NULL reads as 'active'.
+ */
+export type AliasStatus = 'active' | 'suspended' | 'retired';
+
+/** A new alias → canonical mapping and how the resolver made it. */
+export interface AliasInsert {
+  alias: string;
+  canonical: string;
+  /** The resolver rule or layer that matched the names ("skeleton", "llm", ...). */
+  method?: string | null;
+  /** The similarity behind the match, when the resolver knew one. */
+  score?: number | null;
+  session_id?: string | null;
+}
+
+/**
  * Batch-insert alias → canonical_name mappings in a single transaction.
  * The aliases table has no UNIQUE constraint on alias, so we load existing
- * pairs into a Set first and skip duplicates rather than relying on
- * INSERT OR IGNORE. Duplicates are judged on the (alias, canonical) pair:
- * an alias whose old row getAliases() ignores (see name-guard.ts) can get a
- * new mapping; the old row is kept, never updated or deleted.
+ * pairs first and skip duplicates rather than relying on INSERT OR IGNORE.
+ * Duplicates are judged on the (alias, canonical) pair: an alias whose old
+ * row getAliases() ignores (see name-guard.ts) can get a new mapping; the
+ * old row is kept, never deleted. For a pair already stored:
+ *   - active: nothing changes
+ *   - suspended: the new match re-activates it and records its method,
+ *     score and session (status_reason 'rematched')
+ *   - retired: nothing changes, and no new row is added
  */
-export function bulkInsertAliases(
-  aliases: Array<{ alias: string; canonical: string }>
-): void {
+export function bulkInsertAliases(aliases: AliasInsert[]): void {
   if (aliases.length === 0) return;
   const db = openDb();
   const pairKey = (alias: string, canonical: string) => `${alias.toLowerCase()}\u0000${canonical.toLowerCase()}`;
-  const existing = new Set(
-    (db.prepare('SELECT alias, canonical_name FROM aliases').all() as { alias: string; canonical_name: string | null }[]).map(
-      (r) => pairKey(r.alias, r.canonical_name ?? '')
-    )
-  );
+  const existing = new Map<string, Array<{ id: number; status: string }>>();
+  for (const r of db.prepare('SELECT id, alias, canonical_name, status FROM aliases').all() as Array<{
+    id: number;
+    alias: string;
+    canonical_name: string | null;
+    status: string | null;
+  }>) {
+    const key = pairKey(r.alias, r.canonical_name ?? '');
+    const list = existing.get(key) ?? [];
+    list.push({ id: r.id, status: r.status ?? 'active' });
+    existing.set(key, list);
+  }
   const insert = db.prepare(
-    'INSERT INTO aliases (alias, canonical_name) VALUES (?, ?)'
+    'INSERT INTO aliases (alias, canonical_name, method, score, session_id) VALUES (?, ?, ?, ?, ?)'
   );
-  db.transaction((rows: typeof aliases) => {
-    for (const { alias, canonical } of rows) {
+  const reactivate = db.prepare(
+    `UPDATE aliases
+        SET status = 'active', status_reason = 'rematched', status_at = datetime('now'),
+            method = ?, score = ?, session_id = ?
+      WHERE id = ? AND status = 'suspended'`
+  );
+  db.transaction((rows: AliasInsert[]) => {
+    for (const { alias, canonical, method = null, score = null, session_id = null } of rows) {
       const key = pairKey(alias, canonical);
-      if (!existing.has(key)) {
-        insert.run(alias, canonical);
-        existing.add(key);
+      const stored = existing.get(key);
+      if (!stored) {
+        insert.run(alias, canonical, method, score, session_id);
+        existing.set(key, [{ id: -1, status: 'active' }]);
+        continue;
+      }
+      if (stored.some((r) => r.status === 'retired' || r.status === 'active')) continue;
+      for (const r of stored) {
+        if (r.status !== 'suspended') continue;
+        reactivate.run(method, score, session_id, r.id);
+        r.status = 'active';
       }
     }
   })(aliases);
@@ -1183,26 +1225,47 @@ export function bulkInsertAliases(
  * Return the alias → canonical_name pairs the compile steps may use (Layer 1
  * fuzzy resolution, mention pinning, dossiers, crossref link targets).
  *
- * Rows whose two names carry different numbers ("Python 3" → "Python 2",
- * "Python" → "Python 2") are left out: resolution created those before it
- * could tell versions apart, and they would keep sending new sources to the
- * wrong page. The rows stay in the table (getAllAliases, backups). Oldest
- * first, so a newer mapping for the same alias wins where callers build a map.
+ * Only active rows (v29; NULL status counts as active): suspended and
+ * retired aliases bind nothing. Rows whose two names carry different numbers
+ * ("Python 3" → "Python 2", "Python" → "Python 2") are left out too:
+ * resolution created those before it could tell versions apart, and they
+ * would keep sending new sources to the wrong page. The rows stay in the
+ * table (getAllAliases, backups). Oldest first, so a newer mapping for the
+ * same alias wins where callers build a map.
  */
 export function getAliases(): Array<{ alias: string; canonical_name: string }> {
   const rows = openDb()
     .prepare(
-      'SELECT alias, canonical_name FROM aliases WHERE canonical_name IS NOT NULL ORDER BY id'
+      `SELECT alias, canonical_name FROM aliases
+        WHERE canonical_name IS NOT NULL AND COALESCE(status, 'active') = 'active'
+        ORDER BY id`
     )
     .all() as Array<{ alias: string; canonical_name: string }>;
   return rows.filter((r) => numericConflict(r.alias, r.canonical_name) === null);
 }
 
-/** All alias rows including canonical_page_id — used for kompl backup export. */
-export function getAllAliases(): Array<{ alias: string; canonical_name: string; canonical_page_id: string | null }> {
+/** An alias row as a kompl backup carries it. */
+export interface AliasRecord {
+  alias: string;
+  canonical_name: string;
+  canonical_page_id: string | null;
+  method: string | null;
+  score: number | null;
+  session_id: string | null;
+  status: string | null;
+  status_reason: string | null;
+  status_at: string | null;
+}
+
+/** All alias rows, whatever their status, oldest first — used for kompl backup export. */
+export function getAllAliases(): AliasRecord[] {
   return openDb()
-    .prepare('SELECT alias, canonical_name, canonical_page_id FROM aliases')
-    .all() as Array<{ alias: string; canonical_name: string; canonical_page_id: string | null }>;
+    .prepare(
+      `SELECT alias, canonical_name, canonical_page_id, method, score, session_id,
+              status, status_reason, status_at
+         FROM aliases ORDER BY id`
+    )
+    .all() as AliasRecord[];
 }
 
 /**

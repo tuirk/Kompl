@@ -272,6 +272,8 @@ export async function GET(request: Request) {
       JSON.stringify(pages.map((p) => ({ ...p, draft_rules: draftRules.get(p.page_id) ?? null })), null, 2),
     );
     dbFolder.file('provenance.json', JSON.stringify(getAllProvenance(), null, 2));
+    // Every alias row, set aside or not, with how it was made and its status
+    // (v29), so a restore keeps them. Older releases' imports ignore them.
     dbFolder.file('aliases.json', JSON.stringify(getAllAliases(), null, 2));
     dbFolder.file('extractions.json', JSON.stringify(getAllExtractions(), null, 2));
     dbFolder.file('page_links.json', JSON.stringify(getAllPageLinks(), null, 2));

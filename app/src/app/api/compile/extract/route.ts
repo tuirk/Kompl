@@ -32,6 +32,7 @@ import {
   getAliases,
   getAllPageIds,
   getEffectiveCompileModel,
+  getEntityAndConceptPageTitles,
   getExtraction,
   getPageCount,
   getSource,
@@ -43,6 +44,7 @@ import {
   updateSourceTitle,
 } from '../../../../lib/db';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
+import { buildMentionPin } from '../../../../lib/mention-pin';
 import { buildRelationRows } from '../../../../lib/relation-rows';
 
 // "Garbage" source titles — what we get when MarkItDown can't pull a title
@@ -390,17 +392,14 @@ export async function POST(request: Request) {
     }
 
     // Step 7b: record entity/concept mentions for wiki-wide threshold counting.
-    // Alias-pin against the HISTORICAL aliases table so variants discovered in
-    // prior sessions ("GPT4" → "GPT-4") collapse to the existing canonical at
-    // write time. New aliases minted by this session's resolve apply to
-    // subsequent sources, not this one — the usual incremental-graph tradeoff.
+    // Pin each name to an existing page's exact title first, then through the
+    // active aliases (lib/mention-pin.ts), so variants discovered in prior
+    // sessions ("GPT4" → "GPT-4") collapse to the existing canonical at write
+    // time. New aliases minted by this session's resolve apply to subsequent
+    // sources, not this one — the usual incremental-graph tradeoff.
     // Re-extraction wipes + reinserts so the mention set reflects latest
     // llm_output; replaceSourceMentions does both in one transaction.
-    const aliasMap = new Map<string, string>();
-    for (const { alias, canonical_name } of getAliases()) {
-      aliasMap.set(alias.toLowerCase(), canonical_name);
-    }
-    const pin = (name: string): string => aliasMap.get(name.toLowerCase()) ?? name;
+    const pin = buildMentionPin(getEntityAndConceptPageTitles(), getAliases());
 
     const llm = llmOutput as {
       entities?: Array<{ name?: string; type?: string }>;

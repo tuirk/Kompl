@@ -24,6 +24,7 @@ from routers.resolution import (
     _cross_kind_acronym,
     _cross_session_method,
     _fuzzy_method,
+    _layer3_only_method,
     _partner_key,
     resolve_fuzzy,
 )
@@ -48,6 +49,9 @@ _CURATED = [
     "WebKit", "WebAIM", "Chrome", "Chroma", "APCA", "APCA contrast algorithm", "", " ", "+", "(x)",
     "Mercury (planet)", "Mercury (element)", "Mercury", "UNESCO", "UNESCO World Heritage",
     "Russian Academy of Sciences", "Prussian Academy of Sciences", "anti-aliasing and font weight",
+    "United Nations Educational, Scientific and Cultural Organization", "LOTR", "Lord of the Rings",
+    "BOE", "Bank of England", "BTC", "Bitcoin", "AI Act", "Generative Pre-trained Transformer", "GPT",
+    " ETH", "ETHEREUMX", "US", "USB",
 ]
 
 _WORDS = (
@@ -99,7 +103,8 @@ def test_every_pair_a_rule_matches_shares_a_block_key():
                 if meet_ab:
                     continue
                 if (_fuzzy_method(a, b, person_pair=person) or _cross_session_method(a, b, person=person)
-                        or _cross_kind_acronym(a, b) or _cross_kind_acronym(b, a)):
+                        or _cross_kind_acronym(a, b) or _cross_kind_acronym(b, a)
+                        or _layer3_only_method(a, b, person=person)):
                     missed.append((a, b, person))
     assert missed == []
 
@@ -156,6 +161,17 @@ def test_large_session_against_large_wiki_stays_well_inside_the_route_timeout():
     assert elapsed < 20, f"/resolve/fuzzy took {elapsed:.1f}s on 600 names × 5,000 titles"
 
 
+def test_block_keys_meet_a_ticker_and_its_expansion():
+    """"ETH" meets "Ethereum" by the start of its first word, "UNESCO" its
+    expansion by the initials of the words that carry meaning."""
+    def meet(a: str, b: str) -> bool:
+        return any(_partner_key(k) in _block_keys(b) for k in _block_keys(a))
+
+    assert meet("ETH", "Ethereum") and meet("Ethereum", "ETH")
+    assert meet("UNESCO", "United Nations Educational, Scientific and Cultural Organization")
+    assert not meet("Eth", "Ethereum")
+
+
 def test_block_keys_cover_the_bracket_and_its_full_name():
     keys = _block_keys("Web Content Accessibility Guidelines (WCAG)")
     assert {("caps", "WCAG"), ("init", "WCAG")} <= keys
@@ -170,8 +186,11 @@ def _pairs(names: list[str]) -> list[tuple[str, str]]:
 def test_curated_matches_are_found_through_the_keys():
     """Sanity: the curated corpus holds pairs of every kind the rules match."""
     methods: set[Any] = set()
+    layer3_only: set[Any] = set()
     for a, b in _pairs(_CURATED):
         methods.add(_fuzzy_method(a, b, person_pair=False))
         methods.add(_fuzzy_method(a, b, person_pair=True))
-    assert {"exact", "skeleton", "plural", "levenshtein", "acronym", "parenthetical",
+        layer3_only.add(_layer3_only_method(a, b))
+    assert {"exact", "skeleton", "plural", "levenshtein", "parenthetical",
             "person_subset", "person_initials"} <= methods
+    assert {"acronym", "slip"} <= layer3_only

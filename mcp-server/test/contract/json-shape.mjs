@@ -10,6 +10,9 @@
  * - Each actual array element is checked against the first expected one.
  *   An array that is empty everywhere it appears can't be checked: its path
  *   (indices as [*]) goes to `unverified`.
+ * - An expected object whose only key is "*" is a map keyed by data (e.g.
+ *   category names): every actual value is checked against it, and an empty
+ *   map goes to `unverified` the same way.
  *
  * @param {unknown} expected
  * @param {unknown} actual
@@ -47,7 +50,14 @@ function walk(expected, actual, path, pattern, state) {
     return;
   }
   if (want === 'object') {
-    for (const key of Object.keys(expected)) {
+    const keys = Object.keys(expected);
+    if (keys.length === 1 && keys[0] === '*') {
+      const entries = Object.entries(actual);
+      (entries.length ? state.checked : state.empty).add(`${pattern}.*`);
+      for (const [key, value] of entries) walk(expected['*'], value, `${path}.${key}`, `${pattern}.*`, state);
+      return;
+    }
+    for (const key of keys) {
       walk(expected[key], actual[key], `${path}.${key}`, `${pattern}.${key}`, state);
     }
   }

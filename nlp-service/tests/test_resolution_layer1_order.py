@@ -50,13 +50,16 @@ def test_a_short_name_joins_the_same_person_whatever_the_order(client):
     assert first == second
 
 
-def test_an_acronym_binds_the_same_page_whatever_the_page_order(client):
+def test_an_acronym_binds_no_page_whatever_the_page_order(client):
+    """"CI" bound whichever of two matching pages came first; since the
+    owner decision of 2026-10-23 a bare acronym binds no page at all and
+    Layer 2 asks Layer 3 about each (test_resolution_layer2_gate.py)."""
     pages = [{"title": "Continuous Integration", "page_type": "concept"},
              {"title": "Confidence Interval", "page_type": "concept"}]
     first = _fuzzy(client, [_entity("CI")], pages)
     second = _fuzzy(client, [_entity("CI")], pages[::-1])
     assert first == second
-    assert first["resolved"][0]["method"] == "existing_page_title"
+    assert first["resolved"] == []
 
 
 def test_a_group_takes_the_same_type_whatever_the_order(client):

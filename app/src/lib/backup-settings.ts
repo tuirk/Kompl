@@ -4,6 +4,7 @@
  * them can't restore them either.
  */
 
+import { ALIAS_SCREEN_THROUGH_KEY, ALIAS_SCREEN_VERSION_KEY } from './alias-screen';
 import { AGENT_ADD_SOURCES_KEY } from './db';
 import { PAGE_UPGRADE_FLAG } from './page-upgrade-state';
 
@@ -17,6 +18,10 @@ const NOT_BACKED_UP = new Set([
   // Letting AI agents add sources (paid compiles) is this install's choice;
   // a backup never turns it on.
   AGENT_ADD_SOURCES_KEY,
+  // Which of this database's alias rows the alias screen has looked at
+  // (lib/alias-screen.ts); a backup's ids mean nothing here.
+  ALIAS_SCREEN_VERSION_KEY,
+  ALIAS_SCREEN_THROUGH_KEY,
 ]);
 
 export function isBackedUpSetting(key: string): boolean {

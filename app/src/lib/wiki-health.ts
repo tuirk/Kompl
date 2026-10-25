@@ -47,7 +47,9 @@ export function runHealthChecksCached(db: Database.Database): HealthChecks {
     .prepare(
       `SELECT (SELECT COUNT(*) FROM entity_mentions) || ':' || (SELECT COUNT(*) FROM relationship_mentions) || ':' ||
               (SELECT COUNT(*) FROM pages) || ':' || (SELECT COUNT(*) FROM pages WHERE page_type = 'archived') || ':' ||
-              (SELECT COUNT(*) FROM aliases) || ':' || (SELECT COUNT(*) FROM page_links) || ':' ||
+              (SELECT COUNT(*) FROM aliases) || ':' ||
+              (SELECT COUNT(*) FROM aliases WHERE COALESCE(status, 'active') = 'active') || ':' ||
+              (SELECT COUNT(*) FROM page_links) || ':' ||
               (SELECT COUNT(*) FROM provenance) || ':' || (SELECT COUNT(*) FROM sources) || ':' ||
               (SELECT COUNT(*) FROM sources WHERE status = 'archived') AS key`
     )

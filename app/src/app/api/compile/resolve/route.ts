@@ -8,10 +8,13 @@
  *   1. getExtractionsBySession(sessionId) — flatten all entity lists
  *   2. Layer 1: POST /resolve/fuzzy     — spellings of one name (exact,
  *                                          skeleton, plural, near-spelling,
- *                                          acronym), existing aliases and pages
+ *                                          "Full Name (ABBR)"), existing
+ *                                          aliases and pages
  *   3. Layer 2: POST /resolve/embedding — cosine similarity via sentence-transformers
- *              (>0.9 same, <0.7 different, 0.7–0.9 ambiguous) over the
- *              entities Layer 1 left alone and Layer 1's groups
+ *              (>0.9 same when the names say the same words, <0.7
+ *              different, the rest ambiguous) over the entities Layer 1
+ *              left alone and Layer 1's groups; an acronym and its
+ *              expansion are always ambiguous
  *   4. Layer 3: POST /resolve/disambiguate — the LLM on ambiguous pairs, up to
  *              a cap, ranked by lib/resolve-ranking.ts; verdicts come back
  *              by pair_id and 'same' verdicts fold into the groups
@@ -99,6 +102,8 @@ interface AmbiguousPair {
   entity_b: EntityInput;
   similarity: number;
   name_similarity: number; // cosine of the names alone; ranks pairs for the capped Layer 3
+  same_source: boolean;    // one source names both sides; a hint for Layer 3
+  abbreviation: boolean;   // an acronym and its expansion; ranks with the abbreviations
 }
 
 interface FuzzyResolveResponse {
@@ -110,6 +115,7 @@ interface EmbeddingResolveResponse {
   resolved: ResolvedGroup[];
   ambiguous: AmbiguousPair[];
   unresolved: EntityInput[];
+  rerouted: number; // pairs similar enough to merge that went to Layer 3 instead
 }
 
 interface DisambiguateResponse {
@@ -305,6 +311,9 @@ export async function POST(request: Request) {
     let resolved2: ResolvedGroup[] = [];
     let ambiguous2: AmbiguousPair[] = [];
     let unresolved2: EntityInput[] = [];
+    // Pairs Layer 2 sent to Layer 3 instead of merging them on similarity
+    // alone; counted so the real volume can be measured.
+    let rerouted = 0;
     const passedThrough = unresolved1.length > 0 || resolved1.length > 0;
 
     if (passedThrough) {
@@ -320,6 +329,7 @@ export async function POST(request: Request) {
       resolved2 = embResult.resolved;
       ambiguous2 = embResult.ambiguous;
       unresolved2 = embResult.unresolved;
+      rerouted = embResult.rerouted;
     }
 
     // Layer 3 — LLM disambiguation (only if there are ambiguous pairs)
@@ -587,8 +597,10 @@ export async function POST(request: Request) {
 
     // Step 5: persist aliases for both kinds. The aliases table is untagged —
     // page_type is inferred via canonical_page_id once the page is committed.
+    // Each new row records its group's method and this session (schema v29);
+    // the groups carry no per-name similarity, so score stays empty.
     const aliasesToInsert = allCanonical.flatMap((g) =>
-      g.aliases.map((a) => ({ alias: a, canonical: g.canonical }))
+      g.aliases.map((a) => ({ alias: a, canonical: g.canonical, method: g.method, session_id }))
     );
     if (aliasesToInsert.length > 0) {
       bulkInsertAliases(aliasesToInsert);
@@ -629,6 +641,7 @@ export async function POST(request: Request) {
         total_raw:      allEntities.length,
         entity_count:   canonicalEntities.length,
         concept_count:  canonicalConcepts.length,
+        llm_pairs_rerouted: rerouted,
       },
     });
 
@@ -651,6 +664,7 @@ export async function POST(request: Request) {
         llm_pairs: cappedAmbiguous.length,
         llm_pairs_over_cap: overflowAmbiguous.length,
         llm_pairs_failed: llmFailed,
+        llm_pairs_rerouted: rerouted,
       },
     });
   } catch (err) {

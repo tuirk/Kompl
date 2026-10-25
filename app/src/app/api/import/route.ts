@@ -7,6 +7,8 @@ import zlib from 'zlib';
 import { NextResponse } from 'next/server';
 
 import { getDb, DATA_ROOT, logActivity, safePreviousContentPath } from '@/lib/db';
+import { aliasRecordFromBackup } from '@/lib/alias-records';
+import { screenAliasesNowOrLater } from '@/lib/alias-screen';
 import { isBackedUpSetting } from '@/lib/backup-settings';
 import { sanitizeDraftRules } from '@/lib/draft-rules';
 import { backfillRelationDescriptions } from '@/lib/relation-backfill';
@@ -240,13 +242,25 @@ export async function POST(request: Request) {
       );
     }
 
-    for (const a of aliases) {
+    for (const raw of aliases) {
+      // method, score, session_id and status exist from schema v29; older
+      // backups import as active rows with no method (lib/alias-records.ts).
+      const a = aliasRecordFromBackup(raw);
       db.prepare(
-        `INSERT OR IGNORE INTO aliases (alias, canonical_name, canonical_page_id) VALUES (?, ?, ?)`
+        `INSERT OR IGNORE INTO aliases
+           (alias, canonical_name, canonical_page_id, method, score, session_id,
+            status, status_reason, status_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
-        a.alias as string,
-        a.canonical_name as string,
-        (a.canonical_page_id as string | null) ?? null
+        a.alias,
+        a.canonical_name,
+        a.canonical_page_id,
+        a.method,
+        a.score,
+        a.session_id,
+        a.status,
+        a.status_reason,
+        a.status_at
       );
     }
 
@@ -480,6 +494,16 @@ export async function POST(request: Request) {
       format_version: manifest.version,
     },
   });
+
+  // Aliases from a backup made before schema v29 come back active with no
+  // method; the alias screen looks at every such row and sets aside the
+  // clearly wrong ones (in the background when it needs nlp-service).
+  // Non-fatal: the next boot looks at them again.
+  try {
+    await screenAliasesNowOrLater(db, 'import', { force: true });
+  } catch (err) {
+    console.error('[import] alias screen failed:', err instanceof Error ? err.message : err);
+  }
 
   return NextResponse.json({ imported: true, sources: sources.length, pages: pages.length });
 }

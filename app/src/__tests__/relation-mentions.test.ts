@@ -60,7 +60,7 @@ describe('schema v28', () => {
     const migrate = readFileSync(join(__dirname, '../../../scripts/migrate.py'), 'utf8');
     const schema = readFileSync(join(__dirname, 'helpers/schema.sql'), 'utf8');
     const version = /^SCHEMA_VERSION = (\d+)/m.exec(migrate)?.[1];
-    expect(version).toBe('28');
+    expect(Number(version)).toBeGreaterThanOrEqual(28);
     expect(schema).toContain(`VALUES ('schema_version', '${version}')`);
     expect(migrate).toContain('if current < 28:');
     expect(migrate).toContain('PRAGMA table_info(relationship_mentions)');

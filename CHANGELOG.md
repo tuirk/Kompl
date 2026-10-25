@@ -5,7 +5,7 @@ All notable changes to Kompl are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The application surface (Next.js API, CLI, MCP server, settings) follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The SQLite schema
-uses a separate monotonic version (currently `v28`); breaking schema changes
+uses a separate monotonic version (currently `v29`); breaking schema changes
 ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
@@ -344,6 +344,33 @@ ship with a `migrate.py` step that runs at boot.
   a later release that changes the writing rules sets it and lists what
   changed, and the card and the notice offer every page written under older
   rules again.
+
+### Name matches (aliases)
+
+- **Each stored name match says how it was made.** When a compile decides
+  two names are one thing ("GPT 4" is "GPT-4"), it stores the match so later
+  sources go to the same page. Each match now records the rule or step that
+  made it, the compile it came from, and a status: active, set aside, or
+  retired. Schema v28 → v29 adds `aliases.method`, `score`, `session_id`,
+  `status`, `status_reason` and `status_at`; existing matches stay active.
+- **Matches that look wrong are set aside, not deleted.** Older versions
+  stored some matches the resolver no longer makes on its own, e.g.
+  "Ethereum" → "Ethereum Foundation" (one name plus extra words),
+  "Confidence Interval" → "Continuous Integration (CI)" (another meaning of
+  the abbreviation), or two names with different words that are not alike
+  by name alone (an acronym and its expansion, such as "ETH" → "Ethereum",
+  is left for the AI check to judge). After upgrading, Kompl checks the
+  matches made before this version (no AI calls) and sets those aside: new
+  sources no longer follow them, the Connections card, graph and MCP tools
+  no longer join names through them, and the activity feed lists them. A later compile that matches the
+  same names again restores one; a retired match is never restored. The
+  check needs the embedding model for the last kind; while the NLP service
+  is starting it waits and tries again.
+- **Exact page titles come first.** When a source names an existing entity or
+  concept page exactly, its mentions and relations count for that page, even
+  where a stored match points the name elsewhere.
+- Backups carry the new columns. Restoring an older backup brings its
+  matches back active and then checks them the same way.
 
 ### Added
 

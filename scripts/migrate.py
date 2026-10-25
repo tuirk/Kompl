@@ -11,7 +11,7 @@ except ImportError:
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "db", "kompl.db"))
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 SCHEMA_SQL = """
 -- Sources: raw ingested content metadata
@@ -751,6 +751,41 @@ def migrate():
         }
         if "description" not in rel_cols:
             conn.execute("ALTER TABLE relationship_mentions ADD COLUMN description TEXT")
+
+    if current < 29:
+        print("  applying migration v29 (aliases: method, score, session_id, status)...")
+        # Alias records. Every stored alias binds later sources to its
+        # canonical page without being judged again, so each row now says
+        # how it was made and whether compiles may still use it:
+        #   method         the resolver rule or layer that made it ("skeleton",
+        #                  "existing_page_title", "llm", ...); NULL = made
+        #                  before v29
+        #   score          the similarity behind it, when the resolver knew one
+        #   session_id     the compile session that made it
+        #   status         'active' (used), 'suspended' (set aside until it is
+        #                  confirmed; a new resolver match re-activates it) or
+        #                  'retired' (judged wrong; never used again)
+        #   status_reason  why the status last changed
+        #   status_at      when it last changed
+        # Additive only, no rewrite: existing rows read status 'active', and
+        # an older image that ignores the columns still boots and inserts
+        # active rows. The app screens rows made before v29 after boot
+        # (app/src/lib/alias-screen.ts); migrate.py can't, as the screen
+        # needs the embedding model.
+        alias_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(aliases)").fetchall()
+        }
+        for col, ddl in (
+            ("method", "method TEXT"),
+            ("score", "score REAL"),
+            ("session_id", "session_id TEXT"),
+            ("status", "status TEXT DEFAULT 'active'"),
+            ("status_reason", "status_reason TEXT"),
+            ("status_at", "status_at DATETIME"),
+        ):
+            if col not in alias_cols:
+                conn.execute(f"ALTER TABLE aliases ADD COLUMN {ddl}")
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

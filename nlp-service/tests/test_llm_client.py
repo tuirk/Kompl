@@ -119,3 +119,60 @@ def test_draft_page_raises_rate_limited_when_bucket_full(mock_gemini, mock_cost)
             title="X",
             source_contents=[{"source_id": "s1", "title": "T", "markdown": "M"}],
         )
+
+
+# ---------------------------------------------------------------------------
+# Entity disambiguation (Layer 3) prompt and call
+# ---------------------------------------------------------------------------
+
+
+def test_entity_disambiguation_prompt_lists_what_is_different():
+    """The judge merged related things that are not one thing; explicit
+    "different" rules for the entity prompt (decision 2026-10-23, item 1).
+    Its examples stay off the replay set (scripts/resolve_replay_pairs.json),
+    so the replay measures the rules, not the examples."""
+    prompt = llm_client._DISAMBIGUATION_SYSTEM_PROMPT
+    for rule in ("part and its whole", "located in", "parent organisation", "product and its maker",
+                 "founder", "North", "South", "City Hall", "Museum", "versions"):
+        assert rule in prompt, rule
+
+
+@pytest.mark.parametrize("name", ["_DISAMBIGUATION_SYSTEM_PROMPT", "_DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT"])
+def test_disambiguation_prompts_read_same_source_as_a_hint_and_keep_the_canonical_to_the_two_names(name):
+    prompt = getattr(llm_client, name)
+    assert "same_source" in prompt
+    assert "hint, not a rule" in prompt
+    assert "one of the two names" in prompt
+
+
+def test_disambiguate_entities_call_and_payload(monkeypatch):
+    """Call parameters unchanged; each pair goes to the model as given,
+    same_source included; the response schema is the one it always was."""
+    import json  # noqa: PLC0415
+
+    from services.providers import LLMResult  # noqa: PLC0415
+
+    captured = {}
+
+    class _Provider:
+        def complete(self, req):
+            captured["req"] = req
+            parsed = llm_client.DisambiguationResponse(results=[])
+            return LLMResult(text='{"results": []}', parsed=parsed, parse_error=None, usage={}, finish_reason="STOP")
+
+    monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
+    pair = {"entity_a": {"name": "ML", "type": "CONCEPT", "context": "a"},
+            "entity_b": {"name": "Machine Learning", "type": "CONCEPT", "context": "b"}, "same_source": True}
+    llm_client.disambiguate_entities([pair], model="deepseek-flash", pair_kind="entity")
+
+    req = captured["req"]
+    assert req.model == "deepseek-flash"
+    assert req.response_model is llm_client.DisambiguationResponse
+    assert req.temperature == 0.0
+    assert req.max_output_tokens == 8192
+    assert req.thinking_budget == 512
+    assert req.step == "disambiguate"
+    assert req.messages[0] == {"role": "system", "content": llm_client._DISAMBIGUATION_SYSTEM_PROMPT}
+    sent = json.loads(req.messages[1]["content"].split("\n", 1)[1])
+    assert sent == [pair]
+    assert set(llm_client.DisambiguationResult.model_fields) == {"entity_a", "entity_b", "decision", "canonical", "reason"}

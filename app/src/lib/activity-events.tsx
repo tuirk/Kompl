@@ -157,6 +157,30 @@ function renderResolutionPairsUnchecked(row: FeedActivityRow): RowContent {
   };
 }
 
+// Stored name matches the alias screen set aside (lib/alias-screen.ts): new
+// sources stop following them until a later compile matches the names again.
+function renderAliasesSuspended(row: FeedActivityRow): RowContent {
+  const { d, num } = makeGetters(row);
+  const n = num('suspended') ?? 0;
+  const examples = Array.isArray(d?.examples)
+    ? (d.examples as Array<{ alias?: unknown; canonical?: unknown }>)
+        .filter((e) => typeof e.alias === 'string' && typeof e.canonical === 'string')
+        .map((e) => `${e.alias as string} → ${e.canonical as string}`)
+    : [];
+  const more = n > examples.length && examples.length > 0 ? ` and ${n - examples.length} more` : '';
+  return {
+    primary: <strong>{n} name {n === 1 ? 'match' : 'matches'} set aside</strong>,
+    secondary: (
+      <span style={MONO_DIM}>
+        {examples.length > 0 ? `${examples.join(', ')}${more} · ` : ''}
+        new sources no longer go to these pages under these names
+      </span>
+    ),
+    action: null,
+    isError: false,
+  };
+}
+
 // Shared by failure events. `retriable=true` renders a RetryButton; `false`
 // renders a danger-coloured View link (legacy behaviour for
 // entity_expansion_failed, which was in the old case-list but NOT in
@@ -668,6 +692,7 @@ export const ACTIVITY_EVENTS = {
   extraction_failed:      { key: 'extraction_failed',      badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   resolution_complete:    { key: 'resolution_complete',    badge: { label: 'RESOLVED',   tone: 'mint' as Tone }, render: renderResolutionComplete },
   resolution_pairs_unchecked: { key: 'resolution_pairs_unchecked', badge: { label: 'UNCHECKED', tone: 'dim' as Tone }, render: renderResolutionPairsUnchecked },
+  aliases_suspended:      { key: 'aliases_suspended',      badge: { label: 'SET ASIDE',  tone: 'dim'  as Tone }, render: renderAliasesSuspended },
   draft_too_thin:         { key: 'draft_too_thin',         badge: { label: 'TOO THIN',   tone: 'dim'  as Tone }, render: renderDraftTooThin },
   draft_queued_for_approval: { key: 'draft_queued_for_approval', badge: { label: 'QUEUED', tone: 'dim' as Tone }, render: renderDraftQueuedForApproval },
   compile_cancelled:      { key: 'compile_cancelled',      badge: { label: 'CANCELLED',  tone: 'dim'  as Tone }, render: renderCompileCancelled },
