@@ -36,6 +36,7 @@ import {
 } from './db';
 import { assignCitationLabels, labelsToStoredCitations, rewordLabelSubjects } from './citations';
 import { normalizeFrontmatter, relatedLinkTargets, sourceOnlyTitles, tidyDraftLinks } from './draft-cleanup';
+import { withSourceText } from './source-page-text';
 import { APP_PAGE_IDS, CURRENT_DRAFT_RULES, DRAFTED_PAGE_TYPES, isDraftedPage } from './draft-rules';
 import type { LlmModel } from './llm-models';
 import { LONG_HTTP_AGENT } from './long-http-agent';
@@ -286,6 +287,7 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
     // Same safety nets as the compile draft and crossref steps.
     let markdown = normalizeFrontmatter(labelsToStoredCitations(rewordLabelSubjects(drafted).markdown, labels));
     if (pageType !== 'source-summary') markdown = removeEmptyContradictionSections(markdown).markdown;
+    else markdown = withSourceText(markdown, sources[0].markdown);
     const aliasesByTitle = new Map<string, string[]>();
     for (const a of getAliases()) {
       const list = aliasesByTitle.get(a.canonical_name) ?? [];

@@ -1325,13 +1325,12 @@ _DRAFT_PAGE_PROMPTS: dict[str, str] = {
 Write a source summary wiki page for the following source document.
 
 {_FRONTMATTER_RULES}
-The page body should begin directly with the reproduced source content (no `## Content` heading — the renderer labels this section externally), followed by the sub-sections below:
-- Reproduce the source content faithfully and in full — do NOT summarize, paraphrase, or shorten it; copy the text as written, preserving the author's voice, formatting, headings, and structure; for GitHub repos this means the full README.
+Do NOT copy or reproduce the source text: the wiki shows the source itself on this page, above what you write. Write only the frontmatter and these sections, in this order:
 - ## Key Facts (3-5 bullet points of the most important facts for quick reference)
 - ## Entities Mentioned (bullet list of key people, companies, tools)
 - ## Concepts (bullet list of key ideas)
 
-The reproduced source content is the most important part — it must contain the actual source text, not a rewrite of it. Do not add information not in the source.
+Do not add information not in the source.
 Use [[wikilinks]] for any entities, people, tools, or concepts that have their own wiki pages.
 Frontmatter keys: title, page_type: source-summary, category, summary (1-2 sentences describing what this source is about).
 {_CATEGORY_RULE}""",

@@ -57,6 +57,7 @@ import {
 } from '../../../../lib/compile/draft-sources';
 import { getSourceTitleSet } from '../../../../lib/page-sources';
 import { normalizeFrontmatter, SOURCE_PAGE_TYPES, sourceOnlyTitles } from '../../../../lib/draft-cleanup';
+import { withSourceText } from '../../../../lib/source-page-text';
 import { CURRENT_DRAFT_RULES } from '../../../../lib/draft-rules';
 import { pageTextVersionToken } from '../../../../lib/page-rewrite';
 import { removeEmptyContradictionSections } from '../../../../lib/page-sections';
@@ -898,6 +899,9 @@ export async function POST(request: Request) {
       let markdown = normalizeFrontmatter(labelsToStoredCitations(reworded.markdown, labels));
       if (plan.page_type !== 'source-summary') {
         markdown = removeEmptyContradictionSections(markdown).markdown;
+      } else {
+        // The source text from the stored source, the model's sections after it.
+        markdown = withSourceText(markdown, sourceContents[0].markdown);
       }
 
       // Drafted by this version's prompt and cleanup. The commit copies the

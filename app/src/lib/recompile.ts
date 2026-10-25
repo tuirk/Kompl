@@ -44,6 +44,7 @@ import { syncPageWikilinks } from './wikilinks';
 import { LONG_HTTP_AGENT } from './long-http-agent';
 import { assignCitationLabels, labelsToStoredCitations, rewordLabelSubjects } from './citations';
 import { normalizeFrontmatter, relatedLinkTargets, sourceOnlyTitles, tidyDraftLinks } from './draft-cleanup';
+import { withSourceText } from './source-page-text';
 import { CURRENT_DRAFT_RULES, isDraftedPage, setPageDraftRules } from './draft-rules';
 import { removeEmptyContradictionSections } from './page-sections';
 import { recordPageDisagreements } from './disagreements';
@@ -200,6 +201,8 @@ export async function recompilePage(
   let newMarkdown = normalizeFrontmatter(labelsToStoredCitations(rewordLabelSubjects(drafted).markdown, labels));
   if (pageType !== 'source-summary') {
     newMarkdown = removeEmptyContradictionSections(newMarkdown).markdown;
+  } else {
+    newMarkdown = withSourceText(newMarkdown, sourceContents[0].markdown);
   }
   newMarkdown = tidyDraftLinks(newMarkdown, {
     blocked: new Set([...sourceOnlyTitles(getAllPages()), page.title.toLowerCase()]),

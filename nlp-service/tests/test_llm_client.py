@@ -22,27 +22,19 @@ from services import llm_client
 def test_source_summary_prompt_has_required_sections():
     """source-summary prompt must declare all required output sections."""
     prompt = llm_client._DRAFT_PAGE_PROMPTS["source-summary"]
-    assert "## Content" in prompt
     assert "## Key Facts" in prompt
     assert "## Entities Mentioned" in prompt
     assert "## Concepts" in prompt
     assert "YAML frontmatter" in prompt
 
 
-def test_source_summary_prompt_forbids_summarizing_and_paraphrasing():
-    """source-summary prompt must explicitly prohibit summarization/paraphrasing."""
-    prompt = llm_client._DRAFT_PAGE_PROMPTS["source-summary"].lower()
-    # The prompt combines the prohibition: "do NOT summarize, paraphrase, or shorten".
-    assert "do not summarize" in prompt
-    assert "paraphrase" in prompt
-
-
-def test_source_summary_prompt_requires_faithful_reproduction():
-    """source-summary prompt must instruct faithful full reproduction of source text."""
+def test_source_summary_prompt_asks_for_the_sections_only():
+    """The app puts the source text on a source page from the stored source
+    (app/src/lib/source-page-text.ts); a long source never fit in the reply
+    (owner decision 2026-10-25). The model writes the sections only."""
     prompt = llm_client._DRAFT_PAGE_PROMPTS["source-summary"]
-    assert "faithfully and in full" in prompt
-    assert "copy the text as written" in prompt
-    assert "most important part" in prompt
+    assert "Do NOT copy or reproduce the source text" in prompt
+    assert prompt.index("## Key Facts") < prompt.index("## Entities Mentioned") < prompt.index("## Concepts")
 
 
 # ---------------------------------------------------------------------------
