@@ -469,6 +469,24 @@ def _ensure_triage_rechecks(conn: sqlite3.Connection) -> bool:
     return True
 
 
+def _ensure_plan_used_source_ids(conn: sqlite3.Connection) -> bool:
+    """Add page_plans.used_source_ids when missing. Returns True when added.
+
+    used_source_ids  JSON list of the sources whose text or pre-extracted
+                     data a draft's prompt carried; the commit records
+                     provenance for these only (app/src/lib/plan-provenance.ts).
+                     NULL for drafts made before it and for drafts that send
+                     no prompt (original-source pages): those credit every
+                     plan source, as before.
+    Additive, no backfill. Older images never name the column.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(page_plans)").fetchall()}
+    if not cols or "used_source_ids" in cols:
+        return False
+    conn.execute("ALTER TABLE page_plans ADD COLUMN used_source_ids TEXT")
+    return True
+
+
 
 def migrate():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -492,6 +510,10 @@ def migrate():
         if _ensure_triage_rechecks(conn):
             conn.commit()
             print("  added the triage_rechecks table (v30)")
+        # page_plans.used_source_ids joined the v30 step the same way.
+        if _ensure_plan_used_source_ids(conn):
+            conn.commit()
+            print("  added page_plans.used_source_ids (v30)")
         print(f"Database already at version {current}, nothing to do.")
         conn.close()
         return
@@ -835,7 +857,7 @@ def migrate():
                 conn.execute(f"ALTER TABLE aliases ADD COLUMN {ddl}")
 
     if current < 30:
-        print("  applying migration v30 (page_plans.base_version, triage_rechecks table)...")
+        print("  applying migration v30 (page_plans.base_version + used_source_ids, triage_rechecks table)...")
         # Drafts waiting for approval (auto-approve off). Approving one that
         # updates a page must not overwrite what the page gained after the
         # draft was written:
@@ -855,6 +877,8 @@ def migrate():
         # check again (TRIAGE_RECHECKS_SQL above). Additive: older images
         # ignore the table, and its cascades never block their deletes.
         _ensure_triage_rechecks(conn)
+        # The sources each draft's prompt actually carried.
+        _ensure_plan_used_source_ids(conn)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

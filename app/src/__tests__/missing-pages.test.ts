@@ -42,7 +42,7 @@ function seed() {
   rel.run('Ethereum', 'Vitalik Buterin', 'created_by', sources[0]);
   rel.run('Bitcoin', 'Vitalik Buterin', 'related_to', sources[1]);
   named('Hal Finney', 'PERSON', 5); // most sources, but named with no page: wiki_status only
-  named('Proof of stake', 'CONCEPT', 2); // 2 sources: the graph only
+  named('Proof of stake', 'CONCEPT', 2); // 2 sources: below the threshold on both
   rel.run('Ethereum', 'Proof of stake', 'uses', sources[0]);
   named('2009', 'DATE', 4); // a date is no topic
   rel.run('Bitcoin', '2009', 'related_to', sources[0]);
@@ -56,12 +56,11 @@ function seed() {
 }
 
 describe('missing pages', () => {
-  it('lists the same names in the same order on the graph and in wiki_status, each at its own threshold', () => {
+  it('lists the same names in the same order on the graph and in wiki_status, at one threshold', () => {
     const db = seed();
     expect(getRelationEdges().missing).toEqual([
       { name: 'Vitalik Buterin', source_count: 3, page_ids: ['bitcoin', 'ethereum'] },
       { name: 'Satoshi Nakamoto', source_count: 3, page_ids: ['bitcoin'] },
-      { name: 'Proof of stake', source_count: 2, page_ids: ['ethereum'] },
     ]);
     expect(runHealthChecks(db).missing_cross_refs).toEqual([
       { entity_text: 'Vitalik Buterin', mention_count: 3 },

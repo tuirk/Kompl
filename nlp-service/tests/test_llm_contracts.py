@@ -82,11 +82,13 @@ from services.llm_client import (
     LLMExtractionResponse,
     DisambiguationResponse,
     CrossrefResponse,
+    LabelMergeResponse,
     _LINT_SYSTEM_PROMPT,
     _EXTRACTION_SYSTEM_PROMPT,
     _DISAMBIGUATION_SYSTEM_PROMPT,
     _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT,
     _CROSSREF_SYSTEM_PROMPT,
+    _LABEL_MERGE_SYSTEM_PROMPT,
 )
 
 
@@ -218,3 +220,27 @@ def test_crossref_rejects_bare_list():
 def test_crossref_prompt_anchors_keys():
     assert "updated_pages" in _CROSSREF_SYSTEM_PROMPT
     assert "contradictions_found" in _CROSSREF_SYSTEM_PROMPT
+
+
+# ── LabelMergeResponse — wrapper key = "merges" ───────────────────────────────
+
+def test_label_merge_canonical():
+    p = LabelMergeResponse.model_validate({
+        "merges": [{"label": "Crypto", "into": "Cryptocurrency", "reason": "short form"}],
+    })
+    assert p.merges[0].into == "Cryptocurrency"
+
+
+def test_label_merge_rejects_mapping_wrapper():
+    with pytest.raises(ValidationError):
+        LabelMergeResponse.model_validate({"mapping": {"Crypto": "Cryptocurrency"}})
+
+
+def test_label_merge_rejects_bare_list():
+    with pytest.raises(ValidationError):
+        LabelMergeResponse.model_validate([])
+
+
+def test_label_merge_prompt_anchors_keys():
+    for key in ("merges", "label", "into", "reason"):
+        assert key in _LABEL_MERGE_SYSTEM_PROMPT, f"missing key: {key}"

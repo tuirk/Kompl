@@ -47,3 +47,25 @@ export function extractFrontmatterField(
   const value = match?.[1]?.trim();
   return value && value.length > 0 ? value : null;
 }
+
+/**
+ * Replaces one scalar field's value inside the frontmatter envelope only;
+ * the body is never touched, even when it holds a line like `category: x`.
+ * `value` is written as given (callers quote it when YAML needs that). Line
+ * endings are kept. Returns null if there is no envelope or the field is not
+ * in it.
+ */
+export function replaceFrontmatterField(
+  markdown: string,
+  field: string,
+  value: string,
+): string | null {
+  // Same envelope as extractFrontmatter, with the fences captured around it.
+  const m = markdown.match(/^(﻿?---\r?\n)([\s\S]*?)(\r?\n---[ \t]*(?:\r?\n|$))/);
+  if (!m) return null;
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^${escaped}:[^\\r\\n]*`, 'm');
+  if (!re.test(m[2])) return null;
+  const envelope = m[2].replace(re, () => `${field}: ${value}`);
+  return m[1] + envelope + m[3] + markdown.slice(m[0].length);
+}

@@ -95,7 +95,7 @@ def test_draft_page_strips_markdown_code_fences(mock_gemini, mock_limiter, mock_
         page_type="source-summary",
         title="X",
         source_contents=[{"source_id": "s1", "title": "T", "markdown": "M"}],
-    )
+    ).markdown
 
     assert not result.startswith("```")
     assert not result.endswith("```")
@@ -176,3 +176,72 @@ def test_disambiguate_entities_call_and_payload(monkeypatch):
     sent = json.loads(req.messages[1]["content"].split("\n", 1)[1])
     assert sent == [pair]
     assert set(llm_client.DisambiguationResult.model_fields) == {"entity_a", "entity_b", "decision", "canonical", "reason"}
+
+
+# ---------------------------------------------------------------------------
+# Category label consolidation (one call at the end of a compile)
+# ---------------------------------------------------------------------------
+
+
+def test_label_merge_prompt_keeps_different_categories_apart():
+    """Only labels naming the same category merge; related but different
+    categories never do, and the model may only use the names it was given."""
+    prompt = llm_client._LABEL_MERGE_SYSTEM_PROMPT
+    for rule in ("Crypto", "Cryptocurrency", "abbreviation", "broader and a narrower",
+                 "Machine Learning", "neighbouring", "When in doubt, do not merge",
+                 "never a new name", "merge into the EXISTING label", "merges"):
+        assert rule in prompt, rule
+
+
+def test_consolidate_labels_call_and_payload(monkeypatch):
+    import json  # noqa: PLC0415
+
+    from services.providers import LLMResult  # noqa: PLC0415
+
+    captured = {}
+
+    class _Provider:
+        def complete(self, req):
+            captured["req"] = req
+            parsed = llm_client.LabelMergeResponse(merges=[
+                llm_client.LabelMerge(label="Crypto", into="Cryptocurrency", reason="short form"),
+            ])
+            return LLMResult(text='{"merges": []}', parsed=parsed, parse_error=None, usage={}, finish_reason="STOP")
+
+    monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
+    result = llm_client.consolidate_labels(["Cryptocurrency", "Travel"], ["Crypto"], model="deepseek-flash")
+
+    req = captured["req"]
+    assert req.model == "deepseek-flash"
+    assert req.response_model is llm_client.LabelMergeResponse
+    assert req.temperature == 0.0
+    assert req.max_output_tokens == 4096
+    assert req.thinking_budget == 512
+    assert req.step == "labels"
+    assert req.messages[0] == {"role": "system", "content": llm_client._LABEL_MERGE_SYSTEM_PROMPT}
+    assert json.loads(req.messages[1]["content"]) == {
+        "existing_labels": ["Cryptocurrency", "Travel"],
+        "new_labels": ["Crypto"],
+    }
+    assert [(m.label, m.into) for m in result.merges] == [("Crypto", "Cryptocurrency")]
+    assert set(llm_client.LabelMerge.model_fields) == {"label", "into", "reason"}
+
+
+def test_consolidate_labels_sends_nothing_without_new_labels(monkeypatch):
+    def _no_provider(model):
+        raise AssertionError("no call expected")
+
+    monkeypatch.setattr(llm_client, "get_provider", _no_provider)
+    assert llm_client.consolidate_labels(["Travel"], [], model="deepseek-flash").merges == []
+
+
+def test_consolidate_labels_unparsed_response_is_a_compile_error(monkeypatch):
+    from services.providers import LLMResult  # noqa: PLC0415
+
+    class _Provider:
+        def complete(self, req):
+            return LLMResult(text='[]', parsed=None, parse_error=ValueError("bare list"), usage={}, finish_reason="STOP")
+
+    monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
+    with pytest.raises(llm_client.LLMCompileError, match="consolidate_labels_parse_failed"):
+        llm_client.consolidate_labels([], ["Crypto"], model="deepseek-flash")

@@ -1,0 +1,74 @@
+"""Which label merges from the consolidation call the app may apply.
+
+The model (llm_client.consolidate_labels) only proposes. A merge is kept
+when it renames a label this compile added into a label the model was given,
+so no label is ever invented and no label the wiki already had is renamed.
+Names are matched to the spelling they were given in (exact first, then
+ignoring case). Chains end at their last label and a merge that would close
+a cycle is dropped, so applying the result once is final.
+
+This module NEVER opens kompl.db. rule #1 in CLAUDE.md.
+"""
+
+from __future__ import annotations
+
+from typing import Iterable, Protocol
+
+
+class _Merge(Protocol):
+    label: str
+    into: str
+    reason: str
+
+
+def _speller(names: Iterable[str]):
+    exact = {n: n for n in names}
+    folded: dict[str, str] = {}
+    for n in exact:
+        folded.setdefault(n.strip().casefold(), n)
+
+    def spell(name: str) -> str | None:
+        return exact.get(name) or folded.get(name.strip().casefold())
+
+    return spell
+
+
+def clean_label_merges(
+    merges: Iterable[_Merge],
+    existing_labels: list[str],
+    new_labels: list[str],
+) -> list[dict[str, str]]:
+    """Merges as {label, into, reason}, in the order of ``new_labels``."""
+    spell_existing = _speller(existing_labels)
+    spell_new = _speller(new_labels)
+    target: dict[str, str] = {}
+    reason: dict[str, str] = {}
+
+    def end_of(name: str) -> str:
+        seen = set()
+        while name in target and name not in seen:
+            seen.add(name)
+            name = target[name]
+        return name
+
+    for m in merges:
+        label_old, into_old = spell_existing(m.label), spell_existing(m.into)
+        label_new = None if label_old else spell_new(m.label)
+        into_new = spell_new(m.into)
+        if label_new and (into_old or into_new):
+            label, into = label_new, into_old or into_new
+        elif label_old and into_new and not into_old:
+            # The model named the wiki's label first: the new one moves.
+            label, into = into_new, label_old
+        else:
+            continue
+        if label == into or label in target or end_of(into) == label:
+            continue
+        target[label] = into
+        reason[label] = m.reason
+
+    return [
+        {"label": n, "into": end_of(n), "reason": reason[n]}
+        for n in dict.fromkeys(new_labels)
+        if n in target
+    ]

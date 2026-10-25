@@ -35,12 +35,14 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 from pydantic import BaseModel
 
+from . import draft_budget
 from .providers import LLMRequest, get_provider
 
 # ---------------------------------------------------------------------------
@@ -48,6 +50,8 @@ from .providers import LLMRequest, get_provider
 # ---------------------------------------------------------------------------
 
 # Rough char budget: 1 token ≈ 4 chars for English. 32,000 tokens → 128,000 chars.
+# The prompt budget of draft_page (services/draft_budget.py decides which
+# source documents fit) and the hard cut of crossref_pages.
 _GEMINI_INPUT_TOKEN_CAP = int(os.environ.get("GEMINI_INPUT_TOKEN_CAP", "128000"))
 # Extraction output is a structured JSON list of entities/concepts/claims — an
 # over-long input produces a JSON list that exceeds max_output_tokens (32K) and
@@ -353,6 +357,7 @@ _DEFAULT_THINKING_BUDGETS: dict[str, int] = {
     "generate_schema": 2048,
     "crossref_pages": 0,
     "triage_page_update": 0,
+    "consolidate_labels": 512,
 }
 
 
@@ -1270,6 +1275,35 @@ def _final_check(cited: bool) -> str:
     return "\n".join(lines) + "\n"
 
 
+@dataclass(frozen=True)
+class DraftPageResult:
+    markdown: str
+    # Sources whose text or pre-extracted data went into the prompt, in the
+    # caller's order. The commit credits only these (audit B4).
+    used_source_ids: list[str]
+    # Sources that did not go in whole (draft_budget.SourceCut).
+    cuts: list[draft_budget.SourceCut]
+
+
+def _source_header(sc: dict[str, Any], cite: bool) -> str:
+    """The line that opens one source document in the draft prompt."""
+    name = sc.get("title", sc.get("source_id", ""))
+    full = sc.get("shortened_from")
+    if full:
+        name = f"{name} (shortened: first {len(sc.get('markdown', '')):,} of {full:,} characters)"
+    label = sc.get("citation_label")
+    return f"--- Source [{label}]: {name} ---" if cite and label else f"--- Source: {name} ---"
+
+
+def _earlier_sources_note(earlier: list[dict[str, Any]]) -> list[str]:
+    listed = "; ".join(f"[{es['citation_label']}] {es['title']}" for es in earlier)
+    return [
+        "Earlier sources cited in the existing page content (not included below; "
+        f"keep their labels where you keep their claims): {listed}",
+        "",
+    ]
+
+
 def draft_page(
     page_type: str,
     title: str,
@@ -1282,18 +1316,23 @@ def draft_page(
     existing_categories: list[str] | None = None,
     model: str = _DEFAULT_MODEL,
     earlier_sources: list[dict[str, Any]] | None = None,
-) -> str:
-    """Draft a wiki page using Gemini 2.5 Flash.
+) -> DraftPageResult:
+    """Draft a wiki page.
 
-    Returns the raw markdown string for the page (including YAML frontmatter).
-    Uses free-form text output (no response_schema) since page content is
+    Returns the raw markdown for the page (including YAML frontmatter), the
+    sources the prompt used and the ones the prompt budget cut. Uses
+    free-form text output (no response_schema) since page content is
     unstructured markdown.
 
     Args:
         page_type:        'source-summary' | 'entity' | 'concept' | 'comparison' | 'overview'
         title:            Page title
-        source_contents:  List of {source_id, title, markdown} dicts
-        related_pages:    Optional list of {title, type, summary} for context
+        source_contents:  List of {source_id, title, markdown, citation_label?, is_new?}
+                          dicts; is_new marks this session's sources, which go
+                          first and whole (services/draft_budget.py)
+        related_pages:    Optional list of {title, type, summary} for context;
+                          an overview drafted without source documents
+                          describes these pages
         existing_content: Existing page markdown (for updates — None for first compile)
         schema:           wiki schema.md content (None for first compile)
         earlier_sources:  {citation_label, title} of sources the existing content
@@ -1304,8 +1343,6 @@ def draft_page(
         CostCeilingError     — daily $ cap exceeded
         LLMCompileError      — empty response
     """
-    import json as _json
-
     system_prompt = _DRAFT_PAGE_PROMPTS.get(page_type, _DRAFT_PAGE_PROMPTS["entity"])
 
     # Build user prompt
@@ -1334,7 +1371,11 @@ def draft_page(
         ]
 
     if related_pages:
-        if page_type == "overview":
+        if page_type == "overview" and not source_contents:
+            # An overview is drafted from the pages it lists, not from every
+            # source behind them (plan 2.1).
+            parts += ["Pages in this category (the material for this overview; describe each from its summary):"]
+        elif page_type == "overview":
             parts += ["Related pages in the wiki (for cross-reference context):"]
         else:
             parts += ["Related pages in the wiki (for linking only; their summaries are not sources):"]
@@ -1353,7 +1394,8 @@ def draft_page(
         )
         parts.append("")
 
-    if extraction_dossier.strip() and page_type in ("entity", "concept", "comparison"):
+    dossier_sent = bool(extraction_dossier.strip()) and page_type in ("entity", "concept", "comparison")
+    if dossier_sent:
         parts += [
             f'## Pre-extracted knowledge about "{title}"',
             "",
@@ -1375,28 +1417,62 @@ def draft_page(
     # every draft), multi-source pages cite claims with those labels. The app
     # turns them into stored source references after the draft returns, so
     # the page never contains raw ids.
-    cite = page_type in _CITED_PAGE_TYPES and any(sc.get("citation_label") for sc in source_contents)
+    earlier = list(earlier_sources or [])
+    cite = page_type in _CITED_PAGE_TYPES and (
+        any(sc.get("citation_label") for sc in source_contents) or bool(earlier)
+    )
     if cite:
         parts += [_CITATION_RULES, ""]
-        if earlier_sources:
-            listed = "; ".join(
-                f"[{es['citation_label']}] {es['title']}" for es in earlier_sources
-            )
-            parts += [
-                "Earlier sources cited in the existing page content (not included below; "
-                f"keep their labels where you keep their claims): {listed}",
-                "",
-            ]
 
-    parts.append("Source documents:")
-    for sc in source_contents:
-        md = sc.get("markdown", "")
-        label = sc.get("citation_label")
-        name = sc.get('title', sc.get('source_id', ''))
-        header = f"--- Source [{label}]: {name} ---" if cite and label else f"--- Source: {name} ---"
-        parts += [header, md, ""]
+    # Source documents share what the budget leaves after the parts above,
+    # which are never cut (services/draft_budget.py). An older source the
+    # existing page cites may be left out; it is then named with the earlier
+    # sources, so room for that is set aside first.
+    def _earlier_note(left_out: list[dict[str, Any]]) -> list[str]:
+        named = earlier + [
+            {"citation_label": sc["citation_label"], "title": sc.get("title", sc.get("source_id", ""))}
+            for sc in left_out
+        ]
+        return _earlier_sources_note(named) if cite and named else []
 
-    # Build category suffix separately so the truncation below never removes it.
+    cited_older = [
+        sc for sc in source_contents
+        if not sc.get("is_new") and sc.get("citation_label")
+        and f"[{sc['citation_label']}]" in (existing_content or "")
+    ]
+    fixed_chars = len("\n".join(parts + _earlier_note(cited_older) + ["Source documents:", ""]))
+    if fixed_chars > _GEMINI_INPUT_TOKEN_CAP:
+        logger.warning(
+            "draft_page '%s': the prompt without sources is %d chars, over the %d budget",
+            title, fixed_chars, _GEMINI_INPUT_TOKEN_CAP,
+        )
+    fitted = draft_budget.fit_sources(
+        source_contents,
+        max(_GEMINI_INPUT_TOKEN_CAP - fixed_chars, draft_budget.MIN_SOURCE_ROOM_CHARS),
+        lambda sc: len(_source_header(sc, cite)),
+        f"{title}\n{existing_content or ''}",
+    )
+    sent_ids = {sc.get("source_id") for sc in fitted.sources}
+    parts += _earlier_note([sc for sc in cited_older if sc.get("source_id") not in sent_ids])
+
+    if fitted.sources:
+        parts.append("Source documents:")
+        for sc in fitted.sources:
+            parts += [_source_header(sc, cite), sc.get("markdown", ""), ""]
+
+    # Used: what went into the prompt, as text or as pre-extracted data
+    # (the dossier names each source's block "From [S1] ...").
+    used = set(sent_ids)
+    if dossier_sent:
+        used |= {
+            sc.get("source_id") for sc in source_contents
+            if sc.get("citation_label") and f"From [{sc['citation_label']}]" in extraction_dossier
+        }
+    used_source_ids = list(dict.fromkeys(
+        sc["source_id"] for sc in source_contents if sc.get("source_id") in used
+    ))
+
+    # Build category suffix separately: it goes after the final check.
     # It must survive at the very end of the final prompt for Gemini recency attention.
     # Always emit CATEGORY ASSIGNMENT — even when the list is empty — so the LLM
     # always has explicit instruction to write the category field.  When cats is
@@ -1422,9 +1498,6 @@ def draft_page(
         )
 
     prompt = "\n".join(parts)
-
-    if len(prompt) > _GEMINI_INPUT_TOKEN_CAP:
-        prompt = prompt[:_GEMINI_INPUT_TOKEN_CAP]
 
     # Restated after the sources (which can be long) so the rules sit close
     # to the answer; the category instruction stays last.
@@ -1466,7 +1539,7 @@ def draft_page(
         r"\1\2",
         raw,
     )
-    return raw.strip()
+    return DraftPageResult(markdown=raw.strip(), used_source_ids=used_source_ids, cuts=fitted.cuts)
 
 
 # ---------------------------------------------------------------------------
@@ -1742,6 +1815,118 @@ def generate_schema(pages_summary: list[dict[str, Any]], model: str = _DEFAULT_M
 
 
 # ---------------------------------------------------------------------------
+# Category labels — one consolidation call at the end of a compile
+# ---------------------------------------------------------------------------
+#
+# Parallel drafts can each invent a label for the same category ("Crypto",
+# "Cryptocurrency"). The app sends the labels this compile added and the ones
+# the wiki already had; the model names the new labels that should share an
+# existing or another new label. services/label_merge.py keeps only merges
+# the app may apply.
+
+_LABEL_MERGE_MAX_OUTPUT_TOKENS = 4096
+
+
+class LabelMerge(BaseModel):
+    # No extra='forbid' — LLM output model.
+    label: str
+    into: str
+    reason: str
+
+
+class LabelMergeResponse(BaseModel):
+    # No extra='forbid' — LLM output model.
+    merges: list[LabelMerge]
+
+
+_LABEL_MERGE_SYSTEM_PROMPT = """\
+You tidy the category labels of a personal wiki. Every page has one category
+label. A compile just added the NEW labels; the wiki already had the EXISTING
+labels. Find NEW labels that name the same category as another label, so
+their pages can share one label.
+
+Merge a NEW label only when both labels name the same category:
+- spelling, case, plural or punctuation variants ("Startup" / "Startups")
+- an abbreviation and its full form ("AI" / "Artificial Intelligence")
+- a short form and its full form ("Crypto" / "Cryptocurrency")
+- two names for the same thing ("Films" / "Movies")
+
+Never merge labels that name different categories, even closely related ones:
+- a broader and a narrower topic ("Artificial Intelligence" / "Machine Learning",
+  "Cryptocurrency" / "Bitcoin")
+- neighbouring fields ("Economics" / "Finance", "Design" / "Accessibility")
+- a subject and the people, places or organisations around it
+  ("Music" / "Musicians")
+- the same word used for different things
+When in doubt, do not merge. Most compiles need no merge at all.
+
+Each merge has three fields:
+- label: one of the NEW labels, written exactly as given.
+- into: one of the EXISTING or NEW labels, written exactly as given;
+  never a new name.
+- reason: a few words on why both name the same category.
+When a NEW label matches an EXISTING label, merge into the EXISTING label.
+When two NEW labels match, merge into the clearer, more usual name.
+Name each NEW label at most once.
+
+Return {"merges": []} when nothing should be merged.
+""" + _JSON_TRAILER
+
+
+def consolidate_labels(
+    existing_labels: list[str],
+    new_labels: list[str],
+    model: str = _DEFAULT_MODEL,
+) -> LabelMergeResponse:
+    """Ask which of this compile's new category labels mean the same as
+    another label. No call without new labels.
+
+    Returns the model's merges as given; services/label_merge.py cleans them.
+
+    Raises:
+        LLMRateLimitedError  — bucket exhausted
+        CostCeilingError     — daily $ cap reached (refused before sending)
+        LLMCompileError      — call failed, empty response or JSON parse failed
+    """
+    if not new_labels:
+        return LabelMergeResponse(merges=[])
+
+    payload = json.dumps(
+        {"existing_labels": existing_labels, "new_labels": new_labels},
+        ensure_ascii=False,
+    )
+
+    provider = get_provider(model)
+    try:
+        result = provider.complete(LLMRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": _LABEL_MERGE_SYSTEM_PROMPT},
+                {"role": "user", "content": payload},
+            ],
+            response_model=LabelMergeResponse,
+            thinking_budget=_read_thinking_budget('consolidate_labels'),
+            max_output_tokens=_LABEL_MERGE_MAX_OUTPUT_TOKENS,
+            temperature=0.0,
+            step="labels",
+        ))
+    except _LIMIT_ERRORS:
+        raise
+    except Exception as e:
+        raise LLMCompileError(f"consolidate_labels_failed: {e}") from e
+
+    raw_text = result.text
+    if not raw_text:
+        raise LLMCompileError("consolidate_labels_error: empty response")
+    if result.parsed is None:
+        raise LLMCompileError(
+            f"consolidate_labels_parse_failed: {result.parse_error}; "
+            + _parse_failure_tail(step="labels", expected_wrapper="merges", raw_text=raw_text)
+        ) from result.parse_error
+    return result.parsed  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
 # Finalize prompts with response-shape contracts
 # ---------------------------------------------------------------------------
 #
@@ -1762,3 +1947,4 @@ _EXTRACTION_SYSTEM_PROMPT = _EXTRACTION_SYSTEM_PROMPT + _format_response_contrac
 _DISAMBIGUATION_SYSTEM_PROMPT = _DISAMBIGUATION_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
 _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT = _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT + _format_response_contract(DisambiguationResponse)
 _CROSSREF_SYSTEM_PROMPT = _CROSSREF_SYSTEM_PROMPT + _format_response_contract(CrossrefResponse)
+_LABEL_MERGE_SYSTEM_PROMPT = _LABEL_MERGE_SYSTEM_PROMPT + _format_response_contract(LabelMergeResponse)

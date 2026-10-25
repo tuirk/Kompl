@@ -121,7 +121,10 @@ CREATE TABLE page_plans (
   draft_rules TEXT,
   -- v30: the page's version when an update draft read it; NULL for new
   -- pages and pre-v30 drafts.
-  base_version TEXT
+  base_version TEXT,
+  -- v30: JSON list of the sources the draft's prompt carried; NULL credits
+  -- every plan source (older drafts, original-source pages).
+  used_source_ids TEXT
 );
 
 CREATE TABLE compile_progress (

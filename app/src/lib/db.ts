@@ -440,8 +440,12 @@ export interface InsertPageArgs {
 }
 
 /**
- * Upsert a page row. On conflict (same page_id), update all fields and bump
- * last_updated + source_count. Called inside db.transaction() — no await.
+ * Upsert a page row. On conflict (same page_id, i.e. an update), update the
+ * fields and bump last_updated + source_count. An update keeps the page's
+ * category (it only fills one in when the page has none) and its summary
+ * when the update brings none, as lib/page-rewrite.ts does: a draft without
+ * a `category:` line no longer moves the page to "Uncategorized".
+ * Called inside db.transaction() — no await.
  */
 export function insertPage(args: InsertPageArgs): void {
   openDb()
@@ -455,8 +459,8 @@ export function insertPage(args: InsertPageArgs): void {
        ON CONFLICT(page_id) DO UPDATE SET
          title                 = excluded.title,
          page_type             = excluded.page_type,
-         category              = excluded.category,
-         summary               = excluded.summary,
+         category              = COALESCE(pages.category, excluded.category),
+         summary               = COALESCE(excluded.summary, pages.summary),
          content_path          = excluded.content_path,
          previous_content_path = excluded.previous_content_path,
          last_updated          = CURRENT_TIMESTAMP,
@@ -1625,14 +1629,17 @@ export function updatePlanDraft(
   draftContent: string,
   draftRules: string | null,
   baseVersion: string | null = null,
+  /** Sources the draft's prompt carried (v30); NULL credits every plan source (lib/plan-provenance.ts). */
+  usedSourceIds: string[] | null = null,
 ): void {
   openDb()
     .prepare(
       `UPDATE page_plans
-          SET draft_content = ?, draft_status = 'drafted', draft_rules = ?, base_version = ?
+          SET draft_content = ?, draft_status = 'drafted', draft_rules = ?, base_version = ?,
+              used_source_ids = ?
         WHERE plan_id = ?`
     )
-    .run(draftContent, draftRules, baseVersion, planId);
+    .run(draftContent, draftRules, baseVersion, usedSourceIds ? JSON.stringify(usedSourceIds) : null, planId);
 }
 
 /**

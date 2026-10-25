@@ -10,12 +10,15 @@
  *     pages cover their names too: the user put that page away, it is no gap.
  * Ranked as Wikipedia ranks its wanted pages: by how many pages name it (a
  * typed relation between the page and the name), then by sources, then A-Z.
- * Each caller keeps its own threshold and length. Reads only.
+ * Every caller uses the same threshold; each keeps its own length. Reads only.
  */
 
 import type Database from 'better-sqlite3';
 import { buildNameMap, loadPages, loadRelationRows } from './relation-names';
 import type { RelationRow } from './relation-rows';
+
+/** Sources a name needs before it counts as a missing page, on the map and in wiki_status alike. */
+export const MISSING_PAGE_MIN_SOURCES = 3;
 
 /** Entity types that name amounts, dates and positions ("2009", "second", "40%"), not topics. */
 export const NON_TOPIC_TYPES: readonly string[] = ['DATE', 'TIME', 'PERCENT', 'MONEY', 'QUANTITY', 'ORDINAL', 'CARDINAL'];

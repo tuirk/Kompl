@@ -29,16 +29,19 @@ _ROUTES = {
     },
     "/pipeline/triage": {"source_claims": "c", "existing_page_summary": "s", "page_title": "A"},
     "/pipeline/generate-schema": {"pages": [{"title": "A", "page_type": "entity"}]},
+    "/pipeline/consolidate-labels": {"existing_labels": ["Cryptocurrency"], "new_labels": ["Crypto"]},
 }
 
 
 @pytest.fixture
 def api():
     from routers.pipeline import router as pipeline_router  # noqa: PLC0415
+    from routers.labels import router as labels_router  # noqa: PLC0415
     from routers.resolution import router as resolution_router  # noqa: PLC0415
     app = FastAPI()
     app.include_router(pipeline_router)
     app.include_router(resolution_router)
+    app.include_router(labels_router)
     return TestClient(app)
 
 

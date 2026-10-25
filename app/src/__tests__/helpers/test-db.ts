@@ -192,6 +192,8 @@ export interface SeedPagePlanArgs {
   draft_rules?: string | null;
   /** v30 page version the update draft read; NULL (new page or pre-v30 draft) by default. */
   base_version?: string | null;
+  /** v30 sources the draft's prompt carried; NULL (credit every plan source) by default. */
+  used_source_ids?: string[] | null;
 }
 
 export function seedPagePlan(db: Database.Database, args: SeedPagePlanArgs): string {
@@ -200,8 +202,8 @@ export function seedPagePlan(db: Database.Database, args: SeedPagePlanArgs): str
     `INSERT INTO page_plans
        (plan_id, session_id, title, page_type, action,
         source_ids, existing_page_id, related_plan_ids,
-        draft_content, draft_status, draft_rules, base_version)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        draft_content, draft_status, draft_rules, base_version, used_source_ids)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     plan_id,
     args.session_id,
@@ -214,7 +216,8 @@ export function seedPagePlan(db: Database.Database, args: SeedPagePlanArgs): str
     args.draft_content ?? null,
     args.draft_status ?? 'planned',
     args.draft_rules ?? null,
-    args.base_version ?? null
+    args.base_version ?? null,
+    args.used_source_ids ? JSON.stringify(args.used_source_ids) : null
   );
   return plan_id;
 }

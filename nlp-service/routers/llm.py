@@ -77,7 +77,8 @@ class LLMPricingResponse(BaseModel):
     # only picks an effort level (Gemini 3.x thinking_level, DeepSeek effort).
     draft_thinking_budget_is_cap: bool
     draft_max_output_tokens: int
-    # draft_page truncates the user prompt (sources included) to this many chars.
+    # draft_page fits its source documents so the user prompt (sources
+    # included) stays within this many chars (services/draft_budget.py).
     draft_prompt_char_cap: int
 
 

@@ -7,7 +7,7 @@
  *
  * Implements the same outbox commit pattern (CLAUDE.md rule #5):
  *   Phase 2 (sync db.transaction): status + page check, then insertPage +
- *     setPendingContent + draft_rules marker + insertProvenance + FTS5 +
+ *     setPendingContent + draft_rules marker + provenance + FTS5 +
  *     insertActivity + updatePlanStatus('committed').
  *   Phase 3a (awaited): flush pending_content to disk via /storage/write-page,
  *     then clear it compare-and-set (flushOutboxPage, as compile commit does).
@@ -30,7 +30,6 @@ import {
   getSourcePage,
   getTopicPageByTitle,
   insertPage,
-  insertProvenance,
   logActivity,
   pageRewrittenSince,
   updatePlanStatus,
@@ -43,6 +42,7 @@ import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from './draf
 import { flushOutboxPage } from './outbox-flush';
 import { recordNewDisputes } from './page-disputes';
 import { pageTextVersionToken } from './page-rewrite';
+import { contributingSourceIds, recordPageContributions } from './plan-provenance';
 import { upsertVectorWithRetry } from './vector-upsert';
 import { syncPageWikilinks } from './wikilinks';
 import { extractFrontmatterField } from './yaml-frontmatter';
@@ -75,6 +75,7 @@ interface PlanRow {
   draft_status: string;
   created_at: string;
   base_version: string | null;
+  used_source_ids: string | null;
 }
 
 /** The page types plan/route.ts finds by title with getTopicPageByTitle. */
@@ -119,7 +120,7 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
     .prepare(
       `SELECT plan_id, session_id, title, page_type, action,
               source_ids, existing_page_id, draft_content, draft_status, created_at,
-              base_version
+              base_version, used_source_ids
          FROM page_plans WHERE plan_id = ?`
     )
     .get(plan_id) as PlanRow | undefined;
@@ -193,18 +194,15 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
       }
 
       if (sourceIds.length > 0) {
-        const contribType = plan.action === 'update' ? 'updated' : 'created';
-        for (const sid of sourceIds) {
-          insertProvenance({ source_id: sid, page_id, content_hash: contentHash, contribution_type: contribType });
-        }
-        // Derive source_count from provenance — mirrors compile/commit. Must
-        // run AFTER insertProvenance so the new rows are counted. COUNT DISTINCT
-        // handles the allowed duplicate (source_id, page_id) rows.
-        db.prepare(
-          `UPDATE pages SET source_count = (
-             SELECT COUNT(DISTINCT source_id) FROM provenance WHERE page_id = ?
-           ) WHERE page_id = ?`
-        ).run(page_id, page_id);
+        // The sources the draft's prompt carried, once per page, and
+        // source_count from provenance — mirrors compile/commit
+        // (lib/plan-provenance.ts).
+        recordPageContributions(db, {
+          page_id,
+          source_ids: contributingSourceIds(sourceIds, plan.used_source_ids),
+          content_hash: contentHash,
+          contribution_type: plan.action === 'update' ? 'updated' : 'created',
+        });
       }
 
       // FTS5 upsert — strip frontmatter so YAML keys don't pollute the index.

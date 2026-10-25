@@ -6,15 +6,14 @@
  */
 
 import { getDb } from './db';
-import { namedWithPages, rankMissingPages, type MissingPage } from './missing-pages';
+import { MISSING_PAGE_MIN_SOURCES, namedWithPages, rankMissingPages, type MissingPage } from './missing-pages';
 import { buildNameMap, loadPages, loadRelationRows } from './relation-names';
 import { compareRelationLabels, isSymmetricRelation, relationLabel, type RelationDirection } from './relation-labels';
 
 export type { MissingPage } from './missing-pages';
 
-/** Missing-page names returned, and the sources each needs (wiki_status asks for 3: wiki-health.ts). */
+/** Missing-page names returned; each needs MISSING_PAGE_MIN_SOURCES sources, as in wiki_status. */
 const MISSING_MAX = 40;
-const MISSING_MIN_SOURCES = 2;
 
 /** `direction` is read from the edge's `source` page. */
 export interface EdgeRelation {
@@ -35,7 +34,7 @@ export interface RelationEdge {
 
 export interface RelationEdges {
   edges: RelationEdge[];
-  /** Missing pages named with a shown page, from 2 sources; most pages, then most sources first. */
+  /** Missing pages named with a shown page, from MISSING_PAGE_MIN_SOURCES sources; most pages, then most sources first. */
   missing: MissingPage[];
 }
 
@@ -112,7 +111,7 @@ export function getRelationEdges(opts: { includeArchived?: boolean } = {}): Rela
     .sort((x, y) => (x.source < y.source ? -1 : x.source > y.source ? 1 : x.target < y.target ? -1 : x.target > y.target ? 1 : 0));
 
   const missing = rankMissingPages(db, namedWithPages(rows, names), anyPage, {
-    minSources: MISSING_MIN_SOURCES,
+    minSources: MISSING_PAGE_MIN_SOURCES,
     limit: MISSING_MAX,
     linkedOnly: true,
   });

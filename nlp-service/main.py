@@ -54,6 +54,7 @@ from pydantic import BaseModel, ConfigDict
 
 from routers.conversion import router as conversion_router
 from routers.extraction import router as extraction_router
+from routers.labels import router as labels_router
 from routers.llm import router as llm_router
 from routers.metadata_peek import router as metadata_peek_router
 from routers.name_similarity import router as name_similarity_router
@@ -86,6 +87,7 @@ app = FastAPI(title="kompl-nlp-service", version="0.7.0")
 
 app.include_router(conversion_router)
 app.include_router(extraction_router)
+app.include_router(labels_router)
 app.include_router(llm_router)
 app.include_router(metadata_peek_router)
 app.include_router(name_similarity_router)

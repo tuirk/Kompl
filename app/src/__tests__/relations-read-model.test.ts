@@ -70,6 +70,7 @@ function fixture(): void {
   const mention = db.prepare('INSERT INTO entity_mentions (canonical_name, source_id) VALUES (?, ?)');
   mention.run('Satoshi Nakamoto', 'src-1');
   mention.run('satoshi nakamoto', 'src-2');
+  mention.run('Satoshi Nakamoto', 'src-3');
   mention.run('Cypherpunks', 'src-2');
 }
 
@@ -238,9 +239,9 @@ describe('getRelationEdges', () => {
     expect(edge('bitcoin', 'vilnius')).toMatchObject({ relations: [], wikilink: true, weight: 0 });
   });
 
-  it('lists names with no page that are named in 2+ sources', () => {
+  it('lists names with no page that are named in 3+ sources', () => {
     fixture();
-    expect(getRelationEdges().missing).toEqual([{ name: 'Satoshi Nakamoto', source_count: 2, page_ids: ['bitcoin'] }]);
+    expect(getRelationEdges().missing).toEqual([{ name: 'Satoshi Nakamoto', source_count: 3, page_ids: ['bitcoin'] }]);
   });
 
   it('includes archived pages on request', () => {

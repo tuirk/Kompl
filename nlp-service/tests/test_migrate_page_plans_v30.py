@@ -120,4 +120,63 @@ def test_an_older_image_still_writes_drafts(migrate):
         ("draft", "v0.4", "p2"),
     )
     assert conn.execute("SELECT base_version FROM page_plans WHERE plan_id = 'p2'").fetchone() == (None,)
+    assert conn.execute("SELECT used_source_ids FROM page_plans WHERE plan_id = 'p2'").fetchone() == (None,)
+    conn.close()
+
+
+# page_plans.used_source_ids: the sources a draft's prompt carried, so the
+# commit credits only those (plan 2.1, audit B4). Joined the v30 step after
+# v30 shipped.
+
+
+def test_fresh_install_has_a_nullable_used_source_ids(migrate):
+    module, db_path = migrate
+    module.migrate()
+    conn = sqlite3.connect(db_path)
+    assert _plan_columns(conn).get("used_source_ids") == 0
+    conn.close()
+
+
+def test_v29_upgrade_adds_used_source_ids_as_null(migrate):
+    module, db_path = migrate
+    _v29_database(db_path)
+    module.migrate()
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT draft_status, used_source_ids FROM page_plans").fetchall() == [("pending_approval", None)]
+    conn.close()
+
+
+def test_a_v30_database_without_used_source_ids_gets_it_at_boot(migrate):
+    module, db_path = migrate
+    _v29_database(db_path, extra_plan_columns=",\n          base_version TEXT")
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE settings SET value = '30' WHERE key = 'schema_version'")
+    conn.commit()
+    conn.close()
+
+    module.migrate()
+    module.migrate()  # a second boot changes nothing
+    conn = sqlite3.connect(db_path)
+    assert list(_plan_columns(conn)).count("used_source_ids") == 1
+    assert conn.execute("SELECT used_source_ids FROM page_plans").fetchall() == [(None,)]
+    assert conn.execute("SELECT value FROM settings WHERE key = 'schema_version'").fetchone()[0] == "30"
+    conn.close()
+
+
+def test_a_v30_database_without_page_plans_is_left_alone(migrate):
+    module, db_path = migrate
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO settings (key, value) VALUES ('schema_version', '30');
+        CREATE TABLE sources (source_id TEXT PRIMARY KEY);
+        CREATE TABLE pages (page_id TEXT PRIMARY KEY);
+        """
+    )
+    conn.close()
+    module.migrate()
+    conn = sqlite3.connect(db_path)
+    assert _plan_columns(conn) == {}
     conn.close()

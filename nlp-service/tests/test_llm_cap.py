@@ -91,11 +91,12 @@ _CALL_SITES = {
     ),
     "draft_page": lambda: llm_client.draft_page(
         "source-summary", "T", [{"source_id": "s1", "title": "T", "markdown": "Body."}]
-    ),
+    ).markdown,
     "crossref_pages": lambda: llm_client.crossref_pages(
         [{"plan_id": "p1", "title": "A", "page_type": "entity", "markdown": "x"}]
     ),
     "triage_page_update": lambda: llm_client.triage_page_update("claims", "summary", "A"),
+    "consolidate_labels": lambda: llm_client.consolidate_labels(["Cryptocurrency"], ["Crypto"]),
     "generate_schema": lambda: llm_client.generate_schema(
         [{"title": "A", "page_type": "entity", "category": None}]
     ),

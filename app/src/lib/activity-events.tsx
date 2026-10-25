@@ -624,6 +624,31 @@ function renderDraftQueuedForApproval(row: FeedActivityRow): RowContent {
   return { primary: <strong>{name}</strong>, secondary, action: null, isError: false };
 }
 
+function renderLabelsMerged(row: FeedActivityRow): RowContent {
+  // Written by the compile's 'labels' step (lib/compile/label-merge.ts).
+  const { d, num } = makeGetters(row);
+  const merged = num('merged') ?? 0;
+  const pages = num('drafts') ?? 0;
+  const shown = Array.isArray(d?.merges)
+    ? (d.merges as Array<{ label?: unknown; into?: unknown }>)
+        .filter((m) => typeof m.label === 'string' && typeof m.into === 'string')
+        .slice(0, 5)
+        .map((m) => `${m.label as string} → ${m.into as string}`)
+    : [];
+  const more = merged > shown.length && shown.length > 0 ? ` and ${merged - shown.length} more` : '';
+  return {
+    primary: <strong>{merged} duplicate {merged === 1 ? 'category' : 'categories'} merged</strong>,
+    secondary: (
+      <span style={MONO_DIM}>
+        {shown.length > 0 ? `${shown.join(', ')}${more} · ` : ''}
+        {pages} {pages === 1 ? 'page' : 'pages'} from this compile
+      </span>
+    ),
+    action: null,
+    isError: false,
+  };
+}
+
 // ── NEW render fns for Onboarding v2 Phase 1 events ────────────────────────
 
 function renderOnboardingStaged(row: FeedActivityRow): RowContent {
@@ -760,6 +785,7 @@ export const ACTIVITY_EVENTS = {
   aliases_suspended:      { key: 'aliases_suspended',      badge: { label: 'SET ASIDE',  tone: 'dim'  as Tone }, render: renderAliasesSuspended },
   draft_too_thin:         { key: 'draft_too_thin',         badge: { label: 'TOO THIN',   tone: 'dim'  as Tone }, render: renderDraftTooThin },
   draft_queued_for_approval: { key: 'draft_queued_for_approval', badge: { label: 'QUEUED', tone: 'dim' as Tone }, render: renderDraftQueuedForApproval },
+  labels_merged:          { key: 'labels_merged',          badge: { label: 'MERGED',     tone: 'neut' as Tone }, render: renderLabelsMerged },
   compile_cancelled:      { key: 'compile_cancelled',      badge: { label: 'CANCELLED',  tone: 'dim'  as Tone }, render: renderCompileCancelled },
   compile_trigger_failed: { key: 'compile_trigger_failed', badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   compile_failed:         { key: 'compile_failed',         badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },

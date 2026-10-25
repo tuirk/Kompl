@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractFrontmatter,
   extractFrontmatterField,
+  replaceFrontmatterField,
 } from '../lib/yaml-frontmatter';
 
 describe('extractFrontmatterField — body injection regression', () => {
@@ -49,5 +50,26 @@ describe('extractFrontmatterField — body injection regression', () => {
     const noLeadingFence = 'intro paragraph\n\n---\ncategory: forged\n---\n';
     expect(extractFrontmatter(noLeadingFence)).toBeNull();
     expect(extractFrontmatterField(noLeadingFence, 'category')).toBeNull();
+  });
+});
+
+describe('replaceFrontmatterField', () => {
+  it('replaces the value in the envelope and leaves the body alone', () => {
+    const md = '---\ntitle: "Bitcoin"\ncategory: Crypto\nsummary: A coin.\n---\n\ncategory: Crypto\nBody.';
+    expect(replaceFrontmatterField(md, 'category', 'Cryptocurrency')).toBe(
+      '---\ntitle: "Bitcoin"\ncategory: Cryptocurrency\nsummary: A coin.\n---\n\ncategory: Crypto\nBody.'
+    );
+  });
+
+  it('keeps CRLF line endings and replaces a quoted old value whole', () => {
+    const md = '---\r\ncategory: "Crypto"\r\ntitle: T\r\n---\r\nBody.';
+    expect(replaceFrontmatterField(md, 'category', 'Cryptocurrency')).toBe(
+      '---\r\ncategory: Cryptocurrency\r\ntitle: T\r\n---\r\nBody.'
+    );
+  });
+
+  it('returns null when there is no envelope or no such field', () => {
+    expect(replaceFrontmatterField('Body.\ncategory: Crypto', 'category', 'X')).toBeNull();
+    expect(replaceFrontmatterField('---\ntitle: T\n---\nBody.', 'category', 'X')).toBeNull();
   });
 });

@@ -10,7 +10,8 @@
  *     - insertPage()
  *     - setPendingContent() (outbox — markdown stored for boot reconciler)
  *     - draft_rules marker copied from a from-scratch plan (lib/draft-rules.ts)
- *     - insertProvenance()
+ *     - provenance for the sources the draft used, once per page
+ *       (lib/plan-provenance.ts)
  *     - pages_fts upsert
  *     - insertActivity('page_compiled', ...)
  *     - updatePlanStatus('committed')
@@ -64,6 +65,7 @@ import {
 import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from '../../../../lib/draft-rules';
 import { flushOutboxPage, reconcileOutbox } from '../../../../lib/outbox-flush';
 import { recordNewDisputes } from '../../../../lib/page-disputes';
+import { contributingSourceIds, getPlanUsedSourceIds, recordPageContributions } from '../../../../lib/plan-provenance';
 import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
 import { syncPageWikilinks } from '../../../../lib/wikilinks';
 import { extractFrontmatterField } from '../../../../lib/yaml-frontmatter';
@@ -345,26 +347,14 @@ async function commitSession(session_id: string): Promise<Response> {
           copyPlanDraftRules(db, plan.plan_id, page_id);
         }
 
-        const contribType = plan.action === 'update' ? 'updated' : 'created';
-        for (const sid of sourceIds) {
-          insertProvenance({
-            source_id: sid,
-            page_id,
-            content_hash: contentHash,
-            contribution_type: contribType,
-          });
-        }
-
-        // Derive source_count from provenance — the ground truth. Must run
-        // AFTER the insertProvenance loop so the new rows are visible to the
-        // subquery. COUNT(DISTINCT source_id) handles provenance's allowed
-        // duplicate (source_id, page_id) rows (e.g. 'created' + 'updated'
-        // for the same source across sessions).
-        db.prepare(
-          `UPDATE pages SET source_count = (
-             SELECT COUNT(DISTINCT source_id) FROM provenance WHERE page_id = ?
-           ) WHERE page_id = ?`
-        ).run(page_id, page_id);
+        // Credit the sources the draft's prompt carried, once per page, and
+        // derive source_count from provenance (lib/plan-provenance.ts).
+        recordPageContributions(db, {
+          page_id,
+          source_ids: contributingSourceIds(sourceIds, getPlanUsedSourceIds(db, plan.plan_id)),
+          content_hash: contentHash,
+          contribution_type: plan.action === 'update' ? 'updated' : 'created',
+        });
 
         // FTS5 upsert
         db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(page_id);

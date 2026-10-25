@@ -50,6 +50,7 @@ function fixture(): void {
   const mention = db.prepare('INSERT INTO entity_mentions (canonical_name, source_id) VALUES (?, ?)');
   mention.run('Satoshi Nakamoto', 'src-1');
   mention.run('Satoshi Nakamoto', 'src-2');
+  mention.run('Satoshi Nakamoto', 'src-3');
 }
 
 describe('GET /api/wiki/graph', () => {
@@ -66,7 +67,7 @@ describe('GET /api/wiki/graph', () => {
       { source: 'bitcoin', target: 'pow', relations: [{ type: 'uses', direction: 'out', source_count: 2 }], wikilink: true, weight: 2 },
       { source: 'bitcoin', target: 'vilnius', relations: [], wikilink: true, weight: 0 },
     ]);
-    expect(body.missing).toEqual([{ name: 'Satoshi Nakamoto', source_count: 2, page_ids: ['bitcoin'] }]);
+    expect(body.missing).toEqual([{ name: 'Satoshi Nakamoto', source_count: 3, page_ids: ['bitcoin'] }]);
   });
 
   it('adds archived pages, flagged, with include_archived=true', async () => {

@@ -128,6 +128,9 @@ class SourceContent(BaseModel):
     # Short label such as "S1" the page should cite this source with. The
     # app converts labels back to stored source ids after drafting.
     citation_label: str | None = None
+    # This session's source: it goes into the prompt first and whole; older
+    # sources share what the prompt budget leaves (services/draft_budget.py).
+    is_new: bool = False
 
 
 class EarlierSource(BaseModel):
@@ -162,21 +165,35 @@ class DraftPageRequest(BaseModel):
     compile_model: LLMModel = "gemini-2.5-flash"
 
 
+class DraftSourceCut(BaseModel):
+    """A source the prompt budget left out (sent_chars 0) or shortened."""
+    model_config = ConfigDict(extra='forbid')
+
+    source_id: str
+    sent_chars: int
+    cut_chars: int
+
+
 class DraftPageResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     markdown: str
+    # Sources whose text or pre-extracted data the prompt carried; the
+    # commit records provenance for these only.
+    used_source_ids: list[str]
+    cut_sources: list[DraftSourceCut]
 
 
 @router.post("/pipeline/draft-page", response_model=DraftPageResponse)
 def pipeline_draft_page(req: DraftPageRequest) -> DraftPageResponse:
     """Draft a single wiki page from source content via Gemini.
 
-    Returns raw markdown including YAML frontmatter. Temperature=0.3 for
-    natural writing; thinking enabled for quality synthesis.
+    Returns raw markdown including YAML frontmatter, the sources the prompt
+    used and the ones its budget cut. Temperature=0.3 for natural writing;
+    thinking enabled for quality synthesis.
     """
     try:
-        markdown = draft_page(
+        result = draft_page(
             page_type=req.page_type,
             title=req.title,
             source_contents=[sc.model_dump() for sc in req.source_contents],
@@ -189,7 +206,14 @@ def pipeline_draft_page(req: DraftPageRequest) -> DraftPageResponse:
             earlier_sources=[es.model_dump() for es in req.earlier_sources],
             model=req.compile_model,
         )
-        return DraftPageResponse(markdown=markdown)
+        return DraftPageResponse(
+            markdown=result.markdown,
+            used_source_ids=result.used_source_ids,
+            cut_sources=[
+                DraftSourceCut(source_id=c.source_id, sent_chars=c.sent_chars, cut_chars=c.cut_chars)
+                for c in result.cuts
+            ],
+        )
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:

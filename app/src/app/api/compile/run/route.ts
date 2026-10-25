@@ -19,6 +19,7 @@
  *   4. plan     — POST /api/compile/plan
  *   5. draft    — POST /api/compile/draft  (up to 15 min, Gemini calls)
  *   6. crossref — POST /api/compile/crossref
+ *   6b. labels  — merge duplicate category labels in the drafts (in process)
  *   7. commit   — POST /api/compile/commit
  *   8. schema   — POST /api/compile/schema (schema.md bootstrap)
  */
@@ -35,11 +36,13 @@ import {
   logActivity,
 } from '@/lib/db';
 import { CompileCancelledError, CompileRun, CompileSupersededError } from '@/lib/compile/compile-run';
+import { describePromptCuts, type PlanPromptCut } from '@/lib/compile/draft-sources';
 import { runHealthCheckStep } from '@/lib/compile/steps/health-check';
 import { runIngestFilesStep } from '@/lib/compile/steps/ingest-files';
 import { runIngestUrlsStep } from '@/lib/compile/steps/ingest-urls';
 import { runIngestTextsStep } from '@/lib/compile/steps/ingest-texts';
 import { failIfNothingIngested } from '@/lib/compile/steps/ingest-outcome';
+import { runLabelsStep } from '@/lib/compile/steps/labels';
 import { sanitizeLogValue } from '@/lib/log-safe';
 import { LONG_HTTP_AGENT, makeDispatcher } from '@/lib/long-http-agent';
 import { MAX_TRIAGE_RECHECKS_PER_COMPILE, clearSessionRecheckVerdicts } from '@/lib/triage-rechecks';
@@ -158,7 +161,10 @@ async function callPlan(
   return res.json() as Promise<{ stats: { total: number } }>;
 }
 
-async function callDraft(sessionId: string, planCount: number): Promise<{ drafted: number; failed: number }> {
+async function callDraft(
+  sessionId: string,
+  planCount: number,
+): Promise<{ drafted: number; failed: number; prompt_cuts?: PlanPromptCut[] }> {
   // Dynamic timeout sized to planCount / DRAFT_CONCURRENCY batches × inner
   // callDraftPage ceiling. See compile-timeouts.ts:computeDraftMs. Replaces
   // the static 1.5M ms from PR #71 — that fired today at 16m on session
@@ -174,7 +180,7 @@ async function callDraft(sessionId: string, planCount: number): Promise<{ drafte
     dispatcher: makeDispatcher(timeoutMs),
   });
   await throwOnError('draft', res, sessionId);
-  return res.json() as Promise<{ drafted: number; failed: number }>;
+  return res.json() as Promise<{ drafted: number; failed: number; prompt_cuts?: PlanPromptCut[] }>;
 }
 
 async function callCrossref(sessionId: string, planCount: number): Promise<{ wikilinks_added: number }> {
@@ -249,13 +255,13 @@ async function runDraftStep(run: CompileRun, planCount: number): Promise<void> {
   const { sessionId } = run;
   run.step('draft', 'running');
   const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId, planCount));
-  run.step(
-    'draft',
-    'done',
+  const count =
     draftResult.failed > 0
       ? `${draftResult.drafted} drafts generated, ${draftResult.failed} failed — retry to re-attempt`
-      : `${draftResult.drafted} drafts generated`
-  );
+      : `${draftResult.drafted} drafts generated`;
+  // What the prompt budget left out or shortened (lib/compile/draft-sources.ts).
+  const cutLine = describePromptCuts(draftResult.prompt_cuts ?? []);
+  run.step('draft', 'done', cutLine ? `${count}; ${cutLine}` : count);
   run.assertActive();
 }
 
@@ -291,6 +297,12 @@ async function finishPipeline(run: CompileRun, planCount: number): Promise<void>
   run.step('crossref', 'running');
   const crossrefResult = await timed(sessionId, 'crossref', () => callCrossref(sessionId, planCount));
   run.step('crossref', 'done', `${crossrefResult.wikilinks_added} wikilinks added`);
+  run.assertActive();
+
+  // Step 6b: labels — once per session; merges category labels that mean
+  // the same thing in the drafts so commit writes each page once with its
+  // final label. Never fails the compile (lib/compile/steps/labels.ts).
+  await timed(sessionId, 'labels', () => runLabelsStep(run));
   run.assertActive();
 
   // Step 7: commit — ALWAYS re-run (no LLM, DB + disk writes, idempotent).
@@ -348,6 +360,7 @@ async function resumeWithoutSources(run: CompileRun): Promise<void> {
     // own to flush. Commit still runs its reconcile pass.
     run.step('draft',    'done', skippedDetail);
     run.step('crossref', 'done', skippedDetail);
+    run.step('labels',   'done', skippedDetail);
     run.assertActive();
     run.step('commit',   'running');
     assertCommitComplete(run, await timed(sessionId, 'commit', () => callCommit(sessionId, 0)));

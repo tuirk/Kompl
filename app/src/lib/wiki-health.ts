@@ -10,7 +10,7 @@
 import type Database from 'better-sqlite3';
 import { getAllArchivedPageIds } from './db';
 import type { LintDeadProvenance, LintMissingCrossRef, LintOrphanPage, LintStalePage } from './lint-result';
-import { findMissingPages } from './missing-pages';
+import { findMissingPages, MISSING_PAGE_MIN_SOURCES } from './missing-pages';
 import { SYNTHESIZED_PAGE_TYPES } from './page-sections';
 
 export interface HealthChecks {
@@ -30,8 +30,8 @@ export interface ThinPage {
 
 /** missing_cross_refs lists at most this many names. */
 export const MISSING_NAMES_LIMIT = 50;
-/** Sources a name needs for missing_cross_refs (the graph shows names from 2: relation-edges.ts). */
-export const MISSING_NAMES_MIN_SOURCES = 3;
+/** Sources a name needs for missing_cross_refs: the same threshold as the graph. */
+export const MISSING_NAMES_MIN_SOURCES = MISSING_PAGE_MIN_SOURCES;
 /** How long wiki_status reuses a result while the tables keep their size. */
 const CACHE_MS = 60_000;
 const cache = new WeakMap<Database.Database, { key: string; at: number; checks: HealthChecks }>();

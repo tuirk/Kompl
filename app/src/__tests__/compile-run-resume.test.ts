@@ -219,7 +219,7 @@ describe('runCompilePipeline: a session with no sources and no plans', () => {
     const result = await runAndWait(session_id);
 
     expect(result.status).toBe('completed');
-    for (const step of ['extract', 'plan', 'draft', 'crossref', 'commit', 'schema']) {
+    for (const step of ['extract', 'plan', 'draft', 'crossref', 'labels', 'commit', 'schema']) {
       expect(result.steps[step]).toEqual({ status: 'done', detail: 'skipped (no sources)' });
     }
     expect(calls).not.toContain('/api/compile/draft');
