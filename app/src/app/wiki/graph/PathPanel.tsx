@@ -10,7 +10,7 @@
  */
 
 import Link from 'next/link';
-import { useId, useMemo, useState, type CSSProperties, type RefObject } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { ArrowUpDown } from 'lucide-react';
 import { relationsBetween } from '../../../lib/graph-focus';
 import type { GraphModel, ModelNode } from '../../../lib/graph-model';
@@ -52,6 +52,18 @@ export default function PathPanel(props: Props) {
   const title = (id: string | null) => (id ? (model.byId.get(id)?.label ?? id) : '');
   const complete = query.from !== null && query.to !== null;
   const steps = complete && path ? pathSteps(path) : [];
+  // The button goes away once every line shows: keyboard focus moves to the result it brings, not the page body.
+  const resultRef = useRef<HTMLDivElement>(null);
+  const focusResult = useRef(false);
+  useEffect(() => {
+    if (!focusResult.current || onShowAllLines) return;
+    focusResult.current = false;
+    resultRef.current?.focus({ preventScroll: true });
+  }, [onShowAllLines]);
+  const showAllLines = () => {
+    focusResult.current = true;
+    onShowAllLines?.();
+  };
 
   return (
     <PanelShell
@@ -82,7 +94,7 @@ export default function PathPanel(props: Props) {
         </button>
       </div>
 
-      <div aria-live="polite" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div ref={resultRef} tabIndex={-1} aria-live="polite" style={{ outline: 'none', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {!complete && (
           <PanelNote>
             {query.from === null && query.to === null
@@ -97,7 +109,7 @@ export default function PathPanel(props: Props) {
             <p style={{ ...BODY, margin: 0, color: 'var(--fg)' }}>No connection between these pages on the map.</p>
             {onShowAllLines && (
               <div>
-                <button type="button" className="graph-header-btn" onClick={onShowAllLines} style={SMALL_BUTTON}>
+                <button type="button" className="graph-header-btn" onClick={showAllLines} style={SMALL_BUTTON}>
                   Show plain links and “related to” too
                 </button>
               </div>

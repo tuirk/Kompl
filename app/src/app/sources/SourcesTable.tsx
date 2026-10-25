@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { SourceRow } from '../../lib/db';
-import { LocalDayMonth } from '../../components/LocalDate';
+import { LocalDate } from '../../components/LocalDate';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -436,7 +436,7 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
 
               {/* Date */}
               <div style={{ padding: '20px 0', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-secondary)' }}>
-                <LocalDayMonth iso={s.date_ingested} />
+                <LocalDate iso={s.date_ingested} />
               </div>
 
               {/* Source title + meta */}

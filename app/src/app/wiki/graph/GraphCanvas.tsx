@@ -3,8 +3,8 @@
 /**
  * The knowledge graph's canvas: react-force-graph-2d with the topic-map
  * forces (graph-forces.ts), page, name and island drawing (graph-draw.ts,
- * graph-islands.ts), hover highlighting (useCanvasHover.ts), the hover card,
- * click-to-select pages and lines, and the view controls
+ * graph-islands.ts), hover highlighting (useCanvasHover.ts), the hover card
+ * (hidden for what was just clicked), click-to-select pages and lines, and the view controls
  * (useCanvasControls.ts). Fitting and centring keep to the part of the
  * canvas the legend and the side panel leave free (`insets`). The data
  * arrives prepared (lib/graph-model.ts, graph-scope.ts, graph-missing.ts);
@@ -16,6 +16,7 @@ import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import type { ForceGraphMethods } from 'react-force-graph-2d';
 import { LAYOUT, warmupTicks, type ViewInsets } from '../../../lib/graph-layout';
+import { fitItemsFor } from '../../../lib/graph-fit';
 import { focusHighlight, hoverCardText, type GraphFocus, type Highlight } from '../../../lib/graph-focus';
 import { isMissingLink, isMissingNode } from '../../../lib/graph-missing';
 import type { GraphModel, ModelLink, ModelNode, VisibleGraph } from '../../../lib/graph-model';
@@ -82,7 +83,7 @@ interface Props {
   bridges?: ReadonlySet<string>;
   /** The focused page in focus mode: pages gather at its island, and zoom falls back to it. */
   focusId?: string | null;
-  /** Changes when the view should fit again (focus entered, left, its depth changed). */
+  /** Changes when the view should fit again (focus entered, left, its depth changed, the legend changed which pages show). */
   fitKey?: string;
   controlsRef: MutableRefObject<GraphControls | null>;
   /** The map's accessible name (lib/graph-scope.ts canvasLabel). */
@@ -108,7 +109,7 @@ export default function GraphCanvas({
   const anchorRef = useRef<{ x: number; y: number } | null>(null);
   anchorRef.current = focusNode ? { x: focusNode.anchorX, y: focusNode.anchorY } : null;
   const [ready, setReady] = useState(false);
-  const { hovered, hoverNode, hoverLink, track } = useCanvasHover();
+  const { hovered, card, hoverNode, hoverLink, track, dismissCard } = useCanvasHover();
   const cardRef = useRef<HTMLDivElement>(null);
   const frame = useRef(newFrameState('Inter, system-ui, sans-serif', 'system-ui, sans-serif'));
   const clusterBuf = useMemo(() => newClusterBuffer(model.categories.length), [model]);
@@ -124,10 +125,16 @@ export default function GraphCanvas({
   // Automatic fits (first load, scope changes), the guard that keeps a viewer's zoom live there, and the
   // sideways glide that keeps a fitted map centred when the filter panel changes.
   const nodeCount = useCallback(() => visibleRef.current.nodes.length, []);
+  // A fit keeps the names and island titles in the free area too (lib/graph-fit.ts), at their measured widths.
+  const titles = useMemo(() => model.categories.map((c) => c.mapLabel), [model]);
+  const fitItems = useCallback(
+    () => fitItemsFor(visibleRef.current.nodes, titles, labelBuf.widths, labelBuf.islandWidths),
+    [titles, labelBuf]
+  );
   // Reduced motion: view moves jump, and the layout settles before the first paint, then stays still.
   const reducedMotion = useReducedMotion();
   const { fitMap, zoomBy, markMoved, onEngineStop, moveTo, viewTarget } = useCanvasControls(
-    fgRef, viewRef, model, controlsRef, aboutRef, { ready, fitKey, nodeCount, insetLeft: insets.left, reducedMotion }
+    fgRef, viewRef, model, controlsRef, aboutRef, { ready, fitKey, nodeCount, fitItems, insetLeft: insets.left, size: `${width}x${height}`, reducedMotion }
   );
 
   // Forces go in before the first data, so the very first layout is the topic map.
@@ -207,7 +214,7 @@ export default function GraphCanvas({
   }, [hovered, selected, visible, lookup]);
   const framePost = useCallback(
     (ctx: CanvasRenderingContext2D) => {
-      prepareLabels(labelBuf, visible.nodes, frame.current, highlight);
+      prepareLabels(labelBuf, visible.nodes, frame.current, highlight, visible.links);
       drawClusterLabels(ctx, visible.nodes, model.categories, clusterBuf, frame.current, highlight !== null, labelBuf);
       drawLabels(ctx, visible.labelOrder, nameFirst, frame.current, view, labelBuf);
       drawLineLabels(ctx, visible.links, styles, highlight?.links ?? null, lines.current, frame.current, labelBuf.space);
@@ -221,17 +228,21 @@ export default function GraphCanvas({
     (node: object) => {
       if (isMissingNode(node as ModelNode)) return;
       markMoved();
-      onSelect({ kind: 'node', id: (node as ModelNode).id });
+      const focus = { kind: 'node', id: (node as ModelNode).id } as const;
+      dismissCard(focus);
+      onSelect(focus);
     },
-    [onSelect, markMoved]
+    [onSelect, markMoved, dismissCard]
   );
   const clickLink = useCallback(
     (link: object) => {
       if (isMissingLink(link as ModelLink)) return;
       markMoved();
-      onSelect({ kind: 'link', link: link as ModelLink });
+      const focus = { kind: 'link', link: link as ModelLink } as const;
+      dismissCard(focus);
+      onSelect(focus);
     },
-    [onSelect, markMoved]
+    [onSelect, markMoved, dismissCard]
   );
   const clickBackground = useCallback(() => onSelect(null), [onSelect]);
 
@@ -287,7 +298,7 @@ export default function GraphCanvas({
           onEngineStop={onEngineStop}
         />
       </div>
-      <HoverCard cardRef={cardRef} card={hoverCardText(hovered, lookup)} />
+      <HoverCard cardRef={cardRef} card={hoverCardText(card, lookup)} />
       <ZoomButtons right={controlsRight} onZoom={zoomBy} onFit={() => fitMap(400)} />
     </div>
   );

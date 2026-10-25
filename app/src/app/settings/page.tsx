@@ -19,7 +19,7 @@ import { normalizeLintResult, type LintResult } from '@/lib/lint-result';
 import { toUserMessage } from '@/lib/service-errors';
 import {
   Card, NumberField, SavedBar, SettingCard, SettingRow, SettingsGroup, SettingsNav, TogglePill,
-  codeStyle, preStyle,
+  codeStyle, CodeBlock,
 } from './_ui';
 import AgentSourcesCard from './AgentSourcesCard';
 import PageUpgradeCard from './PageUpgradeCard';
@@ -27,6 +27,8 @@ import RepairWikiCard from './RepairWikiCard';
 import TriageRecheckCard from './TriageRecheckCard';
 import ClaimCheckCard from './ClaimCheckCard';
 import WikiCheckCard from './WikiCheckCard';
+import ModelAccessHelp from './ModelAccessHelp';
+import { RESTORE_HOW, RESTORE_NEEDS_EMPTY } from '@/lib/restore-copy';
 import {
   DEFAULT_COMPILE_MODEL, LLM_MODELS, LLM_MODEL_INFO, getProviderForModel, isLlmModel,
   type LlmModel, type LlmProvider,
@@ -119,6 +121,7 @@ export default function SettingsPage() {
 
   const [lintLastResult, setLintLastResult] = useState<LintResult | null>(null);
   const [lintLastResultRaw, setLintLastResultRaw] = useState<Record<string, unknown> | null>(null);
+  const [lintLastAt, setLintLastAt] = useState<string | null>(null);
 
   const [mcpCopied, setMcpCopied] = useState(false);
 
@@ -130,6 +133,7 @@ export default function SettingsPage() {
         related_pages_min_sources: number;
         stale_threshold_days: number;
         lint_last_result: Record<string, unknown> | null;
+        last_lint_at: string | null;
         min_source_chars: number;
         min_draft_chars: number;
         entity_promotion_threshold: number;
@@ -143,6 +147,7 @@ export default function SettingsPage() {
         setStaleThreshold(data.stale_threshold_days);
         setLintLastResultRaw(data.lint_last_result);
         setLintLastResult(normalizeLintResult(data.lint_last_result));
+        setLintLastAt(data.last_lint_at);
         setMinSourceChars(data.min_source_chars);
         setMinDraftChars(data.min_draft_chars);
         setEntityThreshold(data.entity_promotion_threshold);
@@ -245,7 +250,7 @@ export default function SettingsPage() {
       fd.append('file', importFile);
       const res = await fetch('/api/import', { method: 'POST', body: fd });
       if (res.status === 409) {
-        setImportError('Wiki is not empty. Delete all data before importing.');
+        setImportError(`This wiki already has pages, so the backup can't be restored here. ${RESTORE_HOW}`);
         return;
       }
       if (!res.ok) {
@@ -284,6 +289,7 @@ export default function SettingsPage() {
         const data = (await res.json()) as Record<string, unknown>;
         setLintLastResultRaw(data);
         setLintLastResult(normalizeLintResult(data));
+        setLintLastAt(new Date().toISOString());
       }
     } finally {
       setLintRunning(false);
@@ -527,10 +533,7 @@ export default function SettingsPage() {
                       <code style={codeStyle}>.env</code> and restart Kompl, or pick a model from the other provider.
                     </div>
                   )}
-                  <div style={{ fontSize: '0.82rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.4rem' }}>
-                    Not every Gemini API key has access to every model. To list what your key can use, run:
-                  </div>
-                  <pre style={preStyle}>{`curl -s -H "x-goog-api-key: $GEMINI_API_KEY" https://generativelanguage.googleapis.com/v1beta/models | jq '.models[].name'`}</pre>
+                  <ModelAccessHelp provider={selectedProvider} />
                 </>
               }
               saved={compileModelSaved ? 'Saved — applies to new compile sessions.' : null}
@@ -603,15 +606,15 @@ export default function SettingsPage() {
                     Setup, <code style={codeStyle}>kompl update</code> and <code style={codeStyle}>kompl start</code> build
                     it. To build it by hand:
                   </div>
-                  <pre style={preStyle}>cd mcp-server &amp;&amp; npm ci &amp;&amp; npm run build</pre>
+                  <CodeBlock label="Command to build the MCP server">cd mcp-server &amp;&amp; npm ci &amp;&amp; npm run build</CodeBlock>
 
                   <StepLabel>Step 2 — Register with your AI client</StepLabel>
                   <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.5rem' }}>
                     <strong style={{ color: 'var(--fg)' }}>Claude Code</strong> and{' '}
                     <strong style={{ color: 'var(--fg)' }}>Codex</strong>:
                   </div>
-                  <pre style={preStyle}>claude mcp add --scope user kompl-wiki -- node {'<KOMPL_INSTALL_PATH>'}/mcp-server/dist/index.js</pre>
-                  <pre style={preStyle}>codex mcp add kompl-wiki -- node {'<KOMPL_INSTALL_PATH>'}/mcp-server/dist/index.js</pre>
+                  <CodeBlock label="Claude Code command">claude mcp add --scope user kompl-wiki -- node {'<KOMPL_INSTALL_PATH>'}/mcp-server/dist/index.js</CodeBlock>
+                  <CodeBlock label="Codex command">codex mcp add kompl-wiki -- node {'<KOMPL_INSTALL_PATH>'}/mcp-server/dist/index.js</CodeBlock>
                   <div style={{ fontSize: '0.85rem', color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: '0.5rem' }}>
                     <strong style={{ color: 'var(--fg)' }}>Claude Desktop, Cursor, Gemini CLI, Pi and other clients:</strong>{' '}
                     paste the block below into the client&apos;s MCP config file (VS Code:{' '}
@@ -653,7 +656,7 @@ export default function SettingsPage() {
                   </ul>
 
                   <div style={{ position: 'relative' }}>
-                    <pre style={{ ...preStyle, paddingRight: '4.5rem', fontSize: '0.82rem' }}>{MCP_CONFIG_JSON}</pre>
+                    <CodeBlock label="MCP config block" style={{ paddingRight: '4.5rem', fontSize: '0.82rem' }}>{MCP_CONFIG_JSON}</CodeBlock>
                     <button
                       type="button"
                       onClick={() => {
@@ -720,7 +723,7 @@ export default function SettingsPage() {
             >
               {(lintLastResult || lintRunning) && (
                 <div style={{ padding: '0 1.5rem 1.25rem', borderTop: '1px solid var(--border)' }}>
-                  <WikiLintResults result={lintLastResult} raw={lintLastResultRaw} running={lintRunning} />
+                  <WikiLintResults result={lintLastResult} raw={lintLastResultRaw} running={lintRunning} ranAt={lintLastAt} />
                 </div>
               )}
             </SettingCard>
@@ -829,12 +832,13 @@ export default function SettingsPage() {
               title="Import wiki"
               summary={
                 <>
-                  Restore from a .kompl.zip backup. <strong>Only works on an empty wiki</strong> — importing
-                  into a wiki that already has data will fail.
+                  Restore from a .kompl.zip backup. <strong>Only works on a new, empty Kompl</strong> with
+                  nothing compiled yet; it can&apos;t be added to a wiki that already has pages.
                 </>
               }
               details={
                 <>
+                  {RESTORE_NEEDS_EMPTY} {RESTORE_HOW}{' '}
                   Merge import (skip existing pages, dedup by URL/content hash) is not yet implemented.
                   To migrate sources from another instance, re-ingest them through onboarding — compilation
                   is deterministic per source so you get the same result.
@@ -886,7 +890,7 @@ export default function SettingsPage() {
                   {importLeftOut && (
                     <div style={{ marginTop: '0.75rem', color: 'var(--warning)', fontSize: '0.85rem' }}>
                       {importLeftOut}{' '}
-                      <Link href="/wiki" style={{ color: 'inherit' }}>Open the wiki</Link>
+                      <Link href="/wiki" style={{ color: 'inherit', textDecoration: 'underline' }}>Open the wiki</Link>
                     </div>
                   )}
                 </>

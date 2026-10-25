@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   beginFrame, drawLabels, newFrameState, newLabelBuffer, prepareLabels, type DrawView,
 } from '../app/wiki/graph/graph-draw';
-import type { ModelNode } from '../lib/graph-model';
+import type { ModelLink, ModelNode } from '../lib/graph-model';
 
 /**
  * Records the names written, at their graph position (tracking translate and
@@ -133,5 +133,24 @@ describe('names in screen space', () => {
     expect(name?.font).toBe('500 19px Inter');
     expect(parseFloat((name?.font ?? '').split(' ')[1])).toBeGreaterThanOrEqual(12);
     expect(name?.x).toBeCloseTo(200); // centred over the circle, in graph units
+  });
+});
+
+describe('names and lines', () => {
+  it('writes a name off the line its page sends down, rather than across it', () => {
+    const a = page('a', 100, 100);
+    const b = page('b', 100, 400);
+    const line = { source: a, target: b } as unknown as ModelLink;
+    const { ctx, written } = fakeCanvas();
+    const frame = newFrameState('sans-serif', 'sans-serif');
+    beginFrame(frame, ctx, 1);
+    const buf = newLabelBuffer(2, 0);
+    const view: DrawView = {
+      highlight: null, selectedId: null, hoveredId: null, labelRank: new Map([['a', 0], ['b', 0]]), marked: null, bridges: new Set(),
+    };
+    prepareLabels(buf, [a, b], frame, null, [line]);
+    drawLabels(ctx, [a, b], null, frame, view, buf);
+    const named = written.find((w) => w.text === 'A');
+    expect(named?.y).toBeLessThan(100); // above its circle: the line runs down from it
   });
 });

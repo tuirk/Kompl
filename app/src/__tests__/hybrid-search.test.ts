@@ -79,7 +79,7 @@ describe('hybridSearch', () => {
     mockVectors({
       matches: [
         { page_id: 'pow', similarity: 0.66 },
-        { page_id: 'python', similarity: 0.3 }, // below 0.66 × 0.6
+        { page_id: 'python', similarity: 0.35 }, // below 0.66 × 0.6
       ],
     });
     expect(ids((await hybridSearch('mechanism of mining', { limit: 5 })).items)).toEqual(['pow']);
@@ -94,6 +94,20 @@ describe('hybridSearch', () => {
     mockVectors({ matches: [{ page_id: 'python', similarity: 0.12 }] });
     const { items } = await hybridSearch('consensus mechanism', { limit: 5 });
     expect(ids(items)).toEqual(['pow']);
+  });
+
+  it('finds nothing for nonsense or off-topic words instead of the nearest unrelated pages', async () => {
+    seedWiki();
+    // Measured on a real wiki: nonsense ("zzqxplorbnk") and off-topic
+    // questions ("kubernetes", "banana bread recipe") reach 0.10–0.28.
+    mockVectors({
+      matches: [
+        { page_id: 'bitcoin', similarity: 0.28 },
+        { page_id: 'python', similarity: 0.25 },
+        { page_id: 'pow', similarity: 0.2 },
+      ],
+    });
+    expect((await hybridSearch('zzqxplorbnk', { limit: 5 })).items).toEqual([]);
   });
 
   it('never returns archived pages or Saved Links', async () => {
@@ -167,7 +181,7 @@ describe('hybridSearch', () => {
 
   it('leaves questions made only of common words to meaning search', async () => {
     seedWiki();
-    const fetchMock = mockVectors({ matches: [{ page_id: 'python', similarity: 0.3 }] });
+    const fetchMock = mockVectors({ matches: [{ page_id: 'python', similarity: 0.35 }] });
     const { items } = await hybridSearch('what is it', { limit: 5 });
     expect(ids(items)).toEqual(['python']);
     expect(fetchMock).toHaveBeenCalledTimes(1);

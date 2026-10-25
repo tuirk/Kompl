@@ -31,6 +31,26 @@ export function connectionsCount(connections: PageConnections): number {
   return ends.size;
 }
 
+/**
+ * What the headline count is made of, when some of it is names with no page
+ * yet: "3 with a page · 12 with no page yet". The map draws only pages (and
+ * missing pages named in enough sources), so this is why its focused view
+ * can show fewer. Null when every connection has a page.
+ */
+export function connectionsBreakdown(connections: PageConnections): string | null {
+  const pages = new Set<string>();
+  const names = new Set<string>();
+  for (const g of connections.groups) {
+    for (const i of g.items) {
+      if (i.page_id) pages.add(i.page_id);
+      else names.add(i.title.toLowerCase());
+    }
+  }
+  if (names.size === 0) return null;
+  const noPage = `${names.size} with no page yet`;
+  return pages.size === 0 ? noPage : `${pages.size} with a page · ${noPage}`;
+}
+
 /** True when the card has anything to list: a relation or an "Also linked" page. */
 export function hasConnections(connections: PageConnections): boolean {
   return connections.groups.some((g) => g.items.length > 0) || connections.linked_only.length > 0;

@@ -1,73 +1,33 @@
 'use client';
 
+/**
+ * Dates and times in the viewer's time zone, in the one format the app uses
+ * (lib/date-format.ts). The server doesn't know the viewer's zone, so the
+ * first render shows the UTC reading and the browser swaps in local time
+ * after hydration.
+ */
+
 import { useEffect, useState } from 'react';
+import { formatDate, formatDateTime, formatTime } from '../lib/date-format';
 
-export function parseIsoUtc(iso: string): Date | null {
-  const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
-  return isNaN(d.getTime()) ? null : d;
+function useLocalText(format: (utc: boolean) => string, iso: string): string {
+  const [text, setText] = useState(() => format(true));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setText(format(false)), [iso]);
+  return text;
 }
 
-const pad = (n: number) => String(n).padStart(2, '0');
-
-const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-
-function fmtDatetime(iso: string, useUTC: boolean): string {
-  const d = parseIsoUtc(iso);
-  if (!d) return iso;
-  const dd   = useUTC ? d.getUTCDate()     : d.getDate();
-  const mo   = useUTC ? d.getUTCMonth()    : d.getMonth();
-  const yy   = useUTC ? d.getUTCFullYear() : d.getFullYear();
-  const hh   = useUTC ? d.getUTCHours()    : d.getHours();
-  const mi   = useUTC ? d.getUTCMinutes()  : d.getMinutes();
-  return `${pad(dd)}.${pad(mo + 1)}.${yy} ${pad(hh)}.${pad(mi)}`;
-}
-
-function fmtTime(iso: string, useUTC: boolean): string {
-  const d = parseIsoUtc(iso);
-  if (!d) return iso;
-  const hh = useUTC ? d.getUTCHours()   : d.getHours();
-  const mi = useUTC ? d.getUTCMinutes() : d.getMinutes();
-  const ss = useUTC ? d.getUTCSeconds() : d.getSeconds();
-  return `${pad(hh)}:${pad(mi)}:${pad(ss)}`;
-}
-
-function fmtDayMonth(iso: string, useUTC: boolean): string {
-  const d = parseIsoUtc(iso);
-  if (!d) return iso;
-  const mo = useUTC ? d.getUTCMonth() : d.getMonth();
-  const dd = useUTC ? d.getUTCDate()  : d.getDate();
-  return `${MONTHS[mo]} ${dd}`;
-}
-
-function fmtDate(iso: string, useUTC: boolean): string {
-  const d = parseIsoUtc(iso);
-  if (!d) return iso;
-  const yy = useUTC ? d.getUTCFullYear() : d.getFullYear();
-  const mo = useUTC ? d.getUTCMonth()    : d.getMonth();
-  const dd = useUTC ? d.getUTCDate()     : d.getDate();
-  return `${yy}-${pad(mo + 1)}-${pad(dd)}`;
-}
-
+/** "10 Oct 2026, 13:51" */
 export function LocalDatetime({ iso }: { iso: string }) {
-  const [text, setText] = useState(() => fmtDatetime(iso, true));
-  useEffect(() => setText(fmtDatetime(iso, false)), [iso]);
-  return <>{text}</>;
+  return <>{useLocalText((utc) => formatDateTime(iso, { utc }), iso)}</>;
 }
 
+/** "13:51" */
 export function LocalTime({ iso }: { iso: string }) {
-  const [text, setText] = useState(() => fmtTime(iso, true));
-  useEffect(() => setText(fmtTime(iso, false)), [iso]);
-  return <>{text}</>;
+  return <>{useLocalText((utc) => formatTime(iso, { utc }), iso)}</>;
 }
 
-export function LocalDayMonth({ iso }: { iso: string }) {
-  const [text, setText] = useState(() => fmtDayMonth(iso, true));
-  useEffect(() => setText(fmtDayMonth(iso, false)), [iso]);
-  return <>{text}</>;
-}
-
+/** "10 Oct 2026" */
 export function LocalDate({ iso }: { iso: string }) {
-  const [text, setText] = useState(() => fmtDate(iso, true));
-  useEffect(() => setText(fmtDate(iso, false)), [iso]);
-  return <>{text}</>;
+  return <>{useLocalText((utc) => formatDate(iso, { utc }), iso)}</>;
 }

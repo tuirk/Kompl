@@ -5,7 +5,7 @@
  * deterministic, so the map looks the same on every load. Client-safe.
  */
 
-import { CATEGORY_HEX, NEUTRAL_HEX } from './graph-palette';
+import { CATEGORY_HEX, NEUTRAL_HEX, NO_TOPIC_HEX } from './graph-palette';
 
 export const UNCATEGORIZED = 'Uncategorized';
 
@@ -72,8 +72,8 @@ export interface CategoryCount {
 
 /**
  * Category order and colours: biggest first (live pages, then all pages,
- * then name), the first eight take CATEGORY_HEX, the rest and
- * "Uncategorized" are neutral grey; "Uncategorized" always sorts last.
+ * then name), the first eight take CATEGORY_HEX, the rest NEUTRAL_HEX;
+ * "Uncategorized" takes its own NO_TOPIC_HEX and always sorts last.
  */
 export function rankCategories(counts: CategoryCount[]): Array<CategoryCount & { color: string; overflow: boolean }> {
   const named = counts
@@ -85,7 +85,7 @@ export function rankCategories(counts: CategoryCount[]): Array<CategoryCount & {
     overflow: i >= CATEGORY_HEX.length,
   }));
   const uncategorized = counts.find((c) => c.name === UNCATEGORIZED);
-  if (uncategorized) ranked.push({ ...uncategorized, color: NEUTRAL_HEX, overflow: false });
+  if (uncategorized) ranked.push({ ...uncategorized, color: NO_TOPIC_HEX, overflow: false });
   return ranked;
 }
 

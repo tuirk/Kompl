@@ -23,7 +23,7 @@ export const PAGE_TYPE_VAR = {
 export const PAGE_TYPE_HEX = {
   'source-summary': '#a1a1aa',
   concept:          '#5b8def',
-  entity:           '#8b5cf6',
+  entity:           '#9b74f7',
   comparison:       '#d97757',
   overview:         '#5eaaa8',
 } as const;

@@ -1,10 +1,12 @@
 /**
- * Steps 2–5 of a confirmed wiki repair run (lib/wiki-repair/run.ts takes the
+ * Steps 2–6 of a confirmed wiki repair run (lib/wiki-repair/run.ts takes the
  * backup, step 1, before it calls this):
  *   2. aliases   the set-aside name matches confirmed, judged by the AI
  *   3. mentions  every source's mentions credited again from its extraction
- *   4. pages     the pages whose credited sources changed rebuilt from them
- *   5. labels    labels that mean the same thing merged
+ *   4. links     links written through name matches no longer used corrected
+ *                (no AI call)
+ *   5. pages     the pages whose credited sources changed rebuilt from them
+ *   6. labels    labels that mean the same thing merged
  *
  * All or none: the run stops at the first thing that goes wrong (the daily
  * spending limit, a rate limit, the NLP service, 3 failed pages in a row,
@@ -23,6 +25,7 @@ import { applyAliasVerdicts, buildJudgePairs, judgeBatch, judgeBatches, listAlia
 import { RepairCallError, type RepairCallCode } from './calls';
 import { applyLabelMerges, consolidateWikiLabels, repairLabels } from './labels';
 import { REPAIR_MAX_CONSECUTIVE_FAILURES, WIKI_REPAIR_FLAG } from './limits';
+import { applyLinkFixes } from './links';
 import { mergePendingPages, readWikiExtractions, recreditMentions } from './mentions';
 import { saveRun, type RepairIssue, type RepairRun, type RepairStep, type RepairStopReason } from './state';
 
@@ -67,6 +70,8 @@ function stepDetails(run: RepairRun, step: RepairStep): Record<string, unknown> 
       return { ...run.aliases };
     case 'mentions':
       return { sources: run.mentions?.sources ?? 0, pages: run.mentions?.pages ?? 0 };
+    case 'links':
+      return { ...(run.links ?? { pages: 0, links: 0, missed: 0 }) };
     case 'pages': {
       const { current_title: _t, consecutive_failures: _c, ...pages } = run.pages;
       return { ...pages, waiting: run.pending_pages.length };
@@ -106,6 +111,7 @@ function endRun(run: RepairRun, status: 'finished' | 'stopped', reason: RepairSt
         backup: run.backup?.file ?? null,
         aliases_confirmed: run.aliases.confirmed,
         aliases_retired: run.aliases.retired,
+        links_corrected: run.links?.links ?? 0,
         pages_rebuilt: run.pages.rebuilt,
         pages_waiting: run.pending_pages.length,
         labels_merged: run.labels?.merged ?? 0,
@@ -179,7 +185,16 @@ export async function runRepairSteps(run: RepairRun, ctx: StepContext): Promise<
     });
     finishStep(run, 'mentions');
 
-    // ── 4. Pages ──
+    // ── 4. Links through name matches no longer used (no AI call) ──
+    enter('links');
+    run.links = { pages: 0, links: 0, missed: 0 };
+    await applyLinkFixes(db, () => {
+      check();
+      saveRun(run);
+    }, run.links);
+    finishStep(run, 'links');
+
+    // ── 5. Pages ──
     enter('pages');
     const queue = run.pending_pages.slice(0, run.confirmed.max_pages);
     const overflow = run.pending_pages.length > queue.length;
@@ -245,7 +260,7 @@ export async function runRepairSteps(run: RepairRun, ctx: StepContext): Promise<
     }
     finishStep(run, 'pages');
 
-    // ── 5. Labels ──
+    // ── 6. Labels ──
     enter('labels');
     const target = await call(() => consolidateWikiLabels(repairLabels(), run.model));
     await measure();

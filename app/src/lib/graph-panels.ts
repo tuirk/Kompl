@@ -155,13 +155,13 @@ export function serializeSizes(sizes: PanelSizes): string {
  * The canvas edges the map keeps clear of when fitting and gliding: the
  * legend (expanded: its width plus a margin; collapsed: only the "Filters"
  * button, a band along the top), an open details panel, and the zoom
- * buttons on the right.
+ * buttons on the right (beside the panel when it is open).
  */
 export function canvasInsets(legendOpen: boolean, legendWidth: number, panelOpen: boolean, panelWidth: number): ViewInsets {
   return {
     left: legendOpen ? LEGEND_LEFT + legendWidth + 16 : 24,
     top: legendOpen ? 44 : LEGEND_TOP + FILTERS_BUTTON_HEIGHT + 16,
-    right: panelOpen ? panelWidth + 24 : 64,
+    right: (panelOpen ? panelWidth : 0) + 64,
     bottom: 40,
   };
 }

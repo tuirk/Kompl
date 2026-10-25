@@ -12,6 +12,7 @@
 
 import { redirect } from 'next/navigation';
 import { getRunningCompileSession } from '@/lib/db';
+import { countUserPages } from '@/lib/wiki-empty';
 import OnboardingClient from './OnboardingClient';
 
 export const dynamic = 'force-dynamic';
@@ -29,5 +30,6 @@ export default async function OnboardingPage({ searchParams }: PageProps) {
       `&queued=${active.source_count}`
     );
   }
-  return <OnboardingClient />;
+  // A backup restores only into a wiki with no pages (lib/wiki-empty.ts).
+  return <OnboardingClient wikiEmpty={countUserPages() === 0} />;
 }

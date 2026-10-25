@@ -41,7 +41,7 @@ import { displayPageBody } from '../../../lib/page-sections';
 import WikiSidebar from '../../../components/WikiSidebar';
 import SavedLinksInteractive from './SavedLinksInteractive';
 import { PAGE_TYPE_VAR, PAGE_TYPE_LABELS, type PageType } from '../../../lib/page-type-palette';
-import { renderInlineWikilinks } from '../../../lib/wikilink-render';
+import { renderInlineWikilinks, stripWikilinkBrackets } from '../../../lib/wikilink-render';
 import { stripWikilinks } from '../../../lib/wikilink-syntax';
 import {
   renderCitationMarkers,
@@ -68,7 +68,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const { page_id } = await params;
   const page = getPage(page_id);
   if (!page) return { title: 'Page not found' };
-  return { title: page.title, description: page.summary ?? undefined };
+  return { title: page.title, description: page.summary ? stripWikilinkBrackets(page.summary) : undefined };
 }
 
 /**

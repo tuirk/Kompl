@@ -2,8 +2,10 @@
 
 /**
  * Small pieces of the graph legend: the collapsed "Filters" button, the
- * icon buttons' style, a filter row (a real, visible checkbox that shows on
- * or off, a swatch, a noun label and a count; the whole row is clickable),
+ * icon buttons' style, a filter row (a real checkbox that shows on or off,
+ * laid invisibly over the drawn box so a click on the box is a click on the
+ * checkbox itself; a swatch, a noun label and a count; the whole row is
+ * clickable),
  * the checkbox glyph itself, and the dot swatch. Filter rows look like
  * controls (pointer, hover tint, focus ring: globals.css
  * .graph-legend-filter); the key's rows (LegendKey.tsx) use none of this.
@@ -18,7 +20,10 @@ export const LEGEND_HEADING: CSSProperties = {
   margin: '0 0 4px', fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 10, lineHeight: '14px',
   letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--fg-dim)',
 };
-const HIDDEN_INPUT: CSSProperties = { position: 'absolute', opacity: 0, width: 1, height: 1, margin: 0, pointerEvents: 'none' };
+/** The real checkbox, transparent, exactly over the drawn box (CheckGlyph) and above it. */
+const OVER_GLYPH: CSSProperties = {
+  position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, padding: 0, opacity: 0, zIndex: 1, cursor: 'pointer',
+};
 const ROW: CSSProperties = {
   position: 'relative', display: 'flex', alignItems: 'center', gap: 8, minHeight: 26, padding: '0 6px', margin: '0 -6px',
   borderRadius: 4, cursor: 'pointer', userSelect: 'none', fontFamily: 'var(--font-body)', fontSize: 12, lineHeight: '16px',
@@ -31,8 +36,10 @@ export function FilterRow(props: {
   const { on, label, count, swatch, swatchWidth = 14, onToggle } = props;
   return (
     <label className="graph-legend-row graph-legend-filter" data-filter={label} style={{ ...ROW, color: on ? 'var(--fg-secondary)' : 'var(--fg-dim)' }}>
-      <input type="checkbox" checked={on} onChange={onToggle} style={HIDDEN_INPUT} />
-      <CheckGlyph on={on} />
+      <span style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
+        <CheckGlyph on={on} />
+        <input type="checkbox" checked={on} onChange={onToggle} style={OVER_GLYPH} />
+      </span>
       <span style={{ width: swatchWidth, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>{swatch}</span>
       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
       {count !== undefined && <span style={{ color: 'var(--fg-dim)', fontVariantNumeric: 'tabular-nums' }}>{count}</span>}

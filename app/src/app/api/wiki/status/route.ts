@@ -19,7 +19,6 @@
 import { NextResponse } from 'next/server';
 import {
   countPendingDrafts,
-  getAllArchivedPageIds,
   getDb,
   getLastLintAt,
   getLastLintResult,
@@ -39,7 +38,6 @@ export const dynamic = 'force-dynamic';
 
 /** Items listed per finding; the rest are counted. */
 const TOP = 5;
-const SAVED_LINKS_PAGE_ID = 'saved-links';
 
 function summary<T, U>(items: T[], pick: (item: T) => U): { count: number; top: U[] } {
   return { count: items.length, top: items.slice(0, TOP).map(pick) };
@@ -48,8 +46,6 @@ function summary<T, U>(items: T[], pick: (item: T) => U): { count: number; top: 
 export async function GET() {
   const db = getDb();
   const checks = runHealthChecksCached(db);
-  const archived = getAllArchivedPageIds();
-  const orphans = checks.orphan_pages.filter((p) => p.page_id !== SAVED_LINKS_PAGE_ID && !archived.has(p.page_id));
   const thresholdDays = getStaleThresholdDays();
   const lastCheck = normalizeLintResult(getLastLintResult());
   const wikiCheckAt = lastWikiCheckAt(db);
@@ -82,7 +78,7 @@ export async function GET() {
         capped: checks.missing_cross_refs.length >= MISSING_NAMES_LIMIT,
       },
       thin_pages: summary(getThinPages(db), (p) => p),
-      orphan_pages: summary(orphans, (p) => p),
+      orphan_pages: summary(checks.orphan_pages, (p) => p),
       dead_provenance: { count: checks.dead_provenance.length },
     },
     last_health_check: wikiCheckAt

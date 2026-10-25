@@ -42,7 +42,13 @@ export interface LabelSpace {
   /** The box placeName placed last, and whether it sits far enough out to need a leader line. */
   last: Float64Array;
   lastLeader: boolean;
+  /** Lines drawn this frame as x0, y0, x1, y1, which names keep off when they can (none past the buffer's size). */
+  segs: Float64Array;
+  segments: number;
 }
+
+/** Most lines names keep off; with more in view they are not checked at all (addSegment). */
+export const NAME_LINES_MAX = 250;
 
 export function newLabelSpace(maxCircles: number, maxBoxes: number): LabelSpace {
   return {
@@ -70,6 +76,8 @@ export function newLabelSpace(maxCircles: number, maxBoxes: number): LabelSpace 
     best: new Float64Array(4),
     last: new Float64Array(4),
     lastLeader: false,
+    segs: new Float64Array(NAME_LINES_MAX * 4),
+    segments: 0,
   };
 }
 
@@ -98,6 +106,7 @@ export function resetSpace(
   space.boxHalfH = 0;
   space.circles = 0;
   space.maxR = 0;
+  space.segments = 0;
 }
 
 /** Adds a circle (before buildGrid). Circles past the buffer's size are ignored. */
@@ -226,4 +235,58 @@ export function forcePlace(space: LabelSpace, x0: number, y0: number, x1: number
   space.boxHead[c] = i;
   if ((x1 - x0) / 2 > space.boxHalfW) space.boxHalfW = (x1 - x0) / 2;
   if ((y1 - y0) / 2 > space.boxHalfH) space.boxHalfH = (y1 - y0) / 2;
+}
+
+/**
+ * Adds a drawn line for names to keep off. Returns false once the buffer is
+ * full: the caller then clears them all (`segments = 0`), so a crowded map
+ * never makes some names avoid lines and others not.
+ */
+export function addSegment(space: LabelSpace, x0: number, y0: number, x1: number, y1: number): boolean {
+  const at = space.segments * 4;
+  if (at >= space.segs.length) return false;
+  space.segs[at] = x0;
+  space.segs[at + 1] = y0;
+  space.segs[at + 2] = x1;
+  space.segs[at + 3] = y1;
+  space.segments += 1;
+  return true;
+}
+
+/** Whether the segment from (ax, ay) to (bx, by) passes through the box (Liang-Barsky clipping). */
+export function segmentHitsBox(
+  ax: number, ay: number, bx: number, by: number, x0: number, y0: number, x1: number, y1: number
+): boolean {
+  if (Math.max(ax, bx) < x0 || Math.min(ax, bx) > x1 || Math.max(ay, by) < y0 || Math.min(ay, by) > y1) return false;
+  const dx = bx - ax;
+  const dy = by - ay;
+  let t0 = 0;
+  let t1 = 1;
+  // The four edges as p * t <= q: left, right, top, bottom.
+  for (let e = 0; e < 4; e++) {
+    const p = e === 0 ? -dx : e === 1 ? dx : e === 2 ? -dy : dy;
+    const q = e === 0 ? ax - x0 : e === 1 ? x1 - ax : e === 2 ? ay - y0 : y1 - ay;
+    if (p === 0) {
+      if (q < 0) return false;
+      continue;
+    }
+    const t = q / p;
+    if (p < 0) {
+      if (t > t1) return false;
+      if (t > t0) t0 = t;
+    } else {
+      if (t < t0) return false;
+      if (t < t1) t1 = t;
+    }
+  }
+  return true;
+}
+
+/** Whether the box crosses any line added this frame. */
+export function crossesLine(space: LabelSpace, x0: number, y0: number, x1: number, y1: number): boolean {
+  const s = space.segs;
+  for (let i = 0; i < space.segments * 4; i += 4) {
+    if (segmentHitsBox(s[i], s[i + 1], s[i + 2], s[i + 3], x0, y0, x1, y1)) return true;
+  }
+  return false;
 }

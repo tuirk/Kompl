@@ -5,7 +5,8 @@
  * so they never disagree about a name. A name counts when:
  *   - the extraction named it (entity_mentions: alias-pinned names, concepts
  *     included) in at least `minSources` sources, counting only mentions
- *     typed as something a page could be about, not a date, amount or number;
+ *     typed as something a page could be about, not a date, amount or number,
+ *     and named by more than numbers and ordinals ("second", missing-page-rules.ts);
  *   - no page has it as its title or an alias, whatever the case. Archived
  *     pages cover their names too: the user put that page away, it is no gap.
  * Ranked as Wikipedia ranks its wanted pages: by how many pages name it (a
@@ -14,11 +15,11 @@
  */
 
 import type Database from 'better-sqlite3';
+import { isNonTopicName } from './missing-page-rules';
 import { buildNameMap, loadPages, loadRelationRows } from './relation-names';
 import type { RelationRow } from './relation-rows';
 
-/** Sources a name needs before it counts as a missing page, on the map and in wiki_status alike. */
-export const MISSING_PAGE_MIN_SOURCES = 3;
+export { MISSING_PAGE_MIN_SOURCES } from './missing-page-rules';
 
 /** Entity types that name amounts, dates and positions ("2009", "second", "40%"), not topics. */
 export const NON_TOPIC_TYPES: readonly string[] = ['DATE', 'TIME', 'PERCENT', 'MONEY', 'QUANTITY', 'ORDINAL', 'CARDINAL'];
@@ -85,7 +86,7 @@ export function rankMissingPages(
   const found = new Map<string, MissingPage>();
   for (const { name, sources } of counted) {
     const key = name.toLowerCase();
-    if (anyPage.has(key) || (found.get(key)?.source_count ?? 0) >= sources) continue;
+    if (anyPage.has(key) || (found.get(key)?.source_count ?? 0) >= sources || isNonTopicName(name)) continue;
     const linked = namedWith.get(key);
     if (opts.linkedOnly && !linked) continue;
     found.set(key, { name: linked?.name ?? name, source_count: sources, page_ids: linked ? [...linked.pageIds].sort() : [] });

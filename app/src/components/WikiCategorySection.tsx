@@ -4,7 +4,8 @@ import { useEffect, useId, useState, type ReactNode } from 'react';
 
 type Props = {
   category: string;
-  pageCount: number;
+  /** "14 pages" (lib/wiki-counts.ts). */
+  countLabel: string;
   lastUpdatedLabel?: ReactNode;
   defaultOpen?: boolean;
   children: ReactNode;
@@ -14,7 +15,7 @@ const STORAGE_PREFIX = 'kompl_wiki_cat_open:';
 
 export default function WikiCategorySection({
   category,
-  pageCount,
+  countLabel,
   lastUpdatedLabel,
   defaultOpen = false,
   children,
@@ -97,7 +98,7 @@ export default function WikiCategorySection({
                 whiteSpace: 'nowrap',
               }}
             >
-              {pageCount} page{pageCount !== 1 ? 's' : ''}
+              {countLabel}
             </span>
           ) : (
             <span
@@ -107,14 +108,13 @@ export default function WikiCategorySection({
                 lineHeight: '15px',
                 letterSpacing: 1,
                 textTransform: 'uppercase',
-                color: 'var(--fg-secondary)',
-                opacity: 0.3,
+                color: 'var(--fg-dim)',
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
               }}
             >
-              {pageCount} page{pageCount !== 1 ? 's' : ''}
+              {countLabel}
             </span>
           )}
         </div>
@@ -127,8 +127,7 @@ export default function WikiCategorySection({
                 lineHeight: '15px',
                 letterSpacing: 1,
                 textTransform: 'uppercase',
-                color: 'var(--fg-secondary)',
-                opacity: 0.3,
+                color: 'var(--fg-dim)',
                 whiteSpace: 'nowrap',
               }}
             >

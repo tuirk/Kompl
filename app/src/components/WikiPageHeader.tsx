@@ -120,8 +120,7 @@ export default function WikiPageHeader({
                   fontSize: 10,
                   lineHeight: '15px',
                   letterSpacing: -0.5,
-                  color: 'var(--fg)',
-                  opacity: 0.4,
+                  color: 'var(--fg-dim)',
                 }}
               >
                 last update: <LocalDatetime iso={lastUpdated} />

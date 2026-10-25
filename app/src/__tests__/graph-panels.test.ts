@@ -70,7 +70,7 @@ describe('free area', () => {
     for (const [legendW, panelW] of [[236, 360], [400, 700], [200, 300]]) {
       const insets = canvasInsets(true, legendW, true, panelW);
       expect(insets.left).toBe(16 + legendW + 16);
-      expect(insets.right).toBe(panelW + 24);
+      expect(insets.right).toBe(panelW + 64);
       const view = fitView({ x: [-300, 300], y: [-200, 200] }, W, H, insets);
       // The box's centre lands in the middle of the free area.
       const sx = W / 2 + (0 - view.x) * view.k;
@@ -114,7 +114,7 @@ describe('legend expanded or collapsed, kept per viewer', () => {
     expect(collapsed).toEqual({ left: 24, top: LEGEND_TOP + FILTERS_BUTTON_HEIGHT + 16, right: 64, bottom: 40 });
     expect(collapsed.top).toBe(64);
     expect(canvasInsets(true, 236, false, 360)).toEqual({ left: 16 + 236 + 16, top: 44, right: 64, bottom: 40 });
-    expect(canvasInsets(true, 400, true, 500)).toEqual({ left: 432, top: 44, right: 524, bottom: 40 });
+    expect(canvasInsets(true, 400, true, 500)).toEqual({ left: 432, top: 44, right: 564, bottom: 40 });
   });
 
   it('fits the map with the restored state: a first visit fits into the larger, collapsed free area', () => {

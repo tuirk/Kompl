@@ -8,7 +8,9 @@
  * press glides with that point held still on screen.
  *
  * Automatic fits happen only on the first load, on a change of focus or
- * depth (`fitKey`), for a found path and on the fit button: an early fit once
+ * depth or of which pages the legend shows (`fitKey`), for a found path, on
+ * the fit button and, while the viewer has not moved the map, when the
+ * canvas is resized: an early fit once
  * the warm-up has placed the pages, then a refinement when the layout
  * settles. Once the viewer zooms, pans, drags or picks a page or line
  * (`markMoved`), a pending automatic fit is dropped: their view wins. Until
@@ -27,6 +29,7 @@ import type { ForceGraphMethods } from 'react-force-graph-2d';
 import {
   autoFit, centerFor, fitView, LAYOUT_SCALE, panView, recentrePan, zoomAnchor, zoomAround, type GraphView, type ViewInsets,
 } from '../../../lib/graph-layout';
+import { fitWithNames, type FitItem } from '../../../lib/graph-fit';
 import type { GraphModel, ModelNode } from '../../../lib/graph-model';
 import { easeInOut, motionMs, tweenView } from '../../../lib/graph-motion';
 
@@ -59,8 +62,14 @@ export function useCanvasControls(
   controlsRef: MutableRefObject<GraphControls | null>,
   /** The point zoom buttons zoom about (the selection), read when pressed. */
   aboutRef: MutableRefObject<() => Point | null>,
-  /** When the canvas has its forces in, the scope key, how many pages it draws, the free area's left edge, and reduced motion. */
-  auto: { ready: boolean; fitKey: string; nodeCount: () => number; insetLeft: number; reducedMotion: boolean }
+  /**
+   * When the canvas has its forces in, the scope key, how many pages it draws, what a fit keeps in view, the
+   * free area's left edge, the canvas size, and reduced motion.
+   */
+  auto: {
+    ready: boolean; fitKey: string; nodeCount: () => number; fitItems: () => FitItem[]; insetLeft: number; size: string;
+    reducedMotion: boolean;
+  }
 ) {
   const reduced = useRef(auto.reducedMotion);
   reduced.current = auto.reducedMotion;
@@ -122,13 +131,19 @@ export function useCanvasControls(
     return { x: now.x, y: now.y, k: fg.zoom() };
   }, [fgRef]);
 
-  /** zoomToFit, but into the free area between the legend and the panel. An explicit fit: the viewer's moves are forgotten. */
+  const itemsRef = useRef(auto.fitItems);
+  itemsRef.current = auto.fitItems;
+  /**
+   * zoomToFit, but into the free area between the legend and the panel, with room for the names and island
+   * titles (lib/graph-fit.ts; the circles alone when the names cannot fit). An explicit fit: the viewer's
+   * moves are forgotten.
+   */
   const fitMap = useCallback((ms: number) => {
     const fg = fgRef.current;
     const bbox = fg?.getGraphBbox();
     if (!fg || !bbox) return;
     const { width: w, height: h, insets } = viewRef.current;
-    moveTo(fitView(bbox, w, h, insets), ms);
+    moveTo(fitWithNames(itemsRef.current(), w, h, insets) ?? fitView(bbox, w, h, insets), ms);
     userMoved.current = false;
     fittedOnce.current = true;
   }, [fgRef, viewRef, moveTo]);
@@ -193,6 +208,16 @@ export function useCanvasControls(
     };
     glide.current = requestAnimationFrame(step);
   }, [insetLeft, fgRef, moveTo]);
+
+  // The canvas was resized (the window, or the header wrapping): a fitted map fits the new size; a map the
+  // viewer has moved stays as it is.
+  const lastSize = useRef(auto.size);
+  const { size } = auto;
+  useEffect(() => {
+    if (size === lastSize.current) return;
+    lastSize.current = size;
+    if (fittedOnce.current && !userMoved.current) fitMap(RECENTRE_MS);
+  }, [size, fitMap]);
 
   const onEngineStop = useCallback(() => {
     const next = autoFit(fitPending.current, userMoved.current, nodeCount());

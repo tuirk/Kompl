@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getAllPages } from '@/lib/db';
+import { dropCitationLabels } from '@/lib/summary-text';
 
 /** GET /api/wiki/index — machine-readable page catalog. Consumed by the MCP
  *  server (search_wiki without a query) and the wiki sidebar. Returns every page
@@ -29,7 +30,7 @@ export async function GET(request: Request) {
       title: p.title,
       page_type: p.page_type,
       category: p.category,
-      summary: p.summary,
+      summary: p.summary === null ? null : dropCitationLabels(p.summary),
       source_count: p.source_count,
       last_updated: p.last_updated,
     })),

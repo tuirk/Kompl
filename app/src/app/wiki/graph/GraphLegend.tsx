@@ -20,6 +20,7 @@ import { SlidersHorizontal, X } from 'lucide-react';
 import { RING_PAGE_TYPES, type GraphFilters, type GraphModel, type VisibleGraph } from '../../../lib/graph-model';
 import { changedFilters, legendCategoryGroups, legendPageTypes, type CategoryGroup } from '../../../lib/graph-legend';
 import { MISSING_HEX } from '../../../lib/graph-missing';
+import { MISSING_PAGE_MIN_SOURCES } from '../../../lib/missing-page-rules';
 import { LEGEND_LEFT, LEGEND_TOP, legendRange, type LegendSize } from '../../../lib/graph-panels';
 import { PAGE_TYPE_LABELS, type PageType } from '../../../lib/page-type-palette';
 import { Dot, FilterRow, FiltersButton, ICON_BUTTON, LEGEND_HEADING } from './legend-parts';
@@ -160,8 +161,12 @@ export default function GraphLegend(props: Props) {
           <FilterRow on={filters.showSources} label="Source pages" count={sourceCount} swatch={<Dot color="var(--fg-muted)" faint />}
             onToggle={() => onFilters({ ...filters, showSources: !filters.showSources })} />
           {missingCount > 0 && (
-            <FilterRow on={showMissing} label="Missing pages" count={missingCount} swatch={<Dot color={MISSING_HEX} dashed />}
-              onToggle={() => onShowMissing(!showMissing)} />
+            <>
+              <FilterRow on={showMissing} label="Missing pages" count={missingCount} swatch={<Dot color={MISSING_HEX} dashed />}
+                onToggle={() => onShowMissing(!showMissing)} />
+              {/* A page panel lists every name with no page; this counts only those enough sources name. */}
+              <span style={NOTE}>{`Names ${MISSING_PAGE_MIN_SOURCES} or more sources mention that have no page yet.`}</span>
+            </>
           )}
           <FilterRow on={includeArchived} label="Archived pages" swatch={<Dot color="var(--fg-dim)" faint />}
             onToggle={() => onIncludeArchived(!includeArchived)} />

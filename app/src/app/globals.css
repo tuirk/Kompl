@@ -14,9 +14,11 @@
      --fg           High-contrast primary text                (#ececf0)
      --fg-secondary Primary body text (slightly softer)       (#d4d4d8)
      --fg-muted     Labels, metadata, secondary icons         (#a1a1aa)
-     --fg-dim       Timestamps, breadcrumbs, inactive nav     (#83838c)
-     Every text token clears WCAG AA (4.5:1) on --bg and --bg-card; --fg-dim
-     was #52525b (2.5:1) until the wiki readability pass.
+     --fg-dim       Timestamps, breadcrumbs, inactive nav     (#8c8c95)
+     Every text token clears WCAG AA (4.5:1) on --bg, --bg-card, --bg-card-hover
+     and --bg-track; --fg-dim was #52525b (2.5:1) until the wiki readability
+     pass and #83838c (4.35:1 on --bg-card-hover) until the accessibility pass.
+     Dim text with a token, never with opacity: opacity drops it below 4.5:1.
      Note: --fg deliberately *not* pure white — pure #fff on dark bg
      causes glare / visual distortion for dyslexic readers (BDA + W3C).
 
@@ -36,7 +38,7 @@
 
    Page-type taxonomy (wiki schema classification):
      --page-concept    Concept pages                          (#5b8def)
-     --page-entity     Entity pages                           (#8b5cf6)
+     --page-entity     Entity pages                           (#9b74f7)
      --page-comparison Comparison pages                       (#d97757)
      --page-overview   Overview pages                         (#5eaaa8)
      source-summary reuses --fg-muted intentionally (low-signal).
@@ -68,7 +70,7 @@
   --fg:            #ececf0;
   --fg-secondary:  #d4d4d8;
   --fg-muted:      #a1a1aa;
-  --fg-dim:        #83838c;
+  --fg-dim:        #8c8c95;
 
   /* --- Borders --- */
   --border:        #1e2022;
@@ -110,7 +112,7 @@
      app/src/lib/page-type-palette.ts — do not reference elsewhere.
      source-summary reuses --fg-muted (low-signal semantic), not its own var. */
   --page-concept:    #5b8def;
-  --page-entity:     #8b5cf6;
+  --page-entity:     #9b74f7;
   --page-comparison: #d97757;
   --page-overview:   #5eaaa8;
 
@@ -608,8 +610,8 @@ article img {
 .wiki-rp-more > summary::-webkit-details-marker {
   display: none;
 }
-.wiki-rp-more:not([open]) .wiki-rp-less,
-.wiki-rp-more[open] .wiki-rp-all {
+/* Opened, "Show all" gives way to "Show fewer" after the last row (MoreRows.tsx). */
+.wiki-rp-more[open] > summary {
   display: none;
 }
 /* A connection's evidence toggle (ConnectionsPanel.tsx): a chevron beside the row. */
@@ -681,6 +683,13 @@ article img {
 }
 /* The graph header's and path panel's buttons (GraphHeader.tsx, PathPanel.tsx). */
 .graph-header-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Onboarding source cards (app/onboarding/OnboardingClient.tsx) are
+   checkbox buttons; the keyboard focus ring sits outside the card. */
+.onboarding-source-card:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

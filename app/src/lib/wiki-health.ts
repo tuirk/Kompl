@@ -9,7 +9,7 @@
 
 import type Database from 'better-sqlite3';
 import { getAllArchivedPageIds } from './db';
-import type { LintDeadProvenance, LintMissingCrossRef, LintOrphanPage, LintStalePage } from './lint-result';
+import { SAVED_LINKS_PAGE_ID, type LintDeadProvenance, type LintMissingCrossRef, type LintOrphanPage, type LintStalePage } from './lint-result';
 import { findMissingPages, MISSING_PAGE_MIN_SOURCES } from './missing-pages';
 import { SYNTHESIZED_PAGE_TYPES } from './page-sections';
 
@@ -62,15 +62,20 @@ export function runHealthChecksCached(db: Database.Database): HealthChecks {
 }
 
 export function runHealthChecks(db: Database.Database): HealthChecks {
-  const orphan_pages = db
+  // Saved Links is Kompl's own list, linked from nowhere by design; archived
+  // pages are put away. Neither is an orphan to fix.
+  const archived = getAllArchivedPageIds();
+  const orphan_pages = (db
     .prepare(
       `SELECT p.page_id, p.title
          FROM pages p
         WHERE p.page_id NOT IN (SELECT target_page_id FROM page_links)
           AND p.page_id NOT IN (SELECT source_page_id FROM page_links)
+          AND p.page_id != ?
+          AND p.page_type != 'archived'
         ORDER BY p.title COLLATE NOCASE`,
     )
-    .all() as LintOrphanPage[];
+    .all(SAVED_LINKS_PAGE_ID) as LintOrphanPage[]).filter((p) => !archived.has(p.page_id));
 
   const stale_pages = db
     .prepare(

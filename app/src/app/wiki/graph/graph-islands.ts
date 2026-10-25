@@ -42,10 +42,12 @@ export function clusterLabelAlpha(scale: number): number {
 
 /**
  * Each island's name, centred over its pages and just above the topmost one
- * (or two spreads above the centre, when one page strays far out). Islands
- * of one page are left to that page's own name; missing names in `nodes`
- * are left out. While clearly shown, the
- * names claim their boxes in the label space (call after prepareLabels).
+ * (or two spreads above the centre, when one page strays far out). An
+ * island of one page gets its name too: the page's own name says nothing of
+ * its topic, and the page would pass for part of the island beside it
+ * (topics past the eighth even share one grey). Missing names in `nodes`
+ * are left out. While clearly shown, the names claim their boxes in the
+ * label space (call after prepareLabels).
  */
 export function drawClusterLabels(
   ctx: CanvasRenderingContext2D, nodes: readonly ModelNode[], categories: readonly CategoryInfo[],
@@ -79,7 +81,7 @@ export function drawClusterLabels(
   ctx.strokeStyle = CANVAS_BG;
   for (let i = 0; i < categories.length; i++) {
     const count = buf.count[i];
-    if (count < 2) continue;
+    if (count === 0) continue;
     const mx = buf.sumX[i] / count;
     const my = buf.sumY[i] / count;
     const spread = Math.sqrt(Math.max(0, buf.sumSq[i] / count - mx * mx - my * my));

@@ -18,6 +18,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { closesPanelOnEscape, limitsLinePointer, type GraphFocus } from '../../../lib/graph-focus';
+import { pagesFitKey } from '../../../lib/graph-fit';
 import { canvasInsets, LEGEND_LEFT } from '../../../lib/graph-panels';
 import { placeMissing } from '../../../lib/graph-missing';
 import { DEFAULT_FILTERS, type GraphFilters } from '../../../lib/graph-model';
@@ -155,6 +156,13 @@ export default function WikiGraphPage() {
     setPathQuery({ from: selectedNode?.id ?? null, to: null });
     setSelected(null);
   };
+  // The panel's "Focus" button goes away once the map is focused on its page: keyboard focus moves to the
+  // header's focus controls (GraphHeader.tsx) instead of falling to the page body.
+  const [focusRequest, setFocusRequest] = useState(0);
+  const enterFocus = (id: string) => {
+    changeScope({ focus: id, depth: scope.depth });
+    setFocusRequest((n) => n + 1);
+  };
   const toggleMissing = (next: boolean) => {
     if (next) placeMissing(layer, model.byId);
     setShowMissing(next);
@@ -187,6 +195,7 @@ export default function WikiGraphPage() {
           notice={notice ?? (scope.focus && !focusId && model.byId.has(scope.focus) ? 'The focused page is hidden by the legend’s filters.' : null)}
           findPages={scoped.nodes}
           onFind={pick}
+          focusRequest={focusRequest}
         />
 
         {/* tabIndex -1: focus comes back here when a panel closes and its opener is gone. */}
@@ -200,39 +209,8 @@ export default function WikiGraphPage() {
           )}
           {!error && data !== null && (hasPages || archivedOnly || includeArchived) && size.width > 0 && (
             <>
-              {hasPages && (
-                <GraphCanvas
-                  model={model}
-                  visible={visible}
-                  lookup={lookup}
-                  width={size.width}
-                  height={size.height}
-                  insets={insets}
-                  coveredLeft={legendOpen ? LEGEND_LEFT + legendSize.width : 0}
-                  coveredRight={panelOpen ? panelWidth : 0}
-                  controlsRight={panelOpen ? panelWidth + 16 : 16}
-                  selected={selected}
-                  onSelect={select}
-                  pinned={pinned}
-                  marked={marked}
-                  bridges={bridgeIds}
-                  focusId={focusId}
-                  fitKey={focusId ? `${focusId}\u0000${scope.depth}` : ''}
-                  controlsRef={controlsRef}
-                  label={canvasLabel(scoped.nodes.length, scoped.links.length, focusId ? (model.byId.get(focusId)?.label ?? null) : null)}
-                />
-              )}
-              {!hasPages && (
-                <div style={MESSAGE}>
-                  {includeArchived ? 'No pages to show.' : 'Every page is archived. Turn on “Show archived” in the legend to see them.'}
-                </div>
-              )}
-              {hasPages && scoped.nodes.length === 0 && (
-                <div style={{ ...MESSAGE, position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-                  Nothing to show with these filters.
-                </div>
-              )}
-              <CanvasHint model={model} full={view.full} scoped={scoped} focusId={focusId} filters={filters} onFilters={setFilters} />
+              {/* Before the canvas in the page, so Tab reaches the filters (top left) before the zoom buttons
+                  (bottom right); the legend's z-index keeps it over the canvas. */}
               <GraphLegend
                 model={model}
                 visible={scoped}
@@ -250,6 +228,39 @@ export default function WikiGraphPage() {
                 onSize={panels.setLegend}
                 onSizeDone={panels.save}
               />
+              {hasPages && (
+                <GraphCanvas
+                  model={model}
+                  visible={visible}
+                  lookup={lookup}
+                  width={size.width}
+                  height={size.height}
+                  insets={insets}
+                  coveredLeft={legendOpen ? LEGEND_LEFT + legendSize.width : 0}
+                  coveredRight={panelOpen ? panelWidth : 0}
+                  controlsRight={panelOpen ? panelWidth + 16 : 16}
+                  selected={selected}
+                  onSelect={select}
+                  pinned={pinned}
+                  marked={marked}
+                  bridges={bridgeIds}
+                  focusId={focusId}
+                  fitKey={`${focusId ? `${focusId}\u0000${scope.depth}` : ''}\u0003${pagesFitKey(filters, showMissing)}`}
+                  controlsRef={controlsRef}
+                  label={canvasLabel(scoped.nodes.length, scoped.links.length, focusId ? (model.byId.get(focusId)?.label ?? null) : null)}
+                />
+              )}
+              {!hasPages && (
+                <div style={MESSAGE}>
+                  {includeArchived ? 'No pages to show.' : 'Every page is archived. Turn on “Show archived” in the legend to see them.'}
+                </div>
+              )}
+              {hasPages && scoped.nodes.length === 0 && (
+                <div style={{ ...MESSAGE, position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                  Nothing to show with these filters.
+                </div>
+              )}
+              <CanvasHint model={model} full={view.full} scoped={scoped} focusId={focusId} filters={filters} onFilters={setFilters} />
               <PanelWidthContext.Provider value={panels.panelContext}>
               {pathQuery !== null && (
                 <PathPanel pages={view.pickable} model={model} query={pathQuery} onQuery={setPathQuery} path={path}
@@ -259,7 +270,7 @@ export default function WikiGraphPage() {
               {pathQuery === null && selectedNode && (
                 <NodePanel key={selectedNode.id} node={selectedNode} isShown={isShown} cache={connectionsCache}
                   onClose={close} onPick={pick} returnFocusTo={boxRef} takeFocus={focusedFor !== selected} bridge={bridges.get(selectedNode.id) ?? null}
-                  onFocus={focusId === selectedNode.id ? undefined : (id) => changeScope({ focus: id, depth: scope.depth })} />
+                  onFocus={focusId === selectedNode.id ? undefined : enterFocus} />
               )}
               {pathQuery === null && selectedLink && (
                 <EdgePanel key={`${selectedLink.a}\u0000${selectedLink.b}`} link={selectedLink} model={model}

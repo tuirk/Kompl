@@ -88,6 +88,20 @@ describe('expanded: the filter panel', () => {
     for (const label of labels(html)) expect(label).not.toMatch(/^show/i);
   });
 
+  it('says what the missing pages count, so it agrees with the page panels', () => {
+    expect(render()).toContain('Names 3 or more sources mention that have no page yet.');
+  });
+
+  it('lets the checkbox itself take the click: it lies over the drawn box, with nothing on top of it', () => {
+    const html = render();
+    for (const input of html.match(/<input type="checkbox"[^>]*>/g) ?? []) {
+      expect(input).not.toContain('pointer-events:none');
+      expect(input).toMatch(/position:absolute/);
+      expect(input).toMatch(/width:100%;height:100%/);
+      expect(input).toMatch(/z-index:1/);
+    }
+  });
+
   it('shows each state in the checkbox itself: checked = shown', () => {
     const off = render();
     const on = render({ ...DEFAULT_FILTERS, showSources: true, showPlain: true }, { showMissing: true });

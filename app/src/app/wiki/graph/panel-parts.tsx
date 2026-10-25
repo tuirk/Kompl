@@ -12,8 +12,8 @@ import Link from 'next/link';
 import { createContext, useContext, useEffect, useId, useRef, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { moreSourcesNote } from '../../../lib/connections-view';
 import { focusTargetOnClose, PANEL_DEFAULT_WIDTH, type GripRange } from '../../../lib/graph-panels';
-import type { ConnectionItem } from '../../../lib/relations';
 import ResizeGrip from './ResizeGrip';
+import { useMoreEvidence, type EvidenceItem } from './useMoreEvidence';
 
 /** The details panel's width and its limits, and how its grip changes it (the page keeps the size). */
 export const PanelWidthContext = createContext<{ width: number; range?: GripRange; onWidth?(width: number): void; onDone?(): void }>({
@@ -143,13 +143,17 @@ export function PanelSection({ label, count, children }: { label: string; count?
 /**
  * The sources behind a connection (archived ones marked), each with its own
  * sentence in quotation marks when extraction checked it against the
- * source, else Kompl's one-line summary, labelled as Kompl's.
+ * source, else Kompl's one-line summary, labelled as Kompl's. The first
+ * three come with the connection; "+N more sources" loads and shows the
+ * rest, "Show fewer" folds them away (useMoreEvidence.ts).
  */
-export function EvidenceList({ item }: { item: Pick<ConnectionItem, 'evidence' | 'source_count'> }) {
-  const more = moreSourcesNote(item);
+export function EvidenceList({ item, pageId }: { item: EvidenceItem; pageId: string }) {
+  const note = moreSourcesNote(item);
+  const { state, open, close } = useMoreEvidence(pageId, item);
+  const evidence = state.status === 'open' ? state.evidence : item.evidence;
   return (
     <ul style={{ listStyle: 'none', margin: 0, padding: '0 0 0 10px', borderLeft: '2px solid var(--border-hover)' }}>
-      {item.evidence.map((e) => (
+      {evidence.map((e) => (
         <li key={e.source_id} style={{ padding: '4px 0' }}>
           {(e.quote ?? e.sentence) && (
             <span style={{ ...BODY, display: 'block' }}>{e.quote ? `“${e.quote}”` : e.sentence}</span>
@@ -163,7 +167,18 @@ export function EvidenceList({ item }: { item: Pick<ConnectionItem, 'evidence' |
           </span>
         </li>
       ))}
-      {more && <li style={{ ...META, padding: '4px 0' }}>{more}</li>}
+      {note && (
+        <li style={{ ...META, padding: '4px 0' }}>
+          {state.status === 'loading' && 'Loading the other sources…'}
+          {state.status === 'error' && 'Could not load the other sources. '}
+          {state.status !== 'loading' && (
+            <button type="button" className="graph-header-btn" aria-expanded={state.status === 'open'}
+              onClick={state.status === 'open' ? close : open} style={{ ...LINK_BUTTON, color: 'var(--accent)' }}>
+              {state.status === 'open' ? 'Show fewer' : state.status === 'error' ? 'Try again' : note}
+            </button>
+          )}
+        </li>
+      )}
     </ul>
   );
 }

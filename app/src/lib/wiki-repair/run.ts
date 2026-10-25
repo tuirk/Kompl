@@ -6,10 +6,12 @@
  *      backup, no run
  *   2. set-aside name matches confirmed or retired by the AI (./aliases.ts)
  *   3. every source's mentions credited again (./mentions.ts)
- *   4. the pages whose sources changed rebuilt from them, through the
+ *   4. links written through name matches no longer used corrected, no
+ *      AI call (./links.ts)
+ *   5. the pages whose sources changed rebuilt from them, through the
  *      outbox, previous versions kept (lib/redraft.ts)
- *   5. labels that mean the same thing merged (./labels.ts)
- * Steps 2–5 run in ./steps.ts.
+ *   6. labels that mean the same thing merged (./labels.ts)
+ * Steps 2–6 run in ./steps.ts.
  *
  * The owner first sees the plan (./plan.ts): how many name matches the AI
  * checks, how many pages may be rebuilt, the AI calls, cost and time on the
@@ -36,7 +38,7 @@ import { saveRepairBackup } from './backup';
 import { fetchRepairPricing } from './calls';
 import { estimateRepair, type RepairEstimate } from './estimate';
 import { REPAIR_MAX_OVERSPEND, WIKI_REPAIR_FLAG } from './limits';
-import { computeRepairPlan } from './plan';
+import { computeRepairPlan, type RepairPlan } from './plan';
 import { currentRun, isWikiRepairRunning, repairState, saveRun, type RepairRun } from './state';
 import { finishStep, runRepairSteps } from './steps';
 
@@ -87,6 +89,8 @@ export interface RepairOverview {
     pages_high: number;
     pages_over_cap: number;
     pages_waiting: number;
+    link_pages_low: number;
+    link_pages_high: number;
     labels: number;
   } | null;
   nothing_to_do: boolean;
@@ -98,6 +102,11 @@ export interface RepairOverview {
   busy: 'compile' | 'page_upgrade' | 'wiki_check' | null;
   run: RepairRunView | null;
   max_overspend: number;
+}
+
+/** No name pair to ask about, no page to rewrite and no link to correct. */
+function nothingToRepair(plan: RepairPlan): boolean {
+  return plan.aliases.length === 0 && plan.pages_high === 0 && plan.link_pages_high === 0;
 }
 
 function busyWith(): RepairOverview['busy'] {
@@ -142,9 +151,11 @@ export async function getRepairOverview(opts: { withPlan: boolean }): Promise<Re
     pages_high: plan.pages_high,
     pages_over_cap: plan.pages_over_cap,
     pages_waiting: plan.pages_waiting,
+    link_pages_low: plan.link_pages_low,
+    link_pages_high: plan.link_pages_high,
     labels: plan.labels.length,
   };
-  overview.nothing_to_do = plan.aliases.length === 0 && plan.pages_high === 0;
+  overview.nothing_to_do = nothingToRepair(plan);
   if (overview.nothing_to_do) return overview;
 
   try {
@@ -180,7 +191,7 @@ function refuseIfBusy(): void {
  * The owner's confirmation of the numbers shown. Refuses when they no longer
  * hold (another model, more name matches or pages), when there is nothing to
  * do or something else runs; then takes the backup (no backup, no run), arms
- * the flag and starts steps 2–5 in the background.
+ * the flag and starts steps 2–6 in the background.
  */
 export async function startWikiRepair(input: {
   expectedAliases: number;
@@ -203,7 +214,7 @@ export async function startWikiRepair(input: {
       );
     }
     const plan = computeRepairPlan(getDb());
-    if (plan.aliases.length === 0 && plan.pages_high === 0) {
+    if (nothingToRepair(plan)) {
       throw new WikiRepairError('nothing_to_repair', 409, 'There is nothing to repair.');
     }
     if (plan.aliases.length > input.expectedAliases || plan.pages_high > input.expectedPages) {

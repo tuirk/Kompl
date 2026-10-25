@@ -82,6 +82,20 @@ describe('missing pages', () => {
     expect(findMissingPages(db, { minSources: 1, limit: 50 }).find((m) => m.name === 'Satoshi Nakamoto')?.source_count).toBe(3);
   });
 
+  it('leaves out number words and ordinals whatever type they were given', () => {
+    const db = seed();
+    const mention = db.prepare('INSERT INTO entity_mentions (canonical_name, source_id, entity_type) VALUES (?, ?, ?)');
+    for (const id of ['src-0', 'src-1', 'src-2']) {
+      mention.run('second', id, 'CONCEPT');
+      mention.run('Twenty One', id, null);
+      mention.run('Second Life', id, 'PRODUCT');
+    }
+    const names = findMissingPages(db, { minSources: 3, limit: 50 }).map((m) => m.name);
+    expect(names).not.toContain('second');
+    expect(names).not.toContain('Twenty One');
+    expect(names).toContain('Second Life');
+  });
+
   it('stops at the limit, keeping the most named', () => {
     const db = seed();
     expect(findMissingPages(db, { minSources: 3, limit: 1 }).map((m) => m.name)).toEqual(['Vitalik Buterin']);

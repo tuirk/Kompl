@@ -242,7 +242,6 @@ describe('pointerAreaFor', () => {
 });
 
 describe('placeTurned', () => {
-  const ends = { s: { x: 0, y: -100 }, t: { x: 0, y: 100 } };
   const spaceWith = (circles: Array<[number, number, number]>) => {
     const s = newLabelSpace(10, 10);
     resetSpace(s, -500, -500, 500, 500, 64);
@@ -251,11 +250,15 @@ describe('placeTurned', () => {
     return s;
   };
   // A vertical label 60 long and 14 high: its box is 14 x 60, its capsule the segment x=0, y in [-23, 23] padded by 7.
-  const place = (s: ReturnType<typeof spaceWith>) => placeTurned(s, 0, 0, 0, 1, 30, 7, 7, 30, ends.s, ends.t);
+  const place = (s: ReturnType<typeof spaceWith>) => placeTurned(s, 0, 0, 0, 1, 30, 7, 7, 30);
 
-  it('ignores circles its bounding box only reaches past the capsule, and the line’s own pages', () => {
+  it('ignores circles its bounding box only reaches past the capsule', () => {
     expect(place(spaceWith([[12, 29, 4]]))).toBe(true); // touches the box corner area, clear of the capsule
-    expect(place(spaceWith([[0, -100, 90], [0, 100, 90]]))).toBe(true); // the line's own two circles
+    expect(place(spaceWith([[0, -100, 60], [0, 100, 60]]))).toBe(true); // the line's own pages, clear of the label
+  });
+
+  it('is blocked by the line’s own pages too when it would cover them', () => {
+    expect(place(spaceWith([[0, -100, 90], [0, 100, 90]]))).toBe(false);
   });
 
   it('is blocked by another circle on the label, or a placed box', () => {
@@ -358,4 +361,22 @@ describe('growing with zoom', () => {
     expect(w4).toBeCloseTo(w1 * 1.4); // 14 px at zoom 4
     expect(h4).toBeCloseTo(h1 * 1.4);
   });
+});
+
+it('puts the label of a short line in focus beside the line, never over its two pages', () => {
+  const styles = buildLineStyles(model.links);
+  const l = place(lineOf('bitcoin', 'pow'), 0, 0, 30, 0);
+  const s = newLabelSpace(20, 20);
+  resetSpace(s, -1000, -1000, 1000, 1000, 64);
+  for (const n of [l.source, l.target] as ModelNode[]) addCircle(s, n.x, n.y, n.radius + 2);
+  buildGrid(s);
+  const ctx = fakeCtx();
+  const lf = newLineFrame('sans-serif');
+  beginLineFrame(lf, 1);
+  drawLineLabels(ctx, model.links, styles, new Set([l]), lf, frameAt(1), s);
+  expect(ctx.calls.filter((c) => c[0] === 'fillText').map((c) => c[1])).toEqual(['uses']);
+  // The pill's centre is off the line (y = 0), clear of both circles.
+  const [, cx, cy] = ctx.calls.find((c) => c[0] === 'translate') as [string, number, number];
+  expect(cx).toBeCloseTo(15);
+  expect(Math.abs(cy)).toBeGreaterThan(model.byId.get('bitcoin')!.radius);
 });

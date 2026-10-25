@@ -14,7 +14,7 @@ import Link from 'next/link';
 import { useState, type ReactNode, type RefObject } from 'react';
 import { ChevronDown } from 'lucide-react';
 import {
-  ALSO_LINKED_VISIBLE, connectionsCount, hasConnections, sourcesNote, splitRows, visibleRowCount,
+  ALSO_LINKED_VISIBLE, connectionsBreakdown, connectionsCount, hasConnections, sourcesNote, splitRows, visibleRowCount,
 } from '../../../lib/connections-view';
 import { topicList, type Bridge } from '../../../lib/graph-metrics';
 import type { ModelNode } from '../../../lib/graph-model';
@@ -52,6 +52,7 @@ function typeBadge(pageType: string): { label: string; color: string } {
 
 export default function NodePanel({ node, isShown, cache, onClose, onPick, returnFocusTo, takeFocus, bridge = null, onFocus }: Props) {
   const state = useConnections(node.id, cache);
+  const breakdown = state.status === 'ready' ? connectionsBreakdown(state.data) : null;
   const badge = typeBadge(node.pageType);
   const pageLink = (id: string, title: string, muted = false): ReactNode =>
     isShown(id) ? (
@@ -110,11 +111,12 @@ export default function NodePanel({ node, isShown, cache, onClose, onPick, retur
       {state.status === 'ready' && (
         <PanelSection label="Connections" count={connectionsCount(state.data) || undefined}>
           {!hasConnections(state.data) && <PanelNote>No connections yet.</PanelNote>}
+          {breakdown && <PanelNote>{breakdown}</PanelNote>}
           {state.data.groups.map((group) => {
             const { shown, rest } = splitRows(group.items, visibleRowCount(group));
             // Every row keeps its evidence here (the page's own card renders the rest compact).
             const row = (item: ConnectionItem) => (
-              <ItemRow key={`${item.page_id ?? `name:${item.title}`}\u0000${item.type}`} item={item} pageLink={pageLink} />
+              <ItemRow key={`${item.page_id ?? `name:${item.title}`}\u0000${item.type}`} item={item} pageId={node.id} pageLink={pageLink} />
             );
             return (
               <div key={group.label}>
@@ -134,7 +136,7 @@ export default function NodePanel({ node, isShown, cache, onClose, onPick, retur
 type PageLink = (id: string, title: string, muted?: boolean) => ReactNode;
 
 /** One connection: the other page (or a name with no page yet), its sources, and the evidence behind a toggle. */
-function ItemRow({ item, pageLink }: { item: ConnectionItem; pageLink: PageLink }) {
+function ItemRow({ item, pageId, pageLink }: { item: ConnectionItem; pageId: string; pageLink: PageLink }) {
   const [open, setOpen] = useState(false);
   const note = sourcesNote(item);
   return (
@@ -166,7 +168,7 @@ function ItemRow({ item, pageLink }: { item: ConnectionItem; pageLink: PageLink 
       </div>
       {open && (
         <div style={{ margin: '2px 0 6px' }}>
-          <EvidenceList item={item} />
+          <EvidenceList item={item} pageId={pageId} />
         </div>
       )}
     </div>

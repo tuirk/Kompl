@@ -61,13 +61,14 @@ describe('island titles', () => {
   const b = page('b', 0, 140, 100);
   const lone = page('lone', 1, 600, 600);
 
-  it('titles islands of two or more pages, and leaves a one-page island to its page', () => {
-    expect(titles([a, b, lone]).map((w) => w.text)).toEqual(['CRYPTO']);
+  it('titles every island, a one-page one too (its page alone would read as part of the island beside it)', () => {
+    expect(titles([a, b, lone]).map((w) => w.text)).toEqual(['CRYPTO', 'TRAVEL']);
   });
 
-  it('gives no title to a one-page island because of a missing name beside it', () => {
+  it('gives no title to an island of missing names only, and never moves one for a missing name', () => {
+    expect(titles([a, b, missing('missing:x', a, 640, 620)]).map((w) => w.text)).toEqual(['CRYPTO']);
     const named = missing('missing:x', lone, 640, 620);
-    expect(titles([a, b, lone, named]).map((w) => w.text)).toEqual(['CRYPTO']);
+    expect(titles([a, b, lone, named])).toEqual(titles([a, b, lone]));
   });
 
   it('keeps an island title where it is when missing names are shown', () => {

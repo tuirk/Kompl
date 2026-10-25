@@ -79,7 +79,7 @@ export default function EdgePanel({ link, model, cache, onClose, onPick, returnF
           <div style={META}>
             {item.source_count} source{item.source_count === 1 ? '' : 's'}
           </div>
-          {item.evidence.length > 0 && <EvidenceList item={item} />}
+          {item.evidence.length > 0 && <EvidenceList item={item} pageId={fromId} />}
         </section>
       ))}
 

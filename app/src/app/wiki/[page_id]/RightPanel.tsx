@@ -41,7 +41,7 @@ export function PanelSection(
       style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: action ? 0 : '0 0 0.4rem', padding: '0 8px', fontWeight: 400 }}
     >
       {label}
-      {count !== undefined && <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.8 }}>{count}</span>}
+      {count !== undefined && <span style={{ fontVariantNumeric: 'tabular-nums' }}>{count}</span>}
     </h2>
   );
   return (

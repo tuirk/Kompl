@@ -14,6 +14,7 @@ import ConnectionsPanel from '../app/wiki/[page_id]/ConnectionsPanel';
 import {
   ALSO_LINKED_VISIBLE,
   GROUP_VISIBLE,
+  connectionsBreakdown,
   RELATED_VISIBLE,
   connectionsCount,
   hasConnections,
@@ -93,6 +94,14 @@ describe('connections display rules', () => {
     expect(connectionsCount(twice)).toBe(2);
   });
 
+  it('says how many connections have no page yet, so the count explains the map', () => {
+    expect(connectionsBreakdown(FULL)).toBe(`${1 + related.length} with a page · 1 with no page yet`);
+    expect(connectionsBreakdown({ groups: [FULL.groups[1]], linked_only: [] })).toBeNull();
+    expect(connectionsBreakdown({ groups: [FULL.groups[0]], linked_only: [] })).toBe('1 with no page yet');
+    const names = [item({ page_id: null, title: 'A' }), item({ page_id: null, title: 'B' })];
+    expect(connectionsBreakdown({ groups: [{ label: 'Uses', items: names }], linked_only: [] })).toBe('2 with no page yet');
+  });
+
   it('has something to list when there is a relation or an "Also linked" page', () => {
     expect(hasConnections(FULL)).toBe(true);
     expect(hasConnections({ groups: [], linked_only: linked.slice(0, 1) })).toBe(true);
@@ -131,6 +140,7 @@ describe('ConnectionsPanel', () => {
     expect(labels).toEqual(['Created by', 'Uses', 'Related to', 'Also linked']);
     expect(html).toMatch(new RegExp(`Connections<span[^>]*>${connectionsCount(FULL)}</span>`));
     expect(html).toMatch(new RegExp(`Also linked<span[^>]*>${linked.length}</span></h3>`));
+    expect(html).toContain(`${1 + related.length} with a page · 1 with no page yet`);
   });
 
   it('links the header to the graph focused on the page, outside the heading', () => {

@@ -24,6 +24,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { useToast } from '../../../components/Toast';
 import { toUserMessage } from '@/lib/service-errors';
 import { isBlockedHost, URL_HOST_BLOCKED_MESSAGE } from '@/lib/url-blocklist';
+import { parseUrlLines, SKIP_REASON_TEXT, type SkippedLine } from '@/lib/url-lines';
 import {
   SUPPORTED_FORMATS_FULL,
   SUPPORTED_FORMATS_DOTTED,
@@ -52,31 +53,6 @@ const CONNECTOR_LABELS: Record<string, string> = {
 
 const FILE_ACCEPT =
   '.pdf,.docx,.pptx,.xlsx,.txt,.md,.html,.htm,.csv,.json,.xml,.jpg,.jpeg,.png,.mp3,.wav';
-
-function parseUrls(raw: string): { urls: string[]; invalid: string[]; blocked: string[] } {
-  const urls: string[] = [];
-  const invalid: string[] = [];
-  const blocked: string[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const u = new URL(trimmed);
-      if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-        invalid.push(trimmed);
-        continue;
-      }
-      if (isBlockedHost(trimmed)) {
-        blocked.push(trimmed);
-        continue;
-      }
-      urls.push(trimmed);
-    } catch {
-      invalid.push(trimmed);
-    }
-  }
-  return { urls, invalid, blocked };
-}
 
 interface UploadedFile {
   file_path: string;
@@ -131,21 +107,51 @@ function hostnameOf(url: string): string {
 
 // ── URL Connector ─────────────────────────────────────────────────────────────
 
+function urlCountLabel(n: number, duplicates: number): string {
+  const base = `${n} URL${n !== 1 ? 's' : ''} detected`;
+  return duplicates > 0 ? `${base} · ${duplicates} repeat${duplicates !== 1 ? 's' : ''} counted once` : base;
+}
+
+const SKIPPED_SHOWN = 5;
+
+/** The lines the URL box won't read, and why (lib/url-lines.ts). */
+function SkippedUrlLines({ skipped }: { skipped: SkippedLine[] }) {
+  const more = skipped.length - SKIPPED_SHOWN;
+  return (
+    <div role="status" style={{ marginTop: 12, fontFamily: 'var(--font-heading)', fontSize: 12 }}>
+      <div style={{ marginBottom: 4, color: 'var(--warning)' }}>
+        {skipped.length === 1 ? '1 line won’t be read:' : `${skipped.length} lines won’t be read:`}
+      </div>
+      <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--fg-dim)', lineHeight: 1.6 }}>
+        {skipped.slice(0, SKIPPED_SHOWN).map((s, i) => (
+          <li key={i} style={{ overflowWrap: 'anywhere' }}>
+            <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-secondary)' }}>{s.line}</code>: {SKIP_REASON_TEXT[s.reason]}
+          </li>
+        ))}
+        {more > 0 && <li>and {more} more</li>}
+      </ul>
+    </div>
+  );
+}
+
 function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
   const [urlInput, setUrlInput] = useState('');
   const [saving, setSaving] = useState(false);
-  const { urls } = parseUrls(urlInput);
+  const { urls, duplicates, skipped } = parseUrlLines(urlInput);
 
   async function handleIngest() {
-    const { urls: validUrls, invalid, blocked } = parseUrls(urlInput);
-    if (blocked.length > 0 && validUrls.length === 0) {
+    const { urls: validUrls, skipped: notRead } = parseUrlLines(urlInput);
+    const blocked = notRead.filter((s) => s.reason === 'twitter').length;
+    if (blocked > 0 && validUrls.length === 0) {
       showToast(URL_HOST_BLOCKED_MESSAGE, 'error');
       return;
     }
     if (validUrls.length === 0) { showToast('Paste at least one http(s) URL.', 'error'); return; }
-    if (blocked.length > 0) showToast(`Skipping ${blocked.length} X/Twitter URL(s) \u2014 use the Twitter bookmark connector for those.`);
-    if (invalid.length > 0) showToast(`Skipping ${invalid.length} invalid line(s).`);
+    // The lines left out are listed under the box, with why.
+    if (notRead.length > 0) {
+      showToast(`Skipping ${notRead.length} line${notRead.length === 1 ? '' : 's'} that can't be read (listed under the box).`);
+    }
     setSaving(true);
     try {
       await stageItems(
@@ -172,7 +178,7 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: 
         <span style={{
           position: 'absolute', top: 16, right: 16,
           fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '1.8px',
-          textTransform: 'uppercase', color: 'rgba(var(--accent-rgb), 0.3)',
+          textTransform: 'uppercase', color: 'rgba(var(--accent-rgb), 0.55)',
         }}>URL IMPORT</span>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -184,9 +190,9 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: 
             }}>URLS</span>
             <span style={{
               fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
-              textTransform: 'uppercase', color: 'var(--fg-dim)', opacity: 0.5,
+              textTransform: 'uppercase', color: 'var(--fg-dim)',
             }}>
-              {urls.length > 0 ? `${urls.length} URL${urls.length !== 1 ? 's' : ''} detected` : 'one per line'}
+              {urls.length > 0 ? urlCountLabel(urls.length, duplicates) : 'one per line'}
             </span>
           </div>
 
@@ -212,6 +218,8 @@ function UrlConnector({ sessionId, connectors, connectorIdx, showToast, mode }: 
           </div>
         </div>
       </div>
+
+      {skipped.length > 0 && <SkippedUrlLines skipped={skipped} />}
 
       {/* Hint rows */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
@@ -361,14 +369,14 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
                   <span style={{
                     position: 'absolute', top: 12, left: 12,
                     fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.9px',
-                    textTransform: 'uppercase', color: 'var(--separator)',
+                    textTransform: 'uppercase', color: 'var(--fg-dim)',
                   }}>DROP.ZONE</span>
 
                   {/* Bottom-right decor */}
                   <span style={{
                     position: 'absolute', bottom: 12, right: 12,
                     fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.9px',
-                    textTransform: 'uppercase', color: 'var(--separator)',
+                    textTransform: 'uppercase', color: 'var(--fg-dim)',
                   }}>MAX 50 MB / FILE</span>
 
                   {saving ? (
@@ -489,6 +497,7 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
                       </div>
                       <button
                         onClick={e => { e.stopPropagation(); removeFile(i); }}
+                        aria-label={`Remove ${f.name}`}
                         style={{
                           background: 'none', border: 'none', cursor: 'pointer',
                           color: 'var(--fg-subtle)', fontSize: 13, padding: 0, lineHeight: 1,
@@ -501,14 +510,15 @@ function FileConnector({ sessionId, connectors, connectorIdx, showToast, mode }:
                 {/* Empty slot rows to fill space when fewer than 3 files */}
                 {Array.from({ length: Math.max(0, 3 - selectedFiles.length) }).map((_, i) => (
                   <div key={`empty-${i}`} style={{
-                    background: '#000000', opacity: 0.3,
-                    border: '1px solid rgba(var(--separator-rgb),0.1)',
+                    // The faded slot is in the colours, not opacity, so its text keeps 4.5:1.
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid rgba(var(--separator-rgb),0.03)',
                     padding: 16, display: 'flex', alignItems: 'center',
                     justifyContent: 'center', height: 64, boxSizing: 'border-box',
                   }}>
                     <span style={{
                       fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '1px',
-                      textTransform: 'uppercase', color: 'var(--fg-subtle)',
+                      textTransform: 'uppercase', color: 'var(--fg-dim)',
                     }}>WAITING FOR FILES</span>
                   </div>
                 ))}
@@ -884,10 +894,6 @@ const PASTE_HELPER_TEXT: React.CSSProperties = {
   letterSpacing: '0.5px',
   color: 'var(--fg-dim)',
 };
-const PASTE_CHAR_COUNT: React.CSSProperties = {
-  ...PASTE_HELPER_TEXT,
-  opacity: 0.6,
-};
 
 function PasteConnector({ sessionId, connectors, connectorIdx, showToast, mode }: ConnectorProps) {
   const router = useRouter();
@@ -1068,7 +1074,7 @@ function PasteConnector({ sessionId, connectors, connectorIdx, showToast, mode }
                 fontSize: 9,
                 letterSpacing: '1.8px',
                 textTransform: 'uppercase',
-                color: 'rgba(var(--accent-rgb), 0.3)',
+                color: 'rgba(var(--accent-rgb), 0.55)',
               }}
             >
               {i === 0 ? 'PASTE BLOCK' : `BLOCK ${i + 1}`}
@@ -1114,7 +1120,7 @@ function PasteConnector({ sessionId, connectors, connectorIdx, showToast, mode }
                 />
                 <div style={PASTE_HELPER_ROW}>
                   <span />
-                  <span style={PASTE_CHAR_COUNT}>
+                  <span style={PASTE_HELPER_TEXT}>
                     {block.title.length}/{PASTE_TITLE_MAX}
                   </span>
                 </div>
@@ -1177,7 +1183,7 @@ function PasteConnector({ sessionId, connectors, connectorIdx, showToast, mode }
                   ) : (
                     <span />
                   )}
-                  <span style={PASTE_CHAR_COUNT}>
+                  <span style={PASTE_HELPER_TEXT}>
                     {block.text.length.toLocaleString()} chars
                   </span>
                 </div>

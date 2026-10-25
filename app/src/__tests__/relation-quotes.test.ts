@@ -291,7 +291,7 @@ describe('read models and the Connections card', () => {
   it("the graph's evidence list labels them the same way", () => {
     seed();
     const [item] = getPageConnections('btc').groups[0].items;
-    const html = renderToString(createElement(EvidenceList, { item }));
+    const html = renderToString(createElement(EvidenceList, { item, pageId: 'btc' }));
     expect(html).toContain('“Bitcoin relies on proof of work.”');
     expect(html).toMatch(/Quoted from <a [^>]*>Checked</);
     expect(html).toMatch(/Kompl(&#x27;|')s summary, from <a [^>]*>Old</);

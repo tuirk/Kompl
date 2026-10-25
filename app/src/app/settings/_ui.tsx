@@ -228,7 +228,29 @@ export function SavedBar({ children }: { children: ReactNode }) {
   );
 }
 
-/** ON/OFF pill used by boolean settings. */
+/**
+ * A command or config block. It scrolls sideways when the line is long, so it
+ * takes keyboard focus (WCAG 2.1.1) and carries a name to announce there.
+ */
+export function CodeBlock({ label, style, children }: { label: string; style?: CSSProperties; children: ReactNode }) {
+  return (
+    <pre tabIndex={0} role="group" aria-label={label} style={{ ...preStyle, ...style }}>
+      {children}
+    </pre>
+  );
+}
+
+/** Hides text visually but keeps it in the accessible name. */
+const VISUALLY_HIDDEN: CSSProperties = {
+  position: 'absolute', width: 1, height: 1, padding: 0, margin: -1,
+  overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0,
+};
+
+/**
+ * ON/OFF pill used by boolean settings. A switch whose name comes from its
+ * content: the setting's label (hidden) plus the visible ON/OFF, so the name
+ * always contains the visible text (WCAG 2.5.3) and aria-checked carries the state.
+ */
 export function TogglePill({
   value,
   onClick,
@@ -249,9 +271,10 @@ export function TogglePill({
         className={value ? undefined : 'btn-outline'}
         onClick={onClick}
         disabled={value === null || disabled}
-        aria-pressed={value ?? undefined}
-        aria-label={label}
+        role="switch"
+        aria-checked={value === true}
         style={{
+          position: 'relative',
           padding: '0.45rem 1rem',
           borderRadius: 20,
           fontSize: '0.85rem',
@@ -259,6 +282,7 @@ export function TogglePill({
           minWidth: 80,
         }}
       >
+        <span style={VISUALLY_HIDDEN}>{label} </span>
         {value === null ? '…' : value ? 'ON' : 'OFF'}
       </button>
       {defaultHint && <DefaultHint>{defaultHint}</DefaultHint>}

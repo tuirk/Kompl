@@ -5,6 +5,7 @@
  * card, the graph and the MCP tools. Reads only; never writes.
  *
  * A relation end that resolves to no page stays a plain name (page_id null).
+ * "Related to" is left out for an end a stronger relation already lists.
  * Archived pages and Saved Links are never shown as a connection.
  */
 
@@ -15,6 +16,9 @@ import { compareRelationLabels, relationLabel, type RelationDirection } from './
 
 export { getRelationEdges, type EdgeRelation, type MissingPage, type RelationEdge, type RelationEdges } from './relation-edges';
 export { getRelationsAmong, type PageRelation, type RelationEnd } from './relation-among';
+
+/** The weakest relation type: never listed for a page another relation already joins. */
+const RELATED_TO = 'related_to';
 
 /** Evidence entries kept per connection: quotes, then sentences, newest first. */
 const EVIDENCE_PER_ITEM = 3;
@@ -80,8 +84,12 @@ export function resolveNames(db: Database.Database, opts: { includeArchived?: bo
   return buildNameMap(db, loadPages(db), opts.includeArchived ?? false);
 }
 
-/** Typed connections of a page, grouped by label, plus its other wikilinked pages. */
-export function getPageConnections(pageId: string): PageConnections {
+/**
+ * Typed connections of a page, grouped by label, plus its other wikilinked
+ * pages. Each connection keeps `evidenceLimit` sources (EVIDENCE_PER_ITEM).
+ */
+export function getPageConnections(pageId: string, opts: { evidenceLimit?: number } = {}): PageConnections {
+  const evidenceLimit = opts.evidenceLimit ?? EVIDENCE_PER_ITEM;
   const db = getDb();
   const pages = loadPages(db);
   if (!pages.has(pageId)) return { groups: [], linked_only: [] };
@@ -91,7 +99,7 @@ export function getPageConnections(pageId: string): PageConnections {
   const shown = (id: string) => pages.get(id)?.archived === false;
 
   // key: other end + type + label. says: source_id -> its sentence and quote, newest first.
-  const items = new Map<string, { item: ConnectionItem; says: Map<string, SourceSays> }>();
+  const items = new Map<string, { end: string; item: ConnectionItem; says: Map<string, SourceSays> }>();
   for (const row of loadRelationRows(db)) {
     const fromId = names.get(row.from_canonical.toLowerCase()) ?? null;
     const toId = names.get(row.to_canonical.toLowerCase()) ?? null;
@@ -110,6 +118,7 @@ export function getPageConnections(pageId: string): PageConnections {
     if (!entry) {
       const title = otherId !== null ? (pages.get(otherId) as { title: string }).title : otherName;
       entry = {
+        end,
         item: { page_id: otherId, title, type, direction, source_count: 0, evidence: [] },
         says: new Map(),
       };
@@ -124,15 +133,20 @@ export function getPageConnections(pageId: string): PageConnections {
     }
   }
 
+  // "Related to" is the weakest relation: an end another relation already
+  // lists is not listed again under it.
+  const typedEnds = new Set([...items.values()].filter((e) => e.item.type !== RELATED_TO).map((e) => e.end));
+
   const sourceRow = db.prepare('SELECT title, status FROM sources WHERE source_id = ?');
   const byLabel = new Map<string, ConnectionItem[]>();
   const weight = (s: SourceSays) => (s.quote !== null ? 0 : s.sentence !== null ? 1 : 2);
-  for (const { item, says } of items.values()) {
+  for (const { end, item, says } of items.values()) {
+    if (item.type === RELATED_TO && typedEnds.has(end)) continue;
     item.source_count = says.size;
     // Sorting is stable, so each rank stays newest first.
     const ranked = [...says].sort(([, a], [, b]) => weight(a) - weight(b));
     for (const [source_id, { sentence, quote }] of ranked) {
-      if (item.evidence.length >= EVIDENCE_PER_ITEM) break;
+      if (item.evidence.length >= evidenceLimit) break;
       const source = sourceRow.get(source_id) as { title: string; status: string | null } | undefined;
       if (source) {
         item.evidence.push({
@@ -169,4 +183,23 @@ export function getPageConnections(pageId: string): PageConnections {
   }
   const linked_only = [...linked.values()].sort((x, y) => x.title.localeCompare(y.title));
   return { groups, linked_only };
+}
+
+/** The other end of one connection: a page, or a name with no page yet. */
+export type ConnectionEnd = { page_id: string } | { name: string };
+
+/**
+ * One connection of a page with every source behind it (the page read model
+ * keeps EVIDENCE_PER_ITEM): its items to `other` of `type` read in
+ * `direction` from the page. For a panel's "+N more sources". Empty when the
+ * page has no such connection.
+ */
+export function getConnectionEvidence(
+  pageId: string, other: ConnectionEnd, type: string, direction: RelationDirection
+): ConnectionItem[] {
+  const matches = (i: ConnectionItem) =>
+    'page_id' in other ? i.page_id === other.page_id : i.page_id === null && i.title.toLowerCase() === other.name.toLowerCase();
+  return getPageConnections(pageId, { evidenceLimit: Infinity })
+    .groups.flatMap((g) => g.items)
+    .filter((i) => i.type === type && i.direction === direction && matches(i));
 }

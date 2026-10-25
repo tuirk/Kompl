@@ -121,6 +121,21 @@ export function acceptHover<T>(overCanvas: boolean, hovered: T | null): T | null
   return overCanvas ? hovered : null;
 }
 
+/** A page's or line's identity, to tell two hovers or selections apart; null for none. */
+export function focusKey(focus: GraphFocus | null): string | null {
+  if (focus === null) return null;
+  return focus.kind === 'node' ? `n:${focus.id}` : `l:${focus.link.a}\u0000${focus.link.b}`;
+}
+
+/**
+ * The hover the card describes: none for the page or line just clicked
+ * (`dismissed`, its focusKey) while the pointer stays on it. Its panel now
+ * says the same, and the card would sit over the panel and the zoom buttons.
+ */
+export function cardHover(hovered: GraphFocus | null, dismissed: string | null): GraphFocus | null {
+  return hovered !== null && focusKey(hovered) === dismissed ? null : hovered;
+}
+
 /** The bits of a keyboard event the Escape rule reads (a KeyboardEvent fits). */
 export interface EscapeKeyEvent {
   key: string;

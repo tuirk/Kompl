@@ -30,11 +30,8 @@ import {
 } from '@/lib/relation-rows';
 import { isSafeId } from '@/lib/safe-paths';
 import { resyncAllWikilinks } from '@/lib/wikilinks';
+import { countUserPages, SYSTEM_PAGE_IDS } from '@/lib/wiki-empty';
 
-// System-generated pages that don't count as "user data" for the import
-// emptiness check. The Saved Links overview page is rebuilt any time an
-// ingest fails; it must not block a fresh import into an otherwise-empty wiki.
-const SYSTEM_PAGE_IDS = ['saved-links'] as const;
 
 export async function POST(request: Request) {
   // Parse multipart
@@ -77,17 +74,12 @@ export async function POST(request: Request) {
   // System-generated pages (e.g. saved-links) are ignored — they'd otherwise
   // block import on a wiki that the user considers empty.
   const db = getDb();
-  const systemPlaceholders = SYSTEM_PAGE_IDS.map(() => '?').join(', ');
-  const userPageCount = (
-    db
-      .prepare(`SELECT COUNT(*) AS n FROM pages WHERE page_id NOT IN (${systemPlaceholders})`)
-      .get(...SYSTEM_PAGE_IDS) as { n: number }
-  ).n;
+  const userPageCount = countUserPages();
   if (userPageCount > 0) {
     return NextResponse.json(
       {
         error: 'wiki_not_empty',
-        message: 'Import is only supported on an empty wiki. Delete all existing data first.',
+        message: 'Import only works on a new, empty Kompl with nothing compiled yet; this wiki already has pages.',
         existing_pages: userPageCount,
       },
       { status: 409 }

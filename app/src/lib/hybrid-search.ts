@@ -13,6 +13,7 @@
 
 import { getAllArchivedPageIds, getPage, searchPagesFts, type PageRow } from './db';
 import { buildFtsQueryAll, buildFtsQueryAny, buildFtsQueryPairs } from './fts-query';
+import { dropCitationLabels } from './summary-text';
 import { searchPageVectors, type VectorMatch } from './vector-search';
 
 /** Standard RRF constant: damps the gap between the top few ranks. */
@@ -31,12 +32,15 @@ const FILTERED_VECTOR_POOL = 300;
 /** Never hold an agent's search long for the vector side. */
 const VECTOR_TIMEOUT_MS = 1_500;
 /**
- * Vector matches below this cosine similarity are dropped. Without a floor,
- * fusion pads the list with unrelated pages. A question scores lower against
- * a page than one page against another, so this sits below the related-pages
- * floor (0.25).
+ * Vector matches below this cosine similarity are dropped. Fusion ranks by
+ * position only, so without a floor any vector hit reaches the list and a
+ * nonsense query still "finds" pages. Measured on a real wiki: nonsense and
+ * off-topic queries ("zzqxplorbnk", "kubernetes", "banana bread recipe")
+ * reach 0.10–0.28 against their nearest page, while real topic matches
+ * ("lake swimming", "LLM cost", "castle") score 0.31 and up. Pages that
+ * match by keyword are unaffected.
  */
-const MIN_QUERY_SIMILARITY = 0.2;
+const MIN_QUERY_SIMILARITY = 0.3;
 /**
  * Meaning matches must also reach this share of the best match's similarity.
  * When a question has clear matches (Python pages at 0.57–0.66 for "python
@@ -188,7 +192,8 @@ function toHit(page: PageRow): SearchHit {
     title: page.title,
     page_type: page.page_type,
     category: page.category,
-    summary: page.summary,
+    // Old summaries may still carry drafting citation labels (lib/summary-text.ts).
+    summary: page.summary === null ? null : dropCitationLabels(page.summary),
     source_count: page.source_count,
     last_updated: page.last_updated,
   };

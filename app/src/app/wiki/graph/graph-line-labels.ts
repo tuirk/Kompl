@@ -1,7 +1,9 @@
 /**
  * Relation names along the graph's lines: a dark pill turned along the
  * line, kept upright, drawn after the page names, which win any clash (a
- * label goes only where the label space is free). Labels grow with the zoom
+ * label goes only where the label space is free), and never over a circle,
+ * the line's own two pages included: a line in focus too short for its
+ * label gets it beside the line instead. Labels grow with the zoom
  * up to a cap (graph-zoom.ts), drawn in screen pixels so their font is
  * rebuilt only when their size steps. Nothing is allocated per label.
  * Client-only.
@@ -18,6 +20,10 @@ const LABEL_PILL = 'rgba(13,14,16,0.85)';
 const LABEL_TEXT = 'rgba(230,237,243,0.9)';
 /** Where along a line its label is tried, as fractions of the stretch between the circles. */
 const LABEL_SPOTS = [0.5, 0.36, 0.64] as const;
+/** A line in focus: its label on the line's middle, then beside it (just off the line, then clear of both pages) on either side. */
+const BESIDE_SPOTS = [0, 1, -1, 2, -2] as const;
+/** Air between a label beside its line and the line, in screen pixels. */
+const BESIDE_GAP_PX = 3;
 
 /**
  * Relation names along lines, after the page names (which win any clash:
@@ -95,12 +101,17 @@ function labelLine(
   const sin = Math.abs(Math.sin(angle));
   const hx = (cos * w + sin * h) / 2;
   const hy = (sin * w + cos * h) / 2;
-  const spots = zoomLabel ? LABEL_SPOTS.length : 1;
+  const spots = zoomLabel ? LABEL_SPOTS.length : BESIDE_SPOTS.length;
+  // Beside the line: just off it, or far enough out to clear both pages' circles (and rings).
+  const near = h / 2 + BESIDE_GAP_PX / k;
+  const far = Math.max(s.radius, t.radius) + (5 + 2 + BESIDE_GAP_PX) / k + h / 2;
   for (let i = 0; i < spots; i++) {
-    const along = between > 0 ? rs + between * LABEL_SPOTS[i] : len / 2;
-    const cx = s.x + ux * along;
-    const cy = s.y + uy * along;
-    if (!placeTurned(space, cx, cy, ux, uy, w / 2, h / 2, hx, hy, s, t)) continue;
+    const along = zoomLabel ? rs + between * LABEL_SPOTS[i] : between > 0 ? rs + between / 2 : len / 2;
+    const side = zoomLabel ? 0 : BESIDE_SPOTS[i];
+    const off = Math.sign(side) * (Math.abs(side) === 2 ? far : Math.abs(side) === 1 ? near : 0);
+    const cx = s.x + ux * along - uy * off;
+    const cy = s.y + uy * along + ux * off;
+    if (!placeTurned(space, cx, cy, ux, uy, w / 2, h / 2, hx, hy)) continue;
     // Drawn in screen pixels, so the font string changes only when the label size steps.
     ctx.save();
     ctx.translate(cx, cy);
@@ -122,15 +133,16 @@ function labelLine(
 /**
  * Claims the bounding box (half sizes hx, hy) of a label turned along a line
  * (direction ux, uy) when the box overlaps no placed box (island and page
- * names, other labels) and the label overlaps no circle but the line's own
- * two pages. For circles the label is taken as a capsule, its centre line
- * padded by half its height, not as its box, so a label on a steep line is
- * not blocked by circles its box merely reaches. Reads the label space's
+ * names, other labels) and the label overlaps no circle, the line's own two
+ * pages included (a label over them hid the page and its ring).
+ * For circles the label is taken as a capsule, its centre line padded by
+ * half its height, not as its box, so a label on a steep line is not
+ * blocked by circles its box merely reaches. Reads the label space's
  * grid as graph-labels.ts fills it each frame (circles sorted by cell).
  */
 export function placeTurned(
   space: LabelSpace, cx: number, cy: number, ux: number, uy: number, halfW: number, halfH: number,
-  hx: number, hy: number, s: { x: number; y: number }, t: { x: number; y: number }
+  hx: number, hy: number
 ): boolean {
   const x0 = cx - hx;
   const y0 = cy - hy;
@@ -151,7 +163,6 @@ export function placeTurned(
           const i = space.items[j];
           const px = space.cx[i];
           const py = space.cy[i];
-          if ((px === s.x && py === s.y) || (px === t.x && py === t.y)) continue;
           // Distance from the circle's centre to the label's centre line.
           const along = Math.max(-reach, Math.min(reach, (px - cx) * ux + (py - cy) * uy));
           const gap = Math.hypot(px - (cx + ux * along), py - (cy + uy * along));

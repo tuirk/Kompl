@@ -3,12 +3,16 @@
  * CSS vars, so these are raw hex. Client-safe: no DB imports.
  *
  * CATEGORY_HEX colours the topic islands, biggest category first. It starts
- * from the Okabe-Ito set, which stays distinguishable under the common
- * colour-vision deficiencies, with the darkest blue lifted for the near-black
- * canvas and a pale rose as the eighth colour. The colours differ in
- * lightness as well as hue (pale yellow, mid orange, deep blue), so
- * neighbouring islands still separate when hue does not. "Uncategorized" and
- * every category past the eighth share NEUTRAL_HEX.
+ * from the six Okabe-Ito colours that read on a near-black canvas, which
+ * stay distinguishable under the common colour-vision deficiencies, and adds
+ * a violet and a sage green chosen to sit as far as possible from those six
+ * and each other (OKLab, in normal vision and simulated red-green colour
+ * blindness). Okabe-Ito's dark blue, lifted for the canvas, and a pale rose
+ * read as the sky blue and the reddish purple, so two islands side by side
+ * could look like one topic. Any two topics may end up side by side, so every
+ * pair must differ (__tests__/graph-palette.test.ts). Categories past the
+ * eighth share NEUTRAL_HEX; pages with no topic ("Uncategorized") have their
+ * own lighter neutral, NO_TOPIC_HEX.
  *
  * Lines never use topic colours, and each line channel means one thing:
  * brightness is how specific the connection is (LINE_ALPHA: typed, then
@@ -30,12 +34,15 @@ export const CATEGORY_HEX = [
   '#CC79A7', // reddish purple
   '#F0E442', // yellow
   '#D55E00', // vermillion
-  '#3D8BD0', // blue (Okabe-Ito #0072B2, lifted for the dark canvas)
-  '#F4A3B4', // pale rose
+  '#7F63EE', // violet
+  '#85C484', // sage green
 ] as const;
 
-/** Uncategorized pages and categories beyond the eighth. */
+/** Categories beyond the eighth ("Other topics" in the legend). */
 export const NEUTRAL_HEX = '#8B9099';
+
+/** Pages with no topic: a pale grey, apart from NEUTRAL_HEX and every topic colour. */
+export const NO_TOPIC_HEX = '#D0D3D8';
 
 /** Every line's colour; the tiers differ in alpha only. */
 export const LINE_HEX = '#D6DBE2';

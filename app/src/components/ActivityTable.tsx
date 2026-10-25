@@ -21,7 +21,7 @@ import {
   type RowContent,
   type Tone,
 } from '@/lib/activity-events';
-import { LocalTime } from './LocalDate';
+import { LocalDate, LocalTime } from './LocalDate';
 
 // ── Badge config ──────────────────────────────────────────────────────────────
 
@@ -197,8 +197,9 @@ export function ActivityTable({ pollInterval = 2000 }: ActivityTableProps) {
                 }}
               >
                 {/* Timestamp */}
-                <div style={{ padding: '18px 0', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-dim)', whiteSpace: 'nowrap' }}>
-                  <LocalTime iso={ev.timestamp} />
+                <div style={{ padding: '14px 0', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-dim)', whiteSpace: 'nowrap', lineHeight: 1.5 }}>
+                  <div><LocalDate iso={ev.timestamp} /></div>
+                  <div><LocalTime iso={ev.timestamp} /></div>
                 </div>
 
                 {/* Description */}

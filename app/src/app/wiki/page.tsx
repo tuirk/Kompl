@@ -17,6 +17,8 @@ import { LocalDatetime } from '../../components/LocalDate';
 import WikiCategorySection from '../../components/WikiCategorySection';
 import { PAGE_TYPE_HEX } from '../../lib/page-type-palette';
 import { stripWikilinkBrackets } from '../../lib/wikilink-render';
+import { APP_PAGE_IDS } from '../../lib/draft-rules';
+import { categoryCountLabel, compiledPagesLabel } from '../../lib/wiki-counts';
 
 // Tinted badge pill styles per page_type. Derived from the shared PAGE_TYPE_HEX
 // palette so the index cards stay aligned with sidebar dots + graph legend.
@@ -38,7 +40,8 @@ const BADGE_STYLES: Record<string, { bg: string; border: string; text: string }>
 
 export default function WikiIndexPage() {
   const groups = getCategoryGroups();
-  const totalPages = groups.reduce((n, g) => n + g.pages.length, 0);
+  const allPages = groups.flatMap((g) => g.pages);
+  const appPages = allPages.filter((p) => APP_PAGE_IDS.has(p.page_id)).length;
 
   const latestIso = groups
     .flatMap((g) => g.pages.map((p) => p.last_updated))
@@ -54,7 +57,7 @@ export default function WikiIndexPage() {
         <WikiPageHeader
           title="Kompl Wiki"
           label={latestLabel}
-          metaText={`${totalPages} pages compiled`}
+          metaText={compiledPagesLabel(allPages.length - appPages, appPages > 0)}
           showActions
         />
 
@@ -88,7 +91,7 @@ export default function WikiIndexPage() {
               <WikiCategorySection
                 key={group.category}
                 category={group.category}
-                pageCount={group.pages.length}
+                countLabel={categoryCountLabel(group.pages.length, group.pages.filter((pg) => pg.page_type === 'comparison').length)}
                 lastUpdatedLabel={groupLabel}
                 defaultOpen
               >
@@ -150,8 +153,7 @@ export default function WikiIndexPage() {
                               fontSize: 9,
                               letterSpacing: 0.9,
                               textTransform: 'uppercase',
-                              color: 'var(--fg)',
-                              opacity: 0.3,
+                              color: 'var(--fg-dim)',
                               whiteSpace: 'nowrap',
                             }}
                           >
@@ -215,8 +217,7 @@ export default function WikiIndexPage() {
                               fontSize: 10,
                               letterSpacing: 1,
                               textTransform: 'uppercase',
-                              color: 'var(--fg)',
-                              opacity: 0.4,
+                              color: 'var(--fg-dim)',
                             }}
                           >
                             <LocalDatetime iso={page.last_updated} />

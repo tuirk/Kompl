@@ -6,7 +6,8 @@
  * extraction found it in the source (labelled as quoted), else Kompl's
  * one-line summary of the relation (labelled as Kompl's: not a quote); long
  * groups show their first few rows. The header counts the pages
- * the page relates to, links to the graph focused on it ("See in graph"),
+ * (and names with no page yet) the page relates to, a line under it how many
+ * have no page, links to the graph focused on it ("See in graph"),
  * and "Also linked" has its own count. Server component; the data comes from
  * one getPageConnections() call per request in page.tsx (lib/relations.ts;
  * Saved Links gets no card), the display rules from lib/connections-view.ts.
@@ -14,10 +15,11 @@
  */
 
 import Link from 'next/link';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties } from 'react';
 import { ChevronDown, Network } from 'lucide-react';
 import {
   ALSO_LINKED_VISIBLE,
+  connectionsBreakdown,
   connectionsCount,
   hasConnections,
   moreSourcesNote,
@@ -28,12 +30,13 @@ import {
 import { seeInGraphHref } from '../../../lib/graph-scope';
 import type { ConnectionGroup, ConnectionItem, LinkedPage, PageConnections } from '../../../lib/relations';
 import { NOTE, PageRow, PanelSection, ROW, TRUNCATE } from './RightPanel';
+import MoreRows from './MoreRows';
 
 /** A row's title and its note side by side; the title gives way first. */
 const ROW_LINE: CSSProperties = { ...ROW, display: 'flex', alignItems: 'baseline', gap: 6 };
 const ROW_TITLE: CSSProperties = { ...TRUNCATE, minWidth: 0 };
 const ROW_NOTE: CSSProperties = { flexShrink: 0, fontSize: 12, color: 'var(--fg-dim)' };
-const GROUP_COUNT: CSSProperties = { marginLeft: 6, fontVariantNumeric: 'tabular-nums', opacity: 0.8 };
+const GROUP_COUNT: CSSProperties = { marginLeft: 6, fontVariantNumeric: 'tabular-nums' };
 const GROUP_LABEL: CSSProperties = {
   margin: '0.6rem 0 0.1rem',
   padding: '0 8px',
@@ -52,6 +55,7 @@ const TOGGLE_ROOM = 32;
 
 export default function ConnectionsPanel({ pageId, connections }: { pageId: string; connections: PageConnections }) {
   const count = connectionsCount(connections);
+  const breakdown = connectionsBreakdown(connections);
   const any = hasConnections(connections);
   return (
     <PanelSection
@@ -63,6 +67,7 @@ export default function ConnectionsPanel({ pageId, connections }: { pageId: stri
         <p style={{ ...NOTE, margin: 0, padding: '0 8px' }}>No connections yet.</p>
       ) : (
         <>
+          {breakdown && <p style={{ ...NOTE, margin: '0 0 0.2rem', padding: '0 8px' }}>{breakdown}</p>}
           {connections.groups.map((group) => (
             <RelationGroup key={group.label} group={group} />
           ))}
@@ -215,18 +220,5 @@ function AlsoLinked({ pages }: { pages: ReadonlyArray<LinkedPage> }) {
       {shown.map(row)}
       {rest.length > 0 && <MoreRows total={pages.length}>{rest.map(row)}</MoreRows>}
     </div>
-  );
-}
-
-/** The panel's "Show all N" / "Show fewer" disclosure. */
-function MoreRows({ total, children }: { total: number; children: ReactNode }) {
-  return (
-    <details className="wiki-rp-more">
-      <summary className="wiki-rp-item" style={{ ...ROW, fontSize: 13, color: 'var(--accent)' }}>
-        <span className="wiki-rp-all">Show all {total}</span>
-        <span className="wiki-rp-less">Show fewer</span>
-      </summary>
-      {children}
-    </details>
   );
 }

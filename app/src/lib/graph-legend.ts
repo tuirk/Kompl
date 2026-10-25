@@ -9,7 +9,7 @@
 
 import { DEFAULT_FILTERS, type GraphFilters, type GraphModel } from './graph-model';
 import { UNCATEGORIZED } from './graph-layout';
-import { NEUTRAL_HEX } from './graph-palette';
+import { NEUTRAL_HEX, NO_TOPIC_HEX } from './graph-palette';
 
 /** One topic row: a named topic, the overflow topics together, or the uncategorized pages. */
 export interface CategoryGroup {
@@ -26,7 +26,7 @@ export function legendCategoryGroups(model: GraphModel): CategoryGroup[] {
   const overflow = model.categories.filter((c) => c.overflow).map((c) => c.name);
   if (overflow.length > 0) groups.push({ key: 'other', label: `Other topics (${overflow.length})`, color: NEUTRAL_HEX, names: overflow });
   if (model.categories.some((c) => c.name === UNCATEGORIZED)) {
-    groups.push({ key: UNCATEGORIZED, label: UNCATEGORIZED, color: NEUTRAL_HEX, names: [UNCATEGORIZED] });
+    groups.push({ key: UNCATEGORIZED, label: UNCATEGORIZED, color: NO_TOPIC_HEX, names: [UNCATEGORIZED] });
   }
   return groups;
 }

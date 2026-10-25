@@ -38,6 +38,15 @@ describe('POST /api/wiki/lint-pass', () => {
     );
   });
 
+  it('never lists Saved Links or an archived page as an orphan', async () => {
+    seedPage(handle.db, { page_id: 'saved-links', title: 'Saved Links', page_type: 'overview' });
+    seedPage(handle.db, { page_id: 'put-away', title: 'Put away', page_type: 'archived' });
+    seedPage(handle.db, { page_id: 'lonely', title: 'Lonely Page' });
+    const { body } = await postLint();
+    const ids = (body.orphan_pages as Array<{ page_id: string }>).map((p) => p.page_id);
+    expect(ids).toEqual(['lonely']);
+  });
+
   it('returns stale source-summary pages with last_updated', async () => {
     const page_id = seedPage(handle.db, {
       page_id: 'stale-one',

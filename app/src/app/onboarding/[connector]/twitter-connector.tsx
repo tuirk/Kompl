@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { detectAndParseAll, formatTweetMarkdown, isTwitterUrl, scrapeTweetTextDom, type ParsedTweet } from '../../../lib/twitter-parser';
 import { toUserMessage } from '@/lib/service-errors';
+import { formatDate } from '@/lib/date-format';
 import {
   type ConnectorProps,
   navigateNext,
@@ -154,7 +155,7 @@ function ExportGuide({
           background: 'var(--bg-card)', marginBottom: '0.75rem',
         }}>
           <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>
-            Step 1 — Install the exporter
+            Steps 1–2 — Install the exporter and run it on Twitter
           </span>
           <button
             onClick={onToggle}
@@ -209,7 +210,7 @@ function ExportGuide({
               Step 2 — Run it on Twitter
             </h2>
             <ol style={{ margin: 0, paddingLeft: '1.1rem', fontSize: '0.78rem', lineHeight: 1.8, color: 'var(--fg-muted)' }}>
-              <li>Go to <a href="https://twitter.com/i/bookmarks" target="_blank" rel="noreferrer">twitter.com/i/bookmarks</a></li>
+              <li>Go to <a href="https://twitter.com/i/bookmarks" target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>twitter.com/i/bookmarks</a></li>
               <li>Click the bookmark you just installed</li>
               <li>Page scrolls automatically — don&apos;t click anything</li>
               <li>A <code>twitter-bookmarks.json</code> downloads when done</li>
@@ -236,17 +237,17 @@ function ExportGuide({
         {extensionsOpen && (
           <ul style={{ margin: '0.5rem 0 0', paddingLeft: '1.25rem', lineHeight: 1.8, color: 'var(--fg-muted)' }}>
             <li>
-              <a href="https://chromewebstore.google.com/detail/twitter-bookmark-exporter/aggiedibmjnhcjlngcffegdhfdmfjodc" target="_blank" rel="noreferrer">
+              <a href="https://chromewebstore.google.com/detail/twitter-bookmark-exporter/aggiedibmjnhcjlngcffegdhfdmfjodc" target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>
                 Twitter Bookmark Exporter
               </a>{' '}— one-click JSON
             </li>
             <li>
-              <a href="https://chromewebstore.google.com/detail/x-bookmarks-exporter-expo/abgjpimjfnggkhnoehjndcociampccnm" target="_blank" rel="noreferrer">
+              <a href="https://chromewebstore.google.com/detail/x-bookmarks-exporter-expo/abgjpimjfnggkhnoehjndcociampccnm" target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>
                 X Bookmarks Exporter
               </a>{' '}— JSON / CSV / XLSX
             </li>
             <li>
-              <a href="https://chromewebstore.google.com/detail/twitter-bookmarks-downloa/nfkbcnohjlfnclnhhblgjafldimikcdb" target="_blank" rel="noreferrer">
+              <a href="https://chromewebstore.google.com/detail/twitter-bookmarks-downloa/nfkbcnohjlfnclnhhblgjafldimikcdb" target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>
                 Twitter Bookmarks Downloader
               </a>{' '}— includes media
             </li>
@@ -279,7 +280,7 @@ function TweetPreviewCard({ tweet }: { tweet: ParsedTweet }) {
       <div style={{ lineHeight: 1.5 }}>{text}</div>
       {tweet.date && (
         <div style={{ marginTop: '0.3rem', fontSize: '0.8rem', color: 'var(--fg-dim)' }}>
-          {new Date(tweet.date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+          {formatDate(tweet.date)}
         </div>
       )}
     </div>
@@ -504,10 +505,10 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
       {/* Export guide */}
       <ExportGuide collapsed={guideCollapsed} onToggle={() => setGuideCollapsed(v => !v)} bookmarkletRef={bookmarkletRef} />
 
-      {/* Step 2: Upload */}
+      {/* Step 3: Upload */}
       <div style={{ marginBottom: '2rem' }}>
         <h2 style={{ margin: '0 0 1rem', fontSize: '1rem', fontWeight: 600 }}>
-          Step 2 — Upload your export
+          Step 3 — Upload your export
         </h2>
 
         {/* Tabs */}
@@ -602,12 +603,12 @@ export default function TwitterConnector({ sessionId, connectors, connectorIdx, 
         )}
       </div>
 
-      {/* Step 3: Preview (after successful parse) */}
+      {/* Step 4: Preview (after successful parse) */}
       {phase === 'preview' && tweets.length > 0 && (
         <div style={{ marginBottom: '2rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
             <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>
-              Step 3 — Preview
+              Step 4 — Preview
             </h2>
             <button
               onClick={resetToIdle}

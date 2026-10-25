@@ -6,9 +6,14 @@
  * map), "Find a page" (FindPage.tsx), "Connect two pages", and the Wiki /
  * Graph switch (its Graph tab leaves a focus). Inline styles and
  * CSS vars; buttons show the keyboard focus (globals.css .graph-header-btn).
+ *
+ * The control that changes the view goes away with it ("Focus" in the page
+ * panel, "Full map" here), so keyboard focus moves to the new view's header:
+ * the focus controls (named after the focused page) on entering a focus, the
+ * title on leaving one. Otherwise it would fall to the page body.
  */
 
-import type { CSSProperties, MouseEvent } from 'react';
+import { useEffect, useRef, type CSSProperties, type MouseEvent } from 'react';
 import { Route, X } from 'lucide-react';
 import WikiViewToggle from '../../../components/WikiViewToggle';
 import type { ModelNode } from '../../../lib/graph-model';
@@ -30,6 +35,8 @@ interface Props {
   /** The pages on the map, for "Find a page", and what choosing one does. */
   findPages: readonly ModelNode[];
   onFind(pageId: string): void;
+  /** Bumped when a control outside the header entered a focus: keyboard focus goes to the focus controls. */
+  focusRequest?: number;
 }
 
 const SMALL_CAPS: CSSProperties = {
@@ -56,7 +63,23 @@ function leaveFocusOnGraphTab(e: MouseEvent<HTMLDivElement>, focused: boolean, o
 }
 
 export default function GraphHeader(props: Props) {
-  const { pages, lines, focusTitle, depth, onDepth, onFullMap, pathOpen, onPath, notice, findPages, onFind } = props;
+  const { pages, lines, focusTitle, depth, onDepth, onFullMap, pathOpen, onPath, notice, findPages, onFind, focusRequest = 0 } = props;
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const groupRef = useRef<HTMLDivElement>(null);
+  /** "Full map" was pressed: the title takes focus once the focus controls are gone. */
+  const leaving = useRef(false);
+  useEffect(() => {
+    if (focusRequest > 0) groupRef.current?.focus({ preventScroll: true });
+  }, [focusRequest]);
+  useEffect(() => {
+    if (!leaving.current || focusTitle !== null) return;
+    leaving.current = false;
+    titleRef.current?.focus({ preventScroll: true });
+  }, [focusTitle]);
+  const fullMap = () => {
+    leaving.current = true;
+    onFullMap();
+  };
   return (
     // Wraps onto more lines on narrow screens, so the path finder and the Wiki / Graph switch stay reachable.
     <header
@@ -65,7 +88,7 @@ export default function GraphHeader(props: Props) {
         borderBottom: '1px solid rgba(71,72,74,0.15)', background: 'rgba(36,38,41,0.6)', backdropFilter: 'blur(12px)',
       }}
     >
-      <h1 style={{ margin: 0, fontSize: '0.875rem', fontWeight: 700, fontFamily: 'var(--font-heading)', color: 'var(--fg)', letterSpacing: '-0.35px', whiteSpace: 'nowrap' }}>
+      <h1 ref={titleRef} tabIndex={-1} style={{ outline: 'none', margin: 0, fontSize: '0.875rem', fontWeight: 700, fontFamily: 'var(--font-heading)', color: 'var(--fg)', letterSpacing: '-0.35px', whiteSpace: 'nowrap' }}>
         Knowledge Graph
       </h1>
       {DIVIDER}
@@ -75,7 +98,7 @@ export default function GraphHeader(props: Props) {
       {focusTitle !== null && (
         <>
           {DIVIDER}
-          <div role="group" aria-label="Focus" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <div ref={groupRef} tabIndex={-1} role="group" aria-label={`Focus on ${focusTitle}`} style={{ outline: 'none', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <span style={SMALL_CAPS}>Focus</span>
             <span
               title={focusTitle}
@@ -98,7 +121,7 @@ export default function GraphHeader(props: Props) {
                 </button>
               ))}
             </div>
-            <button type="button" className="graph-header-btn" onClick={onFullMap} title="Back to the full map" style={chip()}>
+            <button type="button" className="graph-header-btn" onClick={fullMap} title="Back to the full map" style={chip()}>
               <X size={12} aria-hidden />
               Full map
             </button>

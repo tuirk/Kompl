@@ -216,6 +216,7 @@ export default function TopNav() {
             ref={inputRef}
             type="text"
             className="topnav-search"
+            aria-label="Search wiki"
             placeholder="Search wiki"
             value={query}
             onChange={handleChange}
@@ -364,9 +365,12 @@ export default function TopNav() {
           )}
         </div>
 
-        {/* Settings */}
+        {/* Settings: an icon link, so it carries its name for screen readers */}
         <Link
           href="/settings"
+          aria-label="Settings"
+          title="Settings"
+          aria-current={pathname.startsWith('/settings') ? 'page' : undefined}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -374,7 +378,7 @@ export default function TopNav() {
             transition: 'color var(--transition-fast)',
           }}
         >
-          <Settings size={16} />
+          <Settings size={16} aria-hidden="true" />
         </Link>
       </div>
     </header>

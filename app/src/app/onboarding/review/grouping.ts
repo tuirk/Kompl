@@ -18,6 +18,7 @@
  */
 
 import type { StagingConnector, StagingRow } from '@/lib/db';
+import { formatDate as formatSharedDate, parseTimestamp } from '@/lib/date-format';
 
 // ── Display schema (discriminated union) ──────────────────────────────────
 
@@ -344,13 +345,8 @@ export function formatRelativeMtime(mtime_ms: number, now: number = Date.now()):
   return `${years} year${years === 1 ? '' : 's'} ago`;
 }
 
+/** The app's date format (lib/date-format.ts); '' when missing or unreadable. */
 export function formatDate(iso?: string): string {
-  if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: 'numeric', month: 'short', day: 'numeric',
-    });
-  } catch {
-    return '';
-  }
+  if (!iso || parseTimestamp(iso) === null) return '';
+  return formatSharedDate(iso);
 }

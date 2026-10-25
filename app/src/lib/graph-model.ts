@@ -13,6 +13,8 @@ import { LINE_ALPHA, LINE_FADED, LINE_HEX, LINE_LIT_HEX, withAlpha } from './gra
 import {
   categoryAnchors, clusterRadius, edgeWidth, nodeRadius, rankCategories, ringOrder, seedPosition, UNCATEGORIZED,
 } from './graph-layout';
+import { dropCitationLabels } from './summary-text';
+import { stripWikilinks } from './wikilink-syntax';
 
 /** Page types hidden behind "Show source pages". */
 export const SOURCE_PAGE_TYPES: ReadonlySet<string> = new Set(['source-summary', 'original-source']);
@@ -164,7 +166,7 @@ export function buildGraphModel(data: WikiGraph): GraphModel {
       pageType: n.group,
       category: n.category,
       catIndex: cat.index,
-      summary: n.summary ?? null,
+      summary: n.summary ? stripWikilinks(dropCitationLabels(n.summary)) : null,
       sourceCount: n.source_count,
       lastUpdated: n.last_updated ?? null,
       degree: n.degree,

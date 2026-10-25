@@ -106,8 +106,9 @@ describe('getPageConnections', () => {
   it('groups by label in vocabulary order, with plain names and an unknown type', () => {
     fixture();
     const { groups } = getPageConnections('bitcoin');
+    // Ethereum is related to Bitcoin too, but Competes with already lists it.
     expect(groups.map((g) => g.label)).toEqual([
-      'Includes', 'Created by', 'Uses', 'Competes with', 'Influenced by', 'Related to',
+      'Includes', 'Created by', 'Uses', 'Competes with', 'Influenced by',
     ]);
     const item = (label: string) => groups.find((g) => g.label === label)!.items;
     expect(item('Includes')).toMatchObject([{ page_id: 'lightning', title: 'Lightning Network', type: 'part_of', direction: 'in' }]);
@@ -129,10 +130,18 @@ describe('getPageConnections', () => {
 
   it('merges both directions of a symmetric type into one item', () => {
     fixture();
+    handle!.db.prepare("DELETE FROM relationship_mentions WHERE relationship_type = 'competes_with'").run();
     const related = getPageConnections('bitcoin').groups.find((g) => g.label === 'Related to')!.items;
     expect(related).toHaveLength(1);
     expect(related[0]).toMatchObject({ page_id: 'ethereum', source_count: 2, direction: 'out' });
     expect(related[0].evidence[0].sentence).toBe('Newer related sentence.');
+  });
+
+  it('lists a page under "Related to" only when no other relation joins them', () => {
+    fixture();
+    const ethereum = getPageConnections('ethereum').groups;
+    expect(ethereum.map((g) => g.label)).toEqual(['Competes with']);
+    expect(ethereum[0].items).toMatchObject([{ page_id: 'bitcoin', type: 'competes_with', source_count: 1 }]);
   });
 
   it('labels the other side by direction', () => {

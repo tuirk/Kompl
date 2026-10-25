@@ -37,24 +37,12 @@ import {
   resolveCollapsed,
   serializeOpenCategories,
 } from '../lib/wiki-sidebar-prefs';
+import { archivedNote, archivedPageIds, groupPagesByCategory } from '../lib/sidebar-archived';
 
 interface WikiSidebarProps {
   initialGroups: CategoryGroup[];
   activePageId?: string;
   activeCategory?: string;
-}
-
-/** Client-side equivalent of getCategoryGroups() — groups PageRow[] by category. */
-function buildCategoryGroups(pages: PageRow[]): CategoryGroup[] {
-  const map = new Map<string, PageRow[]>();
-  for (const p of pages) {
-    const cat = p.category ?? 'Uncategorized';
-    if (!map.has(cat)) map.set(cat, []);
-    map.get(cat)!.push(p);
-  }
-  return Array.from(map.entries())
-    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-    .map(([category, pages]) => ({ category, pages }));
 }
 
 const collapsedPref = createLocalPref(SIDEBAR_COLLAPSED_KEY);
@@ -113,15 +101,18 @@ function PageLink({
   active,
   nested = false,
   reveal = false,
+  archived: archivedPage = false,
 }: {
   page: PageRow;
   active: boolean;
+  /** Shown only by "Show archived": all its sources are archived. */
+  archived?: boolean;
   /** Inside a category: draws the category's guide line. */
   nested?: boolean;
   /** The row to scroll into view for the current page. */
   reveal?: boolean;
 }) {
-  const archived = page.page_type === 'archived';
+  const archived = archivedPage || page.page_type === 'archived';
   const dot = archived
     ? ARCHIVED_COLOR
     : PAGE_TYPE_VAR[page.page_type as keyof typeof PAGE_TYPE_VAR] ?? ARCHIVED_COLOR;
@@ -170,6 +161,9 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
   const collapsed = useSyncExternalStore(subscribeCollapsed, readCollapsed, serverCollapsed);
   const openRaw = useSyncExternalStore(openPref.subscribe, openPref.read, serverOpenRaw);
   const [showArchived, setShowArchived] = useState(false);
+  // What "Show archived" found (lib/sidebar-archived.ts), said under the toggle.
+  const [archivedIds, setArchivedIds] = useState<ReadonlySet<string>>(new Set());
+  const [archivedStatus, setArchivedStatus] = useState<string | null>(null);
   const [groups, setGroups] = useState(initialGroups);
   const [dismissedCategory, setDismissedCategory] = useState<string | null>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
@@ -217,18 +211,24 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
   async function handleToggle() {
     const next = !showArchived;
     setShowArchived(next);
-    if (next) {
-      try {
-        const res = await fetch('/api/wiki/index?include_archived=true');
-        if (res.ok) {
-          const data = (await res.json()) as { pages: PageRow[] };
-          setGroups(buildCategoryGroups(data.pages));
-        }
-      } catch {
-        // Non-fatal: toggle still flips, just may not show archived pages
-      }
-    } else {
+    setArchivedIds(new Set());
+    if (!next) {
       setGroups(initialGroups);
+      setArchivedStatus(null);
+      return;
+    }
+    setArchivedStatus('Loading archived pages…');
+    try {
+      const res = await fetch('/api/wiki/index?include_archived=true');
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = (await res.json()) as { pages: PageRow[] };
+      const archived = archivedPageIds(data.pages, initialGroups);
+      setGroups(groupPagesByCategory(data.pages));
+      setArchivedIds(archived);
+      setArchivedStatus(archivedNote(archived.size));
+    } catch {
+      setShowArchived(false);
+      setArchivedStatus('Couldn’t load archived pages. Try again.');
     }
   }
 
@@ -370,6 +370,21 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
             Show archived
           </button>
         </div>
+        {/* Always rendered, so screen readers announce what the toggle found. */}
+        <p
+          role="status"
+          className="wiki-sb-full"
+          style={{
+            margin: archivedStatus ? '0 0 8px' : 0,
+            padding: '0 18px',
+            fontSize: 12,
+            lineHeight: '16px',
+            color: 'var(--fg-dim)',
+            textAlign: 'right',
+          }}
+        >
+          {archivedStatus}
+        </p>
 
         <nav aria-label="Wiki" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           {/* Entry points: icon + label expanded, the icons alone form the rail. */}
@@ -432,7 +447,7 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
                 <ul aria-labelledby={`${ids}-recent`} style={LIST}>
                   {recentPages.map((p) => (
                     <li key={p.page_id}>
-                      <PageLink page={p} active={p.page_id === activePageId} />
+                      <PageLink page={p} active={p.page_id === activePageId} archived={archivedIds.has(p.page_id)} />
                     </li>
                   ))}
                 </ul>
@@ -504,7 +519,7 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
                             const active = p.page_id === activePageId;
                             return (
                               <li key={p.page_id}>
-                                <PageLink page={p} active={active} nested reveal={active} />
+                                <PageLink page={p} active={active} nested reveal={active} archived={archivedIds.has(p.page_id)} />
                               </li>
                             );
                           })}
@@ -526,7 +541,7 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
                     const active = p.page_id === activePageId;
                     return (
                       <li key={p.page_id}>
-                        <PageLink page={p} active={active} reveal={active} />
+                        <PageLink page={p} active={active} reveal={active} archived={archivedIds.has(p.page_id)} />
                       </li>
                     );
                   })}

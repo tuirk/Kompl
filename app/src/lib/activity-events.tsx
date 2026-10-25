@@ -510,6 +510,7 @@ const WIKI_REPAIR_STEP_TEXT: Record<string, string> = {
   backup: 'backup saved',
   aliases: 'name matches checked',
   mentions: 'sources given to the right pages',
+  links: 'links to the wrong page fixed',
   pages: 'pages rewritten',
   labels: 'categories tidied',
 };
@@ -531,14 +532,17 @@ function renderWikiRepair(row: FeedActivityRow): RowContent {
           ? [`${n('confirmed')} kept`, `${n('retired')} retired`, `${n('undecided')} undecided`]
           : step === 'mentions'
             ? [`${n('sources')} sources`, `${n('pages')} pages to rewrite`]
-            : step === 'pages'
-              ? [`${n('rebuilt')} rewritten`, `${n('skipped')} skipped`, `${n('failed')} failed`]
-              : [`${n('merged')} merged`, `${n('pages')} pages`];
+            : step === 'links'
+              ? [`${n('links')} links`, `${n('pages')} pages`, n('missed') > 0 ? `${n('missed')} left for the next repair` : '']
+              : step === 'pages'
+                ? [`${n('rebuilt')} rewritten`, `${n('skipped')} skipped`, `${n('failed')} failed`]
+                : [`${n('merged')} merged`, `${n('pages')} pages`];
   } else {
     primary = phase === 'finished' ? 'Wiki repair finished' : 'Wiki repair stopped';
     parts = [
       `${n('pages_rebuilt')} pages rewritten`,
       `${n('aliases_retired')} name matches retired`,
+      n('links_corrected') > 0 ? `${n('links_corrected')} links fixed` : '',
       phase === 'stopped' ? WIKI_REPAIR_STOP_TEXT[str('reason') ?? ''] ?? '' : '',
     ];
   }

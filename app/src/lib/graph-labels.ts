@@ -3,15 +3,17 @@
  * a box is placed only when it overlaps no name already placed and no circle
  * other than its own page's, trying places round the circle and then further
  * out (with a leader line); a name that must show (placeName's `force`) may
- * cover circles but never a name. The checks run in the label space
+ * cover circles but never a name. Round its circle, a place no drawn line
+ * runs through comes first, so a name does not sit on a line. The checks run in the label space
  * (graph-label-space.ts), re-exported here. Pure (no canvas), so it is
  * unit-tested directly.
  */
 
-import { circleHits, forcePlace, hitsPlaced, inLimits, type LabelSpace } from './graph-label-space';
+import { circleHits, crossesLine, forcePlace, hitsPlaced, inLimits, type LabelSpace } from './graph-label-space';
 
 export {
-  addCircle, buildGrid, forcePlace, hitsPlaced, newLabelSpace, resetSpace, tryPlace, type LabelSpace,
+  addCircle, addSegment, buildGrid, crossesLine, forcePlace, hitsPlaced, newLabelSpace, resetSpace, segmentHitsBox, tryPlace,
+  NAME_LINES_MAX, type LabelSpace,
 } from './graph-label-space';
 
 /** Past this zoom the faded pages are named too, after the lit ones, while something is in focus. */
@@ -78,8 +80,9 @@ function commit(space: LabelSpace, place: number): number {
 
 /**
  * Places a page name round its circle (`gap` from the centre, `half` the
- * box's half width): below, above, right or left, then further out in 8
- * directions (those need a leader line: space.lastLeader). The box lands in
+ * box's half width): below, above, right or left (first where no line of
+ * the space runs, then anywhere), then further out in 8 directions (those
+ * need a leader line: space.lastLeader). The box lands in
  * space.last; returns the place used, or -1. A place must be free of other
  * names and of other pages' circles. With `force` (an island's top page or
  * the page in focus) and no free place, the name still goes where it covers
@@ -89,6 +92,12 @@ export function placeName(
   space: LabelSpace, x: number, y: number, gap: number, half: number, lineHeight: number, force = false
 ): number {
   const c = space.cand;
+  for (let i = 0; i < NEAR_PLACES && space.segments > 0; i++) {
+    placeBox(space, i, x, y, gap, half, lineHeight);
+    if (!inLimits(space, c[0], c[2]) || hitsPlaced(space, c[0], c[1], c[2], c[3])) continue;
+    if (crossesLine(space, c[0], c[1], c[2], c[3])) continue;
+    if (circleHits(space, c[0], c[1], c[2], c[3], x, y, true) === 0) return commit(space, i);
+  }
   for (let i = 0; i < NAME_PLACES; i++) {
     placeBox(space, i, x, y, gap, half, lineHeight);
     if (!inLimits(space, c[0], c[2]) || hitsPlaced(space, c[0], c[1], c[2], c[3])) continue;

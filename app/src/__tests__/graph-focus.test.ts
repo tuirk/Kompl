@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  acceptHover, closesPanelOnEscape, focusHighlight, hoverCardText, limitsLinePointer, linkSummary, nodeHighlight, POINTER_LINES_MAX,
+  acceptHover, cardHover, closesPanelOnEscape, focusKey, focusHighlight, hoverCardText, limitsLinePointer, linkSummary, nodeHighlight, POINTER_LINES_MAX,
   readingOrder, relationsBetween, takesPointer,
 } from '../lib/graph-focus';
 import { buildMissingLayer } from '../lib/graph-missing';
@@ -166,5 +166,25 @@ describe('acceptHover', () => {
     // Back over the canvas: what force-graph holds there now.
     expect(acceptHover(true, b)).toBe(b);
     expect(acceptHover(true, null)).toBeNull();
+  });
+});
+
+describe('the hover card after a click', () => {
+  const node = { kind: 'node', id: 'b-bitcoin' } as const;
+  const line = { kind: 'link', link: lineOf('a-pow', 'b-bitcoin') } as const;
+
+  it('tells pages and lines apart by key', () => {
+    expect(focusKey(node)).not.toEqual(focusKey({ kind: 'node', id: 'c-eth' }));
+    expect(focusKey(line)).toEqual(focusKey({ kind: 'link', link: lineOf('a-pow', 'b-bitcoin') }));
+    expect(focusKey(line)).not.toEqual(focusKey(node));
+    expect(focusKey(null)).toBeNull();
+  });
+
+  it('hides the card for the page or line just clicked (it would cover the panel), and shows it for anything else', () => {
+    expect(cardHover(node, focusKey(node))).toBeNull();
+    expect(cardHover(line, focusKey(line))).toBeNull();
+    expect(cardHover(node, focusKey(line))).toBe(node);
+    expect(cardHover(node, null)).toBe(node);
+    expect(cardHover(null, focusKey(node))).toBeNull();
   });
 });

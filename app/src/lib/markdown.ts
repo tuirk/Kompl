@@ -57,6 +57,11 @@ renderer.link = (href: string, title: string | null | undefined, text: string) =
   const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
   return `<a href="${escapeHtml(safe)}"${titleAttr}>${text}</a>`;
 };
+// Code blocks scroll sideways, so keyboard users must be able to focus them
+// (WCAG 2.1.1); the group role gives the focus stop a name to announce.
+const baseCode = renderer.code.bind(renderer);
+renderer.code = (code: string, infostring: string | undefined, escaped: boolean) =>
+  baseCode(code, infostring, escaped).replace(/^<pre>/, '<pre tabindex="0" role="group" aria-label="Code block">');
 renderer.image = (href: string, title: string | null | undefined, text: string) => {
   const safe = safeMarkdownHref(href);
   // Unsafe src → render the alt text only.

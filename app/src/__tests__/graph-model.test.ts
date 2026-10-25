@@ -10,7 +10,7 @@ import {
   categoryAnchors, centerFor, clusterRadius, edgeWidth, fitView, rankCategories, ringOrder, seedPosition, UNCATEGORIZED,
   zoomAnchor, zoomAround, ZOOM_MAX,
 } from '../lib/graph-layout';
-import { CATEGORY_HEX, LINE_ALPHA, LINE_HEX, LINE_LIT_HEX, NEUTRAL_HEX, withAlpha } from '../lib/graph-palette';
+import { CATEGORY_HEX, LINE_ALPHA, LINE_HEX, LINE_LIT_HEX, NEUTRAL_HEX, NO_TOPIC_HEX, withAlpha } from '../lib/graph-palette';
 import type { RelationEdge } from '../lib/relation-edges';
 import type { WikiGraph, WikiGraphNode } from '../lib/wiki-graph';
 
@@ -138,12 +138,12 @@ describe('category colours', () => {
   const counts = (pairsIn: Array<[string, number, number?]>) =>
     pairsIn.map(([name, live, total]) => ({ name, live, total: total ?? live }));
 
-  it('gives the eight biggest categories the palette in order, the rest and Uncategorized grey', () => {
+  it('gives the eight biggest categories the palette in order, the rest grey and Uncategorized its own neutral', () => {
     const names = Array.from({ length: 10 }, (_, i) => [`C${i}`, 20 - i] as [string, number]);
     const ranked = rankCategories(counts([[UNCATEGORIZED, 50], ...names]));
     expect(ranked.map((c) => c.name)).toEqual([...names.map(([n]) => n), UNCATEGORIZED]);
     expect(ranked.slice(0, 8).map((c) => c.color)).toEqual([...CATEGORY_HEX]);
-    expect(ranked.slice(8).map((c) => c.color)).toEqual([NEUTRAL_HEX, NEUTRAL_HEX, NEUTRAL_HEX]);
+    expect(ranked.slice(8).map((c) => c.color)).toEqual([NEUTRAL_HEX, NEUTRAL_HEX, NO_TOPIC_HEX]);
     expect(ranked.filter((c) => c.overflow).map((c) => c.name)).toEqual(['C8', 'C9']);
   });
 

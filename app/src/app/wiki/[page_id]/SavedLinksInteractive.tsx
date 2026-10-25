@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SavedLinkRow } from '../../../lib/db';
-import { LocalDayMonth } from '../../../components/LocalDate';
+import { LocalDate } from '../../../components/LocalDate';
 import { safeExternalUrl } from '../../../lib/safe-url';
 import { ingestFailureReason } from '../../../lib/ingest-error-copy';
 
@@ -284,7 +284,7 @@ export default function SavedLinksInteractive({
               </div>
 
               <div style={{ padding: '20px 0', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-secondary)' }}>
-                <LocalDayMonth iso={link.date_saved ?? link.date_attempted} />
+                <LocalDate iso={link.date_saved ?? link.date_attempted} />
               </div>
 
               <div style={{ padding: '16px 0', minWidth: 0 }}>

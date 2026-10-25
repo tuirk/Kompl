@@ -6,7 +6,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  addCircle, buildGrid, forcePlace, hitsPlaced, newLabelSpace, placeName, resetSpace, tryPlace, wantsName,
+  addCircle, addSegment, buildGrid, crossesLine, forcePlace, hitsPlaced, newLabelSpace, placeName, resetSpace, segmentHitsBox, tryPlace,
+  wantsName, NAME_LINES_MAX,
   ALL_NAMES_ZOOM, LABEL_ZOOM, NAME_ABOVE, NAME_BELOW, NAME_LEFT, NAME_RIGHT, NEAR_PLACES, OVERVIEW_NAMES, type LabelSpace,
 } from '../lib/graph-labels';
 
@@ -199,5 +200,35 @@ describe('wantsName', () => {
     expect(wantsName(1, true, false, LABEL_ZOOM, 0)).toBe(false);
     expect(wantsName(1, true, false, LABEL_ZOOM + 0.1, 0)).toBe(true);
     expect(wantsName(1, true, true, 3, 0)).toBe(false); // lit pages were named in pass 0
+  });
+});
+
+describe('names keep off the lines', () => {
+  it('finds whether a line passes through a box', () => {
+    expect(segmentHitsBox(-50, 5, 50, 5, -10, 0, 10, 10)).toBe(true); // straight through
+    expect(segmentHitsBox(-50, -50, 50, 50, -10, 0, 10, 10)).toBe(true); // diagonal through
+    expect(segmentHitsBox(-50, 20, 50, 20, -10, 0, 10, 10)).toBe(false); // passes below
+    expect(segmentHitsBox(-50, -40, -5, 10, 0, 0, 20, 10)).toBe(false); // ends short of it
+    expect(segmentHitsBox(5, 5, 6, 6, 0, 0, 10, 10)).toBe(true); // inside
+  });
+
+  it('puts a name round its circle where no line runs, before one that crosses a line', () => {
+    const s = space([[0, 0, 6]]);
+    expect(addSegment(s, 0, 0, 0, 200)).toBe(true); // the page's line straight down, through the name below
+    expect(placeName(s, 0, 0, 8, 20, 14)).toBe(NAME_ABOVE);
+    expect(crossesLine(s, s.last[0], s.last[1], s.last[2], s.last[3])).toBe(false);
+  });
+
+  it('still names the page beside its circle when every near place crosses a line', () => {
+    const s = space([[0, 0, 6]]);
+    addSegment(s, 0, -200, 0, 200);
+    addSegment(s, -200, 0, 200, 0);
+    expect(placeName(s, 0, 0, 8, 20, 14)).toBe(NAME_BELOW);
+  });
+
+  it('checks no lines once more are in view than it keeps', () => {
+    const s = space([]);
+    for (let i = 0; i < NAME_LINES_MAX; i++) expect(addSegment(s, 0, 0, 1, 1)).toBe(true);
+    expect(addSegment(s, 0, 0, 1, 1)).toBe(false);
   });
 });

@@ -129,7 +129,8 @@ export function focusedName(page) {
 export function headerCounts(page) {
   return page.evaluate(() => {
     const m = (document.querySelector("main header")?.textContent ?? "").match(/(\d+)\s+pages?\s*·\s*(\d+)\s+connections?/);
-    const focus = document.querySelector('[role="group"][aria-label="Focus"]');
+    // The header's focus group is named "Focus on <page>" (it takes keyboard focus after Focus).
+    const focus = document.querySelector('[role="group"][aria-label^="Focus"]');
     return { pages: m ? Number(m[1]) : null, lines: m ? Number(m[2]) : null, focusTitle: focus?.querySelector("span[title]")?.getAttribute("title") ?? null };
   }).catch(() => ({ pages: null, lines: null, focusTitle: null }));
 }

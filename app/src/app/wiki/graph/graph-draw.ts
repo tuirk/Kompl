@@ -12,11 +12,11 @@
 
 import type { Highlight } from '../../../lib/graph-focus';
 import {
-  addCircle, buildGrid, newLabelSpace, placeName, resetSpace, wantsName, OVERVIEW_NAMES, type LabelSpace,
+  addCircle, addSegment, buildGrid, newLabelSpace, placeName, resetSpace, wantsName, OVERVIEW_NAMES, type LabelSpace,
 } from '../../../lib/graph-labels';
 import { isMissingNode, MISSING_HEX } from '../../../lib/graph-missing';
 import { LINE_LABELS_MAX } from '../../../lib/graph-line-style';
-import type { ModelNode } from '../../../lib/graph-model';
+import type { ModelLink, ModelNode } from '../../../lib/graph-model';
 import { ACCENT_HEX, CANVAS_BG, withAlpha } from '../../../lib/graph-palette';
 import { grownPx, NAME_GROWTH } from '../../../lib/graph-zoom';
 import { BADGE_GAP_PX, BADGE_PX, BADGE_TEXT, drawBadge, drawLeader } from './graph-name-marks';
@@ -200,11 +200,14 @@ function clearRadius(n: ModelNode, k: number): number {
 }
 
 /**
- * Starts a frame's label space: the circles on screen, sorted into the grid.
- * While something is in focus only the lit circles count; the faded ones are
- * background and may sit under a name.
+ * Starts a frame's label space: the circles on screen, sorted into the grid,
+ * and the lines on screen, which names keep off when they can (none at all
+ * past NAME_LINES_MAX). While something is in focus only the lit circles and
+ * lines count; the faded ones are background and may sit under a name.
  */
-export function prepareLabels(buf: LabelBuffer, nodes: readonly ModelNode[], frame: FrameState, highlight: Highlight | null): void {
+export function prepareLabels(
+  buf: LabelBuffer, nodes: readonly ModelNode[], frame: FrameState, highlight: Highlight | null, links: Iterable<ModelLink> = []
+): void {
   const k = frame.scale;
   const space = buf.space;
   resetSpace(space, frame.minX, frame.minY, frame.maxX, frame.maxY, GRID_CELL_PX / k, frame.labelMinX, frame.labelMaxX);
@@ -215,6 +218,17 @@ export function prepareLabels(buf: LabelBuffer, nodes: readonly ModelNode[], fra
     }
   }
   buildGrid(space);
+  for (const l of highlight?.links ?? links) {
+    const s = l.source;
+    const t = l.target;
+    if (typeof s !== 'object' || typeof t !== 'object') continue;
+    if ((s.x < frame.minX && t.x < frame.minX) || (s.x > frame.maxX && t.x > frame.maxX)) continue;
+    if ((s.y < frame.minY && t.y < frame.minY) || (s.y > frame.maxY && t.y > frame.maxY)) continue;
+    if (!addSegment(space, s.x, s.y, t.x, t.y)) {
+      space.segments = 0;
+      break;
+    }
+  }
 }
 
 /**

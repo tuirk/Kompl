@@ -24,6 +24,7 @@ import { buildJudgePairs, judgeBatches, listAliasesToJudge, type SuspendedAlias 
 import type { RepairEstimateInput } from './estimate';
 import { repairLabels } from './labels';
 import { MAX_REPAIR_ALIASES, MAX_REPAIR_PAGES } from './limits';
+import { planLinkFixes, unusedAliasPairs } from './links';
 import {
   mergePendingPages,
   nocase,
@@ -63,6 +64,13 @@ export interface RepairPlan {
   pages_over_cap: number;
   /** Pages an earlier run left waiting (included above). */
   pages_waiting: number;
+  /**
+   * Pages whose links through name matches no longer used are corrected (no
+   * AI call): high if the AI confirms none of the pairs it is asked about,
+   * low if it confirms them all.
+   */
+  link_pages_low: number;
+  link_pages_high: number;
   labels: string[];
   /** The estimate's inputs (sizes), for lib/wiki-repair/estimate.ts. */
   estimate_input: RepairEstimateInput;
@@ -138,6 +146,8 @@ export function computeRepairPlan(db: Database.Database): RepairPlan {
     pages_high: pages.length,
     pages_over_cap: all.length - pages.length,
     pages_waiting: waitingNow.length,
+    link_pages_low: planLinkFixes(db, unusedAliasPairs(db, new Set(toJudge.map((r) => r.id)))).length,
+    link_pages_high: planLinkFixes(db, unusedAliasPairs(db)).length,
     labels,
     estimate_input: {
       nameCheckBatches: judgeBatches(pairs).map((batch) =>

@@ -27,7 +27,7 @@ vi.mock('../lib/wiki-repair/backup', async (importOriginal) => {
 import { POST as retryPOST } from '../app/api/compile/retry/route';
 import { GET as backupGET } from '../app/api/wiki/repair/backup/route';
 import { POST as startPOST } from '../app/api/wiki/repair/start/route';
-import { DATA_ROOT, getSetting, getSourceIdsMentioning } from '../lib/db';
+import { DATA_ROOT, getSetting, getSourceIdsMentioning, insertPageLink, readPageMarkdown } from '../lib/db';
 import { REPAIR_CONFIRMED_METHOD, REPAIR_UNDECIDED_REASON } from '../lib/wiki-repair/aliases';
 import { MAX_REPAIR_ALIASES, REPAIR_ALIAS_BATCH, REPAIR_BACKUP_DIR, WIKI_REPAIR_FLAG } from '../lib/wiki-repair/limits';
 import { computeRepairPlan } from '../lib/wiki-repair/plan';
@@ -39,8 +39,8 @@ import {
   settleAfterRestart,
   wikiRepairBlock,
 } from '../lib/wiki-repair/state';
-import { EF, ETH, S, mockRepairNlp, seedRepairWiki, type FakeNlp } from './helpers/repair-wiki';
-import { setupTestDb, type TestDbHandle } from './helpers/test-db';
+import { EF, ETH, S, mockRepairNlp, pageMarkdown, seedRepairWiki, writePageFile, type FakeNlp } from './helpers/repair-wiki';
+import { seedPage, setupTestDb, type TestDbHandle } from './helpers/test-db';
 
 let handle: TestDbHandle | null = null;
 
@@ -87,7 +87,7 @@ describe('a full run', () => {
     await runToEnd();
     const run = readSavedRun()!;
     expect(run.status).toBe('finished');
-    expect(run.steps_done).toEqual(['backup', 'aliases', 'mentions', 'pages', 'labels']);
+    expect(run.steps_done).toEqual(['backup', 'aliases', 'mentions', 'links', 'pages', 'labels']);
 
     // 1. The backup is on the data volume and is a kompl backup.
     const file = path.join(DATA_ROOT, REPAIR_BACKUP_DIR, run.backup!.file);
@@ -129,11 +129,29 @@ describe('a full run', () => {
     expect(nlp.writes.filter((w) => w === EF)).toHaveLength(2);
 
     // One activity row per step and one for the end; no per-page rows.
-    expect(repairRows().map((r) => r.step ?? r.phase)).toEqual(['backup', 'aliases', 'mentions', 'pages', 'labels', 'finished']);
+    expect(repairRows().map((r) => r.step ?? r.phase)).toEqual(['backup', 'aliases', 'mentions', 'links', 'pages', 'labels', 'finished']);
     expect(repairRows().at(-1)!.phase).toBe('finished');
     const types = handle!.db.prepare("SELECT DISTINCT action_type FROM activity_log").all() as Array<{ action_type: string }>;
     expect(types.map((t) => t.action_type)).toEqual(['wiki_repair']);
     expect(getSetting(WIKI_REPAIR_FLAG)).toBe('0');
+  });
+
+  it('fixes the links written through a name match the AI retires, and keeps the confirmed ones', async () => {
+    const nlp = setup();
+    const NOTE = 'page-note';
+    seedPage(handle!.db, { page_id: NOTE, title: 'Chain notes', page_type: 'concept', category: 'Cryptocurrency' });
+    writePageFile(NOTE, pageMarkdown('Chain notes', 'Cryptocurrency', 'Pay in [[Ethereum Foundation|ETH]] to [[Ethereum Foundation|The Ethereum Foundation]].'));
+    insertPageLink(NOTE, EF, 'wikilink');
+    const plan = computeRepairPlan(handle!.db);
+    expect([plan.link_pages_low, plan.link_pages_high]).toEqual([0, 1]);
+
+    await runToEnd();
+    const run = readSavedRun()!;
+    expect(run.links).toEqual({ pages: 1, links: 1, missed: 0 });
+    expect(readPageMarkdown(NOTE)).toContain('Pay in ETH to [[Ethereum Foundation|The Ethereum Foundation]].');
+    expect(nlp.writes.filter((w) => w === NOTE)).toHaveLength(1);
+    expect(repairRows().find((r) => r.step === 'links')).toMatchObject({ pages: 1, links: 1, missed: 0 });
+    expect(repairRows().at(-1)).toMatchObject({ phase: 'finished', links_corrected: 1 });
   });
 
   it('leaves a page as it was when no source names it any more', async () => {
@@ -194,7 +212,7 @@ describe('all or none', () => {
     await runToEnd();
     const run = readSavedRun()!;
     expect(run).toMatchObject({ status: 'stopped', stop_reason: 'daily_cost_ceiling', step: 'pages' });
-    expect(run.steps_done).toEqual(['backup', 'aliases', 'mentions']);
+    expect(run.steps_done).toEqual(['backup', 'aliases', 'mentions', 'links']);
     expect(run.pages.rebuilt).toBe(1);
     expect(run.pending_pages.map((p) => p.page_id)).toEqual([EF]);
     expect(nlp.labelBodies).toHaveLength(0);
@@ -235,7 +253,7 @@ describe('steps that stop or leave work', () => {
       status: 'stopped',
       stop_reason: 'daily_cost_ceiling',
       step: 'labels',
-      steps_done: ['backup', 'aliases', 'mentions', 'pages'],
+      steps_done: ['backup', 'aliases', 'mentions', 'links', 'pages'],
     });
     expect(handle!.db.prepare('SELECT category FROM pages WHERE page_id = ?').get(EF)).toEqual({ category: 'Crypto' });
   });

@@ -163,7 +163,7 @@ export default function RepairWikiCard() {
       )}
 
       {!running && overview.nothing_to_do && !run && (
-        <p style={TEXT}>Nothing to repair: no doubtful name pairs are waiting and every source is on the right pages.</p>
+        <p style={TEXT}>Nothing to repair: no doubtful name pairs are waiting, every source is on the right pages and no link goes to the wrong page.</p>
       )}
 
       {confirming && canRun && plan && e && (

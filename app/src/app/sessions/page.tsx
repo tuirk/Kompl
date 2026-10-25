@@ -10,6 +10,8 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { formatDateTime } from '../../lib/date-format';
+import { sessionLine } from '../../lib/session-summary';
 
 interface SessionSummary {
   session_id: string;
@@ -39,16 +41,7 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 function formatTimestamp(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    year:   'numeric',
-    month:  'short',
-    day:    '2-digit',
-    hour:   '2-digit',
-    minute: '2-digit',
-  });
+  return iso ? formatDateTime(iso) : '—';
 }
 
 export default function SessionsPage() {
@@ -177,16 +170,15 @@ export default function SessionsPage() {
                 </span>
 
                 {/* Error or current step or session id */}
-                <span style={{
-                  fontFamily: 'var(--font-mono)', fontSize: 11,
-                  color: s.status === 'failed' ? 'var(--danger)' : 'var(--fg-secondary)',
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}>
-                  {s.status === 'failed' && s.error
-                    ? s.error
-                    : s.current_step
-                      ? `at ${s.current_step}`
-                      : s.session_id.slice(0, 8)}
+                <span
+                  title={sessionLine(s)}
+                  style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 11,
+                    color: s.status === 'failed' ? 'var(--danger)' : 'var(--fg-secondary)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}
+                >
+                  {sessionLine(s)}
                 </span>
 
                 {/* Sources */}
