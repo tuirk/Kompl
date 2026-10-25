@@ -41,7 +41,7 @@ def firecrawl(monkeypatch):
     monkeypatch.setattr(conv, "_try_markitdown_url", lambda source_id, url: None)
     monkeypatch.setattr(conv, "_FIRECRAWL_API_KEY", "fc-test")
     monkeypatch.setattr(conv, "validate_outbound_url", lambda url: None)
-    monkeypatch.setattr(conv._http, "post_json", post_json)
+    monkeypatch.setattr(conv._firecrawl_http, "post_json", post_json)
     monkeypatch.setattr(conv.time, "sleep", sleep)
     monkeypatch.setattr(conv.time, "monotonic", lambda: state["clock"])
     return state
@@ -59,9 +59,9 @@ def test_a_rate_limited_scrape_waits_as_asked_and_retries(firecrawl):
 
 def test_without_a_retry_time_it_backs_off(firecrawl):
     bare = HttpClientError("HTTP 429", 429, None)
-    firecrawl["replies"] = [bare, bare, OK]
+    firecrawl["replies"] = [bare, OK]
     assert convert().title == "Night trams"
-    assert firecrawl["sleeps"] == [10.0, 20.0]
+    assert firecrawl["sleeps"] == [10.0]
 
 
 def test_it_gives_up_once_the_convert_budget_would_run_out(firecrawl, monkeypatch):
@@ -70,9 +70,9 @@ def test_it_gives_up_once_the_convert_budget_would_run_out(firecrawl, monkeypatc
     with pytest.raises(HTTPException) as e:
         convert()
     assert e.value.status_code == 502 and e.value.detail["upstream_status"] == 429
-    # At 60 s (three 10 s scrapes, 10 + 20 s waits) a 30 s wait and a 30 s
-    # retry would pass the 100 s budget.
-    assert firecrawl["sleeps"] == [10.0, 20.0]
+    # At 30 s (two 10 s scrapes, a 10 s wait) a 20 s wait and a retry that
+    # may take the 60 s client timeout would pass the 100 s budget.
+    assert firecrawl["sleeps"] == [10.0]
 
 
 def test_other_errors_are_not_retried(firecrawl):

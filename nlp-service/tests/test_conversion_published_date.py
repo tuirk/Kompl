@@ -74,7 +74,7 @@ def test_firecrawl_meta_tags_give_the_date(monkeypatch):
     monkeypatch.setattr(conv, "_try_markitdown_url", lambda source_id, url: None)
     monkeypatch.setattr(conv, "_FIRECRAWL_API_KEY", "fc-test")
     monkeypatch.setattr(conv, "validate_outbound_url", lambda url: None)
-    monkeypatch.setattr(conv._http, "post_json", lambda **kw: {
+    monkeypatch.setattr(conv._firecrawl_http, "post_json", lambda **kw: {
         "success": True,
         "data": {
             "markdown": "# Night trams\n\nText.",

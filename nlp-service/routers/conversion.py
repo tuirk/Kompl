@@ -139,6 +139,12 @@ router = APIRouter(tags=["conversion"])
 # wall-clock budget. Keep one attempt so the total convert budget stays small
 # enough to fit inside the Next.js client's AbortSignal window.
 _http = HttpClient(timeout=30.0, max_retries=1)
+# Firecrawl queues a scrape when the plan's concurrent browsers are busy
+# (the app fetches 5 links at once), and its own 30 s scrape timeout starts
+# only then. Waiting 30 s here timed out 10 of 32 links on 2026-10-25;
+# 60 s leaves room for the queue and still fits the convert budget below.
+_FIRECRAWL_CLIENT_TIMEOUT_SECS = 60.0
+_firecrawl_http = HttpClient(timeout=_FIRECRAWL_CLIENT_TIMEOUT_SECS, max_retries=1)
 _FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
 # Minimum character count for a MarkItDown URL result to be considered usable.
 # Results below this threshold indicate a JS-rendered SPA or paywall — Firecrawl
@@ -673,14 +679,14 @@ def _firecrawl_scrape(body: dict[str, Any], headers: dict[str, str], started: fl
     """POST /v2/scrape, waiting out 429s while the convert budget allows."""
     for wait_default in (*_FIRECRAWL_429_BACKOFF_SECS, None):
         try:
-            return _http.post_json(url="https://api.firecrawl.dev/v2/scrape", json_body=body, headers=headers)
+            return _firecrawl_http.post_json(url="https://api.firecrawl.dev/v2/scrape", json_body=body, headers=headers)
         except HttpClientError as e:
             if e.status_code != 429 or wait_default is None:
                 raise
             asked = _RETRY_AFTER_RE.search(f"{e.message} {e.upstream_body or ''}")
             wait = min(float(asked.group(1)) + 1.0, _FIRECRAWL_429_MAX_WAIT_SECS) if asked else wait_default
-            # The retry itself takes up to 30 s (Firecrawl's own timeout).
-            if time.monotonic() - started + wait + 30.0 > _CONVERT_URL_BUDGET_SECS:
+            # The retry itself can take up to the client timeout.
+            if time.monotonic() - started + wait + _FIRECRAWL_CLIENT_TIMEOUT_SECS > _CONVERT_URL_BUDGET_SECS:
                 raise
             logger.info("firecrawl 429, retrying in %.0fs", wait)
             time.sleep(wait)
