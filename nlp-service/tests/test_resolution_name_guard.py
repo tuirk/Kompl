@@ -307,7 +307,7 @@ def test_version_pairs_are_different_without_an_llm_call(client, monkeypatch):
     monkeypatch.setattr(llm_client_mod, "disambiguate_entities", fail)
     resp = client.post(
         "/resolve/disambiguate",
-        json={"pairs": [{"entity_a": _entity("Python 3"), "entity_b": _entity("Python 2"), "similarity": 0.85}]},
+        json={"pairs": [{"entity_a": _entity("Python 3"), "entity_b": _entity("Python 2"), "similarity": 0.85, "name_similarity": 0.85}]},
     )
     assert resp.status_code == 200
     result = resp.json()["results"][0]

@@ -6,11 +6,14 @@
  * three-layer cascading matcher:
  *
  *   1. getExtractionsBySession(sessionId) — flatten all entity lists
- *   2. Layer 1: POST /resolve/fuzzy     — exact, Levenshtein, Jaro-Winkler,
- *                                          substring, acronym, existing aliases
+ *   2. Layer 1: POST /resolve/fuzzy     — spellings of one name (exact,
+ *                                          skeleton, plural, near-spelling,
+ *                                          acronym), existing aliases and pages
  *   3. Layer 2: POST /resolve/embedding — cosine similarity via sentence-transformers
- *              (>0.9 same, <0.7 different, 0.7–0.9 ambiguous)
- *   4. Layer 3: POST /resolve/disambiguate — Gemini LLM for ambiguous pairs
+ *              (>0.9 same, <0.7 different, 0.7–0.9 ambiguous) over the
+ *              entities Layer 1 left alone and Layer 1's groups
+ *   4. Layer 3: POST /resolve/disambiguate — Gemini LLM for ambiguous pairs,
+ *              alike names first; 'same' verdicts fold into the groups
  *   5. bulkInsertAliases() — persist alias → canonical mappings
  *
  * The resolved canonical list is the ephemeral output consumed by 2c's
@@ -42,6 +45,7 @@ import {
   normalizeSessionMentionsToCanonical,
 } from '../../../../lib/db';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
+import { numericConflict } from '../../../../lib/name-guard';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -51,6 +55,20 @@ const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000'
 // handling treats this value as a non-source so the sentinel never leaks
 // into real source_ids.
 const EXISTING_PAGE_SENTINEL = '__existing_page__';
+
+// Must match nlp-service/routers/resolution.py GROUP_SENTINEL_PREFIX. In an
+// AmbiguousPair, source_id `__group__:<k>` stands for resolved[k] of the same
+// /resolve/embedding response: a group Layer 1 or Layer 2 formed. A Layer 3
+// 'same' verdict folds into that group; the prefix never reaches source_ids.
+const GROUP_SENTINEL_PREFIX = '__group__:';
+
+// Groups bound to a known canonical (an existing page title or a stored
+// alias). Mirrors _ANCHORED_METHODS in nlp-service/routers/resolution.py.
+const ANCHORED_METHODS = new Set(['existing_page_title', 'existing_alias']);
+
+// Kinds a group may hold together. Mirrors _COMPATIBLE_TYPE_GROUPS in
+// nlp-service/routers/resolution.py.
+const KIND_FAMILIES: string[][] = [['ORG', 'PRODUCT'], ['CONCEPT', 'OTHER']];
 
 // Must match nlp-service/routers/resolution.py DISAMBIGUATE_MAX_PAIRS.
 // Hard bound on Layer-3 LLM pairs per resolve (CLAUDE.md rule #7); overflow
@@ -75,10 +93,15 @@ interface ResolvedGroup {
   method: string;
 }
 
+interface GroupInput extends ResolvedGroup {
+  context: string;
+}
+
 interface AmbiguousPair {
   entity_a: EntityInput;
   entity_b: EntityInput;
   similarity: number;
+  name_similarity: number; // cosine of the names alone; ranks pairs for the capped Layer 3
 }
 
 interface FuzzyResolveResponse {
@@ -130,6 +153,7 @@ async function callFuzzy(
 
 async function callEmbedding(
   entities: EntityInput[],
+  groups: GroupInput[],
   existingPageTitles: ExistingPageTitle[]
 ): Promise<EmbeddingResolveResponse> {
   const res = await fetch(`${NLP_SERVICE_URL}/resolve/embedding`, {
@@ -137,6 +161,7 @@ async function callEmbedding(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       entities,
+      groups,
       existing_page_titles: existingPageTitles,
     }),
     signal: AbortSignal.timeout(60_000),
@@ -167,6 +192,17 @@ async function callDisambiguate(
     throw new Error(`disambiguate_failed: ${res.status} ${detail}`);
   }
   return res.json() as Promise<DisambiguateResponse>;
+}
+
+/**
+ * The context a Layer 1 group speaks with in Layers 2 and 3: the extraction
+ * context of one of its own mentions, preferring the canonical spelling.
+ */
+function groupContext(group: ResolvedGroup, pool: EntityInput[]): string {
+  const names = new Set([group.canonical, ...group.aliases].map((n) => n.toLowerCase()));
+  const sources = new Set(group.source_ids);
+  const own = pool.filter((e) => e.context && sources.has(e.source_id) && names.has(e.name.toLowerCase()));
+  return (own.find((e) => e.name.toLowerCase() === group.canonical.toLowerCase()) ?? own[0])?.context ?? '';
 }
 
 // ── Main handler ───────────────────────────────────────────────────────────────
@@ -253,37 +289,217 @@ export async function POST(request: Request) {
     const resolved1 = fuzzyResult.resolved;
     const unresolved1 = fuzzyResult.unresolved;
 
-    // Layer 2 — embedding (only if there are unresolved entities)
+    // Layer 2 — embedding. Layer 1's groups go along, so a name Layer 1
+    // grouped or bound to a page is still compared with the rest of the
+    // session: "APCA", bound to its page, never met "APCA contrast algorithm"
+    // (2026-10-17, session e55c740b). The response's `resolved` holds the
+    // final state of every group passed in, so it replaces resolved1.
     let resolved2: ResolvedGroup[] = [];
     let ambiguous2: AmbiguousPair[] = [];
     let unresolved2: EntityInput[] = [];
+    const passedThrough = unresolved1.length > 0 || resolved1.length > 0;
 
-    if (unresolved1.length > 0) {
-      const embResult = await callEmbedding(unresolved1, existingPageTitles);
+    if (passedThrough) {
+      const groupInputs: GroupInput[] = resolved1.map((g) => ({
+        canonical: g.canonical,
+        type: g.type,
+        aliases: g.aliases,
+        source_ids: g.source_ids,
+        method: g.method,
+        context: groupContext(g, allEntities),
+      }));
+      const embResult = await callEmbedding(unresolved1, groupInputs, existingPageTitles);
       resolved2 = embResult.resolved;
       ambiguous2 = embResult.ambiguous;
       unresolved2 = embResult.unresolved;
     }
 
     // Layer 3 — LLM disambiguation (only if there are ambiguous pairs)
-    const resolved3: ResolvedGroup[] = [];
+    // The groups so far, which each Layer 3 'same' folds into: a pair's
+    // `__group__:<k>` side is groups[k], `parent` follows a group folded into
+    // another, and groups Layer 3 forms are appended.
+    const groups: ResolvedGroup[] = (passedThrough ? resolved2 : resolved1).map((g) => ({
+      ...g,
+      aliases: [...g.aliases],
+      source_ids: [...g.source_ids],
+    }));
+    const passedCount = groups.length;
+    const parent = groups.map((_, i) => i);
+    const find = (i: number): number => {
+      let root = i;
+      while (parent[root] !== root) root = parent[root];
+      return root;
+    };
+    const isAnchored = (g: ResolvedGroup) => ANCHORED_METHODS.has(g.method);
+    const isExistingPage = (e: EntityInput) => e.source_id === EXISTING_PAGE_SENTINEL;
+    const isGroupRef = (e: EntityInput) => e.source_id.startsWith(GROUP_SENTINEL_PREFIX);
+    const groupOf = (e: EntityInput): number | null => {
+      if (!isGroupRef(e)) return null;
+      const k = Number(e.source_id.slice(GROUP_SENTINEL_PREFIX.length));
+      return Number.isInteger(k) && k >= 0 && k < passedCount ? find(k) : null;
+    };
+    // Real session entities of a pair: not the page sentinel, not a group.
+    const loneSides = (pair: AmbiguousPair) =>
+      [pair.entity_a, pair.entity_b].filter((e) => !isExistingPage(e) && !isGroupRef(e));
+    const anchoredGroup = new Map<string, number>(); // canonical (lower case) → group bound to it
+    groups.forEach((g, i) => {
+      const key = g.canonical.toLowerCase();
+      if (isAnchored(g) && !anchoredGroup.has(key)) anchoredGroup.set(key, i);
+    });
+
     const ambiguousRemaining: EntityInput[] = [];
+    // Session entities already in a merged group: Layer 2's (Layer 1's passed
+    // through), then each Layer 3 'same'. An entity can sit in several pairs
+    // ("APCA" vs "APCA contrast algorithm" and vs an existing page), and it
+    // joins one group only — the first 'same' wins, and verdicts touching an
+    // existing page come first, so the page does. A 'different' verdict on
+    // another pair must not also emit it as a singleton, or plan sees the
+    // name twice and writes it to two pages (2026-10-17, session e55c740b).
+    // Keyed with the kind too: a group's names cover the kinds it can hold,
+    // so a CONCEPT "Chrome" beside an ORG group "Chrome" from the same
+    // source is still its own entity.
+    const mergedKeys = new Set<string>();
+    const entityKey = (e: EntityInput) => `${e.name}|||${e.source_id}|||${e.type}`;
+    for (const g of groups) {
+      const family = KIND_FAMILIES.find((f) => f.includes(g.type));
+      const kinds = family === undefined ? [g.type] : family;
+      for (const name of [g.canonical, ...g.aliases]) {
+        for (const sid of g.source_ids) for (const kind of kinds) mergedKeys.add(`${name}|||${sid}|||${kind}`);
+      }
+    }
+    // Names whose numbers differ are never one thing ("Python 2" / "Python 3"),
+    // so a verdict never folds them together, even through a third name.
+    const numbersClash = (xs: string[], ys: string[]) =>
+      xs.some((x) => ys.some((y) => numericConflict(x, y) === 'hard'));
+    const namesOf = (g: ResolvedGroup) => [g.canonical, ...g.aliases];
+
+    const addName = (g: ResolvedGroup, name: string) => {
+      if (name !== g.canonical && !g.aliases.includes(name)) g.aliases.push(name);
+    };
+    const addGroup = (g: ResolvedGroup) => {
+      groups.push(g);
+      parent.push(groups.length - 1);
+      if (isAnchored(g)) anchoredGroup.set(g.canonical.toLowerCase(), groups.length - 1);
+    };
+    const absorb = (gi: number, e: EntityInput): boolean => {
+      if (numbersClash(namesOf(groups[gi]), [e.name])) return false;
+      addName(groups[gi], e.name);
+      if (!groups[gi].source_ids.includes(e.source_id)) groups[gi].source_ids.push(e.source_id);
+      mergedKeys.add(entityKey(e));
+      return true;
+    };
+    const rename = (g: ResolvedGroup, canonical: string) => {
+      if (canonical === g.canonical) return;
+      const previous = g.canonical;
+      g.canonical = canonical;
+      g.aliases = g.aliases.filter((a) => a !== canonical);
+      addName(g, previous);
+    };
+    // Folds one group into the other. An anchored canonical wins; otherwise
+    // the one more sources back, and on a tie the one Layer 3 picked. Two
+    // anchored groups are two pages and never fold.
+    const join = (x: number, y: number, picked: string): boolean => {
+      let into = find(x);
+      let from = find(y);
+      if (into === from) return true;
+      if (isAnchored(groups[into]) && isAnchored(groups[from])) return false;
+      if (numbersClash(namesOf(groups[into]), namesOf(groups[from]))) return false;
+      const [gx, gy] = [groups[into], groups[from]];
+      if (isAnchored(gy) || (!isAnchored(gx) && (gy.source_ids.length > gx.source_ids.length ||
+          (gy.source_ids.length === gx.source_ids.length && picked === gy.canonical)))) {
+        [into, from] = [from, into];
+      }
+      const [target, source] = [groups[into], groups[from]];
+      for (const name of [source.canonical, ...source.aliases]) addName(target, name);
+      for (const sid of source.source_ids) if (!target.source_ids.includes(sid)) target.source_ids.push(sid);
+      if (!isAnchored(target)) target.method = 'llm';
+      parent[from] = into;
+      return true;
+    };
+    // Applies one Layer 3 'same' verdict; false when it cannot be applied.
+    const applySame = (pair: AmbiguousPair, picked: string): boolean => {
+      const sides = [pair.entity_a, pair.entity_b];
+      const ids = sides.map(groupOf).filter((k): k is number => k !== null);
+      if (ids.length !== sides.filter(isGroupRef).length) return false; // malformed group reference
+      const lone = loneSides(pair);
+      if (ids.length + lone.length === 0) return false; // two pages: nothing of this session's
+      const page = sides.find(isExistingPage);
+      if (page) {
+        // The wiki is authoritative: whatever Layer 3 picked, the page title
+        // is the canonical, and a group already bound to the page takes it in.
+        const holder = anchoredGroup.get(page.name.toLowerCase());
+        if (ids.length > 0) {
+          const g = groups[ids[0]];
+          if (isAnchored(g)) return g.canonical.toLowerCase() === page.name.toLowerCase();
+          if (holder !== undefined) return join(holder, ids[0], page.name);
+          rename(g, page.name);
+          g.method = 'existing_page_title';
+          anchoredGroup.set(page.name.toLowerCase(), ids[0]);
+          return true;
+        }
+        if (holder !== undefined) return absorb(find(holder), lone[0]);
+        addGroup({
+          canonical: page.name,
+          type: lone[0].type,
+          aliases: lone[0].name !== page.name ? [lone[0].name] : [],
+          source_ids: [lone[0].source_id],
+          method: 'existing_page_title',
+        });
+        mergedKeys.add(entityKey(lone[0]));
+        return true;
+      }
+      if (ids.length === 2) return join(ids[0], ids[1], picked);
+      if (ids.length === 1) {
+        const g = groups[ids[0]];
+        if (numbersClash(namesOf(g), [lone[0].name])) return false;
+        if (!isAnchored(g) && g.source_ids.length <= 1 && picked === lone[0].name) rename(g, picked);
+        return absorb(ids[0], lone[0]);
+      }
+      addGroup({
+        canonical: picked,
+        type: pair.entity_a.type,
+        aliases: lone.map((e) => e.name).filter((n) => n !== picked),
+        source_ids: [...new Set(lone.map((e) => e.source_id))],
+        method: 'llm',
+      });
+      for (const e of lone) mergedKeys.add(entityKey(e));
+      return true;
+    };
 
     // App-side mirror of the nlp-service DISAMBIGUATE_MAX_PAIRS cap
     // (CLAUDE.md rule #7): never ask for more LLM pairs than the service
-    // will process. Overflow pairs take the same path as an 'ambiguous'
-    // LLM verdict — entities stay separate singletons, a safe degradation.
-    const cappedAmbiguous = ambiguous2.slice(0, MAX_DISAMBIGUATE_PAIRS);
-    const overflowAmbiguous = ambiguous2.slice(MAX_DISAMBIGUATE_PAIRS);
+    // will process. Overflow pairs take the same path as an 'ambiguous' LLM
+    // verdict — entities stay separate singletons, a safe degradation.
+    // Who gets a slot is ranked as in nlp-service: name similarity first; on
+    // equal names a pair whose sides share a source after one from different
+    // sources; then similarity. Context likeness alone — two things one
+    // source names side by side, "Set collection" / "Route planning" at 0.98
+    // by context, 0.10 by name — never takes a slot from alike names.
+    const sourcesOf = (e: EntityInput): string[] => {
+      if (isExistingPage(e)) return [];
+      if (!isGroupRef(e)) return [e.source_id];
+      const k = groupOf(e);
+      return k === null ? [] : groups[k].source_ids;
+    };
+    const sharesSource = new Map(
+      ambiguous2.map((pair) => {
+        const a = new Set(sourcesOf(pair.entity_a));
+        return [pair, sourcesOf(pair.entity_b).some((s) => a.has(s))] as const;
+      })
+    );
+    const byStrength = [...ambiguous2].sort((x, y) => {
+      if (x.name_similarity !== y.name_similarity) return y.name_similarity - x.name_similarity;
+      if (sharesSource.get(x) !== sharesSource.get(y)) return sharesSource.get(x) ? 1 : -1;
+      return y.similarity - x.similarity;
+    });
+    const cappedAmbiguous = byStrength.slice(0, MAX_DISAMBIGUATE_PAIRS);
+    const overflowAmbiguous = byStrength.slice(MAX_DISAMBIGUATE_PAIRS);
     if (overflowAmbiguous.length > 0) {
       console.warn(
         `[resolve] ${ambiguous2.length} ambiguous pairs exceed cap ${MAX_DISAMBIGUATE_PAIRS}; ` +
           `${overflowAmbiguous.length} pairs kept separate without LLM disambiguation`
       );
-      for (const pair of overflowAmbiguous) {
-        if (pair.entity_a.source_id !== EXISTING_PAGE_SENTINEL) ambiguousRemaining.push(pair.entity_a);
-        if (pair.entity_b.source_id !== EXISTING_PAGE_SENTINEL) ambiguousRemaining.push(pair.entity_b);
-      }
+      for (const pair of overflowAmbiguous) ambiguousRemaining.push(...loneSides(pair));
     }
 
     if (cappedAmbiguous.length > 0) {
@@ -292,49 +508,28 @@ export async function POST(request: Request) {
         disambResult.results.map((r) => [`${r.entity_a}|||${r.entity_b}`, r])
       );
 
-      for (const pair of cappedAmbiguous) {
-        const key = `${pair.entity_a.name}|||${pair.entity_b.name}`;
-        const result = disambMap.get(key);
-        // Cross-session ambiguous pairs have entity_b carrying the sentinel
-        // source_id (see EXISTING_PAGE_SENTINEL in nlp-service). Handle those
-        // specially — the sentinel is not a real session source and must not
-        // leak into source_ids or into ambiguousRemaining as a singleton.
-        const aIsExistingPage = pair.entity_a.source_id === EXISTING_PAGE_SENTINEL;
-        const bIsExistingPage = pair.entity_b.source_id === EXISTING_PAGE_SENTINEL;
+      // Verdicts touching the wiki (an existing page, or a group bound to
+      // one) are applied first, then the rest, each in the ranked order.
+      const touchesWiki = (pair: AmbiguousPair) =>
+        [pair.entity_a, pair.entity_b].some((e) => {
+          const k = groupOf(e);
+          return isExistingPage(e) || (k !== null && isAnchored(groups[k]));
+        });
+      const foldOrder = [
+        ...cappedAmbiguous.filter(touchesWiki),
+        ...cappedAmbiguous.filter((pair) => !touchesWiki(pair)),
+      ];
 
-        if (result?.decision === 'same' && result.canonical) {
-          // Pin the canonical to the existing page title so the new session
-          // entity gets routed to the existing page. Always prefer the
-          // existing-page title regardless of what the LLM picked — the wiki
-          // is authoritative.
-          const canon = bIsExistingPage
-            ? pair.entity_b.name
-            : aIsExistingPage
-              ? pair.entity_a.name
-              : result.canonical;
-          const names: string[] = [];
-          const sourceIds: string[] = [];
-          if (!aIsExistingPage) {
-            names.push(pair.entity_a.name);
-            sourceIds.push(pair.entity_a.source_id);
-          }
-          if (!bIsExistingPage) {
-            names.push(pair.entity_b.name);
-            sourceIds.push(pair.entity_b.source_id);
-          }
-          resolved3.push({
-            canonical: canon,
-            type: pair.entity_a.type,
-            aliases: names.filter((n) => n !== canon),
-            source_ids: [...new Set(sourceIds)],
-            method: aIsExistingPage || bIsExistingPage ? 'existing_page_title' : 'llm',
-          });
-        } else {
-          // "different" or "ambiguous" — real session entities flow back to
-          // singletons; the sentinel is discarded.
-          if (!aIsExistingPage) ambiguousRemaining.push(pair.entity_a);
-          if (!bIsExistingPage) ambiguousRemaining.push(pair.entity_b);
-        }
+      for (const pair of foldOrder) {
+        const result = disambMap.get(`${pair.entity_a.name}|||${pair.entity_b.name}`);
+        const lone = loneSides(pair);
+        const alreadyMerged = lone.some((e) => mergedKeys.has(entityKey(e)));
+        const applied =
+          result?.decision === 'same' && !!result.canonical && !alreadyMerged && applySame(pair, result.canonical);
+        // "different", "ambiguous", a side already merged or two pages — real
+        // session entities flow back to singletons (merged ones are dropped
+        // below); the sentinel and group sides are discarded.
+        if (!applied) ambiguousRemaining.push(...lone);
       }
     }
 
@@ -343,12 +538,13 @@ export async function POST(request: Request) {
       ...unresolved2,
       ...ambiguousRemaining,
     ];
-    // Deduplicate singletons (an entity can appear in both lists if it was in multiple pairs)
+    // Deduplicate singletons (an entity can appear in both lists if it was in
+    // multiple pairs) and drop the ones already in a merged group.
     const seenSingletons = new Set<string>();
     const dedupedSingletons: ResolvedGroup[] = [];
     for (const e of singletonEntities) {
-      const key = `${e.name}|||${e.source_id}`;
-      if (!seenSingletons.has(key)) {
+      const key = entityKey(e);
+      if (!seenSingletons.has(key) && !mergedKeys.has(key)) {
         seenSingletons.add(key);
         dedupedSingletons.push({
           canonical: e.name,
@@ -360,10 +556,9 @@ export async function POST(request: Request) {
       }
     }
 
+    const finalGroups = groups.filter((_, i) => find(i) === i);
     const allCanonical: ResolvedGroup[] = [
-      ...resolved1,
-      ...resolved2,
-      ...resolved3,
+      ...finalGroups,
       ...dedupedSingletons,
     ];
 
@@ -411,15 +606,19 @@ export async function POST(request: Request) {
       },
     });
 
+    // Names each layer added: Layer 2's response repeats Layer 1's groups,
+    // and Layer 3 folds into those groups.
+    const aliasCount = (gs: ResolvedGroup[]) => gs.reduce((sum, g) => sum + g.aliases.length, 0);
+    const beforeLlm = passedThrough ? resolved2 : resolved1;
     return NextResponse.json({
       session_id,
       canonical_entities: canonicalEntities,
       canonical_concepts: canonicalConcepts,
       stats: {
         total_raw: allEntities.length,
-        resolved_fuzzy: resolved1.reduce((sum, g) => sum + g.aliases.length, 0),
-        resolved_embedding: resolved2.reduce((sum, g) => sum + g.aliases.length, 0),
-        resolved_llm: resolved3.reduce((sum, g) => sum + g.aliases.length, 0),
+        resolved_fuzzy: aliasCount(resolved1),
+        resolved_embedding: passedThrough ? Math.max(0, aliasCount(resolved2) - aliasCount(resolved1)) : 0,
+        resolved_llm: Math.max(0, aliasCount(finalGroups) - aliasCount(beforeLlm)),
         final_canonical: allCanonical.length,
         canonical_entities: canonicalEntities.length,
         canonical_concepts: canonicalConcepts.length,

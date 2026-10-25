@@ -60,6 +60,7 @@ it('slices ambiguous pairs to the cap and keeps overflow as singletons', async (
     entity_a: { name: `Amb${i}A`, type: 'ORG', source_id, context: '' },
     entity_b: { name: `Amb${i}B`, type: 'ORG', source_id, context: '' },
     similarity: 0.8,
+    name_similarity: 0.8,
   }));
 
   let disambiguateCalls = 0;

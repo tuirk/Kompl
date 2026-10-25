@@ -29,6 +29,7 @@ import {
   getEntityPromotionThreshold,
   getExtractionsBySession,
   getMinSourceChars,
+  getPage,
   getPageByTitle,
   getSourceIdsForRelationship,
   getSourceIdsMentioning,
@@ -82,6 +83,24 @@ export function entityTypeToCategory(entityType: string): string {
   if (t === 'EVENT') return 'Events';
   if (t === 'CONCEPT') return 'Concepts';
   return 'General';
+}
+
+// ── Updates keep the page's own type ─────────────────────────────────────────
+// Commit writes the plan's page_type onto the page, and sources disagree on
+// kind ("APCA" is PRODUCT in one source, CONCEPT in the next). Typing an
+// update from this session's extraction flipped pages between entity and
+// concept on every re-draft (2026-10-17, session e55c740b: APCA entity →
+// concept by Rule 3, WCAG 2.1 concept → entity by Rule 6). Summary pages keep
+// Rule 1's own type logic.
+const SELF_TYPED_PAGES = new Set<string>(['entity', 'concept', 'comparison', 'overview']);
+
+function updatePageType(
+  existing: { page_type: string } | null,
+  planned: PlannedPage['page_type'],
+): PlannedPage['page_type'] {
+  return existing && SELF_TYPED_PAGES.has(existing.page_type)
+    ? (existing.page_type as PlannedPage['page_type'])
+    : planned;
 }
 
 // ── Route handler ─────────────────────────────────────────────────────────────
@@ -236,7 +255,7 @@ export async function POST(request: Request) {
     plans.push({
       plan_id,
       title: entity.canonical,
-      page_type: 'entity',
+      page_type: updatePageType(existing, 'entity'),
       action: existing ? 'update' : 'create',
       source_ids: getSourceIdsMentioning(entity.canonical),
       existing_page_id: existing?.page_id,
@@ -276,7 +295,7 @@ export async function POST(request: Request) {
     plans.push({
       plan_id,
       title: concept.canonical,
-      page_type: 'concept',
+      page_type: updatePageType(existing, 'concept'),
       action: existing ? 'update' : 'create',
       source_ids: getSourceIdsMentioning(concept.canonical),
       existing_page_id: existing?.page_id,
@@ -453,7 +472,8 @@ export async function POST(request: Request) {
       plans.push({
         plan_id: randomUUID(),
         title: match.page_title,
-        page_type: 'entity',   // match targets non-summary pages; all are entity or concept
+        // Match targets entity, concept, comparison and overview pages.
+        page_type: updatePageType(getPage(match.page_id), 'entity'),
         action: 'update',
         source_ids: [match.source_id],
         existing_page_id: match.page_id,
