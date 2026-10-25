@@ -1986,9 +1986,10 @@ def generate_schema(pages_summary: list[dict[str, Any]], model: str = _DEFAULT_M
 #
 # Parallel drafts can each invent a label for the same category ("Crypto",
 # "Cryptocurrency"). The app sends the labels this compile added and the ones
-# the wiki already had; the model names the new labels that should share an
-# existing or another new label. services/label_merge.py keeps only merges
-# the app may apply.
+# the wiki already had, each with its page count; the model names the new
+# labels that should share an existing or another new label, the smaller
+# moving into the bigger. services/label_merge.py keeps only merges the app
+# may apply. A Repair run sends every label as new.
 
 _LABEL_MERGE_MAX_OUTPUT_TOKENS = 4096
 
@@ -2008,32 +2009,48 @@ class LabelMergeResponse(BaseModel):
 _LABEL_MERGE_SYSTEM_PROMPT = """\
 You tidy the category labels of a personal wiki. Every page has one category
 label. A compile just added the NEW labels; the wiki already had the EXISTING
-labels. Find NEW labels that name the same category as another label, so
-their pages can share one label.
+labels. Each label comes as {"label": ..., "pages": ...}: its name and how
+many pages use it. Find NEW labels that name the same category as another
+label, so their pages can share one label.
 
-Merge a NEW label only when both labels name the same category:
+These name the same category; merge them:
 - spelling, case, plural or punctuation variants ("Startup" / "Startups")
 - an abbreviation and its full form ("AI" / "Artificial Intelligence")
 - a short form and its full form ("Crypto" / "Cryptocurrency")
 - two names for the same thing ("Films" / "Movies")
+- one part of a combined label and that combined label
+  ("Web Accessibility" / "Web Accessibility & Standards"): merge the part
+  into the combined label.
+- a label with 1 or 2 pages whose whole name is contained in the name of a
+  more-used label ("Design" (1 page) / "Graphic Design" (33 pages)): merge it
+  into the most-used label that contains its name.
 
-Never merge labels that name different categories, even closely related ones:
+Always merge the label with fewer pages into the label with more pages,
+never the reverse: "Graphic Design" (33 pages) never moves into
+"Typography & Graphic Design" (6 pages). When the label you would move has
+more pages than the other one, or is an EXISTING label, leave both as they
+are.
+
+Never merge labels that name different categories, even closely related ones,
+except in the two contained-name cases above:
 - a broader and a narrower topic ("Artificial Intelligence" / "Machine Learning",
   "Cryptocurrency" / "Bitcoin")
 - neighbouring fields ("Economics" / "Finance", "Design" / "Accessibility")
 - a subject and the people, places or organisations around it
   ("Music" / "Musicians")
 - the same word used for different things
-When in doubt, do not merge. Most compiles need no merge at all.
+Outside the cases listed above, do not merge. Most compiles need no merge
+at all.
 
 Each merge has three fields:
 - label: one of the NEW labels, written exactly as given.
 - into: one of the EXISTING or NEW labels, written exactly as given;
   never a new name.
 - reason: a few words on why both name the same category.
-When a NEW label matches an EXISTING label, merge into the EXISTING label.
-When two NEW labels match, merge into the clearer, more usual name.
-Name each NEW label at most once.
+When a NEW label matches an EXISTING label with at least as many pages,
+merge into the EXISTING label. When two NEW labels match, merge the one
+with fewer pages into the one with more; with equal pages, into the
+clearer, more usual name. Name each NEW label at most once.
 
 Return {"merges": []} when nothing should be merged.
 """ + _JSON_TRAILER
@@ -2043,9 +2060,13 @@ def consolidate_labels(
     existing_labels: list[str],
     new_labels: list[str],
     model: str = _DEFAULT_MODEL,
+    page_counts: dict[str, int] | None = None,
 ) -> LabelMergeResponse:
     """Ask which of this compile's new category labels mean the same as
     another label. No call without new labels.
+
+    ``page_counts`` gives each label's pages, by label as sent; the model
+    sees them so the smaller label moves into the bigger one.
 
     Returns the model's merges as given; services/label_merge.py cleans them.
 
@@ -2057,8 +2078,13 @@ def consolidate_labels(
     if not new_labels:
         return LabelMergeResponse(merges=[])
 
+    counts = page_counts or {}
+
+    def _with_pages(labels: list[str]) -> list[dict[str, Any]]:
+        return [{"label": n, "pages": counts[n]} if n in counts else {"label": n} for n in labels]
+
     payload = json.dumps(
-        {"existing_labels": existing_labels, "new_labels": new_labels},
+        {"existing_labels": _with_pages(existing_labels), "new_labels": _with_pages(new_labels)},
         ensure_ascii=False,
     )
 

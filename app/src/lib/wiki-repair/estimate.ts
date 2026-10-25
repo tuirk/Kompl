@@ -39,8 +39,10 @@ export const NAME_CHECK_PROMPT_OVERHEAD_TOKENS = 1_000;
 export const NAME_CHECK_PAIR_FRAMING_CHARS = 150;
 /** One answer per pair: both names, the decision, the canonical and a reason. */
 export const NAME_CHECK_ANSWER_TOKENS = { low: 60, high: 250 } as const;
-/** The label prompt (~2.2k chars) and its wrapper. */
-export const LABEL_PROMPT_OVERHEAD_TOKENS = 800;
+/** The label prompt (~3.7k chars) and its wrapper. */
+export const LABEL_PROMPT_OVERHEAD_TOKENS = 1_100;
+/** Around each label's name: `{"label": "", "pages": 12}, `. */
+export const LABEL_FRAMING_CHARS = 28;
 /** Per label shown: a merge names it, its target and a reason. */
 export const LABEL_ANSWER_TOKENS_PER_LABEL = 25;
 /** Seconds per name-check or label call: an assumption, not measured yet. */
@@ -107,7 +109,7 @@ export function estimateRepair(input: RepairEstimateInput, pricing: RepairPricin
   if (labelCall) {
     const t = thinking(pricing.label_merge_thinking_budget, pricing.draft_thinking_budget_is_cap);
     const inputUsd =
-      (LABEL_PROMPT_OVERHEAD_TOKENS + (input.labels.chars + 4 * input.labels.count) / CHARS_PER_TOKEN) *
+      (LABEL_PROMPT_OVERHEAD_TOKENS + (input.labels.chars + LABEL_FRAMING_CHARS * input.labels.count) / CHARS_PER_TOKEN) *
       perToken(pricing.input_usd_per_m);
     const cap = pricing.label_merge_max_output_tokens;
     low += inputUsd + Math.min(t.low, cap) * perToken(pricing.output_usd_per_m);

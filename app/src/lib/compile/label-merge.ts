@@ -1,7 +1,9 @@
 /**
  * The 'labels' compile step (plan 2.3, owner decision D7): one AI call per
  * compile merges the category labels this compile added into labels that
- * mean the same thing ("Crypto" into "Cryptocurrency").
+ * mean the same thing ("Crypto" into "Cryptocurrency", "Web Accessibility"
+ * into "Web Accessibility & Standards"), always the smaller into the bigger
+ * (owner decision 2026-10-25; each label goes with its page count).
  *
  * Runs after crossref and before commit, on this session's drafts waiting
  * to commit. Only each draft's frontmatter `category:` line changes, never
@@ -72,16 +74,22 @@ const SKIP_REASONS: Record<number, string> = {
   503: 'daily cost limit reached',
 };
 
+/**
+ * `pageCounts` gives each label sent its pages (the wiki's, or this
+ * compile's drafts for a new one): the service moves only the smaller
+ * label into the bigger one.
+ */
 async function callConsolidate(
   existing: string[],
   fresh: string[],
+  pageCounts: Record<string, number>,
   compileModel: string,
 ): Promise<{ merges: Array<{ label: string; into: string }> } | { skipped: string }> {
   try {
     const res = await fetch(`${NLP_SERVICE_URL}/pipeline/consolidate-labels`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ existing_labels: existing, new_labels: fresh, compile_model: compileModel }),
+      body: JSON.stringify({ existing_labels: existing, new_labels: fresh, page_counts: pageCounts, compile_model: compileModel }),
       signal: AbortSignal.timeout(LABEL_MERGE_TIMEOUT_MS),
     });
     if (!res.ok) return { skipped: SKIP_REASONS[res.status] ?? 'merge check failed' };
@@ -147,7 +155,11 @@ export async function mergeDraftLabels(
   let skipped: string | null = null;
   if (fresh.length > 0) {
     const existing = byUse(wiki).slice(0, MAX_EXISTING_LABELS);
-    const answer = await callConsolidate(existing, fresh, compileModel);
+    const pageCounts = Object.fromEntries([
+      ...existing.map((l) => [l, wiki.get(l)!] as const),
+      ...fresh.map((l) => [l, freshCounts.get(l)!] as const),
+    ]);
+    const answer = await callConsolidate(existing, fresh, pageCounts, compileModel);
     assertActive();
     if ('skipped' in answer) {
       skipped = answer.skipped;

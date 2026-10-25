@@ -188,9 +188,26 @@ def test_label_merge_prompt_keeps_different_categories_apart():
     categories never do, and the model may only use the names it was given."""
     prompt = llm_client._LABEL_MERGE_SYSTEM_PROMPT
     for rule in ("Crypto", "Cryptocurrency", "abbreviation", "broader and a narrower",
-                 "Machine Learning", "neighbouring", "When in doubt, do not merge",
-                 "never a new name", "merge into the EXISTING label", "merges"):
+                 "Machine Learning", "neighbouring", "the same word used for different things",
+                 "never a new name", "merges"):
         assert rule in prompt, rule
+
+
+def test_label_merge_prompt_folds_parts_and_small_labels_into_bigger_ones():
+    """Owner decision 2026-10-25 (film run): a part of a combined label and
+    a 1-2 page label whose name a more-used label contains are the same
+    category; the smaller always moves into the bigger, never the reverse."""
+    prompt = " ".join(llm_client._LABEL_MERGE_SYSTEM_PROMPT.split())
+    for rule in ('"Web Accessibility" / "Web Accessibility & Standards"',
+                 "one part of a combined label",
+                 "1 or 2 pages",
+                 '"Design" (1 page) / "Graphic Design" (33 pages)',
+                 "fewer pages into the label with more pages",
+                 '"Graphic Design" (33 pages) never moves into "Typography & Graphic Design" (6 pages)',
+                 "pages"):
+        assert rule in prompt, rule
+    # The film run's first compile declined these merges on this line.
+    assert "When in doubt, do not merge." not in prompt
 
 
 def test_consolidate_labels_call_and_payload(monkeypatch):
@@ -209,7 +226,10 @@ def test_consolidate_labels_call_and_payload(monkeypatch):
             return LLMResult(text='{"merges": []}', parsed=parsed, parse_error=None, usage={}, finish_reason="STOP")
 
     monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
-    result = llm_client.consolidate_labels(["Cryptocurrency", "Travel"], ["Crypto"], model="deepseek-flash")
+    result = llm_client.consolidate_labels(
+        ["Cryptocurrency", "Travel"], ["Crypto"], model="deepseek-flash",
+        page_counts={"Cryptocurrency": 4, "Crypto": 1},
+    )
 
     req = captured["req"]
     assert req.model == "deepseek-flash"
@@ -220,8 +240,8 @@ def test_consolidate_labels_call_and_payload(monkeypatch):
     assert req.step == "labels"
     assert req.messages[0] == {"role": "system", "content": llm_client._LABEL_MERGE_SYSTEM_PROMPT}
     assert json.loads(req.messages[1]["content"]) == {
-        "existing_labels": ["Cryptocurrency", "Travel"],
-        "new_labels": ["Crypto"],
+        "existing_labels": [{"label": "Cryptocurrency", "pages": 4}, {"label": "Travel"}],
+        "new_labels": [{"label": "Crypto", "pages": 1}],
     }
     assert [(m.label, m.into) for m in result.merges] == [("Crypto", "Cryptocurrency")]
     assert set(llm_client.LabelMerge.model_fields) == {"label", "into", "reason"}

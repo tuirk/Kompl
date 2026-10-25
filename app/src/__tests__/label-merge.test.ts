@@ -46,6 +46,7 @@ function draftOf(plan_id: string): string {
 interface Call {
   existing_labels: string[];
   new_labels: string[];
+  page_counts: Record<string, number>;
   compile_model: string;
 }
 
@@ -90,7 +91,13 @@ describe('mergeDraftLabels', () => {
     const outcome = await mergeDraftLabels(SESSION, 'deepseek-flash', active);
 
     expect(calls).toEqual([
-      { existing_labels: ['Cryptocurrency', 'Travel'], new_labels: ['Crypto', 'Music'], compile_model: 'deepseek-flash' },
+      {
+        existing_labels: ['Cryptocurrency', 'Travel'],
+        new_labels: ['Crypto', 'Music'],
+        // The wiki's pages per existing label, this compile's drafts per new one.
+        page_counts: { Cryptocurrency: 2, Travel: 1, Crypto: 1, Music: 1 },
+        compile_model: 'deepseek-flash',
+      },
     ]);
     expect(draftOf(a)).toBe(draft('Solana', 'Cryptocurrency'));
     expect(draftOf(b)).toBe(draft('Jazz', 'Music'));
@@ -122,6 +129,8 @@ describe('mergeDraftLabels', () => {
     // Most-used first; "crypto" only differs in case from "Crypto" and is
     // never sent.
     expect(calls[0].new_labels).toEqual(['Cryptocurrency', 'Crypto']);
+    // A label's drafts count its case variants too.
+    expect(calls[0].page_counts).toEqual({ Cryptocurrency: 3, Crypto: 2 });
     for (const id of [a, b, c, d, e]) expect(draftOf(id)).toContain('\ncategory: Cryptocurrency\n');
     expect(outcome.merged).toBe(2);
     expect(outcome.drafts).toBe(2);

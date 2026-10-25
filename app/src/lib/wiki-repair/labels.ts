@@ -4,8 +4,11 @@
  * /pipeline/consolidate-labels), made once over the whole wiki's labels.
  *
  * Every label goes in as "new", most used first (at most
- * MAX_REPAIR_LABELS), so any label may merge into any other; the service
- * only returns merges into a label it was given, and so does this module.
+ * MAX_REPAIR_LABELS), with its page count, so any label may merge into any
+ * other; the service only returns merges into a label it was given, and only
+ * of the smaller label into the bigger (owner decision 2026-10-25: a part of
+ * a combined label and a 1-2 page label inside a more-used one's name fold
+ * into it). This module only applies merges into a label it sent.
  * A page whose label merges gets the new label on its page row and in its
  * frontmatter `category:` line, through the outbox commit (CLAUDE.md rule 5,
  * lib/page-rewrite.ts), which keeps the previous version. Pages Kompl does
@@ -41,9 +44,11 @@ export function repairLabels(): string[] {
 export async function consolidateWikiLabels(labels: string[], model: string): Promise<Map<string, string>> {
   const target = new Map<string, string>();
   if (labels.length < 2) return target;
+  const counts = wikiLabelCounts();
+  const pageCounts = Object.fromEntries(labels.map((l) => [l, counts.get(l) ?? 0]));
   const res = await postNlp<{ items: Array<{ label: string; into: string }> }>(
     '/pipeline/consolidate-labels',
-    { existing_labels: [], new_labels: labels, compile_model: model },
+    { existing_labels: [], new_labels: labels, page_counts: pageCounts, compile_model: model },
     LABEL_CALL_TIMEOUT_MS,
   );
   const sent = new Set(labels);

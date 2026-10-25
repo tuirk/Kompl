@@ -6,7 +6,8 @@ Endpoint:
     (app/src/lib/compile/label-merge.ts) when the compile's drafts added at
     least one category label the wiki did not have. Returns the merges the
     app may apply: a new label renamed into a label it sent, never a label
-    the wiki already had (services/label_merge.py).
+    the wiki already had, and only a smaller label into a bigger one
+    (services/label_merge.py).
 
 This router NEVER opens kompl.db. rule #1 in CLAUDE.md.
 """
@@ -14,7 +15,7 @@ This router NEVER opens kompl.db. rule #1 in CLAUDE.md.
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt
 
 from services.label_merge import clean_label_merges
 from services.llm_client import (
@@ -38,6 +39,12 @@ class ConsolidateLabelsRequest(BaseModel):
 
     existing_labels: list[str] = Field(default_factory=list, max_length=MAX_EXISTING_LABELS)
     new_labels: list[str] = Field(max_length=MAX_NEW_LABELS)
+    # Pages per label, by label as sent above. The model sees them, and
+    # services/label_merge.py moves only the smaller label into the bigger.
+    # Optional: a caller that sends none gets the name rules only.
+    page_counts: dict[str, NonNegativeInt] = Field(
+        default_factory=dict, max_length=MAX_EXISTING_LABELS + MAX_NEW_LABELS,
+    )
     compile_model: LLMModel = "gemini-2.5-flash"
 
 
@@ -65,7 +72,9 @@ def pipeline_consolidate_labels(req: ConsolidateLabelsRequest) -> ConsolidateLab
     HTTP 500 when the LLM call fails or JSON parse fails.
     """
     try:
-        proposed = consolidate_labels(req.existing_labels, req.new_labels, model=req.compile_model)
+        proposed = consolidate_labels(
+            req.existing_labels, req.new_labels, model=req.compile_model, page_counts=req.page_counts,
+        )
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
@@ -74,6 +83,6 @@ def pipeline_consolidate_labels(req: ConsolidateLabelsRequest) -> ConsolidateLab
         raise HTTPException(status_code=500, detail=str(e)) from e
     items = [
         LabelMergeItem(**m)
-        for m in clean_label_merges(proposed.merges, req.existing_labels, req.new_labels)
+        for m in clean_label_merges(proposed.merges, req.existing_labels, req.new_labels, req.page_counts)
     ]
     return ConsolidateLabelsResponse(items=items, count=len(items))

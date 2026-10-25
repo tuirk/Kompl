@@ -7,12 +7,29 @@ Names are matched to the spelling they were given in (exact first, then
 ignoring case). Chains end at their last label and a merge that would close
 a cycle is dropped, so applying the result once is final.
 
+With page counts (owner decision 2026-10-25), two rules from the prompt are
+also held here, whatever the model answers:
+- the label with fewer pages moves into the one with more, never the
+  reverse ("Graphic Design" 33 never into "Typography & Graphic Design" 6);
+- a label whose whole name sits inside the other label's name merges only
+  as one part of a combined label ("Web Accessibility" into "Web
+  Accessibility & Standards") or when it has 1-2 pages ("Design" into
+  "Graphic Design"). Any other contained name is a narrower or broader
+  topic, and a longer name never folds into a word it contains.
+
 This module NEVER opens kompl.db. rule #1 in CLAUDE.md.
 """
 
 from __future__ import annotations
 
-from typing import Iterable, Protocol
+import re
+from typing import Iterable, Mapping, Protocol
+
+# A label this small whose whole name a more-used label contains joins it.
+SMALL_LABEL_PAGES = 2
+
+# What joins the parts of a combined label: "A & B", "A and B", "A / B", "A, B".
+_PART_SEPARATOR = re.compile(r"&|\+|/|,|\band\b", re.IGNORECASE)
 
 
 class _Merge(Protocol):
@@ -33,12 +50,45 @@ def _speller(names: Iterable[str]):
     return spell
 
 
+def _words(name: str) -> list[str]:
+    return re.findall(r"\w+", name.casefold())
+
+
+def _parts(name: str) -> set[tuple[str, ...]]:
+    """The parts of a combined label as word tuples; one part when not combined."""
+    return {tuple(_words(p)) for p in _PART_SEPARATOR.split(name) if _words(p)}
+
+
+def _inside(small: str, big: str) -> bool:
+    """small's words appear, in order and together, in big's longer name."""
+    s, b = _words(small), _words(big)
+    return 0 < len(s) < len(b) and any(b[i:i + len(s)] == s for i in range(len(b) - len(s) + 1))
+
+
+def merge_allowed(label: str, into: str, page_counts: Mapping[str, int]) -> bool:
+    """The size and name rules for moving ``label`` into ``into``."""
+    pages, into_pages = page_counts.get(label), page_counts.get(into)
+    if pages is not None and into_pages is not None and pages > into_pages:
+        return False
+    if _inside(into, label):
+        return False
+    if _inside(label, into):
+        is_part = len(_parts(into)) > 1 and tuple(_words(label)) in _parts(into)
+        return is_part or (pages is not None and pages <= SMALL_LABEL_PAGES)
+    return True
+
+
 def clean_label_merges(
     merges: Iterable[_Merge],
     existing_labels: list[str],
     new_labels: list[str],
+    page_counts: Mapping[str, int] | None = None,
 ) -> list[dict[str, str]]:
-    """Merges as {label, into, reason}, in the order of ``new_labels``."""
+    """Merges as {label, into, reason}, in the order of ``new_labels``.
+
+    ``page_counts`` maps a label, spelled as sent, to its pages.
+    """
+    counts = page_counts or {}
     spell_existing = _speller(existing_labels)
     spell_new = _speller(new_labels)
     target: dict[str, str] = {}
@@ -63,6 +113,8 @@ def clean_label_merges(
         else:
             continue
         if label == into or label in target or end_of(into) == label:
+            continue
+        if not merge_allowed(label, into, counts):
             continue
         target[label] = into
         reason[label] = m.reason

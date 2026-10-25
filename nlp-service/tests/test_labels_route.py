@@ -127,3 +127,36 @@ def test_rejects_unknown_fields(api):
 def test_rejects_label_lists_over_the_limit(api, field, limit):
     too_many = [f"Label {i}" for i in range(limit + 1)]
     assert api.post("/pipeline/consolidate-labels", json={**BODY, field: too_many}).status_code == 422
+
+
+def test_film_labels_with_page_counts_keep_only_the_two_allowed_merges(api, monkeypatch):
+    # A Repair run sends every label as new, with its page count.
+    counts = {
+        "Graphic Design": 33, "Web Accessibility & Standards": 24, "Arts & Culture": 20,
+        "Design & Accessibility": 20, "Web Development": 7, "Typography & Graphic Design": 6,
+        "Web Accessibility": 2, "Design": 1,
+    }
+    fake = _use(monkeypatch, _FakeModel([
+        {"label": "Web Accessibility", "into": "Web Accessibility & Standards", "reason": "one part"},
+        {"label": "Design", "into": "Graphic Design", "reason": "small, contained"},
+        {"label": "Graphic Design", "into": "Typography & Graphic Design", "reason": "bigger into smaller"},
+    ]))
+
+    resp = api.post("/pipeline/consolidate-labels", json={
+        "existing_labels": [], "new_labels": list(counts), "page_counts": counts, "compile_model": "deepseek-flash",
+    })
+
+    assert resp.status_code == 200
+    assert [(i["label"], i["into"]) for i in resp.json()["items"]] == [
+        ("Web Accessibility", "Web Accessibility & Standards"),
+        ("Design", "Graphic Design"),
+    ]
+    sent = json.loads(fake.sent[0].messages[1]["content"])
+    assert sent["new_labels"][0] == {"label": "Graphic Design", "pages": 33}
+    assert sent["new_labels"][-1] == {"label": "Design", "pages": 1}
+
+
+def test_rejects_negative_or_too_many_page_counts(api):
+    assert api.post("/pipeline/consolidate-labels", json={**BODY, "page_counts": {"Crypto": -1}}).status_code == 422
+    too_many = {f"Label {i}": 1 for i in range(401)}
+    assert api.post("/pipeline/consolidate-labels", json={**BODY, "page_counts": too_many}).status_code == 422
