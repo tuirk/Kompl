@@ -1310,6 +1310,16 @@ DISAGREEMENTS (this format applies whatever the wiki schema says):
 # model of them (the final check, update drafts).
 _DISAGREEMENT_HEADINGS = '"### Disputed: <topic>" or "### Changed: <topic>"'
 
+# Film run (2026-10-25): under "use one of these exact strings; invent only
+# if none fit", the first source's "Design & Accessibility" fitted every
+# design source. A label is reused only for the field it names, and a new
+# label names one field.
+_CATEGORY_RULE = (
+    "When selecting the category field, follow CATEGORY ASSIGNMENT (in the user prompt): use an existing "
+    "category, written exactly as listed, only when it names this page's main subject field. "
+    'A new category names one field in 1-3 words; never join two fields with "&", "and" or "/".'
+)
+
 _DRAFT_PAGE_PROMPTS: dict[str, str] = {
     "source-summary": f"""\
 Write a source summary wiki page for the following source document.
@@ -1324,7 +1334,7 @@ The page body should begin directly with the reproduced source content (no `## C
 The reproduced source content is the most important part — it must contain the actual source text, not a rewrite of it. Do not add information not in the source.
 Use [[wikilinks]] for any entities, people, tools, or concepts that have their own wiki pages.
 Frontmatter keys: title, page_type: source-summary, category, summary (1-2 sentences describing what this source is about).
-When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.""",
+{_CATEGORY_RULE}""",
 
     "entity": f"""\
 Write an entity wiki page synthesizing information from multiple sources.
@@ -1337,7 +1347,7 @@ The page body should include:
 Synthesize across all sources. If sources provide complementary information, merge coherently.
 Use [[wikilinks]] when referencing related entities or concepts that have wiki pages.
 Frontmatter keys: title, page_type: entity, category, summary (1-2 sentences).
-When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.
+{_CATEGORY_RULE}
 
 {_GROUNDING_RULES}""",
 
@@ -1354,7 +1364,7 @@ The page body should include:
 Synthesize across sources. Attribute specific claims to their source.
 Use [[wikilinks]] when referencing related concepts or entities that have wiki pages.
 Frontmatter keys: title, page_type: concept, category, summary (1-2 sentences).
-When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.
+{_CATEGORY_RULE}
 
 {_GROUNDING_RULES}""",
 
@@ -1370,7 +1380,7 @@ The page body should include:
 Be objective and factual.
 Use [[wikilinks]] when naming the entities being compared and any related concepts that have wiki pages.
 Frontmatter keys: title, page_type: comparison, category, summary (1-2 sentences describing what is being compared).
-When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.
+{_CATEGORY_RULE}
 
 {_GROUNDING_RULES}""",
 
@@ -1385,7 +1395,7 @@ The page body should include:
 - ## Open Questions (gaps in coverage, if any)
 
 Frontmatter keys: title, page_type: overview, category, summary (1-2 sentences describing this category).
-When selecting the category field, you MUST use one of the exact category strings provided in CATEGORY ASSIGNMENT (in the user prompt). Only invent a new category if the list is empty or none fit.
+{_CATEGORY_RULE}
 
 {_GROUNDING_RULES}""",
 }
@@ -1660,25 +1670,30 @@ def draft_page(
     # It must survive at the very end of the final prompt for Gemini recency attention.
     # Always emit CATEGORY ASSIGNMENT — even when the list is empty — so the LLM
     # always has explicit instruction to write the category field.  When cats is
-    # empty (first session) the LLM must invent one; when cats is non-empty it
-    # must reuse an existing one or invent only when none fits.
+    # empty (first session) the LLM names the page's main field; when cats is
+    # non-empty it reuses a label only when that label names the page's main
+    # field, else it creates one for that field (see _CATEGORY_RULE).
+    one_field = (
+        '(e.g. "Graphic Design", "Web Accessibility", "Cryptocurrency"); never join two fields with '
+        '"&", "and" or "/". The category field is REQUIRED — do not leave it blank or omit it.'
+    )
     cats = existing_categories or []
     if cats:
         cats_str = ", ".join(f'"{c}"' for c in cats)
         cat_suffix = (
             "\nCATEGORY ASSIGNMENT:\n"
             f"Existing wiki categories: {cats_str}\n\n"
-            "You MUST use one of these exact strings for the \"category\" frontmatter field. "
-            "Only invent a new category if none of the existing ones fit. "
-            "Do NOT paraphrase or rephrase an existing category."
+            "Use an existing category only when it names this page's MAIN subject field, and then write it "
+            "exactly as listed for the \"category\" frontmatter field: do not paraphrase or rephrase it. "
+            "Sharing a word or a side topic with the page is not enough. If the main subject belongs to a "
+            "different field than every existing category, create a new category for that field. "
+            "A new category names one field in 1-3 words " + one_field
         )
     else:
         cat_suffix = (
             "\nCATEGORY ASSIGNMENT:\n"
-            "No existing categories yet. You MUST invent a suitable broad category for the "
-            "\"category\" frontmatter field (e.g. \"Technology\", \"AI & Machine Learning\", "
-            "\"Organizations\", \"Concepts\", \"Gaming\"). "
-            "The category field is REQUIRED — do not leave it blank or omit it."
+            "No existing categories yet. Create the \"category\" frontmatter field: this page's main "
+            "subject field in 1-3 words, one field only " + one_field
         )
 
     prompt = "\n".join(parts)
