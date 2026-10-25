@@ -6,8 +6,9 @@ the name similarity (0.6829 → 0.5392, real MiniLM) and across kinds only the
 name counted, so the pair stayed under the 0.70 band and the compile made a
 second page. Now the title is compared without a bracket that abbreviates
 it, and across kinds the "name: context" similarity may ask Layer 3 too
-(0.7741 here); a pair across kinds still never merges in Layer 2, and the
-pair is still made against the exact title.
+(0.7741 here) when the names score at least 0.6, so a name its article only
+ties to the page takes no Layer 3 slot; a pair across kinds still never
+merges in Layer 2, and the pair is still made against the exact title.
 """
 
 from __future__ import annotations
@@ -133,13 +134,16 @@ def test_across_kinds_even_identical_texts_are_only_asked(client, encoder, name,
     assert [(a, b) for a, b, _ns, _s in _asked(data)] == [(name, title)]
 
 
-def test_across_kinds_the_reverse_is_asked_on_context_too(client, encoder):
-    """A product against a concept page: 0.4523 by name, 0.7658 with context
-    (real MiniLM, "Color Oracle" / "Color blindness simulation")."""
+@pytest.mark.parametrize("name_sim,asked", [(0.6, True), (0.62, True), (0.5999, False), (0.4523, False)])
+def test_across_kinds_context_asks_only_for_names_alike_enough(client, encoder, name_sim, asked):
+    """A product against a concept page with context 0.7658: asked when the
+    names score at least 0.6. Real MiniLM gives "Color Oracle" / "Color
+    blindness simulation" 0.4523 by name, so that pair is not asked."""
     page = _toward(1.0, 0, 3)
-    encoder({"Color blindness simulation": page, "Color Oracle": _toward(0.4523, 0, 4),
+    encoder({"Color blindness simulation": page, "Color Oracle": _toward(name_sim, 0, 4),
              "Color Oracle: a": _toward(0.7658, 0, 5)})
     data = _embedding(client, [_entity("Color Oracle", "PRODUCT", "a")],
                       [{"title": "Color blindness simulation", "page_type": "concept"}])
     assert data["resolved"] == []
-    assert _asked(data) == [("Color Oracle", "Color blindness simulation", 0.4523, 0.7658)]
+    assert _asked(data) == ([("Color Oracle", "Color blindness simulation", round(name_sim, 4), 0.7658)]
+                            if asked else [])

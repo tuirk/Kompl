@@ -1098,6 +1098,11 @@ _ANCHORED_METHODS = frozenset({"existing_page_title", "existing_alias"})
 # them Layer 3 decides.
 _MERGE_SIMILARITY = 0.9
 _AMBIGUOUS_SIMILARITY = 0.7
+# A name against a page of the other kind may reach the ambiguous band on
+# "name: context" similarity only with at least this name similarity
+# (resolve_embedding): "Colorblindness" / "Color Vision Deficiency (CVD)"
+# 0.68 is asked, "Color Oracle" / "Color blindness simulation" 0.45 is not.
+_CROSS_KIND_CONTEXT_MIN_NAME_SIMILARITY = 0.6
 
 # A concept and a named thing can be one topic ("UNESCO World Heritage" /
 # "UNESCO World Heritage list"), so Layer 2 compares them; only Layer 3 may
@@ -1406,7 +1411,7 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
       - ambiguous (Layer 3): otherwise, when either similarity is ≥ 0.7; a
         CONCEPT against ORG/PRODUCT/PERSON/LOCATION/EVENT when the names
         alone are, and against a page of the other kind when either is
-        (a page title is compared without a bracket that abbreviates
+        and the names score at least 0.6 (a page title is compared without a bracket that abbreviates
         it, _title_for_similarity); and, whatever the similarity, an acronym or ticker and
         its expansion or a one-letter slip (_layer3_only_method), which
         Layer 1 no longer merges, and a name that adds words to a page
@@ -1491,7 +1496,11 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
                 # two names one article describes alike (session pairs below).
                 # "Colorblindness" / the entity page "Color Vision
                 # Deficiency (CVD)" scored 0.68 by name, 0.77 with context.
-                sim = max(ns, cs)
+                # Only names alike enough may ask on context, so a person or
+                # a tool its article ties to a concept page ("Francis Wolff"
+                # / "Candid photography", 0.2 by name) takes no Layer 3 slot.
+                cross_floor = not same_kind and ns < _CROSS_KIND_CONTEXT_MIN_NAME_SIMILARITY
+                sim = ns if cross_floor else max(ns, cs)
                 if sim < _AMBIGUOUS_SIMILARITY:
                     continue
                 guard = _names_guard(nd.names, [pt.title])

@@ -282,19 +282,18 @@ def test_a_concept_is_asked_about_the_entity_page_with_its_abbreviation_in_brack
                          "known_names": ["Color vision deficiency"]}
 
 
-def test_a_product_asked_about_a_concept_page_on_context_stays_apart(replay, monkeypatch):
+def test_a_product_alike_to_a_concept_page_only_in_context_stays_apart(replay, monkeypatch):
     """"Color Oracle" / the page "Color blindness simulation": 0.4523 by
-    name, 0.7658 with context. Asked, never merged in Layer 2; the fake
-    model says different."""
+    name, 0.7658 with context. Under the 0.6 name floor across kinds, so
+    it is never asked and never merged."""
     from routers import resolution  # noqa: PLC0415
 
     module, _calls = replay
     item = _item("color-oracle-vs-colorblindness-simulation-page")
     monkeypatch.setattr(resolution, "_get_embed_model", lambda: _Measured(item["a"]["name"], item["a"]["context"], {
         "Color blindness simulation": (0.4523, 0.7658)}))
-    assert module.judge(item, "http://x", None)["by"] == "asked (no LLM run)"
-    result = module.judge(item, "http://x", "deepseek-flash")
-    assert (result["got"], result["by"], result["answer"]["decision"]) == ("different", "layer 3", "different")
+    assert module.judge(item, "http://x", None) == {"got": "different", "by": "never asked", "answer": None}
+    assert module.judge(item, "http://x", "deepseek-flash")["got"] == "different"
 
 
 def test_scores_and_the_input_order_check(replay):

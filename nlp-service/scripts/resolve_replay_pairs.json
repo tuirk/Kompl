@@ -264,7 +264,7 @@
       "a": {"name": "Color Oracle", "type": "PRODUCT", "source": "co", "context": "Free colour blindness simulator for Windows, Mac and Linux that shows the screen as people with common colour vision deficiencies see it."},
       "b": {"name": "Color blindness simulation", "page": true, "page_type": "concept", "summary": "Color blindness simulation previews an image or interface as people with a colour vision deficiency would see it, so designers can check that colours stay distinguishable. Several free tools offer it."},
       "expected": "different",
-      "why": "A tool that simulates colour blindness, not the technique the page defines. Across kinds, asked on context (0.45 by name, 0.77 with it, real MiniLM); contexts written for the replay."
+      "why": "A tool that simulates colour blindness, not the technique the page defines. Alike only in context across kinds (0.45 by name, 0.77 with it, real MiniLM), under the 0.6 name floor, so never asked; contexts written for the replay."
     }
   ]
 }
