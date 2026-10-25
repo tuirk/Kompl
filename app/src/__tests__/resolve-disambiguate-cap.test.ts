@@ -78,10 +78,12 @@ it('slices ambiguous pairs to the cap and keeps overflow as singletons', async (
     }
     if (url.endsWith('/resolve/disambiguate')) {
       disambiguateCalls++;
-      const pairs = body.pairs as typeof ambiguous;
+      const pairs = body.pairs as Array<(typeof ambiguous)[number] & { pair_id: string }>;
       disambiguatePairsSent = pairs.length;
       return Response.json({
+        failed_pairs: 0,
         results: pairs.map((p) => ({
+          pair_id: p.pair_id,
           entity_a: p.entity_a.name,
           entity_b: p.entity_b.name,
           decision: 'different',

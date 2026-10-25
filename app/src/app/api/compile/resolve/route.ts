@@ -12,8 +12,9 @@
  *   3. Layer 2: POST /resolve/embedding — cosine similarity via sentence-transformers
  *              (>0.9 same, <0.7 different, 0.7–0.9 ambiguous) over the
  *              entities Layer 1 left alone and Layer 1's groups
- *   4. Layer 3: POST /resolve/disambiguate — Gemini LLM for ambiguous pairs,
- *              alike names first; 'same' verdicts fold into the groups
+ *   4. Layer 3: POST /resolve/disambiguate — the LLM on ambiguous pairs, up to
+ *              a cap, ranked by lib/resolve-ranking.ts; verdicts come back
+ *              by pair_id and 'same' verdicts fold into the groups
  *   5. bulkInsertAliases() — persist alias → canonical mappings
  *
  * The resolved canonical list is the ephemeral output consumed by 2c's
@@ -44,8 +45,10 @@ import {
   logActivity,
   normalizeSessionMentionsToCanonical,
 } from '../../../../lib/db';
-import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
+import { computeDisambiguateMs } from '../../../../lib/compile-timeouts';
+import { makeDispatcher } from '../../../../lib/long-http-agent';
 import { numericConflict } from '../../../../lib/name-guard';
+import { MAX_DISAMBIGUATE_PAIRS, rankForLayer3 } from '../../../../lib/resolve-ranking';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -69,12 +72,6 @@ const ANCHORED_METHODS = new Set(['existing_page_title', 'existing_alias']);
 // Kinds a group may hold together. Mirrors _COMPATIBLE_TYPE_GROUPS in
 // nlp-service/routers/resolution.py.
 const KIND_FAMILIES: string[][] = [['ORG', 'PRODUCT'], ['CONCEPT', 'OTHER']];
-
-// Must match nlp-service/routers/resolution.py DISAMBIGUATE_MAX_PAIRS.
-// Hard bound on Layer-3 LLM pairs per resolve (CLAUDE.md rule #7); overflow
-// pairs are kept as separate singletons instead of being sent to the LLM.
-// (Not exported — Next.js route files may only export route handlers.)
-const MAX_DISAMBIGUATE_PAIRS = 120;
 
 // ── Type definitions (mirror nlp-service Pydantic models) ─────────────────────
 
@@ -117,12 +114,14 @@ interface EmbeddingResolveResponse {
 
 interface DisambiguateResponse {
   results: Array<{
+    pair_id: string | null; // the pair_id sent with the pair
     entity_a: string;
     entity_b: string;
     decision: string;
-    canonical: string | null;
+    canonical: string | null; // for 'same': one of the pair's two names
     reason: string;
   }>;
+  failed_pairs: number; // pairs whose LLM batch failed; answered 'ambiguous'
 }
 
 // ── NLP service call helpers ───────────────────────────────────────────────────
@@ -171,9 +170,13 @@ async function callEmbedding(
 }
 
 async function callDisambiguate(
-  pairs: AmbiguousPair[],
+  pairs: Array<AmbiguousPair & { pair_id: string }>,
   compileModel?: string,
 ): Promise<DisambiguateResponse> {
+  // nlp-service makes one LLM call per 10 pairs, one after another, so the
+  // budget grows with the pair count (lib/compile-timeouts.ts). A fixed 10
+  // minutes let two slow DeepSeek batches abort the whole resolve.
+  const timeoutMs = computeDisambiguateMs(pairs.length);
   const res = await fetch(`${NLP_SERVICE_URL}/resolve/disambiguate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -181,9 +184,9 @@ async function callDisambiguate(
       pairs,
       ...(compileModel ? { compile_model: compileModel } : {}),
     }),
-    signal: AbortSignal.timeout(600_000), // 10 min — disambiguate batches up to 10 pairs; DeepSeek can run ~200-400s per call on dense pairs. 120s (prior value) was Gemini-only sizing.
+    signal: AbortSignal.timeout(timeoutMs),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
-    dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
+    dispatcher: makeDispatcher(timeoutMs), // undici's default 300s headersTimeout would fire first
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
@@ -220,8 +223,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'session_id required' }, { status: 400 });
   }
 
-  // Step 1: get all extractions for this session
-  const extractions = getExtractionsBySession(session_id);
+  // Step 1: get all extractions for this session. created_at has one-second
+  // resolution and sources extract four at a time, so ties are ordered by
+  // source too: the same session always gives the resolver the same input.
+  const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const extractions = getExtractionsBySession(session_id).sort(
+    (x, y) => byText(x.created_at, y.created_at) || byText(x.source_id, y.source_id)
+  );
   if (extractions.length === 0) {
     return NextResponse.json(
       { error: 'no_extracted_sources', detail: 'No extracted sources found for this session. Run /api/compile/extract for each source first.' },
@@ -469,31 +477,33 @@ export async function POST(request: Request) {
     // App-side mirror of the nlp-service DISAMBIGUATE_MAX_PAIRS cap
     // (CLAUDE.md rule #7): never ask for more LLM pairs than the service
     // will process. Overflow pairs take the same path as an 'ambiguous' LLM
-    // verdict — entities stay separate singletons, a safe degradation.
-    // Who gets a slot is ranked as in nlp-service: name similarity first; on
-    // equal names a pair whose sides share a source after one from different
-    // sources; then similarity. Context likeness alone — two things one
-    // source names side by side, "Set collection" / "Route planning" at 0.98
-    // by context, 0.10 by name — never takes a slot from alike names.
+    // verdict — entities stay separate singletons, a safe degradation —
+    // and are reported in stats and the activity log.
+    // Who gets a slot is ranked as in nlp-service (lib/resolve-ranking.ts):
+    // pairs against the wiki or across sources before pairs one source
+    // names both sides of; abbreviations first in each tier; then name
+    // similarity, so context likeness alone never takes a slot.
     const sourcesOf = (e: EntityInput): string[] => {
       if (isExistingPage(e)) return [];
       if (!isGroupRef(e)) return [e.source_id];
       const k = groupOf(e);
       return k === null ? [] : groups[k].source_ids;
     };
-    const sharesSource = new Map(
-      ambiguous2.map((pair) => {
-        const a = new Set(sourcesOf(pair.entity_a));
-        return [pair, sourcesOf(pair.entity_b).some((s) => a.has(s))] as const;
-      })
-    );
-    const byStrength = [...ambiguous2].sort((x, y) => {
-      if (x.name_similarity !== y.name_similarity) return y.name_similarity - x.name_similarity;
-      if (sharesSource.get(x) !== sharesSource.get(y)) return sharesSource.get(x) ? 1 : -1;
-      return y.similarity - x.similarity;
-    });
-    const cappedAmbiguous = byStrength.slice(0, MAX_DISAMBIGUATE_PAIRS);
-    const overflowAmbiguous = byStrength.slice(MAX_DISAMBIGUATE_PAIRS);
+    // A pair touching the wiki: an existing page, or a group bound to one.
+    const touchesWiki = (pair: AmbiguousPair) =>
+      [pair.entity_a, pair.entity_b].some((e) => {
+        const k = groupOf(e);
+        return isExistingPage(e) || (k !== null && isAnchored(groups[k]));
+      });
+    const oneSource = (pair: AmbiguousPair) => {
+      if (touchesWiki(pair)) return false;
+      const a = new Set(sourcesOf(pair.entity_a));
+      return sourcesOf(pair.entity_b).some((s) => a.has(s));
+    };
+    const ranked = rankForLayer3(ambiguous2, oneSource);
+    const cappedAmbiguous = ranked.slice(0, MAX_DISAMBIGUATE_PAIRS);
+    const overflowAmbiguous = ranked.slice(MAX_DISAMBIGUATE_PAIRS);
+    let llmFailed = 0;
     if (overflowAmbiguous.length > 0) {
       console.warn(
         `[resolve] ${ambiguous2.length} ambiguous pairs exceed cap ${MAX_DISAMBIGUATE_PAIRS}; ` +
@@ -503,25 +513,25 @@ export async function POST(request: Request) {
     }
 
     if (cappedAmbiguous.length > 0) {
-      const disambResult = await callDisambiguate(cappedAmbiguous, getEffectiveCompileModel(session_id));
-      const disambMap = new Map(
-        disambResult.results.map((r) => [`${r.entity_a}|||${r.entity_b}`, r])
+      // Each pair goes out with an id and its verdict comes back with it.
+      // Matching by name gave two pairs named "Mercury" / "Mercury" (a
+      // PERSON and a LOCATION group, each against a CONCEPT) one verdict.
+      const sent = cappedAmbiguous.map((pair, k) => ({ ...pair, pair_id: String(k) }));
+      const disambResult = await callDisambiguate(sent, getEffectiveCompileModel(session_id));
+      llmFailed = disambResult.failed_pairs;
+      const verdicts = new Map(
+        disambResult.results.filter((r) => r.pair_id !== null).map((r) => [r.pair_id, r] as const)
       );
 
-      // Verdicts touching the wiki (an existing page, or a group bound to
-      // one) are applied first, then the rest, each in the ranked order.
-      const touchesWiki = (pair: AmbiguousPair) =>
-        [pair.entity_a, pair.entity_b].some((e) => {
-          const k = groupOf(e);
-          return isExistingPage(e) || (k !== null && isAnchored(groups[k]));
-        });
+      // Verdicts touching the wiki are applied first, then the rest, each in
+      // the ranked order.
       const foldOrder = [
-        ...cappedAmbiguous.filter(touchesWiki),
-        ...cappedAmbiguous.filter((pair) => !touchesWiki(pair)),
+        ...sent.filter(touchesWiki),
+        ...sent.filter((pair) => !touchesWiki(pair)),
       ];
 
       for (const pair of foldOrder) {
-        const result = disambMap.get(`${pair.entity_a.name}|||${pair.entity_b.name}`);
+        const result = verdicts.get(pair.pair_id);
         const lone = loneSides(pair);
         const alreadyMerged = lone.some((e) => mergedKeys.has(entityKey(e)));
         const applied =
@@ -592,6 +602,22 @@ export async function POST(request: Request) {
       normalizeSessionMentionsToCanonical(session_id, aliasesToInsert);
     }
 
+    // Pairs Layer 3 never judged (over the cap, or in a failed LLM batch)
+    // may be duplicates left as separate pages; say so where the user looks.
+    if (overflowAmbiguous.length > 0 || llmFailed > 0) {
+      logActivity('resolution_pairs_unchecked', {
+        source_id: null,
+        session_id,
+        step_key: 'resolve',
+        details: {
+          session_id,
+          over_cap:   overflowAmbiguous.length,
+          llm_failed: llmFailed,
+          cap:        MAX_DISAMBIGUATE_PAIRS,
+        },
+      });
+    }
+
     logActivity('resolution_complete', {
       source_id: null,
       session_id,
@@ -622,6 +648,9 @@ export async function POST(request: Request) {
         final_canonical: allCanonical.length,
         canonical_entities: canonicalEntities.length,
         canonical_concepts: canonicalConcepts.length,
+        llm_pairs: cappedAmbiguous.length,
+        llm_pairs_over_cap: overflowAmbiguous.length,
+        llm_pairs_failed: llmFailed,
       },
     });
   } catch (err) {

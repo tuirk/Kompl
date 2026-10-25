@@ -1207,12 +1207,14 @@ export function getAllAliases(): Array<{ alias: string; canonical_name: string; 
  * Return titles of all entity and concept pages — used by the resolver to match
  * session entities/concepts against pages that already exist in the wiki. This
  * is the cross-session bridge that keeps the alias drawer from being the sole
- * signal for cross-session canonicalisation.
+ * signal for cross-session canonicalisation. Sorted, so the resolver breaks
+ * ties between matching pages the same way on every run.
  */
 export function getEntityAndConceptPageTitles(): Array<{ title: string; page_type: string }> {
   return openDb()
     .prepare(
-      `SELECT title, page_type FROM pages WHERE page_type IN ('entity', 'concept')`
+      `SELECT title, page_type FROM pages WHERE page_type IN ('entity', 'concept')
+        ORDER BY title, page_type`
     )
     .all() as Array<{ title: string; page_type: string }>;
 }

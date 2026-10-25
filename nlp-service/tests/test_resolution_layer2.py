@@ -191,13 +191,14 @@ def test_groups_reach_layer_2_and_come_back(client, encoder):
     )
     # Every group comes back, first and in order; nothing joined them.
     assert data["resolved"] == [{k: v for k, v in g.items() if k != "context"} for g in groups]
-    # Group sides name resolved[k]; the APCA page is asked about through its group only.
+    # Group sides name resolved[k]; the APCA page is asked about through its
+    # group only, first: "APCA" reads as an abbreviation of the other name.
     assert _pairs(data) == [
+        ("APCA", "__group__:1", "APCA contrast algorithm", 0.801),
         ("Contrast ratio", "__group__:0", "Colour contrast ratio", 0.903),
         ("prefers-reduced-motion", "__group__:3", "prefers-reduced-motion media feature", 0.877),
-        ("APCA", "__group__:1", "APCA contrast algorithm", 0.801),
     ]
-    assert data["ambiguous"][0]["entity_a"]["context"] == "a"
+    assert data["ambiguous"][1]["entity_a"]["context"] == "a"
     assert data["unresolved"] == []
 
 
@@ -267,10 +268,11 @@ def test_group_input_contract(client, encoder):
     assert bad.status_code == 422
 
 
-def test_pairs_are_ranked_by_name_then_shared_source_then_similarity(client, encoder):
+def test_pairs_are_ranked_by_tier_then_name_then_similarity(client, encoder):
     """Layer 3 answers a capped number of pairs, so the order decides who is
-    asked. A pair alike only in context, two things one source names side by
-    side, goes last however high its similarity."""
+    asked. Pairs across sources or against a page come before pairs one
+    source names both sides of, and a pair alike only in context goes last
+    however high its similarity (more in test_resolution_layer3.py)."""
     encoder({
         **_pair("Set collection", "Route planning", 0.1, 0.98, 0),       # context only, one source
         **_pair("Colour analyser", "Color analyzer", 0.85, 0.6, 4),      # alike names, two sources
@@ -290,8 +292,8 @@ def test_pairs_are_ranked_by_name_then_shared_source_then_similarity(client, enc
     assert [(p["entity_a"]["name"], p["name_similarity"], p["similarity"]) for p in data["ambiguous"]] == [
         ("Web typography", 0.9, 0.9),
         ("Colour analyser", 0.85, 0.85),
-        ("Dutch auction", 0.85, 0.95),
         ("Echo", 0.8, 0.8),
+        ("Dutch auction", 0.85, 0.95),
         ("Set collection", 0.1, 0.98),
     ]
 

@@ -13,6 +13,8 @@
 // each route. If a wrapper still fires legitimately, change the rate
 // constant in this file (one place); do not retune at the call site.
 
+import { MAX_DISAMBIGUATE_PAIRS } from './resolve-ranking';
+
 const OVERHEAD = 1.2;          // 20% relative slack for per-call variance
 const HEADROOM_MS = 180_000;   // 3 min absolute headroom for I/O blips
 
@@ -34,12 +36,30 @@ function withSlack(rawMs: number, floorMs: number): number {
   return Math.max(floorMs, Math.ceil(rawMs * OVERHEAD) + HEADROOM_MS);
 }
 
-// resolve = fuzzy 60s + embedding 60s + sourceCount × disambiguate-batch.
-// Empirical: 10 sources → 192 pairs → ~19 batches × 30s = 570s + 120s
-// prelude = 690s. Formula scales linearly past that.
+// Inner Layer 3 call in resolve/route.ts: nlp-service asks the LLM about 10
+// pairs per call, entity and concept pairs in separate batches. 120s per
+// call covers a slow DeepSeek batch (~30s is typical); the floor is the
+// fixed 10 min this formula replaced, which two slow batches could exceed.
+const DISAMBIGUATE_FLOOR_MS     = 600_000;
+const DISAMBIGUATE_PER_BATCH_MS = 120_000;
+const DISAMBIGUATE_BATCH_SIZE   = 10; // nlp-service resolve_disambiguate
+
+// disambiguate = one LLM call per batch; the kind split adds at most one
+// partial batch.
+export function computeDisambiguateMs(pairCount: number): number {
+  const batches = Math.ceil(pairCount / DISAMBIGUATE_BATCH_SIZE) + 1;
+  return withSlack(batches * DISAMBIGUATE_PER_BATCH_MS, DISAMBIGUATE_FLOOR_MS);
+}
+
+// resolve = fuzzy 60s + embedding 60s + disambiguate. Layer 3 is capped at
+// MAX_DISAMBIGUATE_PAIRS pairs whatever the source count (one list article
+// can fill it), so the step always allows the prelude plus the disambiguate
+// ceiling at the cap; the per-source term only takes over for very large
+// sessions.
 export function computeResolveMs(sourceCount: number): number {
   const raw = 120_000 + sourceCount * RESOLVE_PER_SOURCE_MS;
-  return withSlack(raw, RESOLVE_FLOOR_MS);
+  const atCap = 120_000 + computeDisambiguateMs(MAX_DISAMBIGUATE_PAIRS) + HEADROOM_MS;
+  return Math.max(withSlack(raw, RESOLVE_FLOOR_MS), atCap);
 }
 
 // match = sequential `for source` × top-3 candidates × (tfidf + triage).

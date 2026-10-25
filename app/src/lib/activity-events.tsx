@@ -139,6 +139,24 @@ function renderResolutionComplete(row: FeedActivityRow): RowContent {
   };
 }
 
+// Name pairs entity resolution never put to the LLM: over the per-compile
+// cap, or in a batch whose call failed. Each may be a duplicate kept as two
+// pages.
+function renderResolutionPairsUnchecked(row: FeedActivityRow): RowContent {
+  const { num } = makeGetters(row);
+  const overCap = num('over_cap') ?? 0;
+  const failed = num('llm_failed') ?? 0;
+  const parts: string[] = [];
+  if (overCap > 0) parts.push(`${overCap} over the ${num('cap') ?? 120}-pair limit`);
+  if (failed > 0) parts.push(`${failed} in AI calls that failed`);
+  return {
+    primary: <strong>{overCap + failed} possible duplicate pairs not checked</strong>,
+    secondary: parts.length > 0 ? <span style={MONO_DIM}>{parts.join(' · ')}</span> : null,
+    action: null,
+    isError: false,
+  };
+}
+
 // Shared by failure events. `retriable=true` renders a RetryButton; `false`
 // renders a danger-coloured View link (legacy behaviour for
 // entity_expansion_failed, which was in the old case-list but NOT in
@@ -649,6 +667,7 @@ export const ACTIVITY_EVENTS = {
   extraction_complete:    { key: 'extraction_complete',    badge: { label: 'EXTRACTED',  tone: 'mint' as Tone }, render: renderExtractionComplete },
   extraction_failed:      { key: 'extraction_failed',      badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   resolution_complete:    { key: 'resolution_complete',    badge: { label: 'RESOLVED',   tone: 'mint' as Tone }, render: renderResolutionComplete },
+  resolution_pairs_unchecked: { key: 'resolution_pairs_unchecked', badge: { label: 'UNCHECKED', tone: 'dim' as Tone }, render: renderResolutionPairsUnchecked },
   draft_too_thin:         { key: 'draft_too_thin',         badge: { label: 'TOO THIN',   tone: 'dim'  as Tone }, render: renderDraftTooThin },
   draft_queued_for_approval: { key: 'draft_queued_for_approval', badge: { label: 'QUEUED', tone: 'dim' as Tone }, render: renderDraftQueuedForApproval },
   compile_cancelled:      { key: 'compile_cancelled',      badge: { label: 'CANCELLED',  tone: 'dim'  as Tone }, render: renderCompileCancelled },

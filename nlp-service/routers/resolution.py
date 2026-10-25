@@ -169,13 +169,19 @@ def _entity_matches_page_type(entity_type: str, page_type: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _initials(name: str) -> str | None:
+    """The first letters of a name of two or more words, in capitals:
+    "Web Content Accessibility Guidelines" → "WCAG"."""
+    words = name.split()
+    if len(words) < 2:
+        return None
+    return "".join(w[0] for w in words if w).upper()
+
+
 def _is_acronym(short: str, long: str) -> bool:
     """Return True if short (uppercase) is the acronym of long."""
-    words = long.split()
-    if len(words) < 2:
-        return False
-    initials = "".join(w[0] for w in words if w).upper()
-    return short.upper() == initials
+    initials = _initials(long)
+    return initials is not None and short.upper() == initials
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +517,82 @@ def _cross_kind_acronym(name: str, title: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Blocking: which pairs Layer 1 looks at
+#
+# Checking every name against every other name and every page title made
+# Layer 1 cost entities × pages rule checks: 600 names against 5,000 pages
+# took 122 s, past the route's 60 s limit. Every rule above can only match
+# two names that share one of the keys below, so Layer 1 checks just the
+# pairs that share a key, in the same order as before, and the result is the
+# same. A new matching rule needs its key here.
+# ---------------------------------------------------------------------------
+
+
+def _singulars(skeleton: str) -> list[str]:
+    """The skeleton and each form it could be a simple plural of:
+    "queries" → queries, querie, queri, query."""
+    forms = [skeleton]
+    if skeleton.endswith("s"):
+        forms.append(skeleton[:-1])
+    if skeleton.endswith("es"):
+        forms.append(skeleton[:-2])
+    if skeleton.endswith("ies"):
+        forms.append(skeleton[:-3] + "y")
+    return forms
+
+
+def _block_keys(name: str, *, person: bool = False) -> set[tuple[str, str]]:
+    """Keys that let _partner_key find every name _fuzzy_method or
+    _cross_session_method can match with this one:
+      - exact, skeleton and plural: the lower-case name, the skeleton and
+        the skeleton without a plural ending;
+      - two or more words: the word count and the head word without a
+        plural ending (_same_words_but_spelling);
+      - one slip in a long name: the skeleton with any one letter dropped;
+      - acronym: the name in capitals ("caps"), which meets the initials of
+        a longer name ("init");
+      - "Full Name (ABBR)": the same keys for the bracket and the full name;
+      - people (person=True): each word, for surname and initial matches.
+    """
+    keys = {("lower", name.lower())}
+    skeleton = _skeleton(name)
+    keys.update(("skel", f) for f in _singulars(skeleton) if f)
+    tokens = _name_tokens(name)
+    if len(tokens) >= 2:
+        head = _skeleton(_word_key(tokens[-1]))
+        keys.update(("head", f"{len(tokens)}:{f}") for f in _singulars(head) if f)
+    if len(skeleton) >= 8:
+        keys.update(("drop", skeleton[:k] + skeleton[k + 1:]) for k in range(len(skeleton)))
+        keys.add(("drop", skeleton))
+    caps, initials = [name.upper()], [_initials(name)]
+    bracket = _split_parenthetical(name)
+    if bracket is not None:
+        base, inner = bracket
+        keys.update(("skel", s) for s in (_skeleton(base), _skeleton(inner)) if s)
+        caps.append(inner.upper())
+        initials.append(_initials(base))
+    keys.update(("caps", c) for c in caps if c)
+    keys.update(("init", c) for c in initials if c)
+    if person:
+        keys.update(("token", t) for t in tokens)
+    return keys
+
+
+def _partner_key(key: tuple[str, str]) -> tuple[str, str]:
+    """The key a matching name carries: the same one, except that a name in
+    capitals meets the initials of another and the other way round. Two
+    long names with the same initials are never compared for it."""
+    kind, value = key
+    return ({"caps": "init", "init": "caps"}.get(kind, kind), value)
+
+
+def _title_key(name: str) -> str:
+    """How a name meets an existing page title exactly: Unicode NFC, no
+    surrounding spaces, any case ("OpenAI " is the page "OpenAI")."""
+    return unicodedata.normalize("NFC", name).strip().lower()
+
+
 def _canonical_name(
     names: list[str],
     source_counts: dict[str, int] | None = None,
@@ -629,10 +711,16 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
     surname/initial matches) grouped by a union that refuses to chain
     different versions, pages or people.
     """
-    entities = req.entities
-    if not entities:
+    if not req.entities:
         return FuzzyResolveResponse(resolved=[], unresolved=[])
 
+    # The input arrives in the order extractions finished and pages were
+    # read, which changes between runs. Sorted, the same names always give
+    # the same groups, canonicals and types ("Steiner" joined George or
+    # Thomas Steiner by input order). Aliases keep their order: the newest
+    # row for an alias wins.
+    entities = sorted(req.entities, key=lambda e: (e.name, e.type, e.source_id, e.context))
+    titles = sorted(req.existing_page_titles, key=lambda pt: (pt.title, pt.page_type))
     n = len(entities)
 
     # Build existing alias lookup: alias_lower → canonical
@@ -652,11 +740,9 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
     # LLM rename the name ("APCA" → "APCA contrast algorithm"). The alias row
     # that left behind then sent every later "APCA" to a duplicate page
     # (2026-10-17, session e55c740b, then 5f009864).
-    page_title_lookup: dict[str, ExistingPageTitle] = {
-        pt.title.lower(): pt for pt in req.existing_page_titles
-    }
+    page_title_lookup: dict[str, ExistingPageTitle] = {_title_key(pt.title): pt for pt in titles}
     for i, e in enumerate(entities):
-        pt_exact = page_title_lookup.get(e.name.lower())
+        pt_exact = page_title_lookup.get(_title_key(e.name))
         if pt_exact:
             alias_canonical[i] = pt_exact.title
             alias_method[i] = "existing_page_title"
@@ -673,21 +759,29 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
     # existing wiki page titles by spelling. Page-type gates entity-type
     # compatibility (entity page ↔ non-concept types; concept page ↔ CONCEPT/OTHER),
     # except for a capitalised acronym and its expansion, which bind whatever
-    # kind each side has.
+    # kind each side has. Only the titles sharing a blocking key with the
+    # name are looked at, in title order.
+    titles_by_key: dict[tuple[str, str], list[int]] = {}
+    for k, pt in enumerate(titles):
+        for key in _block_keys(pt.title):
+            titles_by_key.setdefault(key, []).append(k)
     for i, e in enumerate(entities):
         if i in alias_canonical:
             continue
+        near = [titles[k] for k in sorted(
+            {k for key in _block_keys(e.name) for k in titles_by_key.get(_partner_key(key), ())}
+        )]
         # Fuzzy match against any page title — uses the strict cross-session
         # matcher (no substring) to avoid binding short-name entities to
         # longer-name pages they happen to be a character-level prefix of
         # (e.g. "Vilnius" ↔ existing "Vilnius Cathedral"). Layer 2 embedding
         # handles those semantically.
         page = next(
-            (pt for pt in req.existing_page_titles
+            (pt for pt in near
              if _entity_matches_page_type(e.type, pt.page_type)
              and _cross_session_method(e.name, pt.title, person=e.type == "PERSON")),
             None,
-        ) or next((pt for pt in req.existing_page_titles if _cross_kind_acronym(e.name, pt.title)), None)
+        ) or next((pt for pt in near if _cross_kind_acronym(e.name, pt.title)), None)
         if page:
             alias_canonical[i] = page.title
             alias_method[i] = "existing_page_title"
@@ -704,11 +798,17 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
         for j in indices[1:]:
             guard.try_union(indices[0], j, alias_method.get(indices[0], "existing_alias"))
 
-    # Pairwise fuzzy matching (O(n²) — acceptable for session-level entity counts).
-    # The guard refuses merges that would chain different versions, different
-    # existing pages or different people into one group.
+    # Pairwise fuzzy matching over the pairs that share a blocking key, in
+    # (i, j) order. The guard refuses merges that would chain different
+    # versions, different existing pages or different people into one group.
+    keys = [_block_keys(e.name, person=e.type == "PERSON") for e in entities]
+    by_key: dict[tuple[str, str], list[int]] = {}
+    for i, own in enumerate(keys):
+        for key in own:
+            by_key.setdefault(key, []).append(i)
     for i in range(n):
-        for j in range(i + 1, n):
+        partners = {j for key in keys[i] for j in by_key.get(_partner_key(key), ()) if j > i}
+        for j in sorted(partners):
             if guard.find(i) == guard.find(j):
                 continue  # already same group
             if not _types_compatible(entities[i].type, entities[j].type):
@@ -727,10 +827,12 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
             idx = members[0]
             if idx in alias_canonical:
                 # Still emit as resolved (canonical from alias table or existing page)
+                # The name itself is an alias only when it differs from the
+                # canonical: "APCA" bound to the page "APCA" is no alias row.
                 resolved.append(ResolvedGroup(
                     canonical=alias_canonical[idx],
                     type=entities[idx].type,
-                    aliases=[entities[idx].name],
+                    aliases=[entities[idx].name] if entities[idx].name != alias_canonical[idx] else [],
                     source_ids=[entities[idx].source_id],
                     method=alias_method.get(idx, "existing_alias"),
                 ))
@@ -878,6 +980,22 @@ def _names_guard(names_a: list[str], names_b: list[str]) -> str | None:
     return worst
 
 
+def _layer3_rank(pair: AmbiguousPair, one_source: bool) -> tuple[bool, bool, float, float]:
+    """Sort key for Layer 3's capped budget (DISAMBIGUATE_MAX_PAIRS); the
+    route ranks the same way (app/src/lib/resolve-ranking.ts). Tiers first:
+    a pair against the wiki (a page, or a group bound to one) or across
+    sources before a pair whose two sides one source names. A list article
+    ("Kaunas Castle / Cathedral / Town Hall / Fortress ...") gives many of
+    those, usually different things, and they used to push out the rest.
+    Within a tier an abbreviation and its long form first, since their
+    names score low ("ETH" / "Ethereum"); then name similarity, so a pair
+    alike only in context ("Set collection" / "Route planning", 0.98 by
+    context, 0.10 by name) never buys a slot; then similarity."""
+    a, b = pair.entity_a.name, pair.entity_b.name
+    abbreviation = _is_abbreviation(a, b) or _is_abbreviation(b, a)
+    return (one_source, not abbreviation, -pair.name_similarity, -pair.similarity)
+
+
 @dataclass
 class _Node:
     """What Layer 2 compares: a group passed in, or a lone entity."""
@@ -1011,10 +1129,11 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     `resolved` holds the final state of every group passed in (unchanged if
     nothing joined it), followed by the groups Layer 2 formed. A group in an
     AmbiguousPair carries source_id GROUP_SENTINEL_PREFIX + its index in
-    `resolved`. Ambiguous pairs come ranked for Layer 3's capped budget:
-    name similarity, highest first; on equal names a pair whose sides share
-    a source after one from different sources; then similarity. Context
-    likeness alone, the signal behind the wrong merges, never buys a slot.
+    `resolved`. Ambiguous pairs come ranked for Layer 3's capped budget
+    (_layer3_rank): pairs against the wiki or across sources before pairs
+    one source names both sides of; within each, abbreviations first, then
+    name similarity, then similarity. Context likeness alone, the signal
+    behind the wrong merges, never buys a slot.
     """
     import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
@@ -1173,10 +1292,14 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     def sources(root: int) -> set[str]:
         return {s for k in union.members[root] for s in nodes[k].source_ids}
 
-    # Each pair with whether its two sides share a source.
+    def one_source(ra: int, rb: int) -> bool:
+        """One source names both sides, and neither is bound to the wiki."""
+        bound = union.anchor[ra] is not None or union.anchor[rb] is not None
+        return not bound and bool(sources(ra) & sources(rb))
+
     ranked: list[tuple[AmbiguousPair, bool]] = [
         (AmbiguousPair(entity_a=ref(ra), entity_b=ref(rb), similarity=round(sim, 4), name_similarity=round(ns, 4)),
-         bool(sources(ra) & sources(rb)))
+         one_source(ra, rb))
         for (ra, rb), (sim, ns) in best.items()
     ] + [
         (AmbiguousPair(
@@ -1189,13 +1312,9 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
         for root, (ns, sim, pt) in page_best.items()
     ]
     # Layer 3 answers a capped number of pairs (DISAMBIGUATE_MAX_PAIRS, cut
-    # again in the route), so the order decides who is asked. Names first: a
-    # pair alike only in context, two things one source names side by side,
-    # never pushes out a pair whose names are alike ("Set collection" /
-    # "Route planning" is 0.98 by context, 0.10 by name — 2026-10-10, session
-    # demo-p2). The route ranks the same way.
-    ranked.sort(key=lambda t: (-t[0].name_similarity, t[1], -t[0].similarity))
-    ambiguous = [pair for pair, _shared in ranked]
+    # again in the route), so the order decides who is asked.
+    ranked.sort(key=lambda t: _layer3_rank(*t))
+    ambiguous = [pair for pair, _one_source in ranked]
 
     paired = {root for key in best for root in key} | set(page_best)
     unresolved: list[EntityInput] = []
@@ -1221,14 +1340,24 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 DISAMBIGUATE_MAX_PAIRS = 120
 
 
+class DisambiguatePair(AmbiguousPair):
+    """An AmbiguousPair as Layer 3 receives it. `pair_id` comes back on the
+    pair's verdict, so the caller matches verdicts to pairs by id, not by
+    name: two pairs can carry the same names ("Mercury" PERSON / CONCEPT and
+    "Mercury" LOCATION / CONCEPT), and the model may swap or re-case the
+    names it copies back. Optional, so callers without ids still validate."""
+    pair_id: str | None = None
+
+
 class DisambiguateRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    pairs: list[AmbiguousPair]
+    pairs: list[DisambiguatePair]
     compile_model: LLMModel = "gemini-2.5-flash"
 
 
 class DisambiguateResponseItem(BaseModel):
     model_config = ConfigDict(extra='forbid')
+    pair_id: str | None = None  # the request pair's pair_id
     entity_a: str
     entity_b: str
     decision: str           # "same" | "different" | "ambiguous"
@@ -1238,16 +1367,58 @@ class DisambiguateResponseItem(BaseModel):
 
 class DisambiguateResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    results: list[DisambiguateResponseItem]
+    results: list[DisambiguateResponseItem]  # one per request pair, in request order
+    # Pairs whose LLM batch failed; they come back 'ambiguous'.
+    failed_pairs: int = 0
+
+
+def _folded(a: str, b: str) -> list[str]:
+    """Two names as a verdict is matched on: any order, case or spacing."""
+    return sorted(" ".join(n.split()).casefold() for n in (a, b))
+
+
+def _verdicts_by_pair(batch: list[DisambiguatePair], results: list[Any]) -> list[Any | None]:
+    """Each pair's verdict in one LLM batch. The model copies both names back
+    pair by pair: a verdict at its pair's own position whose names fit that
+    pair is that pair's; any other verdict goes to the one remaining pair
+    its names fit. A pair no verdict fits, or whose names another remaining
+    pair shares, gets none."""
+    wanted = [_folded(p.entity_a.name, p.entity_b.name) for p in batch]
+    out: list[Any | None] = [None] * len(batch)
+    rest = []
+    for k, r in enumerate(results):
+        if k < len(batch) and out[k] is None and _folded(r.entity_a, r.entity_b) == wanted[k]:
+            out[k] = r
+        else:
+            rest.append(r)
+    for r in rest:
+        fits = [k for k, names in enumerate(wanted) if out[k] is None and names == _folded(r.entity_a, r.entity_b)]
+        if len(fits) == 1:
+            out[fits[0]] = r
+    return out
+
+
+def _same_canonical(pair: AmbiguousPair, picked: str | None) -> str:
+    """The canonical of a 'same' verdict: the model's pick when it is one of
+    the two names, else the one _canonical_name picks. A re-cased name or an
+    invented expansion ("APCA" -> "Advanced Perceptual Contrast Algorithm")
+    would become the page title and the alias target."""
+    names = [pair.entity_a.name, pair.entity_b.name]
+    if picked in names:
+        return picked
+    return _canonical_name(names, person=pair.entity_a.type == "PERSON" and pair.entity_b.type == "PERSON")
 
 
 @router.post("/resolve/disambiguate", response_model=DisambiguateResponse)
 def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
     """Layer 3 LLM disambiguation.
 
-    Receives ambiguous pairs (0.7–0.9 cosine similarity band) and calls
-    Gemini 2.5 Flash to decide same/different/ambiguous. Batches up to
-    10 pairs per LLM call.
+    Receives ambiguous pairs (0.7–0.9 cosine similarity band) and asks the
+    session's compile model to decide same/different/ambiguous, up to 10
+    pairs per LLM call. Returns one result per pair, in request order, each
+    carrying its pair's pair_id. A batch that fails comes back 'ambiguous'
+    and is counted in failed_pairs; a rate limit (429) or the daily cost
+    ceiling (503) still fails the request.
     """
     from services.llm_client import (
         CostCeilingError,
@@ -1259,10 +1430,23 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
     if not req.pairs:
         return DisambiguateResponse(results=[])
 
+    answers: list[DisambiguateResponseItem | None] = [None] * len(req.pairs)
+
+    def answer(k: int, decision: str, reason: str, canonical: str | None = None) -> None:
+        p = req.pairs[k]
+        answers[k] = DisambiguateResponseItem(
+            pair_id=p.pair_id, entity_a=p.entity_a.name, entity_b=p.entity_b.name,
+            decision=decision, canonical=canonical, reason=reason,
+        )
+
     # Names whose numbers differ are different versions, never the same
     # entity: answered without an LLM call, before the cap is applied.
-    version_pairs = [p for p in req.pairs if _numeric_conflict(p.entity_a.name, p.entity_b.name) == "hard"]
-    llm_pairs = [p for p in req.pairs if _numeric_conflict(p.entity_a.name, p.entity_b.name) != "hard"]
+    llm_pairs: list[int] = []
+    for k, p in enumerate(req.pairs):
+        if _numeric_conflict(p.entity_a.name, p.entity_b.name) == "hard":
+            answer(k, "different", "numeric_conflict: the names carry different numbers (versions are separate entities)")
+        else:
+            llm_pairs.append(k)
 
     # Enforce the LLM call cap. Truncated pairs are answered without an LLM
     # call as 'ambiguous' so callers always get one result per pair.
@@ -1274,68 +1458,64 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
             "%d pairs returned as 'ambiguous' without LLM calls",
             len(llm_pairs), DISAMBIGUATE_MAX_PAIRS, len(overflow_pairs),
         )
+    for k in overflow_pairs:
+        answer(k, "ambiguous", f"cap_exceeded: request had more than {DISAMBIGUATE_MAX_PAIRS} pairs; "
+                               "pair not sent to LLM, entities kept separate")
 
     # Partition pairs by kind: concept pairs (either side CONCEPT) get the
     # stricter concept-disambiguation prompt; the rest use the entity prompt.
     # Concepts have fuzzier boundaries — share vocabulary across distinct
     # ideas — so the concept prompt errs toward "different" in the gray band.
-    concept_pairs: list[dict[str, Any]] = []
-    entity_pairs: list[dict[str, Any]] = []
-    for p in capped_pairs:
-        pair_dict = {
-            "entity_a": {"name": p.entity_a.name, "type": p.entity_a.type, "context": p.entity_a.context},
-            "entity_b": {"name": p.entity_b.name, "type": p.entity_b.type, "context": p.entity_b.context},
-        }
-        if p.entity_a.type == "CONCEPT" or p.entity_b.type == "CONCEPT":
-            concept_pairs.append(pair_dict)
-        else:
-            entity_pairs.append(pair_dict)
+    is_concept = {k: "CONCEPT" in (req.pairs[k].entity_a.type, req.pairs[k].entity_b.type) for k in capped_pairs}
+    concept_pairs = [k for k in capped_pairs if is_concept[k]]
+    entity_pairs = [k for k in capped_pairs if not is_concept[k]]
+    failed = 0
 
-    all_results: list[DisambiguateResponseItem] = [
-        DisambiguateResponseItem(
-            entity_a=p.entity_a.name,
-            entity_b=p.entity_b.name,
-            decision="different",
-            canonical=None,
-            reason="numeric_conflict: the names carry different numbers (versions are separate entities)",
-        )
-        for p in version_pairs
-    ]
-
-    def _call_in_batches(pairs: list[dict[str, Any]], pair_kind: str) -> None:
-        for batch_start in range(0, len(pairs), 10):
-            batch = pairs[batch_start:batch_start + 10]
+    def _call_in_batches(indices: list[int], pair_kind: str) -> None:
+        nonlocal failed
+        for batch_start in range(0, len(indices), 10):
+            batch = indices[batch_start:batch_start + 10]
+            payload = [
+                {
+                    "entity_a": {"name": p.entity_a.name, "type": p.entity_a.type, "context": p.entity_a.context},
+                    "entity_b": {"name": p.entity_b.name, "type": p.entity_b.type, "context": p.entity_b.context},
+                }
+                for p in (req.pairs[k] for k in batch)
+            ]
             try:
-                resp = disambiguate_entities(batch, model=req.compile_model, pair_kind=pair_kind)
+                resp = disambiguate_entities(payload, model=req.compile_model, pair_kind=pair_kind)
             except LLMRateLimitedError as e:
                 raise HTTPException(status_code=429, detail=str(e)) from e
             except CostCeilingError as e:
                 raise HTTPException(status_code=503, detail=str(e)) from e
             except LLMCompileError as e:
-                raise HTTPException(status_code=500, detail=str(e)) from e
+                # The providers charge the daily cap inside the call, so the
+                # ceiling arrives wrapped; it still stops the request.
+                if isinstance(e.__cause__, CostCeilingError):
+                    raise HTTPException(status_code=503, detail=str(e.__cause__)) from e
+                # One bad batch (unparseable JSON, a dropped call) leaves its
+                # pairs undecided, kept separate like an 'ambiguous' verdict;
+                # the other batches' verdicts, already paid for, still count.
+                logger.warning("disambiguate: batch of %d pairs failed: %s", len(batch), e)
+                failed += len(batch)
+                for k in batch:
+                    answer(k, "ambiguous", f"llm_failed: {e}"[:300])
+                continue
 
-            for r in resp.results:
-                all_results.append(DisambiguateResponseItem(
-                    entity_a=r.entity_a,
-                    entity_b=r.entity_b,
-                    decision=r.decision,
-                    canonical=r.canonical,
-                    reason=r.reason,
-                ))
+            verdicts = _verdicts_by_pair([req.pairs[k] for k in batch], resp.results)
+            for k, r in zip(batch, verdicts):
+                if r is None:
+                    answer(k, "ambiguous", "no_verdict: the model returned no verdict for this pair")
+                elif r.decision == "same":
+                    answer(k, r.decision, r.reason, _same_canonical(req.pairs[k], r.canonical))
+                else:
+                    answer(k, r.decision, r.reason, r.canonical)
 
     if entity_pairs:
         _call_in_batches(entity_pairs, "entity")
     if concept_pairs:
         _call_in_batches(concept_pairs, "concept")
 
-    for p in overflow_pairs:
-        all_results.append(DisambiguateResponseItem(
-            entity_a=p.entity_a.name,
-            entity_b=p.entity_b.name,
-            decision="ambiguous",
-            canonical=None,
-            reason=f"cap_exceeded: request had more than {DISAMBIGUATE_MAX_PAIRS} pairs; "
-                   "pair not sent to LLM, entities kept separate",
-        ))
-
-    return DisambiguateResponse(results=all_results)
+    results = [a for a in answers if a is not None]
+    assert len(results) == len(req.pairs)
+    return DisambiguateResponse(results=results, failed_pairs=failed)

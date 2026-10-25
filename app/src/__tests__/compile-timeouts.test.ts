@@ -14,6 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  computeDisambiguateMs,
   computeResolveMs,
   computeMatchMs,
   computeDraftMs,
@@ -33,6 +34,9 @@ const CROSSREF_FLOOR_MS = 120_000;
 const COMMIT_FLOOR_MS   = 120_000;
 
 const RESOLVE_PER_SOURCE_MS = 60_000;
+const DISAMBIGUATE_FLOOR_MS     = 600_000;
+const DISAMBIGUATE_PER_BATCH_MS = 120_000;
+const MAX_DISAMBIGUATE_PAIRS    = 120;
 const MATCH_PER_PAIR_MS     = 60_000;
 const DRAFT_PER_BATCH_MS    = 600_000;
 const CROSSREF_PER_PLAN_MS  = 30_000;
@@ -41,26 +45,49 @@ const COMMIT_PER_PLAN_MS    = 60_000;
 const expected = (rawMs: number, floorMs: number): number =>
   Math.max(floorMs, Math.ceil(rawMs * OVERHEAD) + HEADROOM_MS);
 
+describe('computeDisambiguateMs', () => {
+  // One LLM call per 10 pairs, plus one partial batch for the entity/concept split.
+  const batches = (pairs: number) => Math.ceil(pairs / 10) + 1;
+
+  it('keeps the fixed 10 min it replaced as its floor', () => {
+    expect(computeDisambiguateMs(0)).toBe(DISAMBIGUATE_FLOOR_MS);
+    expect(computeDisambiguateMs(10)).toBe(DISAMBIGUATE_FLOOR_MS);
+  });
+
+  it('grows with the number of LLM batches', () => {
+    expect(computeDisambiguateMs(45)).toBe(expected(batches(45) * DISAMBIGUATE_PER_BATCH_MS, DISAMBIGUATE_FLOOR_MS));
+    expect(computeDisambiguateMs(120)).toBe(expected(batches(120) * DISAMBIGUATE_PER_BATCH_MS, DISAMBIGUATE_FLOOR_MS));
+    expect(computeDisambiguateMs(120)).toBeGreaterThan(computeDisambiguateMs(60));
+  });
+
+  it('leaves room for two batches at the slowest DeepSeek time seen (400s) at the cap', () => {
+    const typical = 11 * 30_000;
+    expect(computeDisambiguateMs(MAX_DISAMBIGUATE_PAIRS)).toBeGreaterThan(typical + 2 * 400_000);
+  });
+});
+
 describe('computeResolveMs', () => {
-  it('returns prelude + headroom at N=0 (floor enforced as a minimum)', () => {
-    const raw = 120_000 + 0 * RESOLVE_PER_SOURCE_MS;
-    expect(computeResolveMs(0)).toBe(expected(raw, RESOLVE_FLOOR_MS));
+  // Layer 3 can fill its cap from a single source, so resolve always allows
+  // the 120s prelude plus the disambiguate ceiling at the cap.
+  const atCap = () => 120_000 + computeDisambiguateMs(MAX_DISAMBIGUATE_PAIRS) + HEADROOM_MS;
+
+  it('covers a full Layer 3 at N=0 and N=1', () => {
+    expect(computeResolveMs(0)).toBe(atCap());
+    expect(computeResolveMs(1)).toBe(atCap());
     expect(computeResolveMs(0)).toBeGreaterThanOrEqual(RESOLVE_FLOOR_MS);
   });
 
-  it('scales linearly at N=1', () => {
-    const raw = 120_000 + 1 * RESOLVE_PER_SOURCE_MS;
-    expect(computeResolveMs(1)).toBe(expected(raw, RESOLVE_FLOOR_MS));
+  it('never lets the outer call abort the inner disambiguate call', () => {
+    for (const n of [0, 1, 5, 10, 38]) {
+      expect(computeResolveMs(n)).toBeGreaterThan(120_000 + computeDisambiguateMs(MAX_DISAMBIGUATE_PAIRS));
+    }
   });
 
-  it('scales linearly at N=10', () => {
-    const raw = 120_000 + 10 * RESOLVE_PER_SOURCE_MS;
-    expect(computeResolveMs(10)).toBe(expected(raw, RESOLVE_FLOOR_MS));
-  });
-
-  it('scales linearly at N=100', () => {
+  it('scales linearly with sources once that passes the cap ceiling', () => {
     const raw = 120_000 + 100 * RESOLVE_PER_SOURCE_MS;
     expect(computeResolveMs(100)).toBe(expected(raw, RESOLVE_FLOOR_MS));
+    const raw200 = 120_000 + 200 * RESOLVE_PER_SOURCE_MS;
+    expect(computeResolveMs(200)).toBe(expected(raw200, RESOLVE_FLOOR_MS));
   });
 });
 
@@ -167,7 +194,7 @@ describe('floor enforcement (degenerate inputs)', () => {
 
   it('every compute*Ms returns a positive integer at any non-negative N', () => {
     for (const n of [0, 1, 5, 10, 38, 100, 1000]) {
-      for (const fn of [computeResolveMs, computeMatchMs, computeDraftMs, computeCrossrefMs, computeCommitMs]) {
+      for (const fn of [computeDisambiguateMs, computeResolveMs, computeMatchMs, computeDraftMs, computeCrossrefMs, computeCommitMs]) {
         const result = fn(n);
         expect(Number.isInteger(result)).toBe(true);
         expect(result).toBeGreaterThan(0);

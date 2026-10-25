@@ -44,8 +44,15 @@ async function resolveWith(
     if (url.endsWith('/resolve/fuzzy')) return Response.json({ resolved: [], unresolved: body.entities });
     if (url.endsWith('/resolve/embedding')) return Response.json({ ...l2, unresolved: [] });
     if (url.endsWith('/resolve/disambiguate')) {
+      // One verdict per pair sent, matched back by its pair_id.
+      const pairs = body.pairs as Array<{ entity_a: Ent; entity_b: Ent; pair_id: string }>;
       return Response.json({
-        results: verdicts.map((v) => ({ entity_a: v.a, entity_b: v.b, decision: v.decision, canonical: v.canonical, reason: 'mock' })),
+        results: pairs.map((p) => {
+          const v = verdicts.find((x) => x.a === p.entity_a.name && x.b === p.entity_b.name);
+          return { pair_id: p.pair_id, entity_a: p.entity_a.name, entity_b: p.entity_b.name,
+                   decision: v?.decision ?? 'different', canonical: v?.canonical ?? null, reason: 'mock' };
+        }),
+        failed_pairs: 0,
       });
     }
     throw new Error(`unexpected fetch: ${url}`);

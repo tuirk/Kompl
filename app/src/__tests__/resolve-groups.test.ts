@@ -24,7 +24,7 @@ afterEach(() => {
 
 interface Ent { name: string; type: string; source_id: string; context: string }
 interface Group { canonical: string; type: string; aliases: string[]; source_ids: string[]; method: string }
-interface Pair { entity_a: Ent; entity_b: Ent; similarity: number; name_similarity: number }
+interface Pair { entity_a: Ent; entity_b: Ent; similarity: number; name_similarity: number; pair_id?: string }
 interface Verdict { a: string; b: string; decision: string; canonical: string | null }
 interface Layers {
   fuzzy: (sid: string) => { resolved: Group[]; unresolved: Ent[] };
@@ -61,9 +61,10 @@ async function resolveWith(concepts: Array<{ name: string; description?: string 
       return Response.json({
         results: pairs.map((p) => {
           const v = layers.verdicts?.find((x) => x.a === p.entity_a.name && x.b === p.entity_b.name);
-          return { entity_a: p.entity_a.name, entity_b: p.entity_b.name, decision: v?.decision ?? 'different',
-                   canonical: v?.canonical ?? null, reason: 'mock' };
+          return { pair_id: p.pair_id, entity_a: p.entity_a.name, entity_b: p.entity_b.name,
+                   decision: v?.decision ?? 'different', canonical: v?.canonical ?? null, reason: 'mock' };
         }),
+        failed_pairs: 0,
       });
     }
     throw new Error(`unexpected fetch: ${url}`);

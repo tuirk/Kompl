@@ -1,0 +1,19 @@
+[
+  {"short": "WCAG", "long": "Web Content Accessibility Guidelines", "abbreviation": true},
+  {"short": "ETH", "long": "Ethereum", "abbreviation": true},
+  {"short": "JS", "long": "JavaScript", "abbreviation": true},
+  {"short": "UNESCO", "long": "United Nations Educational, Scientific and Cultural Organization", "abbreviation": true},
+  {"short": "APCA", "long": "APCA contrast algorithm", "abbreviation": true},
+  {"short": "ÉU", "long": "États-Unis", "abbreviation": true},
+  {"short": "K8S", "long": "Kubernetes", "abbreviation": true},
+  {"short": "K8s", "long": "Kubernetes", "abbreviation": false},
+  {"short": "UK", "long": "Labour Party", "abbreviation": false},
+  {"short": "2009", "long": "Twenty oh nine", "abbreviation": false},
+  {"short": "planet", "long": "Mercury", "abbreviation": false},
+  {"short": "A", "long": "Apple", "abbreviation": false},
+  {"short": "AB CD", "long": "Ab Cd", "abbreviation": false},
+  {"short": "NVDA", "long": "NAVA", "abbreviation": false},
+  {"short": "XYZ", "long": "Ethereum", "abbreviation": false},
+  {"short": "Ethereum", "long": "ETH", "abbreviation": false},
+  {"short": "WCAG", "long": "  web content accessibility guidelines", "abbreviation": true}
+]
