@@ -265,6 +265,13 @@
       "b": {"name": "Color blindness simulation", "page": true, "page_type": "concept", "summary": "Color blindness simulation previews an image or interface as people with a colour vision deficiency would see it, so designers can check that colours stay distinguishable. Several free tools offer it."},
       "expected": "different",
       "why": "A tool that simulates colour blindness, not the technique the page defines. Alike only in context across kinds (0.45 by name, 0.77 with it, real MiniLM), under the 0.6 name floor, so never asked; contexts written for the replay."
+    },
+    {
+      "id": "wcag-contrast-ratio-vs-contrast-ratio",
+      "a": {"name": "Contrast ratio", "type": "CONCEPT", "source": "s1", "context": "Contrast ratio is calculated from the relative luminance of two colours and ranges from 1:1 to 21:1; WCAG asks for 4.5:1 for body text."},
+      "b": {"name": "WCAG contrast ratio", "type": "CONCEPT", "source": "s2", "context": "The WCAG contrast ratio, (L1 + 0.05) / (L2 + 0.05) on relative luminance, is known to give poor results for mid-tone colours."},
+      "expected": "same",
+      "why": "The one WCAG 2 luminance formula, once with its standard's name in front (film run 2026-10-25: both became pages in one compile)."
     }
   ]
 }

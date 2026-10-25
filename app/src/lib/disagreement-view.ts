@@ -6,7 +6,7 @@
 
 import { hiddenDuplicates } from './disagreement-duplicates';
 import type { Disagreement, DisagreementFinder, DisagreementKind, DisagreementStatus } from './disagreements';
-import type { PageDispute } from './page-disputes';
+import { topicKey, type PageDispute } from './page-disputes';
 
 export interface PanelDisagreement {
   /** Stable React key. */
@@ -40,9 +40,9 @@ export function panelDisagreements(disputes: readonly PageDispute[], records: re
   const textRecords = records.filter((r) => r.found_by === 'page_text');
   const used = new Set<string>();
   const rows: PanelDisagreement[] = disputes.map((d, i) => {
-    const topic = d.topic.toLowerCase();
+    const topic = topicKey(d.topic);
     const record = textRecords.find(
-      (r) => !used.has(r.disagreement_id) && (r.topic.toLowerCase() === topic || sameSources(r.source_ids, d.sourceIds)),
+      (r) => !used.has(r.disagreement_id) && (topicKey(r.topic) === topic || sameSources(r.source_ids, d.sourceIds)),
     );
     if (record) used.add(record.disagreement_id);
     return {

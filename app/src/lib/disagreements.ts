@@ -27,7 +27,7 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 import { getDb, logActivity } from './db';
-import { findPageDisputes } from './page-disputes';
+import { findPageDisputes, topicKey } from './page-disputes';
 
 /** disputed: a live disagreement; changed: a claim a later source superseded; contradiction: not classified yet. */
 export const DISAGREEMENT_KINDS = ['disputed', 'changed', 'contradiction', 'scope', 'opinion'] as const;
@@ -232,7 +232,7 @@ function loggedBefore(db: Database.Database, pageId: string): Array<{ topic: str
     try {
       const d = JSON.parse(row.details ?? '{}') as { topic?: unknown; source_ids?: unknown };
       return {
-        topic: typeof d.topic === 'string' ? d.topic.toLowerCase() : '',
+        topic: typeof d.topic === 'string' ? topicKey(d.topic) : '',
         sourceIds: Array.isArray(d.source_ids) ? d.source_ids.filter((s): s is string => typeof s === 'string') : [],
       };
     } catch {
@@ -269,9 +269,9 @@ export function syncPageTextDisagreements(
   const added: Array<{ id: string; dispute: (typeof disputes)[number] }> = [];
 
   for (const dispute of disputes) {
-    const topic = dispute.topic.toLowerCase();
+    const topic = topicKey(dispute.topic);
     const match = stored.find(
-      (s) => !used.has(s.disagreement_id) && (s.topic.toLowerCase() === topic || sameSources(s.source_ids, dispute.sourceIds)),
+      (s) => !used.has(s.disagreement_id) && (topicKey(s.topic) === topic || sameSources(s.source_ids, dispute.sourceIds)),
     );
     if (match) {
       used.add(match.disagreement_id);
@@ -330,7 +330,7 @@ export function syncPageTextDisagreements(
     // Disputes logged by releases before the record are not new either.
     const logged = loggedBefore(db, page.page_id);
     for (const { id, dispute } of added) {
-      const topic = dispute.topic.toLowerCase();
+      const topic = topicKey(dispute.topic);
       if (logged.some((l) => l.topic === topic || sameSources(l.sourceIds, dispute.sourceIds))) continue;
       logActivity('page_dispute_recorded', {
         source_id: null,

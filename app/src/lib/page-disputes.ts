@@ -128,6 +128,22 @@ interface HeadingLine {
   text: string;
 }
 
+/**
+ * A dispute topic as compared with a stored one: case, curly quotes and
+ * dashes, spacing and edge punctuation fold away, so a rewrite that only
+ * retypes the apostrophe (APCA's / APCA’s) is the same finding.
+ */
+export function topicKey(topic: string): string {
+  return topic
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[‘’‚‛′`´]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/[‐-―−]/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s"'.,:;!?-]+|[\s"'.,:;!?-]+$/g, '');
+}
+
 /** Disputes recorded in a page's markdown (stored or display form), in page order. */
 export function findPageDisputes(markdown: string): PageDispute[] {
   const lines = markdown.split('\n');

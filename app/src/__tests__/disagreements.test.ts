@@ -78,6 +78,21 @@ describe('page-text findings', () => {
     expect(getActivityCounts(db).page_dispute_recorded).toBe(2);
   });
 
+  it('a rewrite that retypes the apostrophe and adds a source is the same finding', () => {
+    const { db, page } = setup();
+    const curly = PAGE.replace('founding year', 'the city’s founding year');
+    syncPageTextDisagreements(db, page, curly);
+    const before = listPageDisagreements('vilnius')[0].disagreement_id;
+    const straight = PAGE.replace('founding year', "the city's founding year").replace(
+      `1320[^${B}].`,
+      `1320[^${B}][^${C}].`,
+    );
+    expect(syncPageTextDisagreements(db, page, straight)).toBe(0);
+    const after = listPageDisagreements('vilnius', { includeCleared: true });
+    expect(after.filter((r) => r.kind === 'disputed').map((r) => r.disagreement_id)).toEqual([before]);
+    expect(after[0].topic).toBe("The city's founding year");
+  });
+
   it('a section the text drops is cleared, and returns with its verdict', () => {
     const { db, page } = setup();
     syncPageTextDisagreements(db, page, PAGE);
