@@ -4,7 +4,7 @@ Responsibilities:
   - Wrap the google-genai SDK for structured output via Pydantic response_schema.
   - Enforce a per-process token-bucket rate limiter (pyrate-limiter, in-memory).
   - Track estimated daily spend in /data/llm-cap.json (survives restarts, resets at midnight UTC);
-    raise CostCeilingError when the daily cap is hit.
+    raise CostCeilingError before sending a call once the daily cap is reached.
   - Truncate inputs to GEMINI_INPUT_TOKEN_CAP chars before sending (latency guard).
 
 Architecture notes (docs/research/2026-04-09-llm-compile.md):
@@ -34,9 +34,10 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from pydantic import BaseModel
 
@@ -236,11 +237,17 @@ class LLMRateLimitedError(Exception):
 
 
 class CostCeilingError(Exception):
-    """Raised when estimated daily spend crosses GEMINI_DAILY_USD_CAP."""
+    """Raised before a call is sent once today's recorded spend has reached the daily cap."""
 
 
 class LLMCompileError(Exception):
     """Raised when the LLM call succeeds but the response cannot be parsed."""
+
+
+# Every call site hands these on unwrapped (``except _LIMIT_ERRORS: raise``)
+# rather than as LLMCompileError: the routers answer 429 llm_rate_limited and
+# 503 daily_cost_ceiling for them, which is what the app checks.
+_LIMIT_ERRORS = (LLMRateLimitedError, CostCeilingError)
 
 
 def _parse_failure_tail(
@@ -307,13 +314,25 @@ logger = logging.getLogger(__name__)
 _CAP_FILE = Path(os.environ.get("DATA_ROOT", "/data")) / "llm-cap.json"
 _CONFIG_FILE = Path(os.environ.get("DATA_ROOT", "/data")) / "llm-config.json"
 
-# Serializes the read→check→increment→write critical section in
-# _check_and_record_cost. The service runs a single uvicorn worker by design
-# (Dockerfile --workers 1; single-writer SQLite), so every request thread
-# shares this interpreter and a threading.Lock fully closes the TOCTOU race —
-# no cross-process flock needed. Concurrent extract/disambiguate threads used
-# to read the same baseline and lose each other's spend increments.
+# Serializes the spend file's read→increment→write in _check_and_record_cost
+# and the admission check in _reserve_spend. The service runs a single uvicorn
+# worker by design (Dockerfile --workers 1; single-writer SQLite), so every
+# request thread shares this interpreter and a threading.Lock fully closes the
+# TOCTOU race — no cross-process flock needed. Concurrent extract/disambiguate
+# threads used to read the same baseline and lose each other's spend increments.
 _cap_lock = threading.Lock()
+# Woken whenever a call in flight settles, so calls waiting at the cap re-check.
+_spend_settled = threading.Condition(_cap_lock)
+
+# Calls sent but not yet recorded, with the sum of their worst-case cost
+# (see _estimate_call_usd). Guarded by _cap_lock.
+_in_flight: dict[str, Any] = {"calls": 0, "usd": 0.0}
+# How often a waiting call re-reads the spend and cap files (midnight reset,
+# a cap raised in Settings), and the longest it waits for calls in flight:
+# 600 s is the longest provider HTTP timeout (DeepSeek), so a call that never
+# settles cannot hold the others back forever.
+_SPEND_WAIT_POLL_S = 5.0
+_SPEND_WAIT_MAX_S = 600.0
 
 # Cache the daily cap for 30 s to avoid a filesystem read on every LLM call.
 # 30 s is short enough that a Settings UI change takes effect quickly without
@@ -406,8 +425,8 @@ def _write_cap(data: dict) -> None:
                 pass
             raise
     except OSError as e:
-        # Cap still enforced in-memory for this call; next successful write
-        # catches up because spend is re-read before every increment.
+        # This call's cost is missing from the file, which is all the
+        # pre-send cap check reads; later writes add only their own cost.
         logger.warning("llm-cap.json write failed (%s) — spend not persisted", e)
 
 
@@ -418,19 +437,21 @@ def _check_and_record_cost(
     output_tokens: int,
     thought_tokens: int,
 ) -> None:
-    """Check daily LLM $ cap then record cost. Raises CostCeilingError if exceeded.
+    """Record a returned call's cost in today's spend; never refuses it.
 
-    Per-call cost is computed by the model's provider (Gemini today; DeepSeek
-    in Phase 4) via ``provider.cost_usd(model, usage_dict)``. The dispatcher
-    enforces the daily LLM $ cap and the on-disk persistence — pricing tables
-    live in the providers.
+    Per-call cost is computed by the model's provider via
+    ``provider.cost_usd(model, usage_dict)``; pricing tables live in the
+    providers, the on-disk persistence here.
 
     The token-count signature is preserved for backward compatibility with
     the existing test fixture ``mock_cost``; the body translates to a usage
     dict for the provider.
 
     Called from inside the provider's ``complete()`` after every successful
-    API call. If GEMINI_DAILY_USD_CAP=0 the check is skipped (unlimited mode).
+    API call, while the call still holds its _spend_reservation. The cap is
+    enforced before sending (_reserve_spend): a call that crosses it here was
+    already billed, so its cost is recorded and its result kept, and the next
+    call is refused instead.
     """
     provider = get_provider(model)
     usage = {
@@ -443,16 +464,79 @@ def _check_and_record_cost(
 
     with _cap_lock:
         cap_data = _read_cap()
-        daily_cap = _read_daily_cap_usd()
-        if daily_cap > 0 and cap_data["total_usd"] + cost_usd > daily_cap:
-            raise CostCeilingError(
-                f"Daily LLM spend limit (${daily_cap:.2f}) reached. "
-                f"Today's spend: ${cap_data['total_usd']:.4f}. "
-                f"Resets at midnight UTC."
-            )
         cap_data["total_usd"] = round(cap_data["total_usd"] + cost_usd, 6)
         cap_data["call_count"] = cap_data.get("call_count", 0) + 1
         _write_cap(cap_data)
+
+
+def _estimate_call_usd(req: LLMRequest) -> float:
+    """Worst-case cost of one call, known before it is sent.
+
+    The prompt at ~4 chars per token plus the full max_output_tokens at the
+    output rate: thinking counts against that limit on every supported
+    provider (Gemini max_output_tokens, DeepSeek max_tokens).
+    """
+    prompt_chars = sum(len(m.get("content", "")) for m in req.messages)
+    return get_provider(req.model).cost_usd(req.model, {
+        "prompt_token_count":         prompt_chars // 4 + 1,
+        "cached_content_token_count": 0,
+        "candidates_token_count":     req.max_output_tokens,
+        "thoughts_token_count":       0,
+    })
+
+
+def _reserve_spend(req: LLMRequest) -> float:
+    """Admit one call under the daily cap, before it is sent; return its hold.
+
+    Refuses with CostCeilingError once today's recorded spend has reached the
+    cap. Otherwise the call goes out while recorded spend plus the worst case
+    of calls already in flight is under the cap, and holds its own worst case
+    until it is recorded. Parallel calls near the cap therefore wait for calls
+    in flight to settle instead of all going out at once, and spend passes the
+    cap by at most about one call. A cap of 0 is unlimited: nothing waits or
+    is refused. After _SPEND_WAIT_MAX_S a waiting call goes out anyway.
+    """
+    estimate = _estimate_call_usd(req)
+    deadline = time.monotonic() + _SPEND_WAIT_MAX_S
+    with _spend_settled:
+        while True:
+            daily_cap = _read_daily_cap_usd()
+            spent = _read_cap()["total_usd"]
+            if daily_cap > 0 and spent >= daily_cap:
+                raise CostCeilingError(
+                    f"Daily LLM spend limit (${daily_cap:.2f}) reached. "
+                    f"Today's spend: ${spent:.4f}. "
+                    f"Resets at midnight UTC."
+                )
+            if (
+                daily_cap <= 0
+                or spent + _in_flight["usd"] < daily_cap
+                or time.monotonic() >= deadline
+            ):
+                _in_flight["calls"] += 1
+                _in_flight["usd"] += estimate
+                return estimate
+            _spend_settled.wait(_SPEND_WAIT_POLL_S)
+
+
+def _release_spend(estimate: float) -> None:
+    """Drop a settled call's hold and wake the calls waiting at the cap."""
+    with _spend_settled:
+        _in_flight["calls"] -= 1
+        # Back to exactly zero when idle so float drift never accumulates.
+        _in_flight["usd"] = _in_flight["usd"] - estimate if _in_flight["calls"] else 0.0
+        _spend_settled.notify_all()
+
+
+@contextmanager
+def _spend_reservation(req: LLMRequest) -> Iterator[None]:
+    """Hold a place under the daily cap from before the send until the call
+    is recorded (or fails). Every provider's complete() sends inside one."""
+    estimate = _reserve_spend(req)
+    try:
+        yield
+    finally:
+        _release_spend(estimate)
 
 
 def _salvage_extraction(raw_text: str) -> "LLMExtractionResponse | None":
@@ -546,7 +630,7 @@ def lint_scan(pages: list[str], model: str = _DEFAULT_MODEL) -> LintScanResponse
             step="lint",
             extra={"force_json_mime": True},
         ))
-    except LLMRateLimitedError:
+    except _LIMIT_ERRORS:
         raise
     except Exception as e:
         raise LLMCompileError(f"lint_scan_failed: {e}") from e
@@ -738,7 +822,7 @@ def extract_source(
             temperature=0.0,
             step="extract",
         ))
-    except LLMRateLimitedError:
+    except _LIMIT_ERRORS:
         raise
     except Exception as e:
         raise LLMCompileError(f"extract_llm_call_failed: {e}") from e
@@ -827,7 +911,7 @@ def extract_source(
             temperature=0.0,
             step="extract-fallback",
         ))
-    except LLMRateLimitedError:
+    except _LIMIT_ERRORS:
         raise
     except Exception as fallback_call_err:
         raise LLMCompileError(
@@ -1018,7 +1102,7 @@ def disambiguate_entities(
             temperature=0.0,
             step="disambiguate",
         ))
-    except LLMRateLimitedError:
+    except _LIMIT_ERRORS:
         raise
     except Exception as e:
         raise LLMCompileError(f"disambiguate_llm_call_failed: {e}") from e
@@ -1362,7 +1446,7 @@ def draft_page(
             step="draft_page",
             extra={"retry": False},
         ))
-    except LLMRateLimitedError:
+    except _LIMIT_ERRORS:
         raise
     except Exception as e:
         raise LLMCompileError(f"draft_page_llm_failed: {e}") from e
@@ -1409,9 +1493,12 @@ class CrossrefResponse(BaseModel):
     contradictions_found: list[CrossrefContradiction]
 
 
+TRIAGE_DECISIONS = ("update", "contradiction", "skip")
+
+
 class TriageResponse(BaseModel):
     # No extra='forbid' — LLM output model.
-    decision: str  # "update" | "contradiction" | "skip"
+    decision: str  # one of TRIAGE_DECISIONS; triage_page_update checks it
     reason: str
 
 
@@ -1486,7 +1573,7 @@ def crossref_pages(pages: list[dict[str, Any]], model: str = _DEFAULT_MODEL) -> 
             temperature=0.0,
             step="crossref",
         ))
-    except LLMRateLimitedError:
+    except _LIMIT_ERRORS:
         raise
     except Exception as e:
         raise LLMCompileError(f"crossref_llm_failed: {e}") from e
@@ -1550,7 +1637,8 @@ def triage_page_update(
     Raises:
         LLMRateLimitedError  — bucket exhausted
         CostCeilingError     — daily $ cap exceeded
-        LLMCompileError      — empty response or JSON parse failed
+        LLMCompileError      — empty response, JSON parse failed, or a decision
+                               other than the three (case and spacing ignored)
     """
     import json as _json
 
@@ -1580,7 +1668,7 @@ def triage_page_update(
             temperature=0.0,
             step="triage",
         ))
-    except LLMRateLimitedError:
+    except _LIMIT_ERRORS:
         raise
     except Exception as e:
         raise LLMCompileError(f"triage_llm_call_failed: {e}") from e
@@ -1598,7 +1686,12 @@ def triage_page_update(
         ) from result.parse_error
     triage = result.parsed
 
-    decision = triage.decision if triage.decision in ("update", "contradiction", "skip") else "skip"
+    # Any other answer is no verdict. Read as 'skip', it would record the
+    # source on the page with nothing having decided that; as an error the
+    # app keeps the pair for a later re-check.
+    decision = triage.decision.strip().lower()
+    if decision not in TRIAGE_DECISIONS:
+        raise LLMCompileError(f"triage_unknown_decision: {triage.decision[:80]!r}")
     return {"decision": decision, "reason": triage.reason}
 
 
@@ -1636,7 +1729,7 @@ def generate_schema(pages_summary: list[dict[str, Any]], model: str = _DEFAULT_M
             temperature=0.0,
             step="schema",
         ))
-    except LLMRateLimitedError:
+    except _LIMIT_ERRORS:
         raise
     except Exception as e:
         raise LLMCompileError(f"generate_schema_llm_failed: {e}") from e

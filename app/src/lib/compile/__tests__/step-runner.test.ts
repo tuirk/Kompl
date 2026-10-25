@@ -121,6 +121,25 @@ describe('runPerItemStep', () => {
     expect(step?.status).toBe('running');
   });
 
+  it('a run stopped while an item is in flight writes no progress for it', async () => {
+    let stopped = false;
+
+    const runPromise = runPerItemStep<string>({
+      sessionId,
+      stepKey: 'ingest_urls',
+      items: ['a'],
+      // The run is cancelled or superseded while this item is in flight.
+      run: async () => { stopped = true; },
+      progressMessage: (done, failed, total) => `${done}/${total}`,
+      assertNotCancelled: () => {
+        if (stopped) throw new Error('CompileSupersededError');
+      },
+    });
+
+    await expect(runPromise).rejects.toThrow('CompileSupersededError');
+    expect(readStep('ingest_urls')).toEqual({ status: 'running' });
+  });
+
   it('onFailure throw does NOT derail the batch — logged + counted', async () => {
     const items = ['a', 'b'];
     const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

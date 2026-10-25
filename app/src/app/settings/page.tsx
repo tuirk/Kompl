@@ -3,8 +3,8 @@
 /**
  * /settings — one scrollable page, grouped so the decisions that matter most
  * come first: AI model & spend, Connect your AI (MCP), Wiki health,
- * Backup & restore, then Advanced tuning (auto-approve, then the compile
- * quality settings, collapsed).
+ * Backup & restore, then Advanced tuning (auto-approve, retrying failed page
+ * checks, then the compile quality settings, collapsed).
  *
  * Other pages link to #compile-model, #integrations, #import and
  * #page-upgrade — keep those ids. Layout building blocks live in ./_ui.tsx.
@@ -23,6 +23,7 @@ import {
 } from './_ui';
 import AgentSourcesCard from './AgentSourcesCard';
 import PageUpgradeCard from './PageUpgradeCard';
+import TriageRecheckCard from './TriageRecheckCard';
 import {
   DEFAULT_COMPILE_MODEL, LLM_MODELS, LLM_MODEL_INFO, getProviderForModel, isLlmModel,
   type LlmModel, type LlmProvider,
@@ -881,6 +882,8 @@ export default function SettingsPage() {
               }
               saved={saved ? 'Saved.' : null}
             />
+
+            <TriageRecheckCard />
 
             <Card>
               <details>

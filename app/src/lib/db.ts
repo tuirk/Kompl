@@ -151,6 +151,7 @@ const EXPECTED_TABLES = [
   'entity_mentions',
   'relationship_mentions',
   'collect_staging',
+  'triage_rechecks',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -1478,6 +1479,11 @@ export interface PagePlanRow {
   created_at: string;
 }
 
+/**
+ * `draft_status` defaults to 'planned' (draft writes it next). A plan with
+ * nothing to draft or link up, a provenance-only plan, is stored
+ * 'crossreffed': ready for commit.
+ */
 export function insertPagePlan(plan: {
   plan_id: string;
   session_id: string;
@@ -1487,15 +1493,16 @@ export function insertPagePlan(plan: {
   source_ids: string[];
   existing_page_id?: string | null;
   related_plan_ids?: string[];
+  draft_status?: 'planned' | 'crossreffed';
 }): void {
   openDb()
     .prepare(
       `INSERT INTO page_plans
          (plan_id, session_id, title, page_type, action,
-          source_ids, existing_page_id, related_plan_ids)
+          source_ids, existing_page_id, related_plan_ids, draft_status)
        VALUES
          (@plan_id, @session_id, @title, @page_type, @action,
-          @source_ids, @existing_page_id, @related_plan_ids)`
+          @source_ids, @existing_page_id, @related_plan_ids, @draft_status)`
     )
     .run({
       plan_id: plan.plan_id,
@@ -1506,6 +1513,7 @@ export function insertPagePlan(plan: {
       source_ids: JSON.stringify(plan.source_ids),
       existing_page_id: plan.existing_page_id ?? null,
       related_plan_ids: plan.related_plan_ids ? JSON.stringify(plan.related_plan_ids) : null,
+      draft_status: plan.draft_status ?? 'planned',
     });
 }
 
@@ -2092,6 +2100,53 @@ export function markStaleSessionsFailed(): number {
   return cleaned;
 }
 
+export type CompileRunClaim =
+  | { claimed: true; restarted: boolean }
+  | { claimed: false; reason: 'no_progress_record' | 'already_completed' | 'session_cancelled' | 'already_running' };
+
+/**
+ * The run gate of POST /api/compile/run: claim the session's row for a new
+ * pipeline, in one transaction.
+ *
+ *   - missing, completed or cancelled → refused;
+ *   - running within its time limit   → refused (already_running);
+ *   - running past its time limit (markStaleSessionsFailed) → claimed again:
+ *     a restart;
+ *   - queued, failed (or any other)   → claimed.
+ *
+ * A claim sets status 'running' and a fresh started_at at once. A restarted
+ * run therefore counts for getRunningCompileSession straight away, with a new
+ * time limit; left 'failed', or 'running' with the old started_at, it would
+ * let another session start alongside it.
+ */
+export function claimCompileRun(sessionId: string): CompileRunClaim {
+  const db = openDb();
+  return db.transaction((): CompileRunClaim => {
+    const row = getCompileProgress(sessionId);
+    if (!row) return { claimed: false, reason: 'no_progress_record' };
+    if (row.status === 'completed') return { claimed: false, reason: 'already_completed' };
+    if (row.status === 'cancelled') return { claimed: false, reason: 'session_cancelled' };
+
+    const restarted = row.status === 'running';
+    if (restarted) {
+      markStaleSessionsFailed();
+      if (getCompileProgress(sessionId)?.status === 'running') {
+        return { claimed: false, reason: 'already_running' };
+      }
+    }
+
+    db.prepare(
+      `UPDATE compile_progress
+          SET status       = 'running',
+              started_at   = CURRENT_TIMESTAMP,
+              error        = NULL,
+              completed_at = NULL
+        WHERE session_id   = ?`
+    ).run(sessionId);
+    return { claimed: true, restarted };
+  })();
+}
+
 /**
  * Return the single fresh queued/running compile session, or null.
  *
@@ -2365,13 +2420,39 @@ export function getPagesByType(types: string[]): PageRow[] {
 }
 
 /**
- * Increment the source_count column of a page by the given amount.
- * Called after a provenance-only commit so source_count stays accurate.
+ * Recount a page's source_count from provenance, the ground truth. Distinct
+ * sources: provenance may hold several rows for one source and page (a
+ * 'created' and later 'updated' rows).
  */
-export function incrementPageSourceCount(pageId: string, increment: number): void {
+export function recountPageSources(pageId: string): void {
   openDb()
-    .prepare('UPDATE pages SET source_count = source_count + ? WHERE page_id = ?')
-    .run(increment, pageId);
+    .prepare(
+      `UPDATE pages SET source_count = (
+         SELECT COUNT(DISTINCT source_id) FROM provenance WHERE page_id = ?
+       ) WHERE page_id = ?`
+    )
+    .run(pageId, pageId);
+}
+
+/**
+ * Link sources to a page without changing its text (a provenance-only plan:
+ * match triage found the source adds nothing to the page). Each source not
+ * yet recorded on the page gets one 'mentioned' row; a source already on it,
+ * whatever its rows say, gets none, so a retry or a later 'skip' verdict
+ * never adds a duplicate. Then recounts source_count. Returns the rows added.
+ * Sync, no file I/O: runs inside the commit transaction.
+ */
+export function linkSourcesToPage(pageId: string, sourceIds: string[], contentHash: string): number {
+  const db = openDb();
+  const linked = db.prepare('SELECT 1 FROM provenance WHERE page_id = ? AND source_id = ? LIMIT 1');
+  let added = 0;
+  for (const source_id of new Set(sourceIds)) {
+    if (linked.get(pageId, source_id)) continue;
+    insertProvenance({ source_id, page_id: pageId, content_hash: contentHash, contribution_type: 'mentioned' });
+    added++;
+  }
+  recountPageSources(pageId);
+  return added;
 }
 
 /**

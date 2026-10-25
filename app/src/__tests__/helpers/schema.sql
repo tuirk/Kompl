@@ -202,6 +202,22 @@ CREATE TABLE collect_staging (
   ingested_at DATETIME
 );
 
+-- v30: match triage calls that gave no verdict, kept for a later compile to
+-- check again (lib/triage-rechecks.ts).
+CREATE TABLE triage_rechecks (
+  source_id TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  page_id TEXT NOT NULL REFERENCES pages(page_id) ON DELETE CASCADE,
+  reason TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  first_failed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_failed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  session_id TEXT NOT NULL,
+  verdict TEXT,
+  verdict_reason TEXT,
+  verdict_session_id TEXT,
+  PRIMARY KEY (source_id, page_id)
+);
+
 CREATE VIRTUAL TABLE pages_fts USING fts5(
   page_id,
   title,
@@ -243,6 +259,8 @@ CREATE INDEX idx_relationship_mentions_pair ON relationship_mentions(from_canoni
 CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id);
 CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
+CREATE INDEX idx_triage_rechecks_page ON triage_rechecks(page_id);
+CREATE INDEX idx_triage_rechecks_first_failed ON triage_rechecks(first_failed_at);
 
 INSERT INTO settings (key, value) VALUES ('schema_version', '30');
 -- v26: fresh installs get an explicit compile_model row (DEFAULT_COMPILE_MODEL).

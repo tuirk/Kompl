@@ -18,6 +18,8 @@ This router NEVER opens kompl.db. rule #1 in CLAUDE.md.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
@@ -269,7 +271,7 @@ class TriageRequest(BaseModel):
 class TriageResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
-    decision: str  # 'update' | 'contradiction' | 'skip'
+    decision: Literal['update', 'contradiction', 'skip']
     reason: str
 
 
@@ -280,7 +282,8 @@ def pipeline_triage(req: TriageRequest) -> TriageResponse:
     Returns decision ('update'|'contradiction'|'skip') and a brief reason.
     HTTP 429 when rate limit bucket is full.
     HTTP 503 when daily cost ceiling is exceeded.
-    HTTP 500 when the LLM call fails or JSON parse fails.
+    HTTP 500 when the LLM call fails, JSON parse fails, or the model answers
+    with another decision (the app records a failed triage, never a skip).
     """
     try:
         result = triage_page_update(

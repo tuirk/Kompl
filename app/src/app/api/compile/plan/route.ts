@@ -9,7 +9,7 @@
  *   2. Entity pages — from canonical entity list
  *   3. Concept pages — from canonical_concepts (resolved cross-session)
  *   4. Comparison pages — relationships of type competes_with / contradicts
- *   5. Overview pages — when a category has 3+ entity/concept pages
+ *   5. Overview pages — when an entity type with a category has 3+ entity pages
  *
  * All planned pages are inserted into the page_plans table for the draft
  * and commit steps to consume.
@@ -31,7 +31,6 @@ import {
   getMentionKinds,
   getMinSourceChars,
   getPage,
-  getPageByTitle,
   getSourceIdsForRelationship,
   getSourceIdsMentioning,
   getSourcePage,
@@ -78,9 +77,12 @@ export interface PlannedPage {
 // not a noise knob.
 export const COMPARISON_SOURCE_THRESHOLD = 3;
 
-// ── Entity type → category heuristic ─────────────────────────────────────────
+// ── Entity type → overview category ──────────────────────────────────────────
+// Null for a type with no category (WORK_OF_ART, OTHER, ...): Rule 5 makes
+// no overview for it. A catch-all "General Overview" next to the
+// fine-grained ones defeats the grouping.
 
-export function entityTypeToCategory(entityType: string): string {
+export function entityTypeToCategory(entityType: string): string | null {
   const t = entityType.toUpperCase();
   if (t === 'PERSON') return 'People';
   if (t === 'ORG') return 'Organizations';
@@ -88,7 +90,7 @@ export function entityTypeToCategory(entityType: string): string {
   if (t === 'LOCATION') return 'Locations';
   if (t === 'EVENT') return 'Events';
   if (t === 'CONCEPT') return 'Concepts';
-  return 'General';
+  return null;
 }
 
 // ── Triage updates keep the page's own type ──────────────────────────────────
@@ -99,7 +101,7 @@ export function entityTypeToCategory(entityType: string): string {
 // (lib/page-kind.ts). Summary pages keep Rule 1's own type logic.
 const SELF_TYPED_PAGES = new Set<string>(['entity', 'concept', 'comparison', 'overview']);
 
-// The pages Rules 2 and 3 update by title (db.ts getTopicPageByTitle).
+// The pages Rules 2-5 update by title (db.ts getTopicPageByTitle).
 const TOPIC_PAGE_TYPES = ['entity', 'concept', 'comparison', 'overview'] as const;
 
 function updatePageType(
@@ -385,7 +387,8 @@ export async function POST(request: Request) {
     const related: string[] = [planIdA, planIdB];
 
     const compTitle = `${from} vs ${to}`;
-    const existingComp = getPageByTitle(compTitle);
+    // Like Rules 2 and 3: a source page with this title is not the comparison.
+    const existingComp = getTopicPageByTitle(compTitle);
     if (!existingComp && waitsForApproval(compTitle, ['comparison'])) continue;
     plans.push({
       plan_id: randomUUID(),
@@ -399,7 +402,7 @@ export async function POST(request: Request) {
   }
 
   // ── Rule 5: Overview pages ───────────────────────────────────────────────────
-  // Group entity + concept pages by category, create overview when 3+.
+  // Group this session's entity plans by entity type, create overview when 3+.
   // Use Set — within-session canonical dedup (Rule 2) can yield multiple
   // canonicalEntities entries sharing one plan_id; a list would double-count
   // them and trigger an overview from fewer than 3 unique pages.
@@ -408,12 +411,9 @@ export async function POST(request: Request) {
   for (const entity of canonicalEntities) {
     const planId = planIdByCanonical.get(entity.canonical.toLowerCase());
     if (!planId) continue;
-    const t = entity.type?.toUpperCase();
-    // Skip unmapped/OTHER types — they would flow through entityTypeToCategory's
-    // 'General' fallback and produce a catch-all overview page alongside the
-    // fine-grained ones, defeating the whole point of the category grouping.
-    if (!t || t === 'OTHER') continue;
-    const cat = entityTypeToCategory(entity.type);
+    // No type, or one with no category (OTHER, WORK_OF_ART, ...): no overview.
+    const cat = entity.type ? entityTypeToCategory(entity.type) : null;
+    if (!cat) continue;
     if (!categoryMap.has(cat)) categoryMap.set(cat, new Set());
     categoryMap.get(cat)!.add(planId);
   }
@@ -430,7 +430,7 @@ export async function POST(request: Request) {
     }
 
     const overviewTitle = `${category} Overview`;
-    const existingOverview = getPageByTitle(overviewTitle);
+    const existingOverview = getTopicPageByTitle(overviewTitle);
     if (!existingOverview && waitsForApproval(overviewTitle, ['overview'])) continue;
     plans.push({
       plan_id: randomUUID(),
@@ -445,16 +445,25 @@ export async function POST(request: Request) {
 
   // ── Rule 6: Match-triage outputs (skip / update / contradiction) ────────────
   // The match step (/api/compile/match) runs TF-IDF + LLM triage for each
-  // session source against non-summary pages. All three decisions now have
-  // a concrete downstream action:
+  // session source against non-summary pages, and may re-check pairs whose
+  // triage failed in an earlier compile (their sources are from earlier
+  // sessions; lib/compile/triage-recheck.ts). The three verdicts each have
+  // a concrete downstream action; a failed triage has none:
   //   skip          → provenance-only plan (record the link, no re-draft)
   //   update        → update plan (re-draft the existing page with this source)
   //   contradiction → NO plan (out of compile's hot path) + rich activity row
   //                   powering the wiki page sidebar.
+  //   triage_failed → NO plan: triage gave no verdict (rate limit, cost
+  //                   ceiling, error), so nothing may record the source on
+  //                   the page. match/route.ts already logged it.
   // Pre-built source metadata lookup so Rule 6 doesn't re-query `sources`
   // on every match.
   const sessionSourceMetaById = new Map<string, typeof sessionSources[number]>();
   for (const s of sessionSources) sessionSourceMetaById.set(s.source_id, s);
+  const earlierSourceMeta = (source_id: string) =>
+    db
+      .prepare(`SELECT source_id, title, source_url, source_type, date_ingested FROM sources WHERE source_id = ?`)
+      .get(source_id) as typeof sessionSources[number] | undefined;
 
   for (const match of matches) {
     if (match.decision === 'skip') {
@@ -494,7 +503,8 @@ export async function POST(request: Request) {
     } else if (match.decision === 'contradiction') {
       // Log a detailed activity row. The getPageContradictions(pageId) helper
       // in db.ts json_extracts from here — keep the field names stable.
-      const srcMeta = sessionSourceMetaById.get(match.source_id);
+      // A re-checked pair's source is from an earlier session.
+      const srcMeta = sessionSourceMetaById.get(match.source_id) ?? earlierSourceMeta(match.source_id);
       logActivity('page_contradiction_detected', {
         source_id: match.source_id,
         session_id,
@@ -512,11 +522,16 @@ export async function POST(request: Request) {
         },
       });
     }
-    // Any other decision value: drop silently. Triage is enum-typed at the
-    // match layer; unknown values are a contract violation we don't rescue.
+    // 'triage_failed' and any other decision value: no plan. Triage is
+    // enum-typed at the match layer; unknown values are a contract
+    // violation we don't rescue.
   }
 
   // ── Persist all plans ────────────────────────────────────────────────────────
+  // A provenance-only plan has nothing to draft or link up, so it is stored
+  // ready for commit. Ones earlier versions stored 'planned' never reach
+  // commit (draft and crossref pass them by): some came from triage
+  // outages, which gave no verdict, so linking them would be wrong.
   for (const plan of plans) {
     insertPagePlan({
       plan_id: plan.plan_id,
@@ -527,6 +542,7 @@ export async function POST(request: Request) {
       source_ids: plan.source_ids,
       existing_page_id: plan.existing_page_id ?? null,
       related_plan_ids: plan.related_plan_ids,
+      draft_status: plan.action === 'provenance-only' ? 'crossreffed' : 'planned',
     });
   }
 

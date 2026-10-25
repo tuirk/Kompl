@@ -26,24 +26,23 @@
 import { NextResponse } from 'next/server';
 
 import {
-  getCompileProgress,
-  updateCompileStep,
-  completeCompileProgress,
-  failCompileProgress,
+  claimCompileRun,
   getSourcesBySession,
   getExtractionsBySession,
   getStagingBySession,
   countPagePlansByStatus,
   getDb,
   logActivity,
-  markStaleSessionsFailed,
 } from '@/lib/db';
+import { CompileCancelledError, CompileRun, CompileSupersededError } from '@/lib/compile/compile-run';
 import { runHealthCheckStep } from '@/lib/compile/steps/health-check';
 import { runIngestFilesStep } from '@/lib/compile/steps/ingest-files';
 import { runIngestUrlsStep } from '@/lib/compile/steps/ingest-urls';
 import { runIngestTextsStep } from '@/lib/compile/steps/ingest-texts';
+import { failIfNothingIngested } from '@/lib/compile/steps/ingest-outcome';
 import { sanitizeLogValue } from '@/lib/log-safe';
 import { LONG_HTTP_AGENT, makeDispatcher } from '@/lib/long-http-agent';
+import { MAX_TRIAGE_RECHECKS_PER_COMPILE, clearSessionRecheckVerdicts } from '@/lib/triage-rechecks';
 import {
   computeResolveMs,
   computeMatchMs,
@@ -120,14 +119,16 @@ async function callMatch(
   sessionId: string,
   canonicalEntities: unknown[],
   sourceCount: number,
+  willPlan: boolean,
 ): Promise<{ skipped: boolean; matches: unknown[]; stats: Record<string, number> }> {
   // Dynamic timeout sized to sourceCount × candidatesPerSource (default 3, the
-  // slice(0,3) cap in match/route.ts). See compile-timeouts.ts:computeMatchMs.
-  const timeoutMs = computeMatchMs(sourceCount);
+  // slice(0,3) cap in match/route.ts), plus the re-check cap when match may
+  // re-check stored triage failures. See compile-timeouts.ts:computeMatchMs.
+  const timeoutMs = computeMatchMs(sourceCount, 3, willPlan ? MAX_TRIAGE_RECHECKS_PER_COMPILE : 0);
   const res = await fetch(`${APP_URL}/api/compile/match`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, canonical_entities: canonicalEntities }),
+    body: JSON.stringify({ session_id: sessionId, canonical_entities: canonicalEntities, will_plan: willPlan }),
     signal: AbortSignal.timeout(timeoutMs),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
     dispatcher: makeDispatcher(timeoutMs),
@@ -233,18 +234,6 @@ async function callSchema(sessionId: string): Promise<unknown> {
   return res.json();
 }
 
-class CompileCancelledError extends Error {
-  constructor() {
-    super('Cancelled by user');
-    this.name = 'CompileCancelledError';
-  }
-}
-
-function assertNotCancelled(sessionId: string): void {
-  const p = getCompileProgress(sessionId);
-  if (p?.status === 'cancelled') throw new CompileCancelledError();
-}
-
 // Log step-done timing on success so cold-start latency (first-call spaCy /
 // sentence-transformer lazy load in nlp-service, better-sqlite3 WAL warm-up)
 // shows up clearly. On failure the caller throws and the top-level .catch in
@@ -256,18 +245,18 @@ async function timed<T>(sessionId: string, step: string, fn: () => Promise<T>): 
   return r;
 }
 
-async function runDraftStep(sessionId: string, planCount: number): Promise<void> {
-  updateCompileStep(sessionId, 'draft', 'running');
+async function runDraftStep(run: CompileRun, planCount: number): Promise<void> {
+  const { sessionId } = run;
+  run.step('draft', 'running');
   const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId, planCount));
-  updateCompileStep(
-    sessionId,
+  run.step(
     'draft',
     'done',
     draftResult.failed > 0
       ? `${draftResult.drafted} drafts generated, ${draftResult.failed} failed — retry to re-attempt`
       : `${draftResult.drafted} drafts generated`
   );
-  assertNotCancelled(sessionId);
+  run.assertActive();
 }
 
 // Commit gate (CLAUDE.md rule #5): never signal completion while a page is
@@ -279,13 +268,12 @@ async function runDraftStep(sessionId: string, planCount: number): Promise<void>
 // Either way the session ends 'failed' so the UI/n8n don't treat it as done.
 // Retry recovers: commit always re-runs and its reconcile pass re-flushes,
 // and failed plans are re-drafted and committed again.
-function assertCommitComplete(sessionId: string, r: CommitResult): void {
+function assertCommitComplete(run: CompileRun, r: CommitResult): void {
   const problems: string[] = [];
   if (r.failed > 0) problems.push(`${r.failed} page(s) failed to commit`);
   if (r.flush_failures > 0) problems.push(`${r.flush_failures} page file(s) failed to flush to disk`);
   if (problems.length === 0) return;
-  updateCompileStep(
-    sessionId,
+  run.step(
     'commit',
     'failed',
     `${r.committed} pages committed to DB, but ${problems.join(' and ')} — retry to re-attempt`
@@ -294,32 +282,41 @@ function assertCommitComplete(sessionId: string, r: CommitResult): void {
 }
 
 // Steps 6-8, then completion.
-async function finishPipeline(sessionId: string, planCount: number): Promise<void> {
+async function finishPipeline(run: CompileRun, planCount: number): Promise<void> {
+  const { sessionId } = run;
   // Step 6: crossref — ALWAYS re-run.
   // Reads page_plans WHERE draft_status='drafted'. If draft was skipped and
   // plans are already 'crossreffed' (commit-failure retry), this returns 0
   // wikilinks as a safe no-op — plans stay 'crossreffed' for commit to consume.
-  updateCompileStep(sessionId, 'crossref', 'running');
+  run.step('crossref', 'running');
   const crossrefResult = await timed(sessionId, 'crossref', () => callCrossref(sessionId, planCount));
-  updateCompileStep(sessionId, 'crossref', 'done', `${crossrefResult.wikilinks_added} wikilinks added`);
-  assertNotCancelled(sessionId);
+  run.step('crossref', 'done', `${crossrefResult.wikilinks_added} wikilinks added`);
+  run.assertActive();
 
   // Step 7: commit — ALWAYS re-run (no LLM, DB + disk writes, idempotent).
   // Pass 5 is a synchronous better-sqlite3 transaction — cancel is blocked at
   // the route level once this step is 'running'. No mid-transaction abort.
-  updateCompileStep(sessionId, 'commit', 'running');
+  // No await between the boundary above and this write, so a cancel or a
+  // discard either stops the run first or sees commit running and is refused.
+  run.step('commit', 'running');
   const commitResult = await timed(sessionId, 'commit', () => callCommit(sessionId, planCount));
-  assertCommitComplete(sessionId, commitResult);
+  assertCommitComplete(run, commitResult);
 
   const thinMsg = commitResult.thin_drafts_skipped > 0 ? `, ${commitResult.thin_drafts_skipped} thin drafts skipped` : '';
-  updateCompileStep(sessionId, 'commit', 'done', `${commitResult.committed} pages, ${commitResult.sources_activated} sources committed${thinMsg}`);
+  run.step('commit', 'done', `${commitResult.committed} pages, ${commitResult.sources_activated} sources committed${thinMsg}`);
+  // Commit has taken this session's plans, so the stored pairs its re-checks
+  // answered are settled and can go (lib/triage-rechecks.ts).
+  clearSessionRecheckVerdicts(sessionId);
+  // Cancel is refused from here on; this only stops a superseded run before
+  // it spends a schema call.
+  run.assertActive();
 
   // Step 8: schema — ALWAYS re-run (idempotent, schema route handles already_exists).
-  updateCompileStep(sessionId, 'schema', 'running');
+  run.step('schema', 'running');
   await timed(sessionId, 'schema', () => callSchema(sessionId));
-  updateCompileStep(sessionId, 'schema', 'done');
+  run.step('schema', 'done');
 
-  completeCompileProgress(sessionId);
+  run.complete();
 }
 
 // No source of the session still needs compiling. Two kinds of session get here:
@@ -335,12 +332,13 @@ async function finishPipeline(sessionId: string, planCount: number): Promise<voi
 // from sources.compile_status: plans still to draft are drafted, and commit
 // always runs, because its reconcile pass is what writes the page files an
 // earlier run left in pending_content.
-async function resumeWithoutSources(sessionId: string): Promise<void> {
+async function resumeWithoutSources(run: CompileRun): Promise<void> {
+  const { sessionId } = run;
   const skippedDetail = 'skipped (no sources)';
-  updateCompileStep(sessionId, 'extract', 'done', skippedDetail);
-  updateCompileStep(sessionId, 'resolve', 'done', skippedDetail);
-  updateCompileStep(sessionId, 'match',   'done', skippedDetail);
-  updateCompileStep(sessionId, 'plan',    'done', skippedDetail);
+  run.step('extract', 'done', skippedDetail);
+  run.step('resolve', 'done', skippedDetail);
+  run.step('match',   'done', skippedDetail);
+  run.step('plan',    'done', skippedDetail);
 
   const planCounts = countPagePlansByStatus(sessionId);
   const planCount = Object.values(planCounts).reduce((sum, c) => sum + c, 0);
@@ -348,28 +346,33 @@ async function resumeWithoutSources(sessionId: string): Promise<void> {
   if (planCount === 0) {
     // Saved-link-only session: nothing to draft or link, and no page of its
     // own to flush. Commit still runs its reconcile pass.
-    updateCompileStep(sessionId, 'draft',    'done', skippedDetail);
-    updateCompileStep(sessionId, 'crossref', 'done', skippedDetail);
-    updateCompileStep(sessionId, 'commit',   'running');
-    assertCommitComplete(sessionId, await timed(sessionId, 'commit', () => callCommit(sessionId, 0)));
-    updateCompileStep(sessionId, 'commit',   'done', skippedDetail);
-    updateCompileStep(sessionId, 'schema',   'done', skippedDetail);
-    completeCompileProgress(sessionId);
+    run.step('draft',    'done', skippedDetail);
+    run.step('crossref', 'done', skippedDetail);
+    run.assertActive();
+    run.step('commit',   'running');
+    assertCommitComplete(run, await timed(sessionId, 'commit', () => callCommit(sessionId, 0)));
+    clearSessionRecheckVerdicts(sessionId);
+    run.step('commit',   'done', skippedDetail);
+    run.step('schema',   'done', skippedDetail);
+    run.complete();
     return;
   }
 
   const pendingDraftCount = (planCounts.planned ?? 0) + (planCounts.failed ?? 0);
   if (pendingDraftCount > 0) {
     console.log('[compile:%s] %d plans pending, sources already active — re-drafting', sanitizeLogValue(sessionId), pendingDraftCount);
-    await runDraftStep(sessionId, planCount);
+    await runDraftStep(run, planCount);
   } else {
-    updateCompileStep(sessionId, 'draft', 'done', 'skipped (no drafts left to write)');
+    run.step('draft', 'done', 'skipped (no drafts left to write)');
   }
-  await finishPipeline(sessionId, planCount);
+  await finishPipeline(run, planCount);
 }
 
-async function runCompilePipeline(sessionId: string): Promise<void> {
-  assertNotCancelled(sessionId);
+async function runCompilePipeline(run: CompileRun): Promise<void> {
+  const { sessionId } = run;
+  // Ingest steps check this before each item and before writing progress.
+  const assertActive = () => run.assertActive();
+  run.assertActive();
 
   // ── Prelude (v18 onboarding v2 staging flow) ───────────────────────────
   // Only runs when the session has collect_staging rows. Legacy sessions
@@ -395,37 +398,39 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     await timed(sessionId, 'health_check', () =>
       runHealthCheckStep(sessionId, urlItems.length > 0)
     );
-    assertNotCancelled(sessionId);
+    run.assertActive();
 
     await timed(sessionId, 'ingest_files', () =>
-      runIngestFilesStep(sessionId, fileItems, assertNotCancelled)
+      runIngestFilesStep(sessionId, fileItems, assertActive)
     );
-    assertNotCancelled(sessionId);
+    run.assertActive();
 
     await timed(sessionId, 'ingest_urls', () =>
-      runIngestUrlsStep(sessionId, urlItems, assertNotCancelled)
+      runIngestUrlsStep(sessionId, urlItems, assertActive)
     );
-    assertNotCancelled(sessionId);
+    run.assertActive();
 
     await timed(sessionId, 'ingest_texts', () =>
-      runIngestTextsStep(sessionId, textItems, assertNotCancelled)
+      runIngestTextsStep(sessionId, textItems, assertActive)
     );
-    assertNotCancelled(sessionId);
+    run.assertActive();
   } else {
     // No staging rows → legacy flow. Mark prelude steps 'done (skipped)'
     // so resetForRetry treats them as completed and retries from the first
     // non-done compile step instead of wiping everything.
-    updateCompileStep(sessionId, 'health_check', 'done', 'skipped (legacy session)');
-    updateCompileStep(sessionId, 'ingest_files', 'done', 'skipped (no items)');
-    updateCompileStep(sessionId, 'ingest_urls', 'done', 'skipped (no items)');
-    updateCompileStep(sessionId, 'ingest_texts', 'done', 'skipped (no items)');
+    run.step('health_check', 'done', 'skipped (legacy session)');
+    run.step('ingest_files', 'done', 'skipped (no items)');
+    run.step('ingest_urls', 'done', 'skipped (no items)');
+    run.step('ingest_texts', 'done', 'skipped (no items)');
   }
 
   // No source left to compile: saved-link-only sessions, and retries of
   // sessions whose sources are already 'active' (see resumeWithoutSources).
+  // A session where every staged item failed to import fails here instead.
   const preludeSources = getSourcesBySession(sessionId);
   if (preludeSources.length === 0) {
-    await resumeWithoutSources(sessionId);
+    if (failIfNothingIngested(run)) return;
+    await resumeWithoutSources(run);
     return;
   }
 
@@ -440,9 +445,9 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   const unextracted = sources.filter((s) => !extractedIds.has(s.source_id));
 
   if (sources.length > 0 && unextracted.length === 0) {
-    updateCompileStep(sessionId, 'extract', 'done', `${sources.length}/${sources.length} sources extracted`);
+    run.step('extract', 'done', `${sources.length}/${sources.length} sources extracted`);
   } else {
-    updateCompileStep(sessionId, 'extract', 'running');
+    run.step('extract', 'running');
     let extractSucceeded = sources.length - unextracted.length;
     let extractFailed = 0;
 
@@ -472,7 +477,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
         try {
           // Cancel check inside the worker so an in-flight extract finishes
           // its current call but no new ones start.
-          assertNotCancelled(sessionId);
+          run.assertActive();
         } catch {
           cancelled = true;
           return;
@@ -493,8 +498,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
         // is JS-int-atomic; concurrent writes to compile_progress.steps land
         // in WAL serially. Last-write-wins on the detail string is fine —
         // each writer has the same source-of-truth (succeeded count).
-        updateCompileStep(
-          sessionId,
+        run.step(
           'extract',
           'running',
           `${extractSucceeded}/${sources.length} sources extracted`,
@@ -511,20 +515,20 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     if (cancelled) {
       // Cancellation already wrote the cancelled status via cancel route;
       // bail out without overwriting the step state.
-      assertNotCancelled(sessionId);
+      run.assertActive();
     }
     if (extractSucceeded === 0) {
-      updateCompileStep(sessionId, 'extract', 'failed', `0/${sources.length} sources extracted`);
-      failCompileProgress(sessionId, 'All sources failed extraction');
+      run.step('extract', 'failed', `0/${sources.length} sources extracted`);
+      run.fail('All sources failed extraction');
       return;
     }
     const detail =
       extractFailed > 0
         ? `${extractSucceeded}/${sources.length} sources extracted (${extractFailed} failed)`
         : `${extractSucceeded}/${sources.length} sources extracted`;
-    updateCompileStep(sessionId, 'extract', 'done', detail);
+    run.step('extract', 'done', detail);
   }
-  assertNotCancelled(sessionId);
+  run.assertActive();
 
   // sourceCount feeds dynamic-timeout sizing for callResolve and callMatch.
   // Both wrappers compute their outer AbortSignal + per-request undici Agent
@@ -533,36 +537,16 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   const sourceCount = sources.length;
 
   // Step 2: resolve — ALWAYS re-run (cheap: reads extractions table directly).
-  updateCompileStep(sessionId, 'resolve', 'running');
+  run.step('resolve', 'running');
   const resolveResult = await timed(sessionId, 'resolve', () => callResolve(sessionId, sourceCount));
   const canonicalEntities = resolveResult.canonical_entities;
   const canonicalConcepts = resolveResult.canonical_concepts;
-  updateCompileStep(
-    sessionId,
+  run.step(
     'resolve',
     'done',
     `${canonicalEntities.length} entities, ${canonicalConcepts.length} concepts`
   );
-  assertNotCancelled(sessionId);
-
-  // Step 3: match — ALWAYS re-run (cheap: TF-IDF, no LLM unless triage).
-  updateCompileStep(sessionId, 'match', 'running');
-  const matchResult = await timed(sessionId, 'match', () => callMatch(sessionId, canonicalEntities, sourceCount));
-  if (matchResult.skipped) {
-    updateCompileStep(sessionId, 'match', 'done', 'First compile — no existing pages');
-  } else {
-    // Surface candidates_found + sources_checked so the UI can distinguish
-    // "match found 0 candidates above the TF-IDF threshold" from "match
-    // acted on N candidates and decided u/c/s on each". Without these counts
-    // the prior `0u/0c/0s` rendering looked identical to a bug.
-    updateCompileStep(
-      sessionId,
-      'match',
-      'done',
-      `${matchResult.stats.candidates_found} candidates from ${matchResult.stats.sources_checked} sources → ${matchResult.stats.updates}u/${matchResult.stats.contradictions}c/${matchResult.stats.skips}s`
-    );
-  }
-  assertNotCancelled(sessionId);
+  run.assertActive();
 
   // Steps 4+5: plan + draft. State is derived from the page_plans table, not
   // compile_progress.steps, so per-plan failures (e.g. Gemini 429 mid-batch)
@@ -604,6 +588,42 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     }
   }
   const hasNewSources = [...allExtractedIds].some((id) => !planSourceIds.has(id));
+  // Decided before match (match writes no plans or extractions) so match
+  // knows whether plan will take its answers: only then may it re-check
+  // stored triage failures, whose verdicts would otherwise be lost.
+  const willPlan = !planExists || hasNewSources;
+
+  // Step 3: match — ALWAYS re-run (cheap: TF-IDF, no LLM unless triage).
+  run.step('match', 'running');
+  const matchResult = await timed(sessionId, 'match', () =>
+    callMatch(sessionId, canonicalEntities, sourceCount, willPlan)
+  );
+  if (matchResult.skipped) {
+    run.step('match', 'done', 'First compile — no existing pages');
+  } else {
+    // Surface candidates_found + sources_checked so the UI can distinguish
+    // "match found 0 candidates above the TF-IDF threshold" from "match
+    // acted on N candidates and decided u/c/s on each". Without these counts
+    // the prior `0u/0c/0s` rendering looked identical to a bug.
+    // triage_failed: candidates whose triage call failed (no decision made).
+    // rechecked / recheck_answered / recheck_dropped: stored failures from
+    // earlier compiles (lib/compile/triage-recheck.ts).
+    // Read defensively: match responses without the fields count as 0.
+    const s = matchResult.stats;
+    const triageFailed = s.triage_failed ?? 0;
+    const rechecked = s.rechecked ?? 0;
+    const recheckDropped = s.recheck_dropped ?? 0;
+    run.step(
+      'match',
+      'done',
+      `${s.candidates_found} candidates from ${s.sources_checked} sources → ${s.updates}u/${s.contradictions}c/${s.skips}s` +
+        (triageFailed > 0 ? ` · ${triageFailed} failed` : '') +
+        (rechecked > 0 || recheckDropped > 0
+          ? ` · ${rechecked} rechecked, ${s.recheck_answered ?? 0} answered, ${recheckDropped} dropped`
+          : '')
+    );
+  }
+  run.assertActive();
 
   // planCount feeds dynamic-timeout sizing for callDraft / callCrossref /
   // callCommit. Fresh path takes it from callPlan's return; retry-skip path
@@ -612,17 +632,17 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
   // drafted + crossreffed for commit). Set inside the branches below.
   let planCount: number;
 
-  if (!planExists || hasNewSources) {
+  if (willPlan) {
     // Fresh run: plan then draft.
-    updateCompileStep(sessionId, 'plan', 'running');
+    run.step('plan', 'running');
     const planResult = await timed(sessionId, 'plan', () =>
       callPlan(sessionId, canonicalEntities, canonicalConcepts, matchResult.matches)
     );
     planCount = planResult.stats.total;
-    updateCompileStep(sessionId, 'plan', 'done', `${planCount} pages planned`);
-    assertNotCancelled(sessionId);
+    run.step('plan', 'done', `${planCount} pages planned`);
+    run.assertActive();
 
-    await runDraftStep(sessionId, planCount);
+    await runDraftStep(run, planCount);
   } else if (pendingDraftCount > 0) {
     // Retry path: plans exist, some are still 'planned' or were marked
     // 'failed' on a prior Gemini error. Re-draft only those.
@@ -630,7 +650,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     // crossref/commit timeouts size to the whole plan set, not just pending.
     planCount = Object.values(planCounts).reduce((sum, c) => sum + c, 0);
     console.log('[compile:%s] %d plans pending — re-drafting without re-planning', sanitizeLogValue(sessionId), pendingDraftCount);
-    await runDraftStep(sessionId, planCount);
+    await runDraftStep(run, planCount);
   } else {
     // No plan work to do; downstream still runs against committed plans, so
     // crossref/commit need a planCount sized to the full plan set.
@@ -638,7 +658,7 @@ async function runCompilePipeline(sessionId: string): Promise<void> {
     console.log('[compile:%s] plan+draft already complete — skipping both', sanitizeLogValue(sessionId));
   }
 
-  await finishPipeline(sessionId, planCount);
+  await finishPipeline(run, planCount);
 }
 
 export async function POST(request: Request) {
@@ -651,34 +671,43 @@ export async function POST(request: Request) {
   const { session_id } = rawBody as { session_id?: string };
   if (!session_id?.trim()) return NextResponse.json({ error: 'session_id required' }, { status: 400 });
 
-  const progress = getCompileProgress(session_id);
-  if (!progress) return NextResponse.json({ error: 'no_progress_record' }, { status: 404 });
-  if (progress.status === 'completed') return NextResponse.json({ session_id, status: 'already_completed' }, { status: 409 });
-  if (progress.status === 'cancelled') {
-    return NextResponse.json({ error: 'session_cancelled' }, { status: 409 });
-  }
-
-  if (progress.status === 'running') {
-    // Per-session adaptive cleanup (60 min floor + 6 min/source) — see
-    // markStaleSessionsFailed in lib/db.ts. This call is idempotent: only
-    // sessions that have exceeded their personal threshold get marked failed.
-    markStaleSessionsFailed();
-    const refreshed = getCompileProgress(session_id);
-    if (refreshed?.status === 'running') {
-      return NextResponse.json({ error: 'already_running' }, { status: 409 });
+  // Run gate: claim the row (status 'running', fresh started_at) and make
+  // this run the session's current one, with no await in between. A stale
+  // 'running' session is restarted; its old pipeline, if it is still waiting
+  // on a call, is superseded and stops at its next step boundary.
+  const claim = claimCompileRun(session_id);
+  if (!claim.claimed) {
+    switch (claim.reason) {
+      case 'no_progress_record':
+        return NextResponse.json({ error: 'no_progress_record' }, { status: 404 });
+      case 'already_completed':
+        return NextResponse.json({ session_id, status: 'already_completed' }, { status: 409 });
+      case 'session_cancelled':
+        return NextResponse.json({ error: 'session_cancelled' }, { status: 409 });
+      case 'already_running':
+        return NextResponse.json({ error: 'already_running' }, { status: 409 });
     }
-    // Fell through: it was stale and is now 'failed' — fall through to start fresh
   }
+  if (claim.restarted) {
+    console.log('[compile:%s] stale run past its time limit — restarting', sanitizeLogValue(session_id));
+  }
+  const run = CompileRun.start(session_id);
 
   // Fire and forget — return immediately so n8n doesn't timeout
-  runCompilePipeline(session_id).catch((err: unknown) => {
-    if (err instanceof CompileCancelledError) {
-      console.log('[compile:%s] cancelled by user — pipeline exited cleanly', sanitizeLogValue(session_id));
-      return;
-    }
-    console.error('[compile:%s] pipeline error:', sanitizeLogValue(session_id), err);
-    failCompileProgress(session_id, err instanceof Error ? err.message : String(err));
-  });
+  runCompilePipeline(run)
+    .catch((err: unknown) => {
+      if (err instanceof CompileCancelledError) {
+        console.log('[compile:%s] cancelled by user — pipeline exited cleanly', sanitizeLogValue(session_id));
+        return;
+      }
+      if (err instanceof CompileSupersededError) {
+        console.log('[compile:%s] superseded by a restarted run — old pipeline exited', sanitizeLogValue(session_id));
+        return;
+      }
+      console.error('[compile:%s] pipeline error:', sanitizeLogValue(session_id), err);
+      run.fail(err instanceof Error ? err.message : String(err));
+    })
+    .finally(() => run.end());
 
   return NextResponse.json({ session_id, status: 'started' });
 }

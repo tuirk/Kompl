@@ -59,7 +59,8 @@ function draftMarkdown(body: string): string {
 }
 
 interface MockOptions {
-  draft?: { status?: number; markdown?: string };
+  /** `detail` is the FastAPI error body nlp-service sends with a non-200 status. */
+  draft?: { status?: number; markdown?: string; detail?: string };
   duringDraft?: () => void;
   /** How many /vectors/upsert attempts fail before one succeeds. */
   vectorFailures?: number;
@@ -81,7 +82,7 @@ function mockNlp(pageId: string, opts: MockOptions = {}): MockCalls {
         calls.draftBodies.push(JSON.parse(String(init?.body ?? '{}')));
         opts.duringDraft?.();
         const status = opts.draft?.status ?? 200;
-        if (status !== 200) return new Response('upstream error', { status });
+        if (status !== 200) return Response.json({ detail: opts.draft?.detail ?? 'upstream error' }, { status });
         return Response.json({ markdown: opts.draft?.markdown ?? draftMarkdown(`One claim [S1]. ${LONG_BODY}`) });
       }
       if (u.endsWith('/storage/write-page')) {
@@ -332,8 +333,10 @@ One source gives 2009 [S1]. Another gives 2008 [S2].`,
     handle = setupTestDb();
     const pageId = seedRedraftablePage(handle);
     const before = handle.db.prepare('SELECT * FROM pages WHERE page_id = ?').get(pageId);
-    const calls = mockNlp(pageId, { draft: { status: 503 } });
+    // What nlp-service answers at the limit (nlp-service/tests/test_cost_ceiling_routes.py).
+    const calls = mockNlp(pageId, { draft: { status: 503, detail: 'daily_cost_ceiling' } });
     await expectRedraftError(redraftPage(pageId), 'daily_cost_ceiling', 503);
+    await expect(redraftPage(pageId)).rejects.toThrow("Today's LLM spending limit is reached.");
     expect(calls.writes).toHaveLength(0);
     expect(handle.db.prepare('SELECT * FROM pages WHERE page_id = ?').get(pageId)).toEqual(before);
   });

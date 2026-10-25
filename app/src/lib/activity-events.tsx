@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { RetryButton } from '@/components/RetryButton';
 import { friendlyIngestError } from './ingest-error-copy';
 import { normalizeLintResult, lintCounts } from './lint-result';
+import { MAX_TRIAGE_ATTEMPTS } from './triage-recheck-limits';
 
 // ── Shared shapes ──────────────────────────────────────────────────────────
 // FeedActivityRow is the CLIENT-facing row shape — includes server-joined
@@ -151,6 +152,68 @@ function renderResolutionPairsUnchecked(row: FeedActivityRow): RowContent {
   if (failed > 0) parts.push(`${failed} in AI calls that failed`);
   return {
     primary: <strong>{overCap + failed} possible duplicate pairs not checked</strong>,
+    secondary: parts.length > 0 ? <span style={MONO_DIM}>{parts.join(' · ')}</span> : null,
+    action: null,
+    isError: false,
+  };
+}
+
+// Written by compile/match: checks of this session's sources against
+// existing pages that gave no verdict. Nothing was recorded on those pages.
+function renderMatchTriageFailed(row: FeedActivityRow): RowContent {
+  const { d, num } = makeGetters(row);
+  const failed = num('failed') ?? 0;
+  const parts: string[] = [];
+  const costCeiling = num('cost_ceiling') ?? 0;
+  const rateLimited = num('rate_limited') ?? 0;
+  const errors = num('errors') ?? 0;
+  if (costCeiling > 0) parts.push(`${costCeiling} hit the daily cost limit`);
+  if (rateLimited > 0) parts.push(`${rateLimited} rate limited`);
+  if (errors > 0) parts.push(`${errors} failed`);
+  const examples = Array.isArray(d?.examples)
+    ? (d.examples as Array<{ source_title?: unknown; page_title?: unknown }>)
+        .filter((e) => typeof e.page_title === 'string')
+        .map((e) => (typeof e.source_title === 'string' ? `${e.source_title} → ${e.page_title as string}` : (e.page_title as string)))
+    : [];
+  if (examples.length > 0) parts.push(examples.join(', '));
+  return {
+    primary: <strong>{failed} {failed === 1 ? 'check' : 'checks'} against existing pages not done</strong>,
+    secondary: parts.length > 0 ? <span style={MONO_DIM}>{parts.join(' · ')}</span> : null,
+    action: null,
+    isError: false,
+  };
+}
+
+// Written by compile/match: stored checks that failed in an earlier compile
+// and were run again (lib/compile/triage-recheck.ts), or dropped.
+function renderMatchTriageRechecked(row: FeedActivityRow): RowContent {
+  const { d, num } = makeGetters(row);
+  const rechecked = num('rechecked') ?? 0;
+  const dropped = num('dropped') ?? 0;
+  const gaveUp = num('gave_up') ?? 0;
+  const failed = num('failed') ?? 0;
+  const costCeiling = num('cost_ceiling') ?? 0;
+  const parts: string[] = [];
+  const answered = num('answered') ?? 0;
+  if (answered > 0) parts.push(`${answered} answered`);
+  if (failed > 0) parts.push(`${failed} failed again${costCeiling > 0 ? ` (${costCeiling} hit the daily cost limit)` : ''}`);
+  if (gaveUp > 0) parts.push(`${gaveUp} given up after ${MAX_TRIAGE_ATTEMPTS} tries`);
+  if (dropped - gaveUp > 0) parts.push(`${dropped - gaveUp} no longer needed`);
+  const waiting = num('waiting') ?? 0;
+  if (waiting > 0) parts.push(`${waiting} still waiting`);
+  const givenUp = Array.isArray(d?.examples)
+    ? (d.examples as Array<{ source_title?: unknown; page_title?: unknown; outcome?: unknown }>)
+        .filter((e) => e.outcome === 'gave_up' && typeof e.page_title === 'string')
+        .map((e) => (typeof e.source_title === 'string' ? `${e.source_title} → ${e.page_title as string}` : (e.page_title as string)))
+    : [];
+  if (givenUp.length > 0) parts.push(`given up: ${givenUp.join(', ')}`);
+  const n = rechecked > 0 ? rechecked : dropped;
+  return {
+    primary: (
+      <strong>
+        {n} earlier failed {n === 1 ? 'check' : 'checks'} against existing pages {rechecked > 0 ? 'run again' : 'dropped'}
+      </strong>
+    ),
     secondary: parts.length > 0 ? <span style={MONO_DIM}>{parts.join(' · ')}</span> : null,
     action: null,
     isError: false,
@@ -692,6 +755,8 @@ export const ACTIVITY_EVENTS = {
   extraction_failed:      { key: 'extraction_failed',      badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   resolution_complete:    { key: 'resolution_complete',    badge: { label: 'RESOLVED',   tone: 'mint' as Tone }, render: renderResolutionComplete },
   resolution_pairs_unchecked: { key: 'resolution_pairs_unchecked', badge: { label: 'UNCHECKED', tone: 'dim' as Tone }, render: renderResolutionPairsUnchecked },
+  match_triage_failed:    { key: 'match_triage_failed',    badge: { label: 'UNCHECKED',  tone: 'dim'  as Tone }, render: renderMatchTriageFailed },
+  match_triage_rechecked: { key: 'match_triage_rechecked', badge: { label: 'RECHECKED',  tone: 'neut' as Tone }, render: renderMatchTriageRechecked },
   aliases_suspended:      { key: 'aliases_suspended',      badge: { label: 'SET ASIDE',  tone: 'dim'  as Tone }, render: renderAliasesSuspended },
   draft_too_thin:         { key: 'draft_too_thin',         badge: { label: 'TOO THIN',   tone: 'dim'  as Tone }, render: renderDraftTooThin },
   draft_queued_for_approval: { key: 'draft_queued_for_approval', badge: { label: 'QUEUED', tone: 'dim' as Tone }, render: renderDraftQueuedForApproval },

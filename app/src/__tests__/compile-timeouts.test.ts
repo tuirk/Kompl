@@ -111,6 +111,11 @@ describe('computeMatchMs', () => {
     const raw = 50 * 3 * MATCH_PER_PAIR_MS;
     expect(computeMatchMs(50)).toBe(expected(raw, MATCH_FLOOR_MS));
   });
+
+  it('adds one triage call per allowed re-check of a stored failure', () => {
+    const raw = 10 * 3 * MATCH_PER_PAIR_MS + 10 * 30_000;
+    expect(computeMatchMs(10, 3, 10)).toBe(expected(raw, MATCH_FLOOR_MS));
+  });
 });
 
 describe('computeDraftMs', () => {

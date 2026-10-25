@@ -186,9 +186,10 @@ class DeepSeekProvider:
     name = "deepseek"
 
     def complete(self, req: LLMRequest) -> LLMResult:
-        # Lazy import: keep the public LLMRateLimitedError type at the
-        # dispatcher layer; avoid circular import at module load.
-        from services.llm_client import LLMRateLimitedError
+        # Lazy import: keep the public LLMRateLimitedError type and the
+        # daily-cap gate at the dispatcher layer; avoid circular import at
+        # module load.
+        from services import llm_client
         from . import translate_thinking_budget
 
         effort = translate_thinking_budget("deepseek", req.step, req.thinking_budget)
@@ -214,47 +215,51 @@ class DeepSeekProvider:
         last_exc: Exception | None = None
 
         max_attempts = 3 if req.extra.get("retry", True) else 1
-        for attempt in range(max_attempts):
-            if not limiter.try_acquire("deepseek"):
-                raise LLMRateLimitedError(
-                    f"llm_rate_limited: bucket exhausted on {req.step}"
-                )
-            try:
-                response = client.post("/v1/chat/completions", json=body)
-            except (
-                httpx.ConnectError,
-                httpx.PoolTimeout,
-                httpx.ReadTimeout,
-                httpx.WriteTimeout,
-                httpx.RemoteProtocolError,
-                httpx.WriteError,
-                httpx.ReadError,
-            ) as e:
-                last_exc = e
-                err_class = type(e).__name__
-            else:
-                if response.status_code == 200:
-                    return self._unpack(req, response)
-                if response.status_code not in _RETRYABLE_STATUSES:
-                    raise RuntimeError(
-                        f"deepseek http {response.status_code}: "
-                        f"{response.text[:500]}"
+        # Daily cap: refused here, before anything is sent, once today's
+        # recorded spend has reached it; the place is held across retries
+        # until _unpack records the cost.
+        with llm_client._spend_reservation(req):
+            for attempt in range(max_attempts):
+                if not limiter.try_acquire("deepseek"):
+                    raise llm_client.LLMRateLimitedError(
+                        f"llm_rate_limited: bucket exhausted on {req.step}"
                     )
-                last_exc = RuntimeError(
-                    f"deepseek http {response.status_code}: {response.text[:200]}"
-                )
-                err_class = f"HTTP{response.status_code}"
+                try:
+                    response = client.post("/v1/chat/completions", json=body)
+                except (
+                    httpx.ConnectError,
+                    httpx.PoolTimeout,
+                    httpx.ReadTimeout,
+                    httpx.WriteTimeout,
+                    httpx.RemoteProtocolError,
+                    httpx.WriteError,
+                    httpx.ReadError,
+                ) as e:
+                    last_exc = e
+                    err_class = type(e).__name__
+                else:
+                    if response.status_code == 200:
+                        return self._unpack(req, response)
+                    if response.status_code not in _RETRYABLE_STATUSES:
+                        raise RuntimeError(
+                            f"deepseek http {response.status_code}: "
+                            f"{response.text[:500]}"
+                        )
+                    last_exc = RuntimeError(
+                        f"deepseek http {response.status_code}: {response.text[:200]}"
+                    )
+                    err_class = f"HTTP{response.status_code}"
 
-            if attempt < max_attempts - 1:
-                delay = 0.5 * (2 ** attempt)
-                print(
-                    f"[llm-retry] deepseek {req.step} attempt {attempt + 1}/"
-                    f"{max_attempts} after {err_class}: "
-                    f"{str(last_exc)[:200]} — sleeping {delay}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                time.sleep(delay)
+                if attempt < max_attempts - 1:
+                    delay = 0.5 * (2 ** attempt)
+                    print(
+                        f"[llm-retry] deepseek {req.step} attempt {attempt + 1}/"
+                        f"{max_attempts} after {err_class}: "
+                        f"{str(last_exc)[:200]} — sleeping {delay}s",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    time.sleep(delay)
 
         assert last_exc is not None
         raise last_exc

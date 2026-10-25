@@ -109,6 +109,17 @@ def mock_limiter(monkeypatch):
     return mock_lim
 
 
+@pytest.fixture(autouse=True)
+def _isolated_llm_spend(tmp_path, monkeypatch):
+    """Keep the daily spend files in a temp dir and start with no call in
+    flight: every provider complete() reads the files before sending."""
+    from services import llm_client  # noqa: PLC0415
+    monkeypatch.setattr(llm_client, "_CAP_FILE", tmp_path / "llm-cap.json")
+    monkeypatch.setattr(llm_client, "_CONFIG_FILE", tmp_path / "llm-config.json")
+    monkeypatch.setattr(llm_client, "_cap_cache", {"value": None, "read_at": 0.0})
+    monkeypatch.setattr(llm_client, "_in_flight", {"calls": 0, "usd": 0.0})
+
+
 @pytest.fixture
 def mock_cost(monkeypatch):
     """Patch _check_and_record_cost to avoid disk I/O.

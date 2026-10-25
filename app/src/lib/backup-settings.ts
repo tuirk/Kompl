@@ -7,6 +7,7 @@
 import { ALIAS_SCREEN_THROUGH_KEY, ALIAS_SCREEN_VERSION_KEY } from './alias-screen';
 import { AGENT_ADD_SOURCES_KEY } from './db';
 import { PAGE_UPGRADE_FLAG } from './page-upgrade-state';
+import { TRIAGE_RECHECK_FLAG } from './triage-rechecks';
 
 const NOT_BACKED_UP = new Set([
   // Belongs to this database (migrate.py owns it). Restoring an older value
@@ -18,6 +19,9 @@ const NOT_BACKED_UP = new Set([
   // Letting AI agents add sources (paid compiles) is this install's choice;
   // a backup never turns it on.
   AGENT_ADD_SOURCES_KEY,
+  // Re-checking failed triage calls spends AI calls: this install's choice,
+  // never switched on by a restore (lib/triage-rechecks.ts).
+  TRIAGE_RECHECK_FLAG,
   // Which of this database's alias rows the alias screen has looked at
   // (lib/alias-screen.ts); a backup's ids mean nothing here.
   ALIAS_SCREEN_VERSION_KEY,

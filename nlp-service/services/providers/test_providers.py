@@ -14,6 +14,16 @@ import pytest
 from pydantic import BaseModel
 
 
+@pytest.fixture(autouse=True)
+def _isolated_spend_files(tmp_path, monkeypatch):
+    """Keep the daily spend files in a temp dir: complete() reads them before
+    sending and records each call in them."""
+    from services import llm_client
+    monkeypatch.setattr(llm_client, "_CAP_FILE", tmp_path / "llm-cap.json")
+    monkeypatch.setattr(llm_client, "_CONFIG_FILE", tmp_path / "llm-config.json")
+    monkeypatch.setattr(llm_client, "_cap_cache", {"value": None, "read_at": 0.0})
+
+
 # ---------------------------------------------------------------------------
 # LLMRequest / LLMResult shape
 # ---------------------------------------------------------------------------
@@ -605,15 +615,21 @@ def test_cost_cap_error_message_says_llm_not_gemini(monkeypatch, tmp_path):
     operators run DeepSeek-only sessions, where "Gemini" would be misleading.
     """
     from services import llm_client
+    from services.providers.base import LLMRequest
     # Point the cap files at a temp dir + force a small cap.
     monkeypatch.setattr(llm_client, "_CAP_FILE", tmp_path / "cap.json")
     monkeypatch.setattr(llm_client, "_CONFIG_FILE", tmp_path / "cfg.json")
     monkeypatch.setattr(llm_client, "_read_daily_cap_usd", lambda: 0.0001)
 
+    # Record enough spend to pass the 0.0001 cap on flash pricing (input
+    # rate 0.30 / M; 1M prompt tokens = $0.30); the next call is refused
+    # before it is sent.
+    llm_client._check_and_record_cost("gemini-2.5-flash", 1_000_000, 0, 1_000_000, 0)
     with pytest.raises(llm_client.CostCeilingError) as exc:
-        # Use enough tokens to definitely exceed 0.0001 cap on flash pricing
-        # (input rate 0.30 / M; 1M prompt tokens = $0.30, well over $0.0001).
-        llm_client._check_and_record_cost("gemini-2.5-flash", 1_000_000, 0, 1_000_000, 0)
+        with llm_client._spend_reservation(LLMRequest(
+            model="gemini-2.5-flash", messages=[{"role": "user", "content": "x"}],
+        )):
+            pass
     assert "Daily LLM spend" in str(exc.value)
     assert "Gemini" not in str(exc.value)
 

@@ -42,10 +42,11 @@ export interface PerItemStepOptions<Item> {
    */
   progressMessage: (done: number, failed: number, total: number) => string;
   /**
-   * Cooperative cancel check. Called before each item dispatch; should
-   * throw CompileCancelledError (from run/route.ts) when the compile
-   * has been cancelled. Wiring lives in the orchestrator so this helper
-   * stays independent of the route.
+   * Cooperative stop check. Called before each item dispatch and before each
+   * progress write; throws (CompileCancelledError / CompileSupersededError,
+   * lib/compile/compile-run.ts) when the run was cancelled or replaced by a
+   * restarted run. Wiring lives in the orchestrator so this helper stays
+   * independent of the route.
    */
   assertNotCancelled: (sessionId: string) => void;
 }
@@ -115,16 +116,21 @@ export async function runPerItemStep<Item>(
   // and now.
   opts.assertNotCancelled(sessionId);
 
-  await pLimitRun(items, concurrency, async (item) => {
-    // Cooperative cancel check per item. Throwing here marks the item as
-    // failed in pLimitRun's results array — we detect that below and
-    // re-throw once so the orchestrator sees a single CompileCancelledError.
+  // Throwing here marks the item as failed in pLimitRun's results array — we
+  // detect that below and re-throw once so the orchestrator sees a single
+  // CompileCancelledError.
+  const stopIfCancelled = (): void => {
     try {
       opts.assertNotCancelled(sessionId);
     } catch (e) {
-      cancelledError = e instanceof Error ? e : new Error(String(e));
+      cancelledError ??= e instanceof Error ? e : new Error(String(e));
       throw cancelledError;
     }
+  };
+
+  await pLimitRun(items, concurrency, async (item) => {
+    // Cooperative cancel check per item.
+    stopIfCancelled();
 
     try {
       await run(item);
@@ -148,6 +154,9 @@ export async function runPerItemStep<Item>(
       }
     }
 
+    // A run cancelled or superseded while this item was in flight stops
+    // here, before it writes progress over the session's row.
+    stopIfCancelled();
     updateCompileStep(
       sessionId,
       stepKey,
@@ -167,6 +176,7 @@ export async function runPerItemStep<Item>(
   // could leave onFailure writes pending in event-loop tasks that never fire.
   await Promise.all(onFailureTasks);
 
+  opts.assertNotCancelled(sessionId);
   updateCompileStep(
     sessionId,
     stepKey,

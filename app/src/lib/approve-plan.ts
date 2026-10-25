@@ -9,8 +9,8 @@
  *   Phase 2 (sync db.transaction): status + page check, then insertPage +
  *     setPendingContent + draft_rules marker + insertProvenance + FTS5 +
  *     insertActivity + updatePlanStatus('committed').
- *   Phase 3a (awaited): flush pending_content to disk via /storage/write-page →
- *     clearPendingContent.
+ *   Phase 3a (awaited): flush pending_content to disk via /storage/write-page,
+ *     then clear it compare-and-set (flushOutboxPage, as compile commit does).
  *   Phase 3b (fire-and-forget): syncPageWikilinks for [[Title]] resolution +
  *     vector upsert (3× retry → vector_backfill_queue fallback).
  *
@@ -35,19 +35,17 @@ import {
   pageRewrittenSince,
   updatePlanStatus,
   setPendingContent,
-  clearPendingContent,
   getPageTitleMap,
   backfillAliasCanonicalPageId,
   type PageRow,
 } from './db';
 import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from './draft-rules';
+import { flushOutboxPage } from './outbox-flush';
 import { recordNewDisputes } from './page-disputes';
 import { pageTextVersionToken } from './page-rewrite';
 import { upsertVectorWithRetry } from './vector-upsert';
 import { syncPageWikilinks } from './wikilinks';
 import { extractFrontmatterField } from './yaml-frontmatter';
-
-const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
 /** Why a draft no longer fits its page. */
 export type StaleDraft = 'page_changed' | 'page_exists';
@@ -79,6 +77,9 @@ interface PlanRow {
   base_version: string | null;
 }
 
+/** The page types plan/route.ts finds by title with getTopicPageByTitle. */
+const TOPIC_PAGE_TYPES = new Set(['entity', 'concept', 'comparison', 'overview']);
+
 /**
  * Does the page still match the draft? Synchronous DB reads only: runs
  * inside the commit transaction (CLAUDE.md rule 5).
@@ -86,8 +87,9 @@ interface PlanRow {
  *    (page_plans.base_version, v30). A draft made before v30 counts the
  *    page as changed if it was rewritten after the plan was made.
  *  - A new page looks for its target the way plan/route.ts does: the
- *    source's own page for a source page, the subject's page for an entity
- *    or concept, the title for a comparison or overview.
+ *    source's own page for a source page, the entity, concept, comparison
+ *    or overview page with its title for those (a source page with that
+ *    title is not it).
  */
 function staleDraft(plan: PlanRow, sourceIds: string[]): StaleDraft | null {
   if (plan.action === 'update' && plan.existing_page_id) {
@@ -101,9 +103,10 @@ function staleDraft(plan: PlanRow, sourceIds: string[]): StaleDraft | null {
   let target: PageRow | null;
   if (plan.page_type === 'source-summary' || plan.page_type === 'original-source') {
     target = sourceIds.length > 0 ? getSourcePage(sourceIds[0], plan.title) : null;
-  } else if (plan.page_type === 'entity' || plan.page_type === 'concept') {
+  } else if (TOPIC_PAGE_TYPES.has(plan.page_type)) {
     target = getTopicPageByTitle(plan.title);
   } else {
+    // Any other type (a pending draft from the retired chat): any page with the title.
     target = getPageByTitle(plan.title);
   }
   return target ? 'page_exists' : null;
@@ -235,27 +238,12 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
     return { ok: false, plan_id, error: outcome, status: 409, message: STALE_DRAFT_MESSAGES[outcome] };
   }
 
-  // Phase 3a: flush pending_content to disk.
-  const pageRow = db
-    .prepare('SELECT pending_content FROM pages WHERE page_id = ?')
-    .get(page_id) as { pending_content: string | null } | undefined;
-
-  if (pageRow?.pending_content) {
-    try {
-      const res = await fetch(`${NLP_SERVICE_URL}/storage/write-page`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ page_id, markdown: pageRow.pending_content }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) throw new Error(`write_page_failed: ${res.status}`);
-      const wr = (await res.json()) as { current_path: string; previous_path: string | null };
-      clearPendingContent(page_id, wr.previous_path);
-    } catch (flushErr) {
-      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-      console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'file_flush_failed', context: 'approve_plan', plan_id, page_id, error: msg }));
-      // DB commit succeeded — pending_content stays for boot reconciler.
-    }
+  // Phase 3a: flush pending_content to disk, then clear it only while it
+  // still holds the text written: another writer may have queued newer text
+  // for this page during the write, and that must stay in the outbox.
+  if (!(await flushOutboxPage(page_id))) {
+    // DB commit succeeded — pending_content stays for the boot reconciler.
+    console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'file_flush_failed', context: 'approve_plan', plan_id, page_id }));
   }
 
   // Phase 3b: wikilink injection (per-page; missing targets silently skipped).

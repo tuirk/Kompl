@@ -9,7 +9,8 @@ those are provider-agnostic.
 This module MUST NOT import services.llm_client at module level — gemini.py
 is loaded lazily by ``providers.get_provider()`` AFTER llm_client.py has
 finished its own module-load. Functions that need llm_client.* (the
-``LLMRateLimitedError`` type, the ``_check_and_record_cost`` callback) use
+``LLMRateLimitedError`` type, the ``_spend_reservation`` daily-cap gate, the
+``_check_and_record_cost`` callback) use
 lazy ``from services import llm_client`` inside the function body. That
 also keeps the test fixture's
 ``monkeypatch.setattr(llm_client, "_check_and_record_cost", mock)`` effective
@@ -359,31 +360,33 @@ class GeminiProvider:
         def _call() -> Any:
             return client.models.generate_content(model=req.model, contents=contents, config=config)
 
-        if req.extra.get("retry", True):
-            response = _with_retry(_call, step=req.step)
-        else:
-            # Free-form / state-committing paths (draft_page, synthesize, digest):
-            # acquire the limiter manually and skip retry — semantically
-            # identical to the existing inline rate-limit checks.
-            from services.llm_client import LLMRateLimitedError  # lazy
-            limiter = _get_limiter()
-            if not limiter.try_acquire("gemini"):
-                raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-            response = _call()
+        # Daily cap: refused here, before anything is sent, once today's
+        # recorded spend has reached it; the place is held until the cost is
+        # recorded. Lazy import respects test-fixture monkeypatching of
+        # llm_client._check_and_record_cost.
+        from services import llm_client  # lazy
+        with llm_client._spend_reservation(req):
+            if req.extra.get("retry", True):
+                response = _with_retry(_call, step=req.step)
+            else:
+                # Free-form / state-committing paths (draft_page, synthesize, digest):
+                # acquire the limiter manually and skip retry — semantically
+                # identical to the existing inline rate-limit checks.
+                limiter = _get_limiter()
+                if not limiter.try_acquire("gemini"):
+                    raise llm_client.LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+                response = _call()
 
-        # Log + record cost. Lazy import respects test-fixture monkeypatching
-        # of llm_client._check_and_record_cost.
-        _log_usage(req.step, response)
-        usage_dict = _read_usage_dict(response)
-        if usage_dict:
-            from services import llm_client  # lazy
-            llm_client._check_and_record_cost(
-                req.model,
-                usage_dict["prompt_token_count"],
-                usage_dict["cached_content_token_count"],
-                usage_dict["candidates_token_count"],
-                usage_dict["thoughts_token_count"],
-            )
+            _log_usage(req.step, response)
+            usage_dict = _read_usage_dict(response)
+            if usage_dict:
+                llm_client._check_and_record_cost(
+                    req.model,
+                    usage_dict["prompt_token_count"],
+                    usage_dict["cached_content_token_count"],
+                    usage_dict["candidates_token_count"],
+                    usage_dict["thoughts_token_count"],
+                )
 
         # Pack result. Parse on demand if a Pydantic schema was requested;
         # the dispatcher's salvage path (extract_source) checks ``parsed is None``

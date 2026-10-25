@@ -426,6 +426,48 @@ MIGRATION_V21_SQL = """
 DELETE FROM settings WHERE key = 'deployment_mode';
 """
 
+# v30 (added after v30 shipped): match triage calls that gave no verdict.
+# One row per (source, page) pair; a later compile checks it again
+# (app/src/lib/triage-rechecks.ts). Retry state, not wiki content, so
+# backups leave it out. Deleting the source or the page removes the pair.
+#   reason              the last failure: llm_rate_limited,
+#                       daily_cost_ceiling or triage_error
+#   attempts            failed checks, not counting daily cost ceiling
+#                       refusals; the pair is dropped at the app's maximum
+#   first_failed_at / last_failed_at, session_id (of the last failure)
+#   verdict, verdict_reason, verdict_session_id
+#                       a re-check's answer, kept until the compile session
+#                       that planned it completes, so a retry that plans
+#                       again still has it; NULL until then
+TRIAGE_RECHECKS_SQL = """
+CREATE TABLE IF NOT EXISTS triage_rechecks (
+  source_id TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  page_id TEXT NOT NULL REFERENCES pages(page_id) ON DELETE CASCADE,
+  reason TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  first_failed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_failed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  session_id TEXT NOT NULL,
+  verdict TEXT,
+  verdict_reason TEXT,
+  verdict_session_id TEXT,
+  PRIMARY KEY (source_id, page_id)
+);
+CREATE INDEX IF NOT EXISTS idx_triage_rechecks_page ON triage_rechecks(page_id);
+CREATE INDEX IF NOT EXISTS idx_triage_rechecks_first_failed ON triage_rechecks(first_failed_at);
+"""
+
+
+def _ensure_triage_rechecks(conn: sqlite3.Connection) -> bool:
+    """Create triage_rechecks when it is missing. Returns True when created."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'triage_rechecks'"
+    ).fetchone()
+    if exists:
+        return False
+    conn.executescript(TRIAGE_RECHECKS_SQL)
+    return True
+
 
 
 def migrate():
@@ -445,6 +487,11 @@ def migrate():
         current = 0
 
     if current >= SCHEMA_VERSION:
+        # triage_rechecks joined the v30 step after v30 shipped: a database
+        # already at v30 gets it here, whatever its stored version.
+        if _ensure_triage_rechecks(conn):
+            conn.commit()
+            print("  added the triage_rechecks table (v30)")
         print(f"Database already at version {current}, nothing to do.")
         conn.close()
         return
@@ -788,7 +835,7 @@ def migrate():
                 conn.execute(f"ALTER TABLE aliases ADD COLUMN {ddl}")
 
     if current < 30:
-        print("  applying migration v30 (page_plans.base_version)...")
+        print("  applying migration v30 (page_plans.base_version, triage_rechecks table)...")
         # Drafts waiting for approval (auto-approve off). Approving one that
         # updates a page must not overwrite what the page gained after the
         # draft was written:
@@ -804,6 +851,10 @@ def migrate():
         }
         if "base_version" not in plan_cols:
             conn.execute("ALTER TABLE page_plans ADD COLUMN base_version TEXT")
+        # Match triage calls that gave no verdict, kept for a later compile to
+        # check again (TRIAGE_RECHECKS_SQL above). Additive: older images
+        # ignore the table, and its cascades never block their deletes.
+        _ensure_triage_rechecks(conn)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

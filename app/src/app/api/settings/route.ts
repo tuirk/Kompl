@@ -3,7 +3,8 @@
  * POST /api/settings — update settings
  *
  * Exposes: auto_approve (boolean),
- *          lint_enabled (boolean), lint_last_result (details from last lint_complete | null)
+ *          lint_enabled (boolean), lint_last_result (details from last lint_complete | null),
+ *          triage_recheck_enabled (boolean; lib/triage-rechecks.ts)
  */
 
 import { NextResponse } from 'next/server';
@@ -23,6 +24,7 @@ import {
   getCompileModel, setCompileModel, isLlmModel, LLM_MODELS,
   getAgentAddSourcesEnabled, setAgentAddSourcesEnabled,
 } from '../../../lib/db';
+import { getTriageRecheckEnabled, setTriageRecheckEnabled } from '../../../lib/triage-rechecks';
 
 function buildResponse() {
   return {
@@ -41,6 +43,7 @@ function buildResponse() {
     daily_cap_usd: getDailyCapUsd(),
     compile_model: getCompileModel(),
     agent_add_sources_enabled: getAgentAddSourcesEnabled(),
+    triage_recheck_enabled: getTriageRecheckEnabled(),
   };
 }
 
@@ -62,6 +65,7 @@ export async function POST(request: Request) {
     daily_cap_usd?: number;
     compile_model?: string;
     agent_add_sources_enabled?: boolean;
+    triage_recheck_enabled?: boolean;
   };
 
   const knownFields = [
@@ -74,6 +78,7 @@ export async function POST(request: Request) {
     'daily_cap_usd',
     'compile_model',
     'agent_add_sources_enabled',
+    'triage_recheck_enabled',
   ];
   if (!knownFields.some((f) => f in body)) {
     return NextResponse.json({ error: 'no recognized setting field in request body' }, { status: 422 });
@@ -88,6 +93,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'agent_add_sources_enabled must be a boolean' }, { status: 422 });
     }
     setAgentAddSourcesEnabled(body.agent_add_sources_enabled);
+  }
+  if (body.triage_recheck_enabled !== undefined) {
+    // Re-checks spend triage calls: never switched from another site.
+    if (isCrossSiteRequest(request)) {
+      return NextResponse.json({ error: 'cross_site', message: CROSS_SITE_MESSAGE }, { status: 403 });
+    }
+    if (typeof body.triage_recheck_enabled !== 'boolean') {
+      return NextResponse.json({ error: 'triage_recheck_enabled must be a boolean' }, { status: 422 });
+    }
+    setTriageRecheckEnabled(body.triage_recheck_enabled);
   }
   if (body.auto_approve !== undefined) {
     if (typeof body.auto_approve !== 'boolean') {

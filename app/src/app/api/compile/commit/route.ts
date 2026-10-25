@@ -22,6 +22,9 @@
  *   Phase 3b (fire-and-forget):
  *     - alias canonical backfill
  *     - Vector upsert (retried 3× before queuing for backfill)
+ *   A provenance-only plan (a triage 'skip') changes no page text: its
+ *   Phase 2 links the sources ('mentioned' rows, source_count recounted)
+ *   and marks it committed; it has no Phase 3.
  *
  * Request:  { session_id: string }
  * Response: { session_id, committed, failed, thin_drafts_skipped,
@@ -52,7 +55,8 @@ import {
   updatePlanStatus,
   updatePlanFailed,
   getCurrentPageHash,
-  incrementPageSourceCount,
+  getPage,
+  linkSourcesToPage,
   setPendingContent,
   pruneDeletedPlanSources,
   backfillAliasCanonicalPageId,
@@ -218,27 +222,29 @@ async function commitSession(session_id: string): Promise<Response> {
     sourceIds.forEach((s) => allSourceIds.add(s));
 
     if (plan.action === 'provenance-only') {
-      // provenance-only: insert provenance rows only, no page write
+      // A triage 'skip' verdict (plan Rule 6) links the source to a page
+      // whose text stays as it is. No draft, so no approval even with
+      // auto-approve off, and no file to write: this transaction is the
+      // whole commit (rule 5 Phase 2; nothing for Phase 3).
       try {
-        const existingPageId = plan.existing_page_id!;
-        const pageHash = getCurrentPageHash(existingPageId); // sync filesystem read before transaction
-        const done = db.transaction((): boolean => {
-          if (!planStillCrossreffed(plan.plan_id)) return false;
-          for (const sid of sourceIds) {
-            insertProvenance({
-              source_id: sid,
-              page_id: existingPageId,
-              content_hash: pageHash,
-              contribution_type: 'mentioned',
-            });
+        const existingPageId = plan.existing_page_id;
+        // Sync file read of the page's current text, before the transaction.
+        const pageHash = existingPageId ? getCurrentPageHash(existingPageId) : '';
+        const outcome = db.transaction((): 'linked' | 'taken' | 'page_gone' => {
+          if (!planStillCrossreffed(plan.plan_id)) return 'taken';
+          if (!existingPageId || !getPage(existingPageId)) {
+            // The page was deleted while the session compiled: nothing to link.
+            db.prepare('DELETE FROM page_plans WHERE plan_id = ?').run(plan.plan_id);
+            return 'page_gone';
           }
-          incrementPageSourceCount(existingPageId, sourceIds.length);
-          // Inside transaction — crash between commit and this call previously
-          // left plan stuck as 'crossreffed'. Now atomic with the provenance write.
+          linkSourcesToPage(existingPageId, sourceIds, pageHash);
           updatePlanStatus(plan.plan_id, 'committed');
-          return true;
+          return 'linked';
         })();
-        if (done) committed++;
+        if (outcome === 'linked') committed++;
+        if (outcome === 'page_gone') {
+          console.log(JSON.stringify({ ts: new Date().toISOString(), event: 'commit_deleted_page_dropped', session_id, plan_id: plan.plan_id, page_id: existingPageId }));
+        }
       } catch (txErr) {
         const txMsg = txErr instanceof Error ? txErr.message : String(txErr);
         console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'db_transaction_error', context: 'provenance_only_commit', plan_id: plan.plan_id, session_id, error: txMsg }));

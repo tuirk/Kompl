@@ -28,6 +28,7 @@ const COMMIT_FLOOR_MS   = 120_000; // 2 min
 // Per-item rates — see the inline rationale comments in run/route.ts wrappers.
 const RESOLVE_PER_SOURCE_MS = 60_000;  // ~2 disambiguate batches × 30s avg
 const MATCH_PER_PAIR_MS     = 60_000;  // tfidf 30s + triage 30s, sequential
+const MATCH_RECHECK_MS      = 30_000;  // one triage call (lib/triage-call.ts timeout)
 const DRAFT_PER_BATCH_MS    = 600_000; // inner callDraftPage ceiling per batch
 const CROSSREF_PER_PLAN_MS  = 30_000;  // wikilink injection per plan
 const COMMIT_PER_PLAN_MS    = 60_000;  // db tx + write-page 30s + vector-upsert 30s
@@ -62,10 +63,12 @@ export function computeResolveMs(sourceCount: number): number {
   return Math.max(withSlack(raw, RESOLVE_FLOOR_MS), atCap);
 }
 
-// match = sequential `for source` × top-3 candidates × (tfidf + triage).
+// match = sequential `for source` × top-3 candidates × (tfidf + triage),
+// then up to recheckCalls triage calls on stored failures (the per-compile
+// cap in lib/triage-recheck-limits.ts; 0 when match may not re-check).
 // candidatesPerSource defaults to 3 (the slice(0, 3) cap in match/route.ts).
-export function computeMatchMs(sourceCount: number, candidatesPerSource = 3): number {
-  const raw = sourceCount * candidatesPerSource * MATCH_PER_PAIR_MS;
+export function computeMatchMs(sourceCount: number, candidatesPerSource = 3, recheckCalls = 0): number {
+  const raw = sourceCount * candidatesPerSource * MATCH_PER_PAIR_MS + recheckCalls * MATCH_RECHECK_MS;
   return withSlack(raw, MATCH_FLOOR_MS);
 }
 

@@ -1,6 +1,7 @@
 /**
  * Phase 3a of the outbox commit (CLAUDE.md rule 5) for the compile commit
- * route: write a page's pending_content to disk, then clear it.
+ * route and draft approval (lib/approve-plan.ts): write a page's
+ * pending_content to disk, then clear it.
  *
  * Another writer on the same page (approve, restore, recompile) can replace
  * pending_content while a flush is in flight, so both halves guard against
