@@ -9,7 +9,8 @@ each model, and compare: the change ships only if precision does not drop.
 
 Each item is one small compile session: the two names under test, any other
 names the session holds (the "PM" between "Product Manager" and "Project
-Manager"), existing page titles and stored aliases.
+Manager"), existing page titles and stored aliases. A side bound to a page goes
+to Layer 3 with the page's summary and stored aliases, as the route sends it.
 
 Usage, from the repo root, with nlp-service up (docker compose publishes it
 on 127.0.0.1:8000) and the model's API key set in its environment:
@@ -54,6 +55,7 @@ PAIRS = Path(__file__).with_name("resolve_replay_pairs.json")
 ANCHORED = {"existing_page_title", "existing_alias"}  # resolution.py _ANCHORED_METHODS
 PAGE = "__existing_page__"                           # resolution.py EXISTING_PAGE_SENTINEL
 GROUP = "__group__:"                                 # resolution.py GROUP_SENTINEL_PREFIX
+MAX_KNOWN_NAMES = 10                                 # lib/resolve-page-sides.ts MAX_KNOWN_NAMES
 
 
 def post(base_url: str, path: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
@@ -73,7 +75,7 @@ def session(item: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, 
     sides = [item["a"], item["b"], *item.get("others", [])]
     entities = [{"name": s["name"], "type": s["type"], "source_id": s["source"], "context": s.get("context", "")}
                 for s in sides if not s.get("page")]
-    pages = [*item.get("pages", []), *({"title": s["name"], "page_type": s["page_type"]} for s in sides if s.get("page"))]
+    pages = [*({"title": pt["title"], "page_type": pt["page_type"]} for pt in item.get("pages", [])), *({"title": s["name"], "page_type": s["page_type"]} for s in sides if s.get("page"))]
     return entities, pages, list(item.get("aliases", []))
 
 
@@ -84,6 +86,34 @@ def group_context(group: dict[str, Any], entities: list[dict[str, Any]]) -> str:
     own = [e for e in entities if e["context"] and e["source_id"] in group["source_ids"] and e["name"].lower() in names]
     first = next((e for e in own if e["name"].lower() == group["canonical"].lower()), own[0] if own else None)
     return first["context"] if first else ""
+
+
+def page_sides(item: dict[str, Any], groups: list[dict[str, Any]],
+               pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The pairs as the route sends them to Layer 3 (lib/resolve-page-sides.ts):
+    a side bound to a page (the page, or a group bound to it) goes with the
+    page's summary as its context and the page's stored aliases as
+    known_names."""
+    summaries = {pt["title"].lower(): pt.get("summary", "") for pt in item.get("pages", [])}
+    summaries.update({s["name"].lower(): s.get("summary", "")
+                      for s in (item["a"], item["b"], *item.get("others", [])) if s.get("page")})
+    known: dict[str, list[str]] = {}
+    for a in item.get("aliases", []):
+        names = known.setdefault(a["canonical"].lower(), [])
+        if a["alias"].lower() != a["canonical"].lower() and a["alias"].lower() not in {n.lower() for n in names}:
+            names.append(a["alias"])
+
+    def side(e: dict[str, Any]) -> dict[str, Any]:
+        if e["source_id"] == PAGE:
+            title = e["name"]
+        elif e["source_id"].startswith(GROUP) and groups[int(e["source_id"][len(GROUP):])]["method"] in ANCHORED:
+            title = groups[int(e["source_id"][len(GROUP):])]["canonical"]
+        else:
+            return e
+        return {**e, "context": summaries.get(title.lower()) or e["context"],
+                "known_names": known.get(title.lower(), [])[:MAX_KNOWN_NAMES]}
+
+    return [{**p, "entity_a": side(p["entity_a"]), "entity_b": side(p["entity_b"])} for p in pairs]
 
 
 def layers_1_2(base_url: str, entities: list[dict[str, Any]], pages: list[dict[str, Any]],
@@ -186,11 +216,14 @@ def judge(item: dict[str, Any], base_url: str, model: str | None, rng: random.Ra
     before_llm = fold(groups, [], [])
     if before_llm.find(la) == before_llm.find(lb):
         return {"got": "same", "by": "layer 2", "answer": None}
-    asked = next((p for p in pairs if {label(p["entity_a"]), label(p["entity_b"])} == {la, lb}), None)
+    # The pair between the two sides, a page side asked through the group bound to it.
+    ends = {before_llm.find(la), before_llm.find(lb)}
+    asked = next((p for p in pairs
+                  if {before_llm.find(label(p["entity_a"])), before_llm.find(label(p["entity_b"]))} == ends), None)
     if model is None or not pairs:
         return {"got": "different", "by": "asked (no LLM run)" if asked else "never asked", "answer": None}
 
-    sent = [{**p, "pair_id": str(k)} for k, p in enumerate(pairs)]
+    sent = [{**p, "pair_id": str(k)} for k, p in enumerate(page_sides(item, groups, pairs))]
     resp = post(base_url, "/resolve/disambiguate", {"pairs": sent, "compile_model": model}, 3600)
     by_id = {r["pair_id"]: r for r in resp["results"] if r.get("pair_id") is not None}
     verdicts = [by_id.get(str(k)) for k in range(len(pairs))]

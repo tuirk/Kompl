@@ -1,5 +1,5 @@
 {
-  "about": "Labelled name pairs for the entity-resolution replay gate (scripts/resolve_replay.py). Each item is one compile session: sides a and b (a side with \"page\": true is an existing page title, not a session name), other names in the same session, existing pages and stored aliases. \"expected\" is whether a and b are one thing; \"why\" says so in one line; \"confidence\": \"low\" marks labels the owner should vet. Sources: the decision file of 2026-10-23 (item 1 gate list) and the known cases of the compile quality plan, phase 1A. Contexts are written for the replay, in the style of extraction contexts; the owner may swap in real ones. Keep these names out of the Layer 3 prompt examples (tests/test_resolve_replay.py checks).",
+  "about": "Labelled name pairs for the entity-resolution replay gate (scripts/resolve_replay.py). Each item is one compile session: sides a and b (a side with \"page\": true is an existing page title, not a session name, and may carry the page's \"summary\"), other names in the same session, existing pages and stored aliases. \"expected\" is whether a and b are one thing; \"why\" says so in one line; \"confidence\": \"low\" marks labels the owner should vet. Sources: the decision file of 2026-10-23 (item 1 gate list) and the known cases of the compile quality plan, phase 1A. Contexts are written for the replay, in the style of extraction contexts; the owner may swap in real ones. Keep these names out of the Layer 3 prompt examples (tests/test_resolve_replay.py checks).",
   "items": [
     {
       "id": "pm-is-product-manager",
@@ -217,6 +217,39 @@
       "b": {"name": "LLMs", "type": "CONCEPT", "source": "s2", "context": "LLMs are trained on large text corpora."},
       "expected": "same",
       "why": "A name and its plural (plan 1A must still merge)."
+    },
+    {
+      "id": "colorblindness-is-cvd-page-by-alias",
+      "a": {"name": "colorblindness", "type": "CONCEPT", "source": "dw", "context": "The condition of having reduced ability to distinguish certain colors, discussed in the article as a key consideration when choosing visualization colors."},
+      "b": {"name": "Color Vision Deficiency", "page": true, "page_type": "concept", "summary": "Color vision deficiency (CVD) is a condition in which a person is insensitive to some colors, usually because one or more cone types in the eye is missing or malfunctioning. Because lightness perception is generally unaffected, most CVD types need the same luminance contrast as standard vision, with red-on-black as the notable exception."},
+      "others": [{"name": "color vision deficiency", "type": "CONCEPT", "source": "dw", "context": "A broader term used in the article to refer to colorweakness and colorblindness among readers."}],
+      "aliases": [{"alias": "Colour-blindness", "canonical": "Color Vision Deficiency"}],
+      "expected": "same",
+      "why": "The page Color Vision Deficiency stores the alias Colour-blindness; colorblindness is its spelling (film run 2026-10-25, real summary and contexts)."
+    },
+    {
+      "id": "colorblindness-is-cvd-page-by-summary",
+      "a": {"name": "colorblindness", "type": "CONCEPT", "source": "dw", "context": "The condition of having reduced ability to distinguish certain colors, discussed in the article as a key consideration when choosing visualization colors."},
+      "b": {"name": "Color Vision Deficiency", "page": true, "page_type": "concept", "summary": "Color vision deficiency (CVD) is a condition in which a person is insensitive to some colors, usually because one or more cone types in the eye is missing or malfunctioning. Because lightness perception is generally unaffected, most CVD types need the same luminance contrast as standard vision, with red-on-black as the notable exception."},
+      "others": [{"name": "color vision deficiency", "type": "CONCEPT", "source": "dw", "context": "A broader term used in the article to refer to colorweakness and colorblindness among readers."}],
+      "expected": "same",
+      "why": "No stored alias: the page summary defines the same condition; one source calling CVD a broader term must not outweigh it (film run 2026-10-25)."
+    },
+    {
+      "id": "red-green-colorblindness-vs-cvd-page",
+      "a": {"name": "Red-green colorblindness", "type": "CONCEPT", "source": "cud", "context": "The most common form of colorblindness, involving problems in the red or green opsin gene; affected people are called protanopes or deuteranopes."},
+      "b": {"name": "Color Vision Deficiency", "page": true, "page_type": "concept", "summary": "Color vision deficiency (CVD) is a condition in which a person is insensitive to some colors, usually because one or more cone types in the eye is missing or malfunctioning. Because lightness perception is generally unaffected, most CVD types need the same luminance contrast as standard vision, with red-on-black as the notable exception."},
+      "aliases": [{"alias": "Colour-blindness", "canonical": "Color Vision Deficiency"}],
+      "expected": "different",
+      "why": "One form of colour vision deficiency, not the condition itself (real CUD extraction)."
+    },
+    {
+      "id": "deuteranopia-vs-cvd-page",
+      "a": {"name": "deuteranopia", "type": "CONCEPT", "source": "s1", "context": "A red-green color vision deficiency in which the green-sensitive cones are missing, so reds and greens are confused."},
+      "b": {"name": "Color Vision Deficiency", "page": true, "page_type": "concept", "summary": "Color vision deficiency (CVD) is a condition in which a person is insensitive to some colors, usually because one or more cone types in the eye is missing or malfunctioning. Because lightness perception is generally unaffected, most CVD types need the same luminance contrast as standard vision, with red-on-black as the notable exception."},
+      "aliases": [{"alias": "Colour-blindness", "canonical": "Color Vision Deficiency"}],
+      "expected": "different",
+      "why": "A type of colour vision deficiency, named in its own context as one; a type is never the page that defines the whole."
     }
   ]
 }

@@ -30,7 +30,7 @@ def _load_replay():
 
 
 def test_the_pair_set_is_labelled():
-    assert 20 <= len(ITEMS) <= 30
+    assert 20 <= len(ITEMS) <= 35
     assert len({i["id"] for i in ITEMS}) == len(ITEMS)
     for item in ITEMS:
         assert item["expected"] in {"same", "different"}, item["id"]
@@ -200,7 +200,39 @@ def test_what_the_rules_ask_whatever_the_similarity(replay, monkeypatch):
         "karpathy-is-andrej-karpathy": "layer 1",
         "gpt-4-spellings": "layer 1",
         "llm-plural": "layer 1",
+        "colorblindness-is-cvd-page-by-alias": "layer 1",
     }
+
+
+def test_a_side_bound_to_a_page_reaches_the_model_as_that_page(replay, monkeypatch):
+    """As the route sends it (lib/resolve-page-sides.ts): the group bound to
+    the page "Color Vision Deficiency" goes with the page summary, not the
+    source's "a broader term" sentence, and with the page's stored names."""
+    from services import llm_client as llm_client_mod  # noqa: PLC0415
+    from services.llm_client import DisambiguationResponse, DisambiguationResult  # noqa: PLC0415
+
+    module, _calls = replay
+    seen: list[dict[str, Any]] = []
+
+    def model(pairs, model, pair_kind="entity"):  # noqa: ARG001
+        seen.extend(pairs)
+        return DisambiguationResponse(results=[
+            DisambiguationResult(entity_a=p["entity_a"]["name"], entity_b=p["entity_b"]["name"], decision="same",
+                                 canonical="Color Vision Deficiency", reason="fake")
+            for p in pairs if "known_names" in p["entity_b"] or "known_names" in p["entity_a"]
+        ])
+
+    monkeypatch.setattr(llm_client_mod, "disambiguate_entities", model)
+    item = _item("colorblindness-is-cvd-page-by-summary")
+    result = module.judge(item, "http://x", "deepseek-flash")
+    assert (result["got"], result["by"]) == ("same", "layer 3")
+    [page_side] = [s for p in seen for s in (p["entity_a"], p["entity_b"]) if "known_names" in s]
+    assert page_side == {"name": "Color Vision Deficiency", "type": "CONCEPT", "context": item["b"]["summary"],
+                         "known_names": []}
+
+    seen.clear()
+    module.judge(_item("deuteranopia-vs-cvd-page"), "http://x", "deepseek-flash")
+    assert [s["known_names"] for p in seen for s in (p["entity_a"], p["entity_b"]) if "known_names" in s] ==         [["Colour-blindness"]]
 
 
 def test_scores_and_the_input_order_check(replay):
