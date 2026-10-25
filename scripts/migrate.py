@@ -941,9 +941,13 @@ def migrate():
         if "title_rescued_at" not in existing_cols:
             conn.execute("ALTER TABLE sources ADD COLUMN title_rescued_at TIMESTAMP")
 
-    if current < 26:
-        print("  applying migration v26 (explicit compile_model row)...")
-        # The default compile model moves from gemini-2.5-flash to
+    # One upgrade step from the last release (v0.3.2.1, schema v25) to v30.
+    # The parts below were built as v26-v30 during development; every part
+    # checks before it adds, so a database at any of those versions (a
+    # development install) also converges here.
+    if current < 30:
+        print("  applying migration v26-v30 (compile model row, writing rules, relation sentences and quotes, alias records, approval checks, disagreements, claim verdicts, source dates)...")
+        # v26: the default compile model moves from gemini-2.5-flash to
         # deepseek-flash (DeepSeek V4.1 Flash). Write the model each install
         # runs on as an explicit settings row so the new default only reaches
         # fresh installs:
@@ -961,9 +965,7 @@ def migrate():
             (seeded_model,),
         )
 
-    if current < 27:
-        print("  applying migration v27 (pages.draft_rules + page_plans.draft_rules)...")
-        # Writing-rules marker. v0.4 writes pages under stricter rules
+        # v27: writing-rules marker. v0.4 writes pages under stricter rules
         # (sources only, numbered citations, each page linked once, at most
         # 5 Related entries, no empty Contradictions sections, four
         # frontmatter keys). A compile only adds to an existing page, so a
@@ -983,18 +985,18 @@ def migrate():
             row[1]
             for row in conn.execute("PRAGMA table_info(pages)").fetchall()
         }
-        if "draft_rules" not in page_cols:
+        # Each part leaves alone a table the database doesn't have (empty
+        # table_info): the merged step also runs on development databases.
+        if page_cols and "draft_rules" not in page_cols:
             conn.execute("ALTER TABLE pages ADD COLUMN draft_rules TEXT")
         plan_cols = {
             row[1]
             for row in conn.execute("PRAGMA table_info(page_plans)").fetchall()
         }
-        if "draft_rules" not in plan_cols:
+        if plan_cols and "draft_rules" not in plan_cols:
             conn.execute("ALTER TABLE page_plans ADD COLUMN draft_rules TEXT")
 
-    if current < 28:
-        print("  applying migration v28 (relationship_mentions.description)...")
-        # Evidence for typed connections. The extract LLM returns a
+        # v28: evidence for typed connections. The extract LLM returns a
         # one-sentence description with every relationship ("Bitcoin uses
         # proof-of-work consensus."); before v28 it was dropped at insert and
         # only survived in extractions.llm_output. The wiki's connections
@@ -1009,12 +1011,10 @@ def migrate():
             row[1]
             for row in conn.execute("PRAGMA table_info(relationship_mentions)").fetchall()
         }
-        if "description" not in rel_cols:
+        if rel_cols and "description" not in rel_cols:
             conn.execute("ALTER TABLE relationship_mentions ADD COLUMN description TEXT")
 
-    if current < 29:
-        print("  applying migration v29 (aliases: method, score, session_id, status)...")
-        # Alias records. Every stored alias binds later sources to its
+        # v29: alias records. Every stored alias binds later sources to its
         # canonical page without being judged again, so each row now says
         # how it was made and whether compiles may still use it:
         #   method         the resolver rule or layer that made it ("skeleton",
@@ -1044,12 +1044,10 @@ def migrate():
             ("status_reason", "status_reason TEXT"),
             ("status_at", "status_at DATETIME"),
         ):
-            if col not in alias_cols:
+            if alias_cols and col not in alias_cols:
                 conn.execute(f"ALTER TABLE aliases ADD COLUMN {ddl}")
 
-    if current < 30:
-        print("  applying migration v30 (page_plans.base_version + used_source_ids, triage_rechecks + disagreements + claim_verdicts tables, relation quotes, source dates)...")
-        # Drafts waiting for approval (auto-approve off). Approving one that
+        # v30: drafts waiting for approval (auto-approve off). Approving one that
         # updates a page must not overwrite what the page gained after the
         # draft was written:
         #   base_version  the page's version when the draft read it
@@ -1062,7 +1060,7 @@ def migrate():
             row[1]
             for row in conn.execute("PRAGMA table_info(page_plans)").fetchall()
         }
-        if "base_version" not in plan_cols:
+        if plan_cols and "base_version" not in plan_cols:
             conn.execute("ALTER TABLE page_plans ADD COLUMN base_version TEXT")
         # Match triage calls that gave no verdict, kept for a later compile to
         # check again (TRIAGE_RECHECKS_SQL above). Additive: older images
