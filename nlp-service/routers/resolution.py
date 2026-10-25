@@ -470,7 +470,8 @@ def _is_abbreviation(short: str, long: str) -> bool:
 
 
 def _parenthetical_match(a: str, b: str) -> str | None:
-    """"Full Name (ABBR)" against its full name or its abbreviation: "Web
+    """"Full Name (ABBR)", or "ABBR (Full Name)", against its full name or
+    its abbreviation: "Web
     Content Accessibility Guidelines (WCAG)" is both "Web Content
     Accessibility Guidelines" and "WCAG", though the bracket reads as one
     more word to the extension guard and the acronym rule (2026-10-17,
@@ -490,11 +491,17 @@ def _parenthetical_match(a: str, b: str) -> str | None:
     if (pa is None) == (pb is None):
         return None
     (base, inner), other = (pa, b) if pa is not None else (pb, a)
-    if not _is_abbreviation(inner, base):
+    if _is_abbreviation(inner, base):
+        short, full = inner, base
+    elif _is_abbreviation(base, inner):
+        # "ABBR (Full Name)", the other way round: "APCA (Advanced Perceptual
+        # Contrast Algorithm)" and "APCA" were two pages (film run 2026-10-25).
+        short, full = base, inner
+    else:
         return None
-    if other.isupper() and _skeleton(other) == _skeleton(inner):
+    if other.isupper() and _skeleton(other) == _skeleton(short):
         return "abbreviation"
-    if _skeleton(other) == _skeleton(base) or _spelling_method(other, base):
+    if _skeleton(other) == _skeleton(full) or _spelling_method(other, full):
         return "expansion"
     return None
 

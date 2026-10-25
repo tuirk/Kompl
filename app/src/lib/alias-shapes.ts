@@ -187,10 +187,14 @@ export function aliasShape(alias: string, canonical: string, person: boolean): A
     }
   } else if (pa || pc) {
     const [{ base, inner }, other] = pa ? [pa, canonical] : [pc!, alias];
-    if (isAbbreviation(inner, base)) {
-      if (skeleton(other) === skeleton(inner) || skeleton(other) === skeleton(base)) return 'keep';
-      if (sameSet(contentWords(other), contentWords(base))) return 'keep';
-      if (differentExpansion(inner, base, other)) return 'parenthetical_expansion';
+    // "Full Name (ABBR)", or the other way round, "ABBR (Full Name)" (as
+    // nlp-service _parenthetical_match).
+    const [short, full] = isAbbreviation(inner, base) ? [inner, base]
+      : isAbbreviation(base, inner) ? [base, inner] : [null, null];
+    if (short !== null && full !== null) {
+      if (skeleton(other) === skeleton(short) || skeleton(other) === skeleton(full)) return 'keep';
+      if (sameSet(contentWords(other), contentWords(full))) return 'keep';
+      if (differentExpansion(short, full, other)) return 'parenthetical_expansion';
     }
   }
 

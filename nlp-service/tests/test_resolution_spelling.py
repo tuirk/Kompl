@@ -160,6 +160,13 @@ def test_a_bare_acronym_binds_no_page(client):
         ("Avatar (2009)", "Avatar", None),                     # a year
         ("Labour Party (UK)", "UK", None),                     # capitals, not its abbreviation
         ("Color Universal Design (CUD)", "Color Universal Design Organization (CUDO)", None),
+        # The abbreviation first, its full name in brackets (film run 2026-10-25).
+        ("APCA (Advanced Perceptual Contrast Algorithm)", "APCA", "abbreviation"),
+        ("APCA", "APCA (Advanced Perceptual Contrast Algorithm)", "abbreviation"),
+        ("APCA (Advanced Perceptual Contrast Algorithm)", "Advanced Perceptual Contrast Algorithm", "expansion"),
+        ("APCA (Advanced Perceptual Contrast Algorithm)", "APCA (Accessible Perceptual Contrast Algorithm)", None),
+        ("APCA (Advanced Perceptual Contrast Algorithm)", "Accessible Perceptual Contrast Algorithm", None),
+        ("WHO (2019)", "WHO", None),                           # a year
     ],
 )
 def test_parenthetical_match(a, b, expected):

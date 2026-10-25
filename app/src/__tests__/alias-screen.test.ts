@@ -49,6 +49,8 @@ describe('aliasShape', () => {
     ['A. Karpathy', 'Andrej Karpathy', true],
     ['WCAG', 'Web Content Accessibility Guidelines (WCAG)', false],
     ['Web Content Accessibility Guidelines', 'Web Content Accessibility Guidelines (WCAG)', false],
+    ['APCA', 'APCA (Advanced Perceptual Contrast Algorithm)', false],
+    ['Advanced Perceptual Contrast Algorithm', 'APCA (Advanced Perceptual Contrast Algorithm)', false],
     ['Python', 'Python 2', false], // numbers: getAliases() already leaves it out
   ])('keeps %s -> %s', (alias, canonical, person) => {
     expect(aliasShape(alias, canonical, person)).toBe('keep');

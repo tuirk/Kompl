@@ -295,6 +295,13 @@
       ],
       "expected": "same",
       "why": "Held-out eval dev split (2026-10-25), real extractions of two sources that each name both: the virus's provisional and official names. Became two pages."
+    },
+    {
+      "id": "apca-is-apca-with-its-expansion-in-brackets",
+      "a": {"name": "APCA", "type": "PRODUCT", "source": "s1", "context": "A contrast algorithm that scores text by perceived lightness rather than a luminance ratio."},
+      "b": {"name": "APCA (Advanced Perceptual Contrast Algorithm)", "type": "CONCEPT", "source": "s2", "context": "The candidate contrast method proposed for WCAG 3."},
+      "expected": "same",
+      "why": "Film run on d43ac398 batch A: the abbreviation, and the abbreviation with its full name in brackets, became two pages."
     }
   ]
 }
