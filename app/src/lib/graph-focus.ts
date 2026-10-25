@@ -6,7 +6,7 @@
 
 import { isSymmetricRelation, relationLabel } from './relation-labels';
 import { isMissingLink, isMissingNode, missingDetail } from './graph-missing';
-import type { ModelLink, ModelNode, VisibleGraph } from './graph-model';
+import { currentRelations, type ModelLink, type ModelNode, type VisibleGraph } from './graph-model';
 import type { ConnectionItem, PageConnections } from './relations';
 
 /** What stays lit while a page or line is hovered or selected. */
@@ -38,11 +38,12 @@ export function focusHighlight(visible: VisibleGraph, hovered: GraphFocus | null
 
 /**
  * The page ids [from, to] to read a line as "A — Uses → B": the `from` end
- * of its strongest one-way relation, so the label reads forwards; for a line
- * with only two-way relations, `prefer` when it is one of the ends.
+ * of its strongest current one-way relation (graph-model.ts
+ * currentRelations), so the label reads forwards; for a line with only
+ * two-way relations, `prefer` when it is one of the ends.
  */
 export function readingOrder(link: Pick<ModelLink, 'a' | 'b' | 'relations'>, prefer?: string | null): [string, string] {
-  const oneWay = link.relations.find((r) => !isSymmetricRelation(r.type));
+  const oneWay = currentRelations(link.relations).find((r) => !isSymmetricRelation(r.type));
   if (oneWay) return oneWay.direction === 'out' ? [link.a, link.b] : [link.b, link.a];
   return prefer === link.b ? [link.b, link.a] : [link.a, link.b];
 }
@@ -71,12 +72,27 @@ export function relationsBetween(connections: PageConnections, toId: string): Ar
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
+ * " · may be outdated" for a dimmed line (every relation outdated); for a
+ * line named by a current relation, the outdated ones read from its `from`
+ * page (" · part of: may be outdated"); '' when none is.
+ */
+function outdatedNote(link: ModelLink): string {
+  const stale = link.relations.filter((r) => r.outdated);
+  if (stale.length === 0) return '';
+  if (link.outdated) return ' · may be outdated';
+  const [from] = readingOrder(link);
+  const label = (r: ModelLink['relations'][number]) =>
+    relationLabel(r.type, from === link.a ? r.direction : r.direction === 'out' ? 'in' : 'out').toLowerCase();
+  return ` · ${stale.map(label).join(', ')}: may be outdated`;
+}
+
+/**
  * The hover card's two lines. A page: its title, then category, type and
  * sources. A missing name: the name, then how many sources name it. A line:
  * its summary, then a prompt with the source count of the relation the
  * summary names (not the line's weight, which may come from another
- * relation), and whether that relation may be outdated. Null when nothing
- * is hovered.
+ * relation), and which of the line's relations may be outdated. Null when
+ * nothing is hovered.
  */
 export function hoverCardText(
   hovered: GraphFocus | null, byId: ReadonlyMap<string, ModelNode>
@@ -90,8 +106,7 @@ export function hoverCardText(
   if (hovered?.kind === 'link' && !isMissingLink(hovered.link)) {
     const named = namedRelation(hovered.link);
     const sources = named ? ` · ${plural(named.source_count, 'source')}` : '';
-    const outdated = named?.outdated ? ' · may be outdated' : '';
-    return { title: linkSummary(hovered.link, byId), detail: `Click for the evidence${sources}${outdated}` };
+    return { title: linkSummary(hovered.link, byId), detail: `Click for the evidence${sources}${outdatedNote(hovered.link)}` };
   }
   return null;
 }

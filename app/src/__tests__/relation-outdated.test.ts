@@ -11,7 +11,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { recordDisagreement, setOwnerVerdict, syncPageTextDisagreements } from '../lib/disagreements';
 import { buildGraphModel } from '../lib/graph-model';
-import { LINE_HEX, LINE_OUTDATED, withAlpha } from '../lib/graph-palette';
+import { hoverCardText } from '../lib/graph-focus';
+import { LINE_ALPHA, LINE_HEX, LINE_OUTDATED, withAlpha } from '../lib/graph-palette';
 import { namesPhrase } from '../lib/relation-outdated';
 import { getPageConnections, getRelationEdges, getRelationsAmong } from '../lib/relations';
 import { getWikiGraph } from '../lib/wiki-graph';
@@ -86,12 +87,26 @@ describe('may be outdated', () => {
       { type: 'related_to', direction: 'out', source_count: 2, direction_disputed: false, outdated: false },
       { type: 'part_of', direction: 'out', source_count: 1, direction_disputed: false, outdated: true },
     ]);
-    // The line is named by "part of", so it is drawn dimmed.
-    const line = buildGraphModel(getWikiGraph(false)).links.find((l) => l.a === 'apca' && l.b === 'wcag3');
-    expect(line).toMatchObject({ outdated: true, color: withAlpha(LINE_HEX, LINE_OUTDATED) });
+    // The line is named by its current relation and not dimmed; the hover card names the outdated one.
+    const model = buildGraphModel(getWikiGraph(false));
+    const line = model.links.find((l) => l.a === 'apca' && l.b === 'wcag3')!;
+    expect(line).toMatchObject({ outdated: false, kind: 'related', colorType: 'related_to', color: withAlpha(LINE_HEX, LINE_ALPHA.related) });
+    expect(hoverCardText({ kind: 'link', link: line }, model.byId)).toEqual({
+      title: 'APCA — Related to → WCAG 3.0 (+1 more)',
+      detail: 'Click for the evidence · 2 sources · part of: may be outdated',
+    });
 
     const among = getRelationsAmong(['apca'], 10).find((r) => r.type === 'part_of');
     expect(among?.outdated).toEqual(note);
+  });
+
+  it('dims a line only when every relation on it may be outdated, and then names it by that relation', () => {
+    const db = seed();
+    db.prepare(`DELETE FROM relationship_mentions WHERE relationship_type = 'related_to' AND to_canonical = 'WCAG 3.0'`).run();
+    const model = buildGraphModel(getWikiGraph(false));
+    const line = model.links.find((l) => l.a === 'apca' && l.b === 'wcag3')!;
+    expect(line).toMatchObject({ outdated: true, kind: 'typed', colorType: 'part_of', color: withAlpha(LINE_HEX, LINE_OUTDATED) });
+    expect(hoverCardText({ kind: 'link', link: line }, model.byId)?.detail).toBe('Click for the evidence · 1 source · may be outdated');
   });
 
   it('leaves alone a relation a newer source also states, and one the finding does not name', () => {

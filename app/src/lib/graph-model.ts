@@ -71,7 +71,7 @@ export interface ModelLink {
   kind: EdgeKind;
   /** The relation that names the line: the strongest specific one, else related_to; null for a plain link. */
   colorType: string | null;
-  /** That relation may be outdated (relation-outdated.ts): the line is drawn dimmed. */
+  /** Every relation on the line may be outdated (relation-outdated.ts): it is drawn dimmed. */
   outdated: boolean;
   sameCategory: boolean;
   width: number;
@@ -104,14 +104,25 @@ export interface GraphModel {
   missing: MissingPage[];
 }
 
-export function edgeKind(relations: readonly EdgeRelation[]): EdgeKind {
-  if (relations.length === 0) return 'plain';
-  return relations.every((r) => r.type === RELATED_TO) ? 'related' : 'typed';
+/**
+ * The relations a line is drawn and named by: those no newer source
+ * superseded (relation-outdated.ts), or all of them when every one may be
+ * outdated. The panels and the hover card still list the outdated ones.
+ */
+export function currentRelations(relations: readonly EdgeRelation[]): readonly EdgeRelation[] {
+  const current = relations.filter((r) => !r.outdated);
+  return current.length > 0 ? current : relations;
 }
 
-/** The strongest relation that is not "related to", else "related to"; null when none. */
+export function edgeKind(relations: readonly EdgeRelation[]): EdgeKind {
+  if (relations.length === 0) return 'plain';
+  return currentRelations(relations).every((r) => r.type === RELATED_TO) ? 'related' : 'typed';
+}
+
+/** The strongest current relation that is not "related to", else "related to"; null when none. */
 export function colorTypeOf(relations: readonly EdgeRelation[]): string | null {
-  return (relations.find((r) => r.type !== RELATED_TO) ?? relations[0])?.type ?? null;
+  const current = currentRelations(relations);
+  return (current.find((r) => r.type !== RELATED_TO) ?? current[0])?.type ?? null;
 }
 
 export function clipLabel(title: string): string {
@@ -194,7 +205,7 @@ export function buildGraphModel(data: WikiGraph): GraphModel {
     if (!a || !b) continue;
     const kind = edgeKind(e.relations);
     const colorType = colorTypeOf(e.relations);
-    const outdated = e.relations.find((r) => r.type === colorType)?.outdated ?? false;
+    const outdated = e.relations.length > 0 && e.relations.every((r) => r.outdated);
     links.push({
       source: a.id,
       target: b.id,
