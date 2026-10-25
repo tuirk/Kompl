@@ -495,6 +495,18 @@ def _parenthetical_match(a: str, b: str) -> str | None:
     return None
 
 
+def _title_for_similarity(title: str) -> str:
+    """A page title as Layer 2 embeds it: without a trailing bracket that
+    abbreviates the rest. "Color Vision Deficiency (CVD)" scored 0.54 by
+    name against "Colorblindness", 0.68 without the bracket (film run
+    2026-10-25). "Mercury (planet)" keeps its bracket; pairs and anchors
+    still name the exact title."""
+    bracket = _split_parenthetical(title)
+    if bracket is not None and _is_abbreviation(bracket[1], bracket[0]):
+        return bracket[0]
+    return title
+
+
 def _fuzzy_method(a: str, b: str, *, person_pair: bool = False) -> str | None:
     """Return the best matching method name if a and b should be merged, else None.
 
@@ -1393,7 +1405,9 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
         the last two goes to Layer 3 and is counted in `rerouted`;
       - ambiguous (Layer 3): otherwise, when either similarity is ≥ 0.7; a
         CONCEPT against ORG/PRODUCT/PERSON/LOCATION/EVENT when the names
-        alone are; and, whatever the similarity, an acronym or ticker and
+        alone are, and against a page of the other kind when either is
+        (a page title is compared without a bracket that abbreviates
+        it, _title_for_similarity); and, whatever the similarity, an acronym or ticker and
         its expansion or a one-letter slip (_layer3_only_method), which
         Layer 1 no longer merges, and a name that adds words to a page
         title or a stored alias's canonical, against that page
@@ -1444,7 +1458,8 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     pages = [pt for pt in req.existing_page_titles if pt.title.lower() not in held]
 
     model = _get_embed_model()
-    texts = list(dict.fromkeys([nd.name for nd in nodes] + [nd.text for nd in nodes] + [pt.title for pt in pages]))
+    page_texts = [_title_for_similarity(pt.title) for pt in pages]
+    texts = list(dict.fromkeys([nd.name for nd in nodes] + [nd.text for nd in nodes] + page_texts))
     vectors = model.encode(texts, convert_to_numpy=True)
     row = {t: k for k, t in enumerate(texts)}
     name_vecs = vectors[[row[nd.name] for nd in nodes]]
@@ -1457,7 +1472,7 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     name_page: Any = None
     ctx_page: Any = None
     if pages:
-        page_vecs = vectors[[row[pt.title] for pt in pages]]
+        page_vecs = vectors[[row[t] for t in page_texts]]
         name_page = sklearn_cosine(name_vecs, page_vecs)
         ctx_page = sklearn_cosine(ctx_vecs, page_vecs)
         for i, nd in enumerate(nodes):
@@ -1471,7 +1486,12 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
                 if not same_kind and not _page_kinds_cross(nd.type, pt.page_type):
                     continue
                 ns, cs = float(name_page[i][j]), float(ctx_page[i][j])
-                sim = max(ns, cs) if same_kind else ns
+                # Across kinds the context may ask too, never merge: a page
+                # title carries no context from the node's source, unlike
+                # two names one article describes alike (session pairs below).
+                # "Colorblindness" / the entity page "Color Vision
+                # Deficiency (CVD)" scored 0.68 by name, 0.77 with context.
+                sim = max(ns, cs)
                 if sim < _AMBIGUOUS_SIMILARITY:
                     continue
                 guard = _names_guard(nd.names, [pt.title])

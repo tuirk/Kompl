@@ -350,6 +350,9 @@ def test_concept_and_named_thing_go_to_layer_3_by_name(client, encoder):
 
 
 def test_page_of_the_other_kind_is_asked_about_not_anchored(client, encoder):
+    """Against a page of the other kind the context may ask too (0.857 for
+    "Francis Wolff" / "Candid photography", 0.2 by name; film run
+    2026-10-25), but neither pair is anchored; name similarity still ranks."""
     unesco_page = [0.0] * DIM
     unesco_page[0] = 1.0
     photo_page = [0.0] * DIM
@@ -372,7 +375,8 @@ def test_page_of_the_other_kind_is_asked_about_not_anchored(client, encoder):
                {"title": "Candid photography", "page_type": "concept"}],
     )
     assert data["resolved"] == []
-    assert _pairs(data) == [("UNESCO World Heritage list", "s1", "UNESCO World Heritage", 0.923)]
+    assert _pairs(data) == [("UNESCO World Heritage list", "s1", "UNESCO World Heritage", 0.933),
+                            ("Francis Wolff", "s2", "Candid photography", 0.857)]
     assert data["ambiguous"][0]["entity_b"] == {"name": "UNESCO World Heritage", "type": "CONCEPT",
                                                 "source_id": "__existing_page__", "context": ""}
-    assert [e["name"] for e in data["unresolved"]] == ["Francis Wolff"]
+    assert data["unresolved"] == []
