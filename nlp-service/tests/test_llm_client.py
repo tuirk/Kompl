@@ -202,8 +202,9 @@ def test_label_merge_prompt_folds_parts_and_small_labels_into_bigger_ones():
                  "one part of a combined label",
                  "1 or 2 pages",
                  '"Design" (1 page) / "Graphic Design" (33 pages)',
-                 "fewer pages into the label with more pages",
+                 "Between two NEW labels, always merge the one with fewer pages into the one with more",
                  '"Graphic Design" (33 pages) never moves into "Typography & Graphic Design" (6 pages)',
+                 "merges into the EXISTING label whatever the pages",
                  "pages"):
         assert rule in prompt, rule
     # The film run's first compile declined these merges on this line.

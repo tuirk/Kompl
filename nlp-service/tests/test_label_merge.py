@@ -128,10 +128,29 @@ def test_equal_counts_may_merge():
     assert _pairs(clean_label_merges([_m("Films", "Movies")], [], ["Films", "Movies"], counts)) == [("Films", "Movies")]
 
 
-def test_a_new_label_bigger_than_the_existing_one_stays():
-    # A compile never renames the wiki's label, and the new one is bigger.
+def test_a_new_label_merges_into_the_existing_one_whatever_the_pages():
+    # A compile never renames the wiki's label, so the size rule does not
+    # apply: 4 new drafts still join the 1-page existing label.
     counts = {"Cryptocurrency": 1, "Crypto": 4}
-    assert clean_label_merges([_m("Crypto", "Cryptocurrency")], EXISTING, ["Crypto"], counts) == []
+    assert _pairs(clean_label_merges([_m("Crypto", "Cryptocurrency")], EXISTING, ["Crypto"], counts)) == [
+        ("Crypto", "Cryptocurrency"),
+    ]
+
+
+def test_a_new_part_joins_a_smaller_existing_combined_label():
+    counts = {"Graphic Design": 33, "Typography & Graphic Design": 6}
+    merges = [_m("Graphic Design", "Typography & Graphic Design")]
+    assert _pairs(clean_label_merges(merges, ["Typography & Graphic Design"], ["Graphic Design"], counts)) == [
+        ("Graphic Design", "Typography & Graphic Design"),
+    ]
+
+
+def test_into_an_existing_label_the_name_rules_still_apply():
+    # A contained name is still a narrower topic unless it is a part or has
+    # 1-2 pages; a longer name still never folds into a word it contains.
+    counts = {"Learning": 5, "Machine Learning": 1, "Graphic Design": 1, "Design": 1}
+    merges = [_m("Learning", "Machine Learning"), _m("Graphic Design", "Design")]
+    assert clean_label_merges(merges, ["Machine Learning", "Design"], ["Learning", "Graphic Design"], counts) == []
 
 
 def test_a_part_merges_into_its_combined_label_at_any_size_below_it():

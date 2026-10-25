@@ -2025,11 +2025,12 @@ These name the same category; merge them:
   more-used label ("Design" (1 page) / "Graphic Design" (33 pages)): merge it
   into the most-used label that contains its name.
 
-Always merge the label with fewer pages into the label with more pages,
-never the reverse: "Graphic Design" (33 pages) never moves into
-"Typography & Graphic Design" (6 pages). When the label you would move has
-more pages than the other one, or is an EXISTING label, leave both as they
-are.
+EXISTING labels never move. A NEW label that names the same category as an
+EXISTING label (any case above) merges into the EXISTING label whatever the
+pages. Between two NEW labels, always merge the one with fewer pages into
+the one with more, never the reverse: "Graphic Design" (33 pages) never
+moves into "Typography & Graphic Design" (6 pages). When the NEW label you
+would move has more pages than the other NEW label, leave both as they are.
 
 Never merge labels that name different categories, even closely related ones,
 except in the two contained-name cases above:
@@ -2047,8 +2048,8 @@ Each merge has three fields:
 - into: one of the EXISTING or NEW labels, written exactly as given;
   never a new name.
 - reason: a few words on why both name the same category.
-When a NEW label matches an EXISTING label with at least as many pages,
-merge into the EXISTING label. When two NEW labels match, merge the one
+When a NEW label matches an EXISTING label, merge into the EXISTING
+label. When two NEW labels match, merge the one
 with fewer pages into the one with more; with equal pages, into the
 clearer, more usual name. Name each NEW label at most once.
 

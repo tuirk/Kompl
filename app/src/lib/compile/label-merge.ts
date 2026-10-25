@@ -2,8 +2,9 @@
  * The 'labels' compile step (plan 2.3, owner decision D7): one AI call per
  * compile merges the category labels this compile added into labels that
  * mean the same thing ("Crypto" into "Cryptocurrency", "Web Accessibility"
- * into "Web Accessibility & Standards"), always the smaller into the bigger
- * (owner decision 2026-10-25; each label goes with its page count).
+ * into "Web Accessibility & Standards"). Each label goes with its page
+ * count: two new labels merge smaller into bigger, and a new label joins a
+ * wiki label whatever the pages (owner decision 2026-10-25).
  *
  * Runs after crossref and before commit, on this session's drafts waiting
  * to commit. Only each draft's frontmatter `category:` line changes, never
