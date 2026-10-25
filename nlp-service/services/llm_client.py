@@ -1404,9 +1404,16 @@ Frontmatter keys: title, page_type: overview, category, summary (1-2 sentences d
 _CITED_PAGE_TYPES = ("entity", "concept", "comparison", "overview")
 
 # Output ceiling for one draft_page call. DeepSeek counts reasoning tokens
-# against it too. GET /llm/pricing reports it (with the prompt cap above) so
-# the app's page-update estimate works from the same limits.
-_DRAFT_PAGE_MAX_OUTPUT_TOKENS = 16384
+# against it too: at 16384, 7 of 79 drafts on the held-out corpus ran out
+# (2026-10-25), one empty (a 4-source page lost) and others cut mid-link.
+# GET /llm/pricing reports it (with the prompt cap above) so the app's
+# page-update estimate works from the same limits.
+_DRAFT_PAGE_MAX_OUTPUT_TOKENS = 32768
+# A draft that runs out of room is asked once more, then fails: a cut-off
+# page is never returned (owner decision 2026-10-25).
+_DRAFT_PAGE_ATTEMPTS = 2
+# Finish reasons meaning the output ceiling was hit: Gemini, DeepSeek.
+_OUTPUT_CAP_FINISH = frozenset({"MAX_TOKENS", "LENGTH"})
 
 _CITATION_RULES = """\
 CITATIONS:
@@ -1704,24 +1711,33 @@ def draft_page(
     prompt += cat_suffix
 
     provider = get_provider(model)
-    try:
-        result = provider.complete(LLMRequest(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-            response_model=None,
-            thinking_budget=_read_thinking_budget('draft_page'),
-            max_output_tokens=_DRAFT_PAGE_MAX_OUTPUT_TOKENS,
-            temperature=0.3,
-            step="draft_page",
-            extra={"retry": False},
-        ))
-    except _LIMIT_ERRORS:
-        raise
-    except Exception as e:
-        raise LLMCompileError(f"draft_page_llm_failed: {e}") from e
+    for attempt in range(1, _DRAFT_PAGE_ATTEMPTS + 1):
+        try:
+            result = provider.complete(LLMRequest(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                response_model=None,
+                thinking_budget=_read_thinking_budget('draft_page'),
+                max_output_tokens=_DRAFT_PAGE_MAX_OUTPUT_TOKENS,
+                temperature=0.3,
+                step="draft_page",
+                extra={"retry": False},
+            ))
+        except _LIMIT_ERRORS:
+            raise
+        except Exception as e:
+            raise LLMCompileError(f"draft_page_llm_failed: {e}") from e
+        if str(result.finish_reason).upper() not in _OUTPUT_CAP_FINISH:
+            break
+        print(f"[draft] '{title}' ran out of output room (attempt {attempt})", file=sys.stderr, flush=True)
+    else:
+        raise LLMCompileError(
+            f"draft_page_truncated: '{title}' ran out of output room "
+            f"({_DRAFT_PAGE_MAX_OUTPUT_TOKENS} tokens) {_DRAFT_PAGE_ATTEMPTS} times"
+        )
 
     raw_text = result.text
     if not raw_text:

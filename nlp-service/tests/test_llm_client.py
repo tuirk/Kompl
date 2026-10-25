@@ -68,7 +68,7 @@ def test_draft_page_calls_gemini_flash_with_correct_config(
     config = call_kwargs["config"]
     assert config.thinking_config.thinking_budget == 1024
     assert config.temperature == 0.3
-    assert config.max_output_tokens == 16384
+    assert config.max_output_tokens == 32768
 
 
 def test_draft_page_uses_source_summary_system_prompt(
@@ -472,3 +472,37 @@ def test_judge_claim_pairs_unparsed_response_is_a_compile_error(monkeypatch):
     monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
     with pytest.raises(llm_client.LLMCompileError, match="judge_claim_pairs_parse_failed"):
         llm_client.judge_claim_pairs([_PAIR], model="deepseek-flash")
+
+
+def _draft_provider(monkeypatch, finishes):
+    """A provider whose draft replies end with ``finishes`` in turn."""
+    from services.providers import LLMResult  # noqa: PLC0415
+
+    calls = []
+    text = "---\ntitle: T\npage_type: source-summary\ncategory: X\nsummary: S\n---\n\nBody."
+
+    class _Provider:
+        def complete(self, req):
+            calls.append(req)
+            return LLMResult(text=text, parsed=None, parse_error=None, usage={}, finish_reason=finishes[len(calls) - 1])
+
+    monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
+    return calls
+
+
+def test_draft_that_runs_out_of_room_is_asked_once_more(monkeypatch, mock_cost):
+    calls = _draft_provider(monkeypatch, ["LENGTH", "STOP"])
+    llm_client.draft_page(page_type="source-summary", title="T",
+                          source_contents=[{"source_id": "s1", "title": "T", "markdown": "Content."}],
+                          model="deepseek-flash")
+    assert len(calls) == 2
+    assert calls[0].max_output_tokens == 32768
+
+
+def test_draft_that_runs_out_of_room_twice_fails_and_is_never_returned(monkeypatch, mock_cost):
+    calls = _draft_provider(monkeypatch, ["MAX_TOKENS", "LENGTH"])
+    with pytest.raises(llm_client.LLMCompileError, match="draft_page_truncated"):
+        llm_client.draft_page(page_type="source-summary", title="T",
+                              source_contents=[{"source_id": "s1", "title": "T", "markdown": "Content."}],
+                              model="gemini-2.5-flash")
+    assert len(calls) == 2

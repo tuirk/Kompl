@@ -73,7 +73,7 @@ def test_deepseek_flash_prices_and_draft_limits(pricing_client):
         "draft_thinking_budget": 1024,
         # DeepSeek turns the budget into a reasoning_effort, not a token cap.
         "draft_thinking_budget_is_cap": False,
-        "draft_max_output_tokens": 16384,
+        "draft_max_output_tokens": 32768,
         "draft_prompt_char_cap": 128000,
         "claim_judge_thinking_budget": 512,
         "claim_judge_max_output_tokens": 8192,

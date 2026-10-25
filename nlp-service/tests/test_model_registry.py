@@ -75,7 +75,7 @@ def test_gemini3_request_uses_thinking_level_and_default_temperature(mock_gemini
     assert config.thinking_config.thinking_level == types.ThinkingLevel.LOW  # draft_page budget 1024
     assert config.thinking_config.thinking_budget is None
     assert config.temperature is None
-    assert config.max_output_tokens == 16384
+    assert config.max_output_tokens == 32768
 
 
 def test_gemini3_flash_lite_zero_budget_gets_minimal(mock_gemini, mock_limiter, mock_cost):
