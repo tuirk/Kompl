@@ -53,7 +53,17 @@ export function buildSourceMentionRows(
   };
   for (const ent of list(llm.entities)) add(text(ent.name), text(ent.type), text(ent.type) || null);
   for (const con of list(llm.concepts)) add(text(con.name), 'CONCEPT', 'CONCEPT');
-  const relations = buildRelationRows(llm.relationships, sourceId, (name) => named.get(mentionKey(name)) ?? pin(name));
+  const kinds = new Map<string, string>();
+  for (const ent of list(llm.entities)) if (text(ent.name)) kinds.set(mentionKey(text(ent.name)), text(ent.type).toUpperCase());
+  for (const con of list(llm.concepts)) {
+    if (text(con.name) && !kinds.has(mentionKey(text(con.name)))) kinds.set(mentionKey(text(con.name)), 'CONCEPT');
+  }
+  const relations = buildRelationRows(
+    llm.relationships,
+    sourceId,
+    (name) => named.get(mentionKey(name)) ?? pin(name),
+    (name) => kinds.get(mentionKey(name)),
+  );
   return { source_id: sourceId, entities, relations };
 }
 

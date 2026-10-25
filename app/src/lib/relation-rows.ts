@@ -118,6 +118,24 @@ export function quoteVerifiedFromColumn(value: number | null | undefined): boole
   return value === 1 ? true : value === 0 ? false : null;
 }
 
+/**
+ * A created_by whose from is a person and whose to is not: the maker was
+ * written first ("Saul Bass" created_by "The Man with the Golden Arm", one
+ * source, film run 2026-10-25, with the quote "Bass ... after creating the
+ * title sequence for ... The Man with the Golden Arm"). A person is never
+ * made by a film, a product or an idea, so the row is turned.
+ */
+export function makerFirst(
+  type: string,
+  from: string,
+  to: string,
+  kindOf: (name: string) => string | undefined,
+): boolean {
+  if (type !== 'created_by') return false;
+  const [a, b] = [kindOf(from), kindOf(to)];
+  return a === 'PERSON' && b !== undefined && b !== 'PERSON';
+}
+
 /** from/to in stored order: sorted lowercase for direction-agnostic types. */
 export function orderRelationPair(type: string, from: string, to: string): [string, string] {
   if (DIRECTION_AGNOSTIC_RELATIONS.has(type) && from.toLowerCase() > to.toLowerCase()) {
@@ -171,16 +189,22 @@ export function readLlmRelations(relationships: unknown): LlmRelation[] {
  *
  * The description backfill reads llm_output with readLlmRelations alone, so
  * it still finds older rows under the type as the LLM wrote it.
+ *
+ * `kindOf` gives a name's kind in this source (its entity type, 'CONCEPT'
+ * for a concept); with it a created_by written the wrong way round is
+ * turned (makerFirst).
  */
 export function buildRelationRows(
   relationships: unknown,
   sourceId: string,
-  pin: (name: string) => string
+  pin: (name: string) => string,
+  kindOf: (name: string) => string | undefined = () => undefined,
 ): RelationRow[] {
   const rows = new Map<string, RelationRow>();
   for (const rel of readLlmRelations(relationships)) {
     const type = normalizeRelationType(rel.type);
-    const [from, to] = orderRelationPair(type, pin(rel.from), pin(rel.to));
+    const [first, second] = makerFirst(type, rel.from, rel.to, kindOf) ? [rel.to, rel.from] : [rel.from, rel.to];
+    const [from, to] = orderRelationPair(type, pin(first), pin(second));
     const key = relationKey(from, to, type);
     const seen = rows.get(key);
     if (seen) {

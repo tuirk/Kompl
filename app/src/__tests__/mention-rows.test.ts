@@ -60,6 +60,38 @@ describe('buildResolverPin', () => {
 });
 
 describe('buildSourceMentionRows', () => {
+  it('turns a created_by written with the person first (film run 2026-10-25)', () => {
+    const rows = buildSourceMentionRows(
+      {
+        entities: [
+          { name: 'Saul Bass', type: 'PERSON' },
+          { name: 'The Man with the Golden Arm', type: 'OTHER' },
+          { name: 'Otto Preminger', type: 'PERSON' },
+          { name: 'Elaine Bass', type: 'PERSON' },
+        ],
+        concepts: [{ name: 'Title sequence' }],
+        relationships: [
+          { from_entity: 'Saul Bass', to: 'The Man with the Golden Arm', type: 'created_by' },
+          { from_entity: 'The Man with the Golden Arm', to: 'Otto Preminger', type: 'created_by' },
+          { from_entity: 'Saul Bass', to: 'Title sequence', type: 'created_by' },
+          { from_entity: 'Saul Bass', to: 'Elaine Bass', type: 'created_by' }, // two people: left as written
+          { from_entity: 'Saul Bass', to: 'Unlisted film', type: 'created_by' }, // kind unknown: left as written
+          { from_entity: 'Saul Bass', to: 'Title sequence', type: 'uses' },
+        ],
+      },
+      's1',
+      (n) => n
+    );
+    expect(rows.relations.map((r) => [r.from_canonical, r.relationship_type, r.to_canonical])).toEqual([
+      ['The Man with the Golden Arm', 'created_by', 'Saul Bass'],
+      ['The Man with the Golden Arm', 'created_by', 'Otto Preminger'],
+      ['Title sequence', 'created_by', 'Saul Bass'],
+      ['Saul Bass', 'created_by', 'Elaine Bass'],
+      ['Saul Bass', 'created_by', 'Unlisted film'],
+      ['Saul Bass', 'uses', 'Title sequence'],
+    ]);
+  });
+
   it('keeps entity types, one row per canonical, and names relation ends as the source names its entities', () => {
     const rows = buildSourceMentionRows(
       {
