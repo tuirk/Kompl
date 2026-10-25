@@ -81,3 +81,14 @@ describe('page_upgrade_in_progress', () => {
     expect(toUserMessage('page_upgrade_in_progress')).toBe(r!.title);
   });
 });
+
+describe('wiki_repair_in_progress', () => {
+  it('tells the user the wiki is being repaired and where to stop it', () => {
+    const r = getRemediation('wiki_repair_in_progress');
+    expect(r).toBeDefined();
+    expect(r!.title).toMatch(/repairing the wiki/i);
+    expect(r!.title).toMatch(/Wiki health/);
+    expect(r!.fix).toMatch(/Stop/);
+    expect(toUserMessage('wiki_repair_in_progress')).toBe(r!.title);
+  });
+});

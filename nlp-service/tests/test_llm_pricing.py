@@ -34,6 +34,10 @@ _FIELDS = {
     "draft_prompt_char_cap",
     "claim_judge_thinking_budget",
     "claim_judge_max_output_tokens",
+    "disambiguate_thinking_budget",
+    "disambiguate_max_output_tokens",
+    "label_merge_thinking_budget",
+    "label_merge_max_output_tokens",
 }
 
 
@@ -73,6 +77,10 @@ def test_deepseek_flash_prices_and_draft_limits(pricing_client):
         "draft_prompt_char_cap": 128000,
         "claim_judge_thinking_budget": 512,
         "claim_judge_max_output_tokens": 8192,
+        "disambiguate_thinking_budget": 512,
+        "disambiguate_max_output_tokens": 8192,
+        "label_merge_thinking_budget": 512,
+        "label_merge_max_output_tokens": 4096,
     }
 
 
@@ -87,6 +95,16 @@ def test_claim_judge_limits_match_the_judge_call(pricing_client):
     body = pricing_client.get("/llm/pricing", params={"model": "deepseek-flash"}).json()
     assert body["claim_judge_thinking_budget"] == llm_client._read_thinking_budget("judge_claim_pairs")
     assert body["claim_judge_max_output_tokens"] == llm_client._CLAIM_JUDGE_MAX_OUTPUT_TOKENS
+
+
+def test_repair_call_limits_match_the_calls(pricing_client):
+    """The wiki repair estimate (app lib/wiki-repair) prices the name check
+    (Layer 3) and the label merge from these."""
+    body = pricing_client.get("/llm/pricing", params={"model": "deepseek-flash"}).json()
+    assert body["disambiguate_thinking_budget"] == llm_client._read_thinking_budget("disambiguate_entities")
+    assert body["disambiguate_max_output_tokens"] == llm_client._DISAMBIGUATE_MAX_OUTPUT_TOKENS
+    assert body["label_merge_thinking_budget"] == llm_client._read_thinking_budget("consolidate_labels")
+    assert body["label_merge_max_output_tokens"] == llm_client._LABEL_MERGE_MAX_OUTPUT_TOKENS
 
 
 def test_draft_page_sends_the_reported_output_limit(mock_gemini, mock_limiter, mock_cost):

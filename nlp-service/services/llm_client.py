@@ -1153,6 +1153,16 @@ STRICTNESS RULES for this task:
 """ + _JSON_TRAILER
 
 
+# Sized for the 10-pair batch of routers/resolution.py. Each decision is
+# {entity_a, entity_b, decision, canonical, reason} where `reason` carries
+# free-text justification (e.g., "Bagging is a specific ensemble method...");
+# 10 × ~250 tokens + thinking overhead easily exceeds 2048. Session 97f58805
+# hit truncation: raw_excerpt cut off mid-string at line 50 col 166 of the
+# JSON. 8192 matches generate_schema (structured-creative reasoning tier).
+# GET /llm/pricing reports it for the wiki repair estimate.
+_DISAMBIGUATE_MAX_OUTPUT_TOKENS = 8192
+
+
 def disambiguate_entities(
     pairs: list[dict[str, Any]],
     model: str = _DEFAULT_MODEL,
@@ -1194,14 +1204,7 @@ def disambiguate_entities(
             ],
             response_model=DisambiguationResponse,
             thinking_budget=_read_thinking_budget('disambiguate_entities'),
-            # 8192 sized for the 10-pair batch in routers/resolution.py:665.
-            # Each decision is {entity_a, entity_b, decision, canonical, reason}
-            # where `reason` carries free-text justification (e.g., "Bagging is
-            # a specific ensemble method..."); 10 × ~250 tokens + thinking
-            # overhead easily exceeds 2048. Session 97f58805 hit truncation:
-            # raw_excerpt cut off mid-string at line 50 col 166 of the JSON.
-            # 8192 matches generate_schema (structured-creative reasoning tier).
-            max_output_tokens=8192,
+            max_output_tokens=_DISAMBIGUATE_MAX_OUTPUT_TOKENS,
             temperature=0.0,
             step="disambiguate",
         ))

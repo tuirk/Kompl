@@ -200,6 +200,10 @@ async function disarmPageUpgrade(): Promise<void> {
   const { getSetting, setSetting } = await import('./lib/db');
   const { PAGE_UPGRADE_FLAG } = await import('./lib/page-upgrade-state');
   if (getSetting(PAGE_UPGRADE_FLAG) === '1') setSetting(PAGE_UPGRADE_FLAG, '0');
+  // The wiki repair likewise: its flag goes off, and a run the old process
+  // left going is recorded as stopped by the restart (lib/wiki-repair/state.ts).
+  const { settleAfterRestart } = await import('./lib/wiki-repair/state');
+  settleAfterRestart();
 }
 
 export async function register(): Promise<void> {

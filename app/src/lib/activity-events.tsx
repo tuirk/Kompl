@@ -493,6 +493,63 @@ function renderPageUpgradeRun(row: FeedActivityRow): RowContent {
   };
 }
 
+const WIKI_REPAIR_STOP_TEXT: Record<string, string> = {
+  user: 'stopped by you',
+  flag_off: 'stopped by you',
+  daily_cost_ceiling: "today's spending limit reached",
+  rate_limited: 'the AI model was busy',
+  nlp_unreachable: "Kompl's NLP service did not answer",
+  consecutive_failures: '3 pages in a row failed',
+  overspend: 'spending passed 1.5 × the estimate',
+  pages_over_confirmed: 'more pages to rewrite than confirmed',
+  restart: 'Kompl restarted',
+  error: 'unexpected error',
+};
+
+const WIKI_REPAIR_STEP_TEXT: Record<string, string> = {
+  backup: 'backup saved',
+  aliases: 'name matches checked',
+  mentions: 'sources given to the right pages',
+  pages: 'pages rewritten',
+  labels: 'categories tidied',
+};
+
+/** The wiki repair (lib/wiki-repair): one row per finished step, one for the end. */
+function renderWikiRepair(row: FeedActivityRow): RowContent {
+  const { str, num } = makeGetters(row);
+  const phase = str('phase');
+  const step = str('step') ?? '';
+  const n = (k: string) => num(k) ?? 0;
+  let primary: string;
+  let parts: string[];
+  if (phase === 'step') {
+    primary = `Wiki repair: ${WIKI_REPAIR_STEP_TEXT[step] ?? step}`;
+    parts =
+      step === 'backup'
+        ? [str('file') ?? '']
+        : step === 'aliases'
+          ? [`${n('confirmed')} kept`, `${n('retired')} retired`, `${n('undecided')} undecided`]
+          : step === 'mentions'
+            ? [`${n('sources')} sources`, `${n('pages')} pages to rewrite`]
+            : step === 'pages'
+              ? [`${n('rebuilt')} rewritten`, `${n('skipped')} skipped`, `${n('failed')} failed`]
+              : [`${n('merged')} merged`, `${n('pages')} pages`];
+  } else {
+    primary = phase === 'finished' ? 'Wiki repair finished' : 'Wiki repair stopped';
+    parts = [
+      `${n('pages_rebuilt')} pages rewritten`,
+      `${n('aliases_retired')} name matches retired`,
+      phase === 'stopped' ? WIKI_REPAIR_STOP_TEXT[str('reason') ?? ''] ?? '' : '',
+    ];
+  }
+  return {
+    primary: <>{primary}</>,
+    secondary: <span style={MONO_DIM}>{parts.filter(Boolean).join(' · ')}</span>,
+    action: <Link href="/settings#wiki-repair" style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>,
+    isError: phase === 'stopped' && ['error', 'consecutive_failures', 'nlp_unreachable'].includes(str('reason') ?? ''),
+  };
+}
+
 function renderLintComplete(row: FeedActivityRow): RowContent {
   const { d } = makeGetters(row);
   const raw = d as Record<string, unknown> | null;
@@ -875,6 +932,17 @@ export const ACTIVITY_EVENTS = {
       return { label: 'UPGRADING', tone: 'neut' as Tone };
     },
     render: renderPageUpgradeRun,
+  },
+  wiki_repair: {
+    key: 'wiki_repair',
+    badge: (row: FeedActivityRow) => {
+      const { str } = makeGetters(row);
+      const phase = str('phase');
+      if (phase === 'finished') return { label: 'REPAIRED', tone: 'mint' as Tone };
+      if (phase === 'stopped') return { label: 'STOPPED', tone: 'dim' as Tone };
+      return { label: 'REPAIR', tone: 'neut' as Tone };
+    },
+    render: renderWikiRepair,
   },
   page_provenance_updated: { key: 'page_provenance_updated', badge: { label: 'NOTED',    tone: 'dim'  as Tone }, render: renderPageProvenanceUpdated },
   page_contradiction_detected: { key: 'page_contradiction_detected', badge: { label: 'CONFLICT', tone: 'red' as Tone }, render: renderPageContradictionDetected },

@@ -1081,8 +1081,22 @@ export function replaceSourceMentions(
  * sessions' rows never change. Returns the number of sources rewritten.
  */
 export function rebuildSessionMentions(sessionId: string, sources: SourceMentionRows[]): number {
+  const inSession = openDb().prepare('SELECT 1 FROM sources WHERE source_id = ? AND onboarding_session_id = ?');
+  return rewriteMentionRows(sources, (sourceId) => Boolean(inSession.get(sourceId, sessionId)));
+}
+
+/**
+ * The same rewrite for every source given, whatever its session: the wiki
+ * repair (lib/wiki-repair) re-credits every source's mentions from its
+ * extraction in one transaction. A source no longer in the wiki is skipped.
+ */
+export function rebuildWikiMentions(sources: SourceMentionRows[]): number {
+  const exists = openDb().prepare('SELECT 1 FROM sources WHERE source_id = ?');
+  return rewriteMentionRows(sources, (sourceId) => Boolean(exists.get(sourceId)));
+}
+
+function rewriteMentionRows(sources: SourceMentionRows[], include: (sourceId: string) => boolean): number {
   const db = openDb();
-  const inSession = db.prepare('SELECT 1 FROM sources WHERE source_id = ? AND onboarding_session_id = ?');
   const oldEntities = db.prepare('SELECT canonical_name, first_seen_at FROM entity_mentions WHERE source_id = ?');
   const oldRelations = db.prepare(
     `SELECT from_canonical, to_canonical, relationship_type, first_seen_at, description, quote, quote_verified
@@ -1104,7 +1118,7 @@ export function rebuildSessionMentions(sessionId: string, sources: SourceMention
   let rebuilt = 0;
   db.transaction(() => {
     for (const { source_id, entities, relations } of sources) {
-      if (!inSession.get(source_id, sessionId)) continue;
+      if (!include(source_id)) continue;
       const entitySeen = new Map<string, string | null>();
       for (const r of oldEntities.all(source_id) as Array<{ canonical_name: string; first_seen_at: string | null }>) {
         entitySeen.set(nocase(r.canonical_name), r.first_seen_at);

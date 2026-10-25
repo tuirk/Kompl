@@ -6,7 +6,8 @@
  * all their sources (in bulk, from Settings > Wiki health). These tests pin
  * that an update never loses anything: guards refuse before any LLM call,
  * the commit follows the outbox order (DB first, file after), a thin or
- * failed draft leaves the page untouched, provenance never changes, the
+ * failed draft leaves the page untouched, provenance changes only with a
+ * credit change the wiki repair passes (and then in the same commit), the
  * previous version can be restored, and the draft_rules marker is set by an
  * update and kept by a restore.
  */
@@ -249,6 +250,28 @@ describe('redraftPage', () => {
     // Provenance is never touched.
     expect(provenanceOf(pageId)).toEqual(provenanceBefore);
     expect(getActivityCounts(handle.db).page_redrafted).toBe(1);
+  });
+
+  it('with a credit change (the wiki repair), drafts from the changed sources and credits them with the text, quietly', async () => {
+    handle = setupTestDb();
+    const pageId = seedRedraftablePage(handle);
+    const C = 'c3a7e2f1-1111-4c2b-9d0e-000000000003';
+    seedSource(handle.db, { source_id: C, title: 'Mining Explained', raw_markdown: 'Miners spend energy.' });
+    const calls = mockNlp(pageId);
+
+    await redraftPage(pageId, { credits: { remove: [B], add: [C, GONE] }, quiet: true });
+
+    const sent = (calls.draftBodies[0].source_contents as Array<{ source_id: string }>).map((s) => s.source_id);
+    expect(sent).toEqual([A, C]);
+    const rows = handle.db.prepare('SELECT source_id, contribution_type FROM provenance WHERE page_id = ? ORDER BY id').all(pageId);
+    // B leaves; C, which the draft read, joins; the archived source stays as it was.
+    expect(rows).toEqual([
+      { source_id: A, contribution_type: 'created' },
+      { source_id: GONE, contribution_type: 'created' },
+      { source_id: C, contribution_type: 'updated' },
+    ]);
+    expect((handle.db.prepare('SELECT source_count FROM pages WHERE page_id = ?').get(pageId) as { source_count: number }).source_count).toBe(3);
+    expect(getActivityCounts(handle.db).page_redrafted).toBeUndefined();
   });
 
   it('marks the page in the same transaction that stores the new text', async () => {

@@ -28,6 +28,7 @@ import { LLM_MODEL_INFO, type LlmModel } from '../llm-models';
 import { exceedsBudget } from '../page-upgrade-estimate';
 import { fetchLlmUsage, type LlmUsage } from '../page-upgrade';
 import { isPageUpgradeRunning } from '../page-upgrade-state';
+import { isWikiRepairRunning } from '../wiki-repair/state';
 import type { CandidatePair } from './candidates';
 import { estimateWikiCheck, type JudgePricing, type WikiCheckEstimate } from './estimate';
 import { MAX_WIKI_CHECK_PAIRS_PER_RUN } from './limits';
@@ -202,6 +203,9 @@ export async function startWikiCheck(input: { expectedPairs: number; model: stri
     }
     if (isPageUpgradeRunning()) {
       throw new WikiCheckError('page_upgrade_in_progress', 409, 'Pages are being updated. Check the wiki once the update finishes.');
+    }
+    if (isWikiRepairRunning()) {
+      throw new WikiCheckError('wiki_repair_in_progress', 409, 'The wiki is being repaired. Check the wiki once the repair finishes.');
     }
     const model = getCompileModel();
     if (input.model !== model) {

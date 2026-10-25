@@ -1,7 +1,8 @@
 /**
  * Replace a page's content outside a compile session — a page update
- * (lib/redraft.ts, run from Settings > Wiki health) and "Restore previous
- * version".
+ * (lib/redraft.ts, run from Settings > Wiki health), "Restore previous
+ * version" and the wiki repair (lib/wiki-repair), which can also change the
+ * page's credited sources or its label in the same commit.
  *
  * Follows the outbox rule (CLAUDE.md rule 5):
  *   Phase 2  (sync db.transaction, no await, no file I/O): version check,
@@ -14,6 +15,8 @@
  * If Phase 3a fails, pending_content stays set and the boot reconciler
  * (instrumentation.ts) flushes it on the next start; nothing is lost.
  */
+
+import { createHash } from 'node:crypto';
 
 import {
   clearPendingContent,
@@ -28,6 +31,7 @@ import { stripFrontmatter } from './markdown';
 import { syncPageWikilinks } from './wikilinks';
 import { extractFrontmatterField } from './yaml-frontmatter';
 import { recordPageDisagreements } from './disagreements';
+import { recordPageContributions } from './plan-provenance';
 import { upsertVectorWithRetry } from './vector-upsert';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -73,6 +77,30 @@ export function pageTextVersionToken(pageId: string): string {
 
 export type RewriteResult = { ok: true; flushed: boolean } | { ok: false; reason: 'page_changed' | 'page_not_found' };
 
+/** Sources a rewrite drops from the page and adds to it (the wiki repair). */
+export interface CreditChange {
+  remove: string[];
+  add: string[];
+}
+
+/**
+ * Inside the Phase 2 transaction: the page's provenance rows for `remove`
+ * go, each source in `add` that still exists gets an 'updated' row unless it
+ * already contributed, and source_count is recounted.
+ */
+function applyCredits(pageId: string, credits: CreditChange, markdown: string): void {
+  const db = getDb();
+  const drop = db.prepare('DELETE FROM provenance WHERE page_id = ? AND source_id = ?');
+  for (const sourceId of new Set(credits.remove)) drop.run(pageId, sourceId);
+  const exists = db.prepare('SELECT 1 FROM sources WHERE source_id = ?');
+  recordPageContributions(db, {
+    page_id: pageId,
+    source_ids: credits.add.filter((id) => exists.get(id)),
+    content_hash: createHash('sha256').update(markdown).digest('hex'),
+    contribution_type: 'updated',
+  });
+}
+
 async function writePageFile(pageId: string, markdown: string): Promise<{ previous_path: string | null }> {
   const res = await fetch(`${NLP_SERVICE_URL}/storage/write-page`, {
     method: 'POST',
@@ -95,14 +123,20 @@ export async function commitPageRewrite(args: {
    * rewrites it on its own).
    */
   draftRules: string | null;
-  activity: { type: ActivityEventType; details: Record<string, unknown> };
+  /** Null: no activity row (the wiki repair records its run as a whole). */
+  activity: { type: ActivityEventType; details: Record<string, unknown> } | null;
+  /** Credited sources that change with the text (the wiki repair). */
+  credits?: CreditChange;
+  /** A new label for the page (the wiki repair's label merge). */
+  category?: string;
 }): Promise<RewriteResult> {
-  const { pageId, markdown, expectedToken, draftRules, activity } = args;
+  const { pageId, markdown, expectedToken, draftRules, activity, credits } = args;
   const page = getPage(pageId);
   if (!page) return { ok: false, reason: 'page_not_found' };
 
   // A new summary replaces the old one; the category is only filled in when
-  // the page has none, so an update never moves a page between categories.
+  // the page has none, so an update never moves a page between categories;
+  // only the label merge sets one.
   const summary = extractFrontmatterField(markdown, 'summary');
   const category = extractFrontmatterField(markdown, 'category');
 
@@ -113,11 +147,11 @@ export async function commitPageRewrite(args: {
     db.prepare(
       `UPDATE pages
           SET summary = COALESCE(?, summary),
-              category = COALESCE(category, ?),
+              category = COALESCE(?, category, ?),
               draft_rules = COALESCE(?, draft_rules),
               last_updated = datetime('now')
         WHERE page_id = ?`,
-    ).run(summary || null, category || null, draftRules, pageId);
+    ).run(summary || null, args.category ?? null, category || null, draftRules, pageId);
     setPendingContent(pageId, markdown);
     db.prepare('DELETE FROM pages_fts WHERE page_id = ?').run(pageId);
     db.prepare('INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)').run(
@@ -127,7 +161,8 @@ export async function commitPageRewrite(args: {
     );
     // Disagreements the committed text records (lib/disagreements.ts).
     recordPageDisagreements(db, { page_id: pageId, title: page.title }, markdown);
-    logActivity(activity.type, { source_id: null, details: activity.details });
+    if (credits) applyCredits(pageId, credits, markdown);
+    if (activity) logActivity(activity.type, { source_id: null, details: activity.details });
     return true;
   })();
   if (!committed) return { ok: false, reason: 'page_changed' };
@@ -156,7 +191,7 @@ export async function commitPageRewrite(args: {
     void upsertVectorWithRetry(pageId, {
       title: page.title,
       page_type: page.page_type,
-      category: page.category ?? category ?? '',
+      category: args.category ?? page.category ?? category ?? '',
       source_count: page.source_count,
     });
   }

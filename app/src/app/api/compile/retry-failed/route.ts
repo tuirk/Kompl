@@ -59,6 +59,7 @@ import {
   getRunningCompileSession,
 } from '@/lib/db';
 import { pageUpgradeBlock } from '@/lib/page-upgrade-state';
+import { wikiRepairBlock } from '@/lib/wiki-repair/state';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
 interface StagingMini {
@@ -91,7 +92,7 @@ export async function POST(request: Request) {
   }
 
   // No compile while pages are being updated to the current writing rules.
-  const upgrading = pageUpgradeBlock();
+  const upgrading = pageUpgradeBlock() ?? wikiRepairBlock();
   if (upgrading) return NextResponse.json(upgrading, { status: 409 });
 
   // Global concurrency gate: block retry if a DIFFERENT session is active.

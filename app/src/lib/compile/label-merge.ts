@@ -92,8 +92,8 @@ async function callConsolidate(
   }
 }
 
-/** The label as a YAML scalar: plain when that reads back the same. */
-function yamlLabel(label: string): string {
+/** The label as a YAML scalar: plain when that reads back the same. Also used by the wiki repair. */
+export function yamlLabel(label: string): string {
   return /^[\p{L}\p{N}][^"\\#:\r\n]*$/u.test(label) && label === label.trim() ? label : yamlDoubleQuote(label);
 }
 

@@ -2,9 +2,9 @@
 
 Endpoints:
   GET /llm/usage   — today's LLM spend vs the daily cap (from the on-disk cap file).
-  GET /llm/pricing — list prices for one model plus the draft_page and claim
-                     judge limits, for the app's estimates in Settings > Wiki
-                     health (page update, whole-wiki check).
+  GET /llm/pricing — list prices for one model plus the limits of the calls
+                     the app estimates in Settings > Wiki health (page
+                     update, whole-wiki check, wiki repair).
 
 This router NEVER opens kompl.db. rule #1 in CLAUDE.md.
 """
@@ -18,8 +18,10 @@ from pydantic import BaseModel, ConfigDict
 
 from services.llm_client import (
     _CLAIM_JUDGE_MAX_OUTPUT_TOKENS,
+    _DISAMBIGUATE_MAX_OUTPUT_TOKENS,
     _DRAFT_PAGE_MAX_OUTPUT_TOKENS,
     _GEMINI_INPUT_TOKEN_CAP,
+    _LABEL_MERGE_MAX_OUTPUT_TOKENS,
     _read_cap,
     _read_daily_cap_usd,
     _read_thinking_budget,
@@ -86,6 +88,13 @@ class LLMPricingResponse(BaseModel):
     # the budget is a cap or an effort level as draft_thinking_budget_is_cap says.
     claim_judge_thinking_budget: int
     claim_judge_max_output_tokens: int
+    # The wiki repair (app lib/wiki-repair): one disambiguate_entities call
+    # judges up to 10 name matches; one consolidate_labels call tidies the
+    # wiki's labels. Budgets are caps or effort levels as above.
+    disambiguate_thinking_budget: int
+    disambiguate_max_output_tokens: int
+    label_merge_thinking_budget: int
+    label_merge_max_output_tokens: int
 
 
 @router.get("/llm/pricing", response_model=LLMPricingResponse)
@@ -106,4 +115,8 @@ def get_llm_pricing(model: LLMModel) -> LLMPricingResponse:
         draft_prompt_char_cap=_GEMINI_INPUT_TOKEN_CAP,
         claim_judge_thinking_budget=_read_thinking_budget("judge_claim_pairs"),
         claim_judge_max_output_tokens=_CLAIM_JUDGE_MAX_OUTPUT_TOKENS,
+        disambiguate_thinking_budget=_read_thinking_budget("disambiguate_entities"),
+        disambiguate_max_output_tokens=_DISAMBIGUATE_MAX_OUTPUT_TOKENS,
+        label_merge_thinking_budget=_read_thinking_budget("consolidate_labels"),
+        label_merge_max_output_tokens=_LABEL_MERGE_MAX_OUTPUT_TOKENS,
     )

@@ -9,9 +9,10 @@
  * current version is archived by the page write and can be put back with
  * Restore (on the page), which is itself undoable the same way.
  *
- * Users reach redraftPage only through the bulk update in Settings > Wiki
- * health (lib/page-upgrade.ts), which runs it one page at a time behind an
- * explicit confirmation. Nothing here runs on its own: no boot hook.
+ * Users reach redraftPage only through the bulk update and the wiki repair
+ * in Settings > Wiki health (lib/page-upgrade.ts, lib/wiki-repair), which
+ * run it one page at a time behind an explicit confirmation. Nothing here
+ * runs on its own: no boot hook.
  */
 
 import fs from 'node:fs';
@@ -40,7 +41,7 @@ import type { LlmModel } from './llm-models';
 import { LONG_HTTP_AGENT } from './long-http-agent';
 import { stripFrontmatter } from './markdown';
 import { removeEmptyContradictionSections } from './page-sections';
-import { commitPageRewrite, pageVersionToken } from './page-rewrite';
+import { commitPageRewrite, pageVersionToken, type CreditChange } from './page-rewrite';
 import { sourceDates, withSourceDate } from './source-dates';
 import { injectWikilinks, type WikilinkTarget } from './wikilink-injector';
 
@@ -117,25 +118,30 @@ interface DraftSource {
   citation_label?: string;
 }
 
-/** The page's current, active sources, each once, in provenance order. */
-function currentSources(pageId: string): { sources: DraftSource[]; skipped: number } {
+/**
+ * The page's current, active sources, each once, in provenance order. With
+ * a credit change (the wiki repair), the sources it removes are left out and
+ * the ones it adds follow.
+ */
+function currentSources(pageId: string, credits?: CreditChange): { sources: DraftSource[]; skipped: number } {
   const sources: DraftSource[] = [];
-  const seen = new Set<string>();
+  const seen = new Set<string>(credits?.remove ?? []);
   let skipped = 0;
-  for (const prov of getProvenanceForPage(pageId)) {
-    if (seen.has(prov.source_id)) continue;
-    seen.add(prov.source_id);
-    const source = getSource(prov.source_id);
+  const ids = [...getProvenanceForPage(pageId).map((p) => p.source_id), ...(credits?.add ?? [])];
+  for (const sourceId of ids) {
+    if (seen.has(sourceId)) continue;
+    seen.add(sourceId);
+    const source = getSource(sourceId);
     if (!source || source.status !== 'active') {
       skipped++;
       continue;
     }
-    const markdown = readRawMarkdown(prov.source_id);
+    const markdown = readRawMarkdown(sourceId);
     if (!markdown) {
       skipped++;
       continue;
     }
-    sources.push({ source_id: prov.source_id, title: source.title ?? 'Untitled source', markdown });
+    sources.push({ source_id: sourceId, title: source.title ?? 'Untitled source', markdown });
   }
   return { sources, skipped };
 }
@@ -197,6 +203,15 @@ export interface RedraftOptions {
    * compile session does; without it the current Settings choice is used.
    */
   model?: LlmModel;
+  /**
+   * The wiki repair (lib/wiki-repair): sources that no longer name the page
+   * leave it and sources that now do join it. The page is rebuilt from its
+   * sources so changed, and the change is credited in the same commit as
+   * the new text (only added sources the draft could read are credited).
+   */
+  credits?: CreditChange;
+  /** No activity row per page: the wiki repair records its run as a whole. */
+  quiet?: boolean;
 }
 
 /** Rebuild a page from all its current sources. One LLM call. */
@@ -210,7 +225,7 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
   return withPageLock(pageId, async () => {
     assertNoCompileRunning();
     assertFlushed(pageId);
-    const { sources, skipped } = currentSources(pageId);
+    const { sources, skipped } = currentSources(pageId, options.credits);
     if (sources.length === 0) {
       throw new RedraftError('no_readable_sources', 422, "None of this page's sources could be read, so it cannot be updated.");
     }
@@ -254,7 +269,7 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
         compile_model: model,
       });
     } catch (err) {
-      if (err instanceof RedraftError) {
+      if (err instanceof RedraftError && !options.quiet) {
         logActivity('page_redraft_failed', {
           source_id: null,
           details: { page_id: pageId, title: page.title, error: err.code },
@@ -286,10 +301,12 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
     const bodyChars = stripFrontmatter(markdown).trim().length;
     const threshold = getMinDraftChars();
     if (threshold > 0 && bodyChars < threshold) {
-      logActivity('page_redraft_failed', {
-        source_id: null,
-        details: { page_id: pageId, title: page.title, error: 'draft_too_thin', chars: bodyChars, threshold },
-      });
+      if (!options.quiet) {
+        logActivity('page_redraft_failed', {
+          source_id: null,
+          details: { page_id: pageId, title: page.title, error: 'draft_too_thin', chars: bodyChars, threshold },
+        });
+      }
       throw new RedraftError('draft_too_thin', 422, 'The new version was too short, so the page was left unchanged.', {
         chars: bodyChars,
         threshold,
@@ -301,9 +318,15 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
       markdown,
       expectedToken,
       draftRules: CURRENT_DRAFT_RULES,
-      activity: {
-        type: 'page_redrafted',
-        details: { page_id: pageId, title: page.title, model, sources: sources.length, draft_rules: CURRENT_DRAFT_RULES },
+      activity: options.quiet
+        ? null
+        : {
+            type: 'page_redrafted',
+            details: { page_id: pageId, title: page.title, model, sources: sources.length, draft_rules: CURRENT_DRAFT_RULES },
+          },
+      credits: options.credits && {
+        remove: options.credits.remove,
+        add: options.credits.add.filter((id) => sources.some((s) => s.source_id === id)),
       },
     });
     if (!result.ok) {

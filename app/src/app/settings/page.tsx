@@ -23,6 +23,7 @@ import {
 } from './_ui';
 import AgentSourcesCard from './AgentSourcesCard';
 import PageUpgradeCard from './PageUpgradeCard';
+import RepairWikiCard from './RepairWikiCard';
 import TriageRecheckCard from './TriageRecheckCard';
 import ClaimCheckCard from './ClaimCheckCard';
 import WikiCheckCard from './WikiCheckCard';
@@ -692,6 +693,8 @@ export default function SettingsPage() {
           {/* ========== Wiki health ========== */}
           <SettingsGroup id="wiki-health" title="Wiki health">
             <PageUpgradeCard />
+
+            <RepairWikiCard />
 
             <SettingCard
               title="Wiki health checks"

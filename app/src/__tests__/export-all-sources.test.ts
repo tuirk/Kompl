@@ -38,7 +38,9 @@ function seedMany(): string[] {
   return ids;
 }
 
-describe('exports carry every source', () => {
+// Zipping 205 sources takes about a second alone but well past the default
+// 5 s when the whole suite runs in parallel.
+describe('exports carry every source', { timeout: 30_000 }, () => {
   it('getAllSources returns them all unless a limit is asked for', () => {
     seedMany();
     expect(getAllSources()).toHaveLength(COUNT);

@@ -85,6 +85,7 @@ import {
   type PageUpgradeStopReason,
 } from './page-upgrade-state';
 import { RedraftError, redraftPage } from './redraft';
+import { isWikiRepairRunning } from './wiki-repair/state';
 
 export { PAGE_UPGRADE_FLAG, PAGE_UPGRADE_NOTICE_DISMISSED } from './page-upgrade-state';
 
@@ -406,6 +407,9 @@ export async function confirmPageUpgrade(input: { expectedPages: number; model: 
   const refuseIfCompiling = () => {
     if (getRunningCompileSession()) {
       throw new PageUpgradeError('session_in_progress', 409, 'A compile is running. Pages can be updated once it finishes.');
+    }
+    if (isWikiRepairRunning()) {
+      throw new PageUpgradeError('wiki_repair_in_progress', 409, 'The wiki is being repaired. Pages can be updated once the repair finishes.');
     }
   };
   refuseIfCompiling();

@@ -23,6 +23,7 @@ import {
   supersedeOrphanQueuedSessions,
 } from './db';
 import { pageUpgradeBlock } from './page-upgrade-state';
+import { wikiRepairBlock } from './wiki-repair/state';
 import { triggerSessionCompile } from './trigger-n8n';
 
 export interface FinalizeResult {
@@ -50,8 +51,9 @@ export async function finalizeSession(session_id: string): Promise<FinalizeResul
   }
 
   // No compile while pages are being updated to the current writing rules
-  // (lib/page-upgrade.ts). Checked before any side effect.
-  const upgrading = pageUpgradeBlock();
+  // or the wiki is being repaired (lib/page-upgrade.ts, lib/wiki-repair).
+  // Checked before any side effect.
+  const upgrading = pageUpgradeBlock() ?? wikiRepairBlock();
   if (upgrading) return { status: 409, body: { ...upgrading } };
 
   // Clear orphan queued rows (failed n8n trigger, abandoned tab) so they

@@ -21,6 +21,7 @@ import {
 import { MAX_PER_CALL, MAX_PER_DAY } from './agent-sources-limits';
 import { finalizeSession } from './finalize-session';
 import { pageUpgradeBlock } from './page-upgrade-state';
+import { wikiRepairBlock } from './wiki-repair/state';
 import { isBlockedHost } from './url-blocklist';
 import { urlKey, urlKeyCandidates } from './url-key';
 
@@ -66,11 +67,12 @@ export async function addAgentSources(req: AgentSourcesRequest): Promise<AgentSo
     };
   }
 
-  // Nothing is staged while a compile or a page update runs: the new one
-  // couldn't start, and staged rows would sit unseen. A compile left queued
-  // that nothing will start doesn't count: finalizeSession supersedes it.
-  const upgrading = pageUpgradeBlock();
-  if (upgrading) return fail(409, 'page_upgrade_in_progress', upgrading.error);
+  // Nothing is staged while a compile, a page update or a wiki repair runs:
+  // the new one couldn't start, and staged rows would sit unseen. A compile
+  // left queued that nothing will start doesn't count: finalizeSession
+  // supersedes it.
+  const upgrading = pageUpgradeBlock() ?? wikiRepairBlock();
+  if (upgrading) return fail(409, upgrading.error_code, upgrading.error);
   const running = getRunningCompileSession();
   if (running && !isLeftoverQueued(running.session_id)) return compileRunning(running);
 

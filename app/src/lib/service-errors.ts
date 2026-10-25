@@ -113,6 +113,11 @@ export const SERVICE_ERROR_MESSAGES = {
     body: 'The page update tracks its own LLM spending and writes pages one at a time, so a compile cannot run at the same time.',
     fix: 'Wait for the update to finish, or select Stop in Settings → Wiki health.',
   },
+  wiki_repair_in_progress: {
+    title: 'Kompl is repairing the wiki. Start the compile once the repair finishes, or stop the repair in Settings → Wiki health.',
+    body: 'The repair tracks its own AI spending and rewrites pages one at a time, so a compile cannot run at the same time.',
+    fix: 'Wait for the repair to finish, or select Stop in Settings → Wiki health.',
+  },
 
   // ── Pre-stage health codes (consumed by /onboarding/health table) ──────
   selected_provider_key_missing: {
