@@ -1875,19 +1875,22 @@ export function hasPendingCreate(title: string, pageTypes: readonly string[]): b
  * Titles the resolver matches session names against: entity and concept
  * pages, plus the new entity and concept pages drafts waiting for approval
  * will create, so a name binds to such a page as it would once approved
- * (plan 1.8). Sorted like getEntityAndConceptPageTitles.
+ * (plan 1.8). Each with its summary (none yet for a waiting draft), which
+ * Layer 2 compares names with by meaning. Sorted like
+ * getEntityAndConceptPageTitles.
  */
-export function getResolverPageTitles(): Array<{ title: string; page_type: string }> {
+export function getResolverPageTitles(): Array<{ title: string; page_type: string; summary: string | null }> {
   return openDb()
     .prepare(
-      `SELECT title, page_type FROM pages WHERE page_type IN ('entity', 'concept')
+      `SELECT title, page_type, NULLIF(TRIM(summary), '') AS summary FROM pages
+        WHERE page_type IN ('entity', 'concept')
        UNION
-       SELECT title, page_type FROM page_plans
+       SELECT title, page_type, NULL FROM page_plans
         WHERE draft_status = 'pending_approval' AND action = 'create'
           AND page_type IN ('entity', 'concept')
        ORDER BY title, page_type`
     )
-    .all() as Array<{ title: string; page_type: string }>;
+    .all() as Array<{ title: string; page_type: string; summary: string | null }>;
 }
 
 /**

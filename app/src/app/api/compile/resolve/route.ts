@@ -112,6 +112,7 @@ interface AmbiguousPair {
   name_similarity: number; // cosine of the names alone; ranks pairs for the capped Layer 3
   same_source: boolean;    // one source names both sides; a hint for Layer 3
   abbreviation: boolean;   // an acronym and its expansion; ranks with the abbreviations
+  by_meaning?: boolean;    // asked only as closest by meaning; ranks last in its tier
 }
 
 interface FuzzyResolveResponse {
@@ -143,6 +144,7 @@ interface DisambiguateResponse {
 interface ExistingPageTitle {
   title: string;
   page_type: string;  // 'entity' | 'concept'
+  summary: string | null;  // for the closest-by-meaning candidates (Layer 2)
 }
 
 async function callFuzzy(
@@ -410,8 +412,13 @@ export async function POST(request: Request) {
     }
     // Names whose numbers differ are never one thing ("Python 2" / "Python 3"),
     // so a verdict never folds them together, even through a third name.
+    // The one exception is the two names of a pair asked as closest by
+    // meaning that Layer 3 judged the same: a rename can change a number
+    // ("2019 novel coronavirus" / "SARS-CoV-2").
+    const renamed = new Set<string>();
+    const nameKey = (x: string, y: string) => [x.toLowerCase(), y.toLowerCase()].sort().join('\u0000');
     const numbersClash = (xs: string[], ys: string[]) =>
-      xs.some((x) => ys.some((y) => numericConflict(x, y) === 'hard'));
+      xs.some((x) => ys.some((y) => numericConflict(x, y) === 'hard' && !renamed.has(nameKey(x, y))));
     const namesOf = (g: ResolvedGroup) => [g.canonical, ...g.aliases];
 
     const addName = (g: ResolvedGroup, name: string) => {
@@ -459,6 +466,7 @@ export async function POST(request: Request) {
     };
     // Applies one Layer 3 'same' verdict; false when it cannot be applied.
     const applySame = (pair: AmbiguousPair, picked: string): boolean => {
+      if (pair.by_meaning === true) renamed.add(nameKey(pair.entity_a.name, pair.entity_b.name));
       const sides = [pair.entity_a, pair.entity_b];
       const ids = sides.map(groupOf).filter((k): k is number => k !== null);
       if (ids.length !== sides.filter(isGroupRef).length) return false; // malformed group reference
@@ -496,6 +504,7 @@ export async function POST(request: Request) {
         if (!isAnchored(g) && g.source_ids.length <= 1 && picked === lone[0].name) rename(g, picked);
         return absorb(ids[0], lone[0]);
       }
+      if (lone.length === 2 && numbersClash([lone[0].name], [lone[1].name])) return false;
       addGroup({
         canonical: picked,
         type: pair.entity_a.type,

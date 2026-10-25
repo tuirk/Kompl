@@ -43,6 +43,22 @@ describe('rankForLayer3', () => {
     ]);
   });
 
+  it('puts pairs asked only by meaning after the rest of their tier, most alike in meaning first', () => {
+    const meaning = (a: string, b: string, name: number, sim: number, oneSource = false) =>
+      ({ ...pair(a, b, name, sim, oneSource), by_meaning: true });
+    const pairs = [
+      meaning('Colorblindness', 'Color Vision Deficiency', 0.3, 0.71),
+      meaning('CVD', 'Color Vision Deficiency', 0.2, 0.9),
+      pair('Gas fee', 'Transaction fee', 0.75),
+      meaning('Moneyball', 'Billy Beane', 0.5, 0.8, true),
+      pair('Kaunas Castle', 'Kaunas Fortress', 0.88, 0.88, true),
+      meaning('mpox', 'Monkeypox', 0.4, 0.69),
+    ];
+    expect(rankForLayer3(pairs, (p) => p.oneSource).map((p) => p.entity_a.name)).toEqual([
+      'Gas fee', 'CVD', 'Colorblindness', 'mpox', 'Kaunas Castle', 'Moneyball',
+    ]);
+  });
+
   it('ranks an acronym pair Layer 2 flags with the abbreviations, within its tier', () => {
     const pairs = [
       pair('Gas fee', 'Transaction fee', 0.75),

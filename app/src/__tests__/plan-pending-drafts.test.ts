@@ -119,16 +119,16 @@ describe('plan: no second create while one waits for approval', () => {
 describe('resolve: a page waiting for approval is matched like a page', () => {
   it('lists the titles of pending new entity and concept pages with the pages', () => {
     handle = setupTestDb();
-    seedPage(handle.db, { title: 'Mercury', page_type: 'entity' });
+    seedPage(handle.db, { title: 'Mercury', page_type: 'entity', summary: 'The planet closest to the Sun.' });
     pending('Gemini', 'entity', []);
     pending('Contrast ratio', 'concept', []);
     pending('Gemini vs Claude', 'comparison', []);
     pending('Old idea', 'concept', [], 'rejected');
 
     expect(getResolverPageTitles()).toEqual([
-      { title: 'Contrast ratio', page_type: 'concept' },
-      { title: 'Gemini', page_type: 'entity' },
-      { title: 'Mercury', page_type: 'entity' },
+      { title: 'Contrast ratio', page_type: 'concept', summary: null },
+      { title: 'Gemini', page_type: 'entity', summary: null },
+      { title: 'Mercury', page_type: 'entity', summary: 'The planet closest to the Sun.' },
     ]);
   });
 
@@ -156,6 +156,6 @@ describe('resolve: a page waiting for approval is matched like a page', () => {
       body: JSON.stringify({ session_id }),
     }));
     expect(res.status).toBe(200);
-    expect(titles).toEqual([{ title: 'Gemini', page_type: 'entity' }]);
+    expect(titles).toEqual([{ title: 'Gemini', page_type: 'entity', summary: null }]);
   });
 });

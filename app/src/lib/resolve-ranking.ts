@@ -32,6 +32,9 @@ export interface RankedPair {
   // An acronym pair Layer 2 flagged ("ML" / "Machine Learning"), also when
   // the acronym is another name of a group ("LLMs" holding "LLM").
   abbreviation?: boolean;
+  // Asked only as each other's closest by meaning (nlp-service
+  // _MEANING_CANDIDATES): after the rest of its tier, by similarity.
+  by_meaning?: boolean;
 }
 
 const LETTER = /\p{L}/u;
@@ -66,8 +69,9 @@ export function isAbbreviation(short: string, long: string): boolean {
  * usually different things. Within a tier an abbreviation and its long form
  * first, since their names score low ("ETH" / "Ethereum"), including the
  * acronym pairs Layer 2 flags; then name similarity, so a pair alike only
- * in context never buys a slot; then similarity. Stable: equal pairs keep
- * their order.
+ * in context never buys a slot; then similarity. Pairs asked only as
+ * closest by meaning come after the rest of their tier, most alike in
+ * meaning first. Stable: equal pairs keep their order.
  */
 export function rankForLayer3<P extends RankedPair>(pairs: P[], oneSource: (pair: P) => boolean): P[] {
   return pairs
@@ -75,11 +79,14 @@ export function rankForLayer3<P extends RankedPair>(pairs: P[], oneSource: (pair
       p,
       i,
       tier: oneSource(p) ? 1 : 0,
-      abbreviation: p.abbreviation === true ||
-        isAbbreviation(p.entity_a.name, p.entity_b.name) || isAbbreviation(p.entity_b.name, p.entity_a.name),
+      meaning: p.by_meaning === true,
+      abbreviation: p.by_meaning !== true && (p.abbreviation === true ||
+        isAbbreviation(p.entity_a.name, p.entity_b.name) || isAbbreviation(p.entity_b.name, p.entity_a.name)),
     }))
     .sort((x, y) =>
       x.tier - y.tier ||
+      Number(x.meaning) - Number(y.meaning) ||
+      (x.meaning && y.meaning ? y.p.similarity - x.p.similarity : 0) ||
       Number(y.abbreviation) - Number(x.abbreviation) ||
       y.p.name_similarity - x.p.name_similarity ||
       y.p.similarity - x.p.similarity ||

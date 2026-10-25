@@ -62,8 +62,8 @@ it('sends Layer 1 the page titles in that order', async () => {
   }));
   expect(res.status).toBe(200);
   expect(titles).toEqual([
-    { title: 'Confidence Interval', page_type: 'concept' },
-    { title: 'Continuous Integration', page_type: 'concept' },
+    { title: 'Confidence Interval', page_type: 'concept', summary: null },
+    { title: 'Continuous Integration', page_type: 'concept', summary: null },
   ]);
 });
 

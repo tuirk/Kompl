@@ -75,15 +75,22 @@ def session(item: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, 
     sides = [item["a"], item["b"], *item.get("others", [])]
     entities = [{"name": s["name"], "type": s["type"], "source_id": s["source"], "context": s.get("context", "")}
                 for s in sides if not s.get("page")]
-    pages = [*({"title": pt["title"], "page_type": pt["page_type"]} for pt in item.get("pages", [])), *({"title": s["name"], "page_type": s["page_type"]} for s in sides if s.get("page"))]
+    # With its summary when the item gives one, as the route sends it (closest by meaning).
+    pages = [{"title": p["title"], "page_type": p["page_type"], **({"summary": p["summary"]} if p.get("summary") else {})}
+             for p in [*item.get("pages", []),
+                       *({"title": s["name"], "page_type": s["page_type"], "summary": s.get("summary")}
+                         for s in sides if s.get("page"))]]
     return entities, pages, list(item.get("aliases", []))
 
 
 def group_context(group: dict[str, Any], entities: list[dict[str, Any]]) -> str:
     """The route's groupContext: a context of one of the group's own names,
-    the canonical spelling first."""
+    the canonical spelling first. The route's pool comes in extraction
+    order (created_at, then source); here by source, so the input-order
+    check never changes which context a group carries."""
     names = {n.lower() for n in [group["canonical"], *group["aliases"]]}
-    own = [e for e in entities if e["context"] and e["source_id"] in group["source_ids"] and e["name"].lower() in names]
+    own = sorted((e for e in entities if e["context"] and e["source_id"] in group["source_ids"]
+                  and e["name"].lower() in names), key=lambda e: e["source_id"])
     first = next((e for e in own if e["name"].lower() == group["canonical"].lower()), own[0] if own else None)
     return first["context"] if first else ""
 

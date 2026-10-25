@@ -176,6 +176,17 @@ it('applies each verdict to its own pair when two pairs carry the same names', a
   expect(canonical_concepts).toEqual([]);
 });
 
+it('applies a same verdict on a rename asked by meaning, whatever its numbers, and nothing else that clashes', async () => {
+  const renamed = { ...pair(ent('2019 novel coronavirus', 's1'), ent('SARS-CoV-2', 's2'), 0.8), by_meaning: true };
+  const { canonical_concepts } = await resolveWith({
+    ambiguous: [renamed, pair(ent('Python 2', 's3'), ent('Python 3', 's4'), 0.9)],
+    decide: (p) => ({ decision: 'same', canonical: p.entity_b.name }),
+  });
+  expect(canonical_concepts.map((g) => [g.canonical, g.aliases]).sort()).toEqual([
+    ['Python 2', []], ['Python 3', []], ['SARS-CoV-2', ['2019 novel coronavirus']],
+  ]);
+});
+
 it('applies no verdict that comes back without its pair id', async () => {
   const { canonical_concepts } = await resolveWith({
     ambiguous: [pair(ent('Gas fee', 's1'), ent('Transaction fee', 's2'), 0.72)],

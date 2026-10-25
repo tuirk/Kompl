@@ -272,6 +272,29 @@
       "b": {"name": "WCAG contrast ratio", "type": "CONCEPT", "source": "s2", "context": "The WCAG contrast ratio, (L1 + 0.05) / (L2 + 0.05) on relative luminance, is known to give poor results for mid-tone colours."},
       "expected": "same",
       "why": "The one WCAG 2 luminance formula, once with its standard's name in front (film run 2026-10-25: both became pages in one compile)."
+    },
+    {
+      "id": "colorblindness-vs-cvd-concept-page-real",
+      "a": {"name": "Colorblindness", "type": "CONCEPT", "source": "dw", "context": "Reduced ability to distinguish certain colors, discussed in the article in relation to red-green, green-blind, and blue-blind readers."},
+      "b": {"name": "Color Vision Deficiency (CVD)", "page": true, "page_type": "concept", "summary": "A condition affecting the ability to distinguish certain shades of color, commonly involving one cone type. Sources describe its common types and its implications for luminance-based contrast and accessibility."},
+      "others": [
+        {"name": "Colorblind-safe color palettes", "type": "CONCEPT", "source": "dw", "context": "Color palettes designed so that colorblind readers can distinguish the colors, often using safe hues and lightness variation."},
+        {"name": "Colorblind simulators", "type": "CONCEPT", "source": "dw", "context": "Tools that simulate how colors appear to people with different types of colorblindness, used to test visualizations."}
+      ],
+      "aliases": [{"alias": "color vision deficiency", "canonical": "Color Vision Deficiency (CVD)"}],
+      "expected": "same",
+      "why": "Film run on 7ae2a33f batch B, real inputs: the concept page, its summary and stored alias, and the Datawrapper source's own names; became a second page."
+    },
+    {
+      "id": "sars-cov-2-is-2019-novel-coronavirus",
+      "a": {"name": "SARS-CoV-2", "type": "OTHER", "source": "ictv", "context": "The official name announced by ICTV for the virus responsible for COVID-19."},
+      "b": {"name": "2019 novel coronavirus", "type": "OTHER", "source": "ictv", "context": "The previous informal name for the virus now officially named SARS-CoV-2."},
+      "others": [
+        {"name": "SARS-CoV-2", "type": "OTHER", "source": "nature", "context": "The virus causing COVID-19, designated by the Coronaviridae Study Group and assigned to the species Severe acute respiratory syndrome-related coronavirus."},
+        {"name": "2019-nCoV", "type": "OTHER", "source": "nature", "context": "The provisional name used for the newly identified human coronavirus before it was designated SARS-CoV-2."}
+      ],
+      "expected": "same",
+      "why": "Held-out eval dev split (2026-10-25), real extractions of two sources that each name both: the virus's provisional and official names. Became two pages."
     }
   ]
 }

@@ -284,15 +284,16 @@ def test_a_concept_is_asked_about_the_entity_page_with_its_abbreviation_in_brack
 
 def test_a_product_alike_to_a_concept_page_only_in_context_stays_apart(replay, monkeypatch):
     """"Color Oracle" / the page "Color blindness simulation": 0.4523 by
-    name, 0.7658 with context. Under the 0.6 name floor across kinds, so
-    it is never asked and never merged."""
+    name, 0.7658 with context. Under the 0.6 name floor across kinds the
+    name rules never ask; as its closest page by meaning it is asked, and
+    Layer 3 keeps them apart."""
     from routers import resolution  # noqa: PLC0415
 
     module, _calls = replay
     item = _item("color-oracle-vs-colorblindness-simulation-page")
     monkeypatch.setattr(resolution, "_get_embed_model", lambda: _Measured(item["a"]["name"], item["a"]["context"], {
         "Color blindness simulation": (0.4523, 0.7658)}))
-    assert module.judge(item, "http://x", None) == {"got": "different", "by": "never asked", "answer": None}
+    assert module.judge(item, "http://x", None)["got"] == "different"
     assert module.judge(item, "http://x", "deepseek-flash")["got"] == "different"
 
 

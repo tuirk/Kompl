@@ -117,6 +117,9 @@ class ExistingPageTitle(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: str
     page_type: str  # 'entity' | 'concept'
+    # What the page is about, for the closest-by-meaning candidates (Layer 2).
+    # Optional, so older callers still validate.
+    summary: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1045,6 +1048,10 @@ class AmbiguousPair(BaseModel):
     # Learning"). Layer 1 no longer merges these; the pair is asked whatever
     # its similarity and ranks with the abbreviations (_layer3_rank).
     abbreviation: bool = False
+    # Asked only because the two are among each other's closest by meaning
+    # (_MEANING_CANDIDATES): ranked after the pairs whose names are alike in
+    # its tier, by `similarity`, the meaning cosine.
+    by_meaning: bool = False
 
 
 class GroupInput(BaseModel):
@@ -1103,6 +1110,16 @@ _AMBIGUOUS_SIMILARITY = 0.7
 # (resolve_embedding): "Colorblindness" / "Color Vision Deficiency (CVD)"
 # 0.68 is asked, "Color Oracle" / "Color blindness simulation" 0.45 is not.
 _CROSS_KIND_CONTEXT_MIN_NAME_SIMILARITY = 0.6
+# Closest by meaning (owner decision 2026-10-25): each name is also asked
+# about its few nearest other names and pages by "name: context" against
+# "name: context" or "title: summary", whatever the names look like. The
+# filters above let 55 of 100 held-out same-thing pairs (Wikidata) go
+# unasked ("Colorblindness" / "Color Vision Deficiency"), while Layer 3 got
+# every pair it saw right. Meaning cannot tell such pairs apart by itself
+# (SARS-CoV / SARS-CoV-2 0.78, mpox / Monkeypox 0.69), so it only nominates
+# and Layer 3 decides, after the name-alike pairs (_layer3_rank).
+_MEANING_CANDIDATES = 3
+_MEANING_MIN_SIMILARITY = 0.6
 
 # A concept and a named thing can be one topic ("UNESCO World Heritage" /
 # "UNESCO World Heritage list"), so Layer 2 compares them; only Layer 3 may
@@ -1129,6 +1146,18 @@ def _page_kinds_cross(entity_type: str, page_type: str) -> bool:
     return False
 
 
+def _version_clash(a: str, b: str) -> bool:
+    """Different numbers on names that share a word: two versions ("Python 2"
+    / "Python 3", "GPT-4" / "GPT-4o"), never one thing. Names with no word
+    in common may be a rename that changed a number ("2019-nCoV" /
+    "SARS-CoV-2", "COP21" / "2015 United Nations Climate Change
+    Conference"); Layer 3 judges those when they are closest by meaning."""
+    if _numeric_conflict(a, b) != "hard":
+        return False
+    words = lambda s: {w for w in re.findall(r"[a-z]+", s.lower()) if len(w) > 1}  # noqa: E731
+    return bool(words(a) & words(b))
+
+
 def _names_guard(names_a: list[str], names_b: list[str]) -> str | None:
     """"hard" when two of the names carry different numbers (never the same
     thing); "soft" when a number only one carries or extra words could still
@@ -1144,7 +1173,7 @@ def _names_guard(names_a: list[str], names_b: list[str]) -> str | None:
     return worst
 
 
-def _layer3_rank(pair: AmbiguousPair, one_source: bool) -> tuple[bool, bool, float, float]:
+def _layer3_rank(pair: AmbiguousPair, one_source: bool) -> tuple[bool, bool, bool, float, float]:
     """Sort key for Layer 3's capped budget (DISAMBIGUATE_MAX_PAIRS); the
     route ranks the same way (app/src/lib/resolve-ranking.ts). Tiers first:
     a pair against the wiki (a page, or a group bound to one) or across
@@ -1155,10 +1184,14 @@ def _layer3_rank(pair: AmbiguousPair, one_source: bool) -> tuple[bool, bool, flo
     names score low ("ETH" / "Ethereum"), also when the acronym is another
     name of a group (`abbreviation`); then name similarity, so a pair
     alike only in context ("Set collection" / "Route planning", 0.98 by
-    context, 0.10 by name) never buys a slot; then similarity."""
+    context, 0.10 by name) never buys a slot; then similarity. Pairs asked
+    only because they are closest by meaning (`by_meaning`) come after the
+    rest of their tier, most alike in meaning first."""
+    if pair.by_meaning:
+        return (one_source, True, True, -pair.similarity, -pair.name_similarity)
     a, b = pair.entity_a.name, pair.entity_b.name
     abbreviation = pair.abbreviation or _is_abbreviation(a, b) or _is_abbreviation(b, a)
-    return (one_source, not abbreviation, -pair.name_similarity, -pair.similarity)
+    return (one_source, False, not abbreviation, -pair.name_similarity, -pair.similarity)
 
 
 def _layer3_only_kind(names_a: list[str], type_a: str, names_b: list[str], type_b: str) -> str | None:
@@ -1416,7 +1449,9 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
         its expansion or a one-letter slip (_layer3_only_method), which
         Layer 1 no longer merges, and a name that adds words to a page
         title or a stored alias's canonical, against that page
-        (_extension_node_pairs);
+        (_extension_node_pairs); and each name's few closest other names
+        and pages by meaning ("title: summary" for a page), `by_meaning`
+        (_MEANING_CANDIDATES);
       - different: the rest, and two people who share only a surname.
 
     Cross-session: an unanchored node whose best page title passes the merge
@@ -1464,7 +1499,8 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 
     model = _get_embed_model()
     page_texts = [_title_for_similarity(pt.title) for pt in pages]
-    texts = list(dict.fromkeys([nd.name for nd in nodes] + [nd.text for nd in nodes] + page_texts))
+    page_meanings = [f"{t}: {pt.summary}" if pt.summary else t for t, pt in zip(page_texts, pages)]
+    texts = list(dict.fromkeys([nd.name for nd in nodes] + [nd.text for nd in nodes] + page_texts + page_meanings))
     vectors = model.encode(texts, convert_to_numpy=True)
     row = {t: k for k, t in enumerate(texts)}
     name_vecs = vectors[[row[nd.name] for nd in nodes]]
@@ -1652,6 +1688,73 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
             else (max(old[0], ns), max(old[1], sim), pt, old[3] or kind == "acronym")
         )
 
+    # Closest by meaning (_MEANING_CANDIDATES): pairs none of the above asks.
+    meaning_best: dict[tuple[int, int], tuple[float, float]] = {}
+    meaning_pages: dict[tuple[int, str], tuple[float, float, ExistingPageTitle]] = {}
+
+    def may_pair(a: _Node, names_b: list[str], type_b: str, kinds_ok: bool) -> bool:
+        # A person and anything else one article ties to them ("Francis
+        # Wolff" / "Candid photography") are never one thing, nor two people
+        # who share only a surname.
+        if not kinds_ok or (a.type == "PERSON") != (type_b == "PERSON"):
+            return False
+        if any(_version_clash(x, y) for x in a.names for y in names_b):
+            return False
+        return not (a.type == "PERSON" and type_b == "PERSON"
+                    and any(_person_names_clash(x, y) for x in a.names for y in names_b))
+
+    # Nearest first; ties by name and sources, so the input order never
+    # decides which candidates are taken.
+    def node_order(i: int) -> list[int]:
+        return sorted(range(len(nodes)), key=lambda j: (-round(float(ctx_sim[i][j]), 6), nodes[j].name,
+                                                       sorted(nodes[j].source_ids)))
+
+    for i, nd in enumerate(nodes):
+        ri = union.find(i)
+        taken = 0
+        for j in node_order(i):
+            if taken == _MEANING_CANDIDATES or float(ctx_sim[i][j]) < _MEANING_MIN_SIMILARITY:
+                break
+            rj = union.find(j)
+            if j == i or ri == rj or (union.anchor[ri] is not None and union.anchor[rj] is not None):
+                continue
+            b = nodes[j]
+            if not may_pair(nd, b.names, b.type, _types_compatible(nd.type, b.type) or _kinds_cross(nd.type, b.type)):
+                continue
+            taken += 1
+            key = key_of(ri, rj)
+            if key not in best:
+                old = meaning_best.get(key, (0.0, 0.0))
+                meaning_best[key] = (max(old[0], float(ctx_sim[i][j])), max(old[1], float(name_sim[i][j])))
+    if pages:
+        meaning_page = sklearn_cosine(ctx_vecs, vectors[[row[t] for t in page_meanings]])
+        for i, nd in enumerate(nodes):
+            root = union.find(i)
+            if union.anchor[root] is not None:
+                continue
+            taken = 0
+            for k in sorted(range(len(pages)), key=lambda k: (-round(float(meaning_page[i][k]), 6),
+                                                              pages[k].title, pages[k].page_type)):
+                sim = float(meaning_page[i][k])
+                if taken == _MEANING_CANDIDATES or sim < _MEANING_MIN_SIMILARITY:
+                    break
+                pt = pages[k]
+                kinds_ok = _entity_matches_page_type(nd.type, pt.page_type) or _page_kinds_cross(nd.type, pt.page_type)
+                if not may_pair(nd, [pt.title], _page_type_to_entity_type(pt.page_type), kinds_ok):
+                    continue
+                taken += 1
+                ns = float(name_page[i][k])
+                holder = on_page.get(pt.title.lower())
+                if holder is not None:
+                    key = key_of(root, holder)
+                    if key not in best:
+                        old = meaning_best.get(key, (0.0, 0.0))
+                        meaning_best[key] = (max(old[0], sim), max(old[1], ns))
+                elif (root, pt.title.lower()) not in page_asks:
+                    old_page = meaning_pages.get((root, pt.title.lower()))
+                    if old_page is None or sim > old_page[1]:
+                        meaning_pages[(root, pt.title.lower())] = (ns, sim, pt)
+
     def sources(root: int) -> set[str]:
         return {s for k in union.members[root] for s in nodes[k].source_ids}
 
@@ -1675,13 +1778,29 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
             abbreviation=abbreviation,
         ), False)
         for (root, _title), (ns, sim, pt, abbreviation) in page_asks.items()
+    ] + [
+        (AmbiguousPair(entity_a=ref(ra), entity_b=ref(rb), similarity=round(sim, 4), name_similarity=round(ns, 4),
+                       same_source=bool(sources(ra) & sources(rb)), by_meaning=True),
+         one_source(ra, rb))
+        for (ra, rb), (sim, ns) in meaning_best.items()
+    ] + [
+        (AmbiguousPair(
+            entity_a=ref(root),
+            entity_b=EntityInput(name=pt.title, type=_page_type_to_entity_type(pt.page_type),
+                                 source_id=EXISTING_PAGE_SENTINEL, context=""),
+            similarity=round(sim, 4),
+            name_similarity=round(ns, 4),
+            by_meaning=True,
+        ), False)
+        for (root, _title), (ns, sim, pt) in meaning_pages.items()
     ]
     # Layer 3 answers a capped number of pairs (DISAMBIGUATE_MAX_PAIRS, cut
     # again in the route), so the order decides who is asked.
     ranked.sort(key=lambda t: _layer3_rank(*t))
     ambiguous = [pair for pair, _one_source in ranked]
 
-    paired = {root for key in best for root in key} | {root for root, _title in page_asks}
+    paired = ({root for key in [*best, *meaning_best] for root in key}
+              | {root for root, _title in [*page_asks, *meaning_pages]})
     unresolved: list[EntityInput] = []
     for root in sorted(union.members, key=lambda r: union.members[r][0]):
         entity = nodes[root].entity
@@ -1829,10 +1948,14 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
         )
 
     # Names whose numbers differ are different versions, never the same
-    # entity: answered without an LLM call, before the cap is applied.
+    # entity: answered without an LLM call, before the cap is applied. A
+    # pair asked as closest by meaning whose names share no word may be a
+    # rename that changed a number ("2019-nCoV" / "SARS-CoV-2"): the model
+    # judges it (_version_clash).
     llm_pairs: list[int] = []
     for k, p in enumerate(req.pairs):
-        if _numeric_conflict(p.entity_a.name, p.entity_b.name) == "hard":
+        a, b = p.entity_a.name, p.entity_b.name
+        if _version_clash(a, b) if p.by_meaning else _numeric_conflict(a, b) == "hard":
             answer(k, "different", "numeric_conflict: the names carry different numbers (versions are separate entities)")
         else:
             llm_pairs.append(k)

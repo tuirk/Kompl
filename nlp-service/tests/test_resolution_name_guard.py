@@ -316,3 +316,40 @@ def test_version_pairs_are_different_without_an_llm_call(client, monkeypatch):
     result = resp.json()["results"][0]
     assert result["decision"] == "different"
     assert result["reason"].startswith("numeric_conflict")
+
+
+@pytest.mark.parametrize("a,b,clash", [
+    ("Python 2", "Python 3", True),
+    ("GPT-4", "GPT-4o", True),
+    ("2019-nCoV", "SARS-CoV-2", False),
+    ("COP21", "2015 United Nations Climate Change Conference", False),
+    ("Python", "Python 3", False),
+])
+def test_version_clash_needs_a_shared_word(a, b, clash):
+    from routers.resolution import _version_clash  # noqa: PLC0415
+
+    assert _version_clash(a, b) is clash
+
+
+def test_a_rename_asked_by_meaning_reaches_the_model_and_a_version_never_does(client, monkeypatch):
+    from services import llm_client as llm_client_mod  # noqa: PLC0415
+    from services.llm_client import DisambiguationResponse, DisambiguationResult  # noqa: PLC0415
+
+    seen = []
+
+    def fake(pairs, model=None, pair_kind="entity"):
+        seen.extend((p["entity_a"]["name"], p["entity_b"]["name"]) for p in pairs)
+        return DisambiguationResponse(results=[DisambiguationResult(
+            entity_a=p["entity_a"]["name"], entity_b=p["entity_b"]["name"], decision="same",
+            canonical=p["entity_b"]["name"], reason="renamed") for p in pairs])
+
+    monkeypatch.setattr(llm_client_mod, "disambiguate_entities", fake)
+    side = lambda n, s: {"name": n, "type": "OTHER", "source_id": s, "context": "c"}  # noqa: E731
+    resp = client.post("/resolve/disambiguate", json={"pairs": [
+        {"entity_a": side("2019-nCoV", "s1"), "entity_b": side("SARS-CoV-2", "s2"), "similarity": 0.8, "by_meaning": True},
+        {"entity_a": side("Python 2", "s1"), "entity_b": side("Python 3", "s2"), "similarity": 0.9, "by_meaning": True},
+        {"entity_a": side("2019-nCoV", "s3"), "entity_b": side("SARS-CoV-2", "s4"), "similarity": 0.8},
+    ]})
+    assert resp.status_code == 200
+    assert seen == [("2019-nCoV", "SARS-CoV-2")]
+    assert [r["decision"] for r in resp.json()["results"]] == ["same", "different", "different"]
