@@ -212,7 +212,12 @@ async function callExtractLLM(payload: Record<string, unknown>): Promise<any> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(600_000), // 10 min — DeepSeek extract on a 95K-char source clocks ~290s; Vilnius travel guide hit ~387s in Phase 7. Gemini thinking adds another minute on top of that on its bad days. 600s gives ~55% headroom over the worst observed for either provider.
+    // 15 min: DeepSeek extract on a 95K-char source clocks ~290s; the Vilnius
+    // travel guide hit ~387s in Phase 7. nlp-service gives one DeepSeek
+    // attempt 420 s (providers/deepseek.py _STEP_TIMEOUT_S), so a stalled
+    // first attempt and its retry both fit; at 600 s here, one stalled
+    // attempt used the whole window and no retry ever ran (2026-10-25).
+    signal: AbortSignal.timeout(900_000),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
     dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
   });

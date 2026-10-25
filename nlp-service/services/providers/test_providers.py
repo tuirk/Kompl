@@ -672,3 +672,27 @@ def test_translate_thinking_budget_unknown_provider_raises():
 
     with pytest.raises(ValueError, match="unknown provider"):
         translate_thinking_budget("openai", "extract", 0)
+
+
+def test_deepseek_extract_attempt_waits_less_so_a_retry_fits(monkeypatch):
+    """One extract attempt waits 420 s, so a stalled one and its retry fit
+    the app's 900 s extract window; other steps keep 600 s."""
+    _ensure_clean_deepseek_singleton(monkeypatch)
+    import httpx
+    from services.providers import get_provider
+    from services.providers.base import LLMRequest
+
+    timeouts: list[float] = []
+    _stub_deepseek_post(monkeypatch, [200, 200])
+    stub = httpx.Client.post
+
+    def _post(self, url, json=None, **kw):
+        timeouts.append(kw.get("timeout"))
+        return stub(self, url, json=json, **kw)
+
+    monkeypatch.setattr(httpx.Client, "post", _post)
+    p = get_provider("deepseek-v4-pro")
+    for step in ("extract", "draft_page"):
+        p.complete(LLMRequest(model="deepseek-v4-pro", messages=[{"role": "user", "content": "x"}],
+                              response_model=None, thinking_budget=0, max_output_tokens=64, step=step))
+    assert timeouts == [420.0, 600.0]

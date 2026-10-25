@@ -86,9 +86,9 @@ async function callExtract(sourceId: string, sessionId: string): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_id: sourceId }),
-    // 1500s = NER (360s, sequential) + route (10s) + keyphrase/tfidf parallel (360s longest) + extract LLM (600s) + ~170s handler+I/O headroom.
+    // 1800s = NER (360s, sequential) + route (10s) + keyphrase/tfidf parallel (360s longest) + extract LLM (900s) + ~170s handler+I/O headroom.
     // Inner NLP sub-call ceilings raised from 60s → 360s after session e2c8a59d (13 academic PDFs) failed all 13 sources twice on 60s NER timeouts under EXTRACT_CONCURRENCY=4 contention; outer wrapper had to grow to match.
-    signal: AbortSignal.timeout(1_500_000),
+    signal: AbortSignal.timeout(1_800_000),
     // LONG_HTTP_AGENT (16-min headersTimeout) — needed since the 360s NLP +
     // 600s LLM bumps push per-source extract past undici's default 300s
     // headersTimeout. Session 29be62eb hit `[cause] HeadersTimeoutError`

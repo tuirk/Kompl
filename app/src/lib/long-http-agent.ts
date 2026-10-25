@@ -4,8 +4,9 @@ import { Agent } from 'undici';
 // than the long AbortSignals we set on LLM-bound and dense-PDF NLP calls
 // (extract LLM, draft, crossref, NER on academic PDFs, etc.), so
 // HeadersTimeoutError fires before our AbortSignal ever kicks in. This shared
-// Agent has 16-min headersTimeout/bodyTimeout — covers the longest single
-// request (15-min draft) plus buffer.
+// Agent has 31-min headersTimeout/bodyTimeout — covers the longest single
+// request (the 30-min per-source extract in compile/run) plus buffer; each
+// call's own AbortSignal still bounds it.
 //
 // Apply via `dispatcher: LONG_HTTP_AGENT` to any fetch whose AbortSignal
 // exceeds 300_000 ms. Calls under 300_000 ms can stay on the default Agent
@@ -23,8 +24,8 @@ import { Agent } from 'undici';
 // dispatcher API (`undici.request()` direct, or `setGlobalDispatcher()` on
 // a v8 Agent).
 export const LONG_HTTP_AGENT = new Agent({
-  headersTimeout: 16 * 60_000,
-  bodyTimeout: 16 * 60_000,
+  headersTimeout: 31 * 60_000,
+  bodyTimeout: 31 * 60_000,
   connectTimeout: 10_000,
   keepAliveTimeout: 60_000,
 });

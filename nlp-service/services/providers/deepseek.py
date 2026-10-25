@@ -108,6 +108,13 @@ def _get_model_prices(model: str) -> dict[str, float]:
 
 _RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 
+_DEFAULT_TIMEOUT_S = 600.0
+# One extract attempt waits less than the default, so a retry still fits the
+# app's 900 s extract window (app/src/app/api/compile/extract/route.ts):
+# at 600 s one stalled attempt used the whole window and the retries never
+# ran (film run 2026-10-25). 420 s is above the slowest extract seen (387 s).
+_STEP_TIMEOUT_S: dict[str, float] = {"extract": 420.0}
+
 
 # ---------------------------------------------------------------------------
 # Rate limiter — own bucket so Gemini and DeepSeek don't share the cap
@@ -146,7 +153,7 @@ def get_client() -> httpx.Client:
             # ~290s; the Vilnius travel guide hit ~387s in the Phase 7 rerun.
             # 120s (the prior value) timed out before the API responded on any
             # source >25K chars. Headroom over the worst observed: ~55%.
-            timeout=600.0,
+            timeout=_DEFAULT_TIMEOUT_S,
         )
     return _client
 
@@ -225,7 +232,8 @@ class DeepSeekProvider:
                         f"llm_rate_limited: bucket exhausted on {req.step}"
                     )
                 try:
-                    response = client.post("/v1/chat/completions", json=body)
+                    response = client.post("/v1/chat/completions", json=body,
+                                           timeout=_STEP_TIMEOUT_S.get(req.step, _DEFAULT_TIMEOUT_S))
                 except (
                     httpx.ConnectError,
                     httpx.PoolTimeout,
