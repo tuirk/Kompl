@@ -56,7 +56,12 @@
                 "source_count": 2,
                 "evidence": [
                   { "source_id": "src-paper", "source_title": "Bitcoin paper", "source_archived": false, "sentence": "Bitcoin uses proof of work.", "quote": "Bitcoin relies on proof of work." }
-                ]
+                ],
+                "direction_dispute": {
+                  "kept": { "label": "Uses", "sources": [{ "source_id": "src-paper", "source_title": "Bitcoin paper" }] },
+                  "other": { "label": "Used by", "sources": [{ "source_id": "src-blog", "source_title": "Bitcoin blog" }] }
+                },
+                "outdated": { "source_id": "src-paper", "source_title": "Bitcoin paper", "topic": "Mining method", "page_id": "btc" }
               }
             ]
           }
@@ -116,7 +121,9 @@
           "source_count": 2,
           "sources": [1],
           "sentence": "Bitcoin uses proof of work.",
-          "quote": "Bitcoin relies on proof of work."
+          "quote": "Bitcoin relies on proof of work.",
+          "direction_dispute": { "label": "Used by", "sources": [1] },
+          "outdated": { "source": 1, "topic": "Mining method" }
         }
       ]
     }

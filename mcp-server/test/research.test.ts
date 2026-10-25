@@ -136,6 +136,26 @@ describe('research_topic connections', () => {
     expect(res.text).toContain('- Bitcoin uses Proof of work [2][1] · 2 sources · quoted: "Bitcoin relies on proof of work."');
     expect(res.text).not.toContain("Kompl's summary: Bitcoin uses proof of work.");
   });
+
+  it('marks a relation a newer source supersedes and one whose sources disagree on direction', async () => {
+    const kompl = fakeKompl({
+      '/api/wiki/research': {
+        ...PACK,
+        connections: [
+          { ...connection(['btc', 'Bitcoin'], ['pow', 'Proof of work'], 'Uses', [1], 1, null), outdated: { source: 2, topic: 'Mining method' } },
+          {
+            ...connection(['pow', 'Proof of work'], ['btc', 'Bitcoin'], 'Part of', [1], 1, null),
+            direction_dispute: { label: 'Includes', sources: [2] },
+          },
+        ],
+      },
+    });
+    const res = await call(await connect(kompl.fetchImpl), 'research_topic', { topic: 'bitcoin mining' });
+    expect(res.text).toContain('- Bitcoin uses Proof of work [1] · may be outdated: [2] says otherwise (changed over time: Mining method)');
+    expect(res.text).toContain(
+      '- Proof of work part of Bitcoin [1] · sources disagree on direction: [2] read it as "Proof of work includes Bitcoin"'
+    );
+  });
 });
 
 describe('research_topic numbers can be checked with read_source', () => {

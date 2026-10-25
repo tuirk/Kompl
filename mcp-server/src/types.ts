@@ -57,6 +57,31 @@ export interface ConnectionItem {
   source_count: number;
   /** At most 3: those with a quote, then those with a summary, newest first. */
   evidence: ConnectionEvidence[];
+  /**
+   * Sources state this relation both ways round: `kept` is the reading the
+   * item shows (more sources, or on a tie the better evidence), `other` the
+   * opposite one. null when they agree (absent from older apps).
+   */
+  direction_dispute?: { kept: DirectionSide; other: DirectionSide } | null;
+  /**
+   * Every source of the relation is older than a "Changed" finding about
+   * both ends: the newer source that says otherwise, and the finding's topic
+   * and page. null otherwise (absent from older apps).
+   */
+  outdated?: OutdatedNote | null;
+}
+
+/** One way round a relation reads, from the page ("Part of", "Includes"), and the sources saying so. */
+export interface DirectionSide {
+  label: string;
+  sources: Array<{ source_id: string; source_title: string }>;
+}
+
+export interface OutdatedNote {
+  source_id: string;
+  source_title: string;
+  topic: string;
+  page_id: string;
 }
 
 export interface PageConnections {
@@ -226,6 +251,10 @@ export interface ResearchConnection {
   sentence: string | null;
   /** That first source's own sentence, checked at extraction (as ConnectionEvidence.quote). */
   quote?: string | null;
+  /** Other sources state it the other way round: that reading's label from `from`, and their numbers (newer apps). */
+  direction_dispute?: { label: string; sources: number[] } | null;
+  /** A newer source (its number) says otherwise, recorded as a change over time on `topic` (newer apps). */
+  outdated?: { source: number; topic: string } | null;
 }
 
 /** A list cut at the caller's limit, with the full count. */

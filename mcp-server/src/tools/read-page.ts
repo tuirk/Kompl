@@ -8,6 +8,7 @@ import { failure, READ_ONLY, text } from '../result.js';
 import type {
   ConnectionEvidence,
   ConnectionItem,
+  DirectionSide,
   PageConnections,
   PageData,
   PageDisagreement,
@@ -179,6 +180,8 @@ function moreLine(rest: ConnectionItem[], full: Set<ConnectionItem>): string {
  * A quote is source [2]'s own sentence, checked against it when it was
  * extracted. Without one, the line carries what the extraction model wrote
  * about the relation on reading the source, labelled as Kompl's summary.
+ * A relation a newer source supersedes says "may be outdated"; one whose
+ * sources state it both ways round names both sides.
  */
 function connectionLine(label: string, item: ConnectionItem, numbered: Map<string, number>): string {
   const parts = [`- ${label}: ${item.title} ${item.page_id ? `(\`${item.page_id}\`)` : '(no page)'}`];
@@ -187,7 +190,24 @@ function connectionLine(label: string, item: ConnectionItem, numbered: Map<strin
   if (item.source_count > 1) parts.push(`· ${item.source_count} sources`);
   if (evidence?.quote) parts.push(`· quoted: "${clip(evidence.quote, MAX_QUOTE)}"`);
   else if (evidence?.sentence) parts.push(`· Kompl's summary: ${clip(evidence.sentence, MAX_SENTENCE)}`);
+  const { outdated, direction_dispute: dispute } = item;
+  if (outdated) {
+    parts.push(
+      `· may be outdated: ${idRef(outdated, numbered)} says otherwise (changed over time: ${clip(outdated.topic, MAX_DISAGREEMENT_TEXT)})`
+    );
+  }
+  if (dispute) {
+    const side = (s: DirectionSide) =>
+      `${s.sources.map((source) => idRef(source, numbered)).join(' ')} ${s.sources.length === 1 ? 'says' : 'say'} "${s.label}"`;
+    parts.push(`· sources disagree on direction: ${side(dispute.kept)}; ${side(dispute.other)}`);
+  }
   return parts.join(' ');
+}
+
+/** A source by the page's [n] when it lists it, else by name and id (for read_source). */
+function idRef(s: { source_id: string; source_title: string }, numbered: Map<string, number>): string {
+  const n = numbered.get(s.source_id.toLowerCase());
+  return n ? `[${n}]` : `(source: ${s.source_title}, \`${s.source_id}\`)`;
 }
 
 /**

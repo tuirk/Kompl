@@ -122,5 +122,10 @@ function connectionLine(c: ResearchConnection, inPack: Set<string>): string {
   if (c.source_count > 1) parts.push(`· ${c.source_count} sources`);
   if (c.quote) parts.push(`· quoted: "${clip(c.quote, MAX_QUOTE)}"`);
   else if (c.sentence) parts.push(`· Kompl's summary: ${clip(c.sentence, MAX_SENTENCE)}`);
+  if (c.outdated) parts.push(`· may be outdated: [${c.outdated.source}] says otherwise (changed over time: ${clip(c.outdated.topic, MAX_SENTENCE)})`);
+  if (c.direction_dispute?.sources.length) {
+    const refs = c.direction_dispute.sources.map((n) => `[${n}]`).join('');
+    parts.push(`· sources disagree on direction: ${refs} read it as "${end(c.from)} ${c.direction_dispute.label.toLowerCase()} ${end(c.to)}"`);
+  }
   return parts.join(' ');
 }

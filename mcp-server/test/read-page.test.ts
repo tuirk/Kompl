@@ -262,6 +262,37 @@ describe('read_page connections', () => {
     expect(text.split('\n').some((l) => l.startsWith('+'))).toBe(false);
   });
 
+  it('marks a relation a newer source supersedes and names both sides when sources disagree on direction', async () => {
+    const text = await read({
+      groups: [
+        {
+          label: 'Part of',
+          items: [
+            {
+              ...item('Consensus', 'consensus', 'part_of', [ev('s9', 'Old blog', 'Proof of work is part of consensus.')]),
+              outdated: { source_id: 'S1', source_title: 'Bitcoin paper', topic: 'Consensus methods', page_id: 'pow' },
+            },
+            {
+              ...item('Mining', 'mining', 'part_of', [ev('s1', 'Bitcoin paper', 'Proof of work is part of mining.')]),
+              direction_dispute: {
+                kept: { label: 'Part of', sources: [{ source_id: 's1', source_title: 'Bitcoin paper' }] },
+                other: { label: 'Includes', sources: [{ source_id: 's9', source_title: 'Old blog' }] },
+              },
+            },
+          ],
+        },
+      ],
+      linked_only: [],
+    });
+    const rows = text.split('\n').filter((l) => l.startsWith('- Part of: '));
+    expect(rows).toEqual([
+      "- Part of: Consensus (`consensus`) (source: Old blog, `s9`) · Kompl's summary: Proof of work is part of consensus." +
+        ' · may be outdated: [1] says otherwise (changed over time: Consensus methods)',
+      "- Part of: Mining (`mining`) [1] · Kompl's summary: Proof of work is part of mining." +
+        ' · sources disagree on direction: [1] says "Part of"; (source: Old blog, `s9`) says "Includes"',
+    ]);
+  });
+
   it('says when a page has no connections, even if an older field lists links', async () => {
     const text = await read({ groups: [], linked_only: [] });
     expect(text).toContain('**Connections:** none yet.');
