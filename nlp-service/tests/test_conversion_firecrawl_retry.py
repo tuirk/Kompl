@@ -106,3 +106,10 @@ def test_a_title_with_the_page_indentation_is_one_line(firecrawl):
                  "metadata": {"title": "\n\t\tOn automatically generating contrasting text colors with CSS \u2022 Lea Verou\n"}},
     }]
     assert convert().title == "On automatically generating contrasting text colors with CSS \u2022 Lea Verou"
+
+
+def test_a_page_without_a_title_is_named_by_its_first_heading(firecrawl):
+    body = "[< Previous](./atypi)\n\n## Censorship, Creativity, and the Polish School of Posters\n\n#### By\n\n" + "Text. " * 200
+    firecrawl["replies"] = [{"success": True, "data": {"markdown": body, "metadata": {}}}]
+    result = convert()
+    assert (result.title, result.title_source) == ("Censorship, Creativity, and the Polish School of Posters", "body_h2")
