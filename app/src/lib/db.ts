@@ -1890,6 +1890,25 @@ export function getResolverPageTitles(): Array<{ title: string; page_type: strin
     .all() as Array<{ title: string; page_type: string }>;
 }
 
+/**
+ * The entity and concept pages with these titles (any case) and their
+ * summaries, for what Layer 3 reads about a pair side bound to a page
+ * (lib/resolve-page-sides.ts). A title can name an entity and a concept
+ * page; both rows come back.
+ */
+export function getResolverPageSummaries(
+  titles: string[]
+): Array<{ title: string; page_type: string; summary: string | null }> {
+  const stmt = openDb().prepare(
+    `SELECT title, page_type, summary FROM pages
+      WHERE title = ? COLLATE NOCASE AND page_type IN ('entity', 'concept')
+      ORDER BY page_type`
+  );
+  return [...new Set(titles)].flatMap(
+    (t) => stmt.all(t) as Array<{ title: string; page_type: string; summary: string | null }>
+  );
+}
+
 /** Each source's stored kind for a canonical name: entity_mentions.entity_type ('CONCEPT' for concepts). */
 export function getMentionKinds(canonicalName: string): Array<{ source_id: string; entity_type: string | null }> {
   return openDb()

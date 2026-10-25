@@ -16,8 +16,10 @@
  *              left alone and Layer 1's groups; an acronym and its
  *              expansion are always ambiguous
  *   4. Layer 3: POST /resolve/disambiguate — the LLM on ambiguous pairs, up to
- *              a cap, ranked by lib/resolve-ranking.ts; verdicts come back
- *              by pair_id and 'same' verdicts fold into the groups
+ *              a cap, ranked by lib/resolve-ranking.ts; a side bound to a
+ *              page goes with the page's summary and stored names
+ *              (lib/resolve-page-sides.ts); verdicts come back by pair_id
+ *              and 'same' verdicts fold into the groups
  *   5. bulkInsertAliases() — persist alias → canonical mappings
  *   6. rebuildSessionMentions() — this session's mention rows, rebuilt from
  *              the extractions through the groups
@@ -47,6 +49,7 @@ import {
   getEffectiveCompileModel,
   getEntityAndConceptPageTitles,
   getExtractionsBySession,
+  getResolverPageSummaries,
   getResolverPageTitles,
   logActivity,
   rebuildSessionMentions,
@@ -56,6 +59,7 @@ import { makeDispatcher } from '../../../../lib/long-http-agent';
 import { buildMentionPin, KIND_FAMILIES } from '../../../../lib/mention-pin';
 import { sessionMentionRows } from '../../../../lib/mention-rows';
 import { numericConflict } from '../../../../lib/name-guard';
+import { pageSide } from '../../../../lib/resolve-page-sides';
 import { MAX_DISAMBIGUATE_PAIRS, rankForLayer3 } from '../../../../lib/resolve-ranking';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -84,6 +88,9 @@ interface EntityInput {
   type: string;
   source_id: string;
   context: string;
+  // Layer 3 only, on a side bound to a wiki page: the page's other stored
+  // names; the context is then the page's summary (lib/resolve-page-sides.ts).
+  known_names?: string[];
 }
 
 interface ResolvedGroup {
@@ -539,10 +546,35 @@ export async function POST(request: Request) {
     }
 
     if (cappedAmbiguous.length > 0) {
+      // A side bound to a wiki page (the page, or a group bound to it) goes
+      // as that page: its summary for the context, its stored names as
+      // known_names. One source's sentence calling the page "a broader
+      // term" kept "colorblindness" off "Color Vision Deficiency".
+      const boundTitle = (e: EntityInput): string | null => {
+        if (isExistingPage(e)) return e.name;
+        const k = groupOf(e);
+        return k !== null && isAnchored(groups[k]) ? groups[k].canonical : null;
+      };
+      const bound = cappedAmbiguous.flatMap((p) => [p.entity_a, p.entity_b]).map(boundTitle);
+      const pageOf = pageSide(
+        getResolverPageSummaries(bound.filter((t): t is string => t !== null)),
+        storedAliases,
+      );
+      const asPage = (e: EntityInput): EntityInput => {
+        const title = boundTitle(e);
+        if (title === null) return e;
+        const page = pageOf(title, e.type);
+        return { ...e, context: page.summary || e.context, known_names: page.known_names };
+      };
       // Each pair goes out with an id and its verdict comes back with it.
       // Matching by name gave two pairs named "Mercury" / "Mercury" (a
       // PERSON and a LOCATION group, each against a CONCEPT) one verdict.
-      const sent = cappedAmbiguous.map((pair, k) => ({ ...pair, pair_id: String(k) }));
+      const sent = cappedAmbiguous.map((pair, k) => ({
+        ...pair,
+        entity_a: asPage(pair.entity_a),
+        entity_b: asPage(pair.entity_b),
+        pair_id: String(k),
+      }));
       const disambResult = await callDisambiguate(sent, getEffectiveCompileModel(session_id));
       llmFailed = disambResult.failed_pairs;
       const verdicts = new Map(

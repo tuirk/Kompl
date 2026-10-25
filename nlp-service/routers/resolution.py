@@ -1676,13 +1676,34 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 DISAMBIGUATE_MAX_PAIRS = 120
 
 
+class DisambiguateSide(EntityInput):
+    """A pair side as Layer 3 receives it. `known_names` is set, possibly
+    empty, only on a side bound to a page the wiki holds (the page itself,
+    or a group bound to it): the page's other stored names, and the side's
+    context is then the page's own summary. The model saw only one source's
+    sentence for such a side, which called "Color Vision Deficiency" a
+    broader term, and kept "colorblindness" apart from it (film run,
+    2026-10-25). Optional, so callers without it still validate."""
+    known_names: list[str] | None = None
+
+
 class DisambiguatePair(AmbiguousPair):
     """An AmbiguousPair as Layer 3 receives it. `pair_id` comes back on the
     pair's verdict, so the caller matches verdicts to pairs by id, not by
     name: two pairs can carry the same names ("Mercury" PERSON / CONCEPT and
     "Mercury" LOCATION / CONCEPT), and the model may swap or re-case the
     names it copies back. Optional, so callers without ids still validate."""
+    entity_a: DisambiguateSide
+    entity_b: DisambiguateSide
     pair_id: str | None = None
+
+
+def _llm_side(side: DisambiguateSide) -> dict[str, Any]:
+    """A side as the model reads it; known_names only on a page side."""
+    out: dict[str, Any] = {"name": side.name, "type": side.type, "context": side.context}
+    if side.known_names is not None:
+        out["known_names"] = side.known_names
+    return out
 
 
 class DisambiguateRequest(BaseModel):
@@ -1812,11 +1833,7 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
         for batch_start in range(0, len(indices), 10):
             batch = indices[batch_start:batch_start + 10]
             payload = [
-                {
-                    "entity_a": {"name": p.entity_a.name, "type": p.entity_a.type, "context": p.entity_a.context},
-                    "entity_b": {"name": p.entity_b.name, "type": p.entity_b.type, "context": p.entity_b.context},
-                    "same_source": p.same_source,
-                }
+                {"entity_a": _llm_side(p.entity_a), "entity_b": _llm_side(p.entity_b), "same_source": p.same_source}
                 for p in (req.pairs[k] for k in batch)
             ]
             try:

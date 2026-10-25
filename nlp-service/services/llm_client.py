@@ -1085,11 +1085,31 @@ full name and its abbreviation.
 """
 
 
+# Shared by both disambiguation prompts: how to read a side that is a page
+# the wiki already holds (routers/resolution.py DisambiguateSide).
+_DISAMBIGUATION_WIKI_PAGE = """\
+A side that carries known_names is a page the wiki already holds. Its
+context is then the page's own summary, not a sentence from one source, and
+known_names lists the other names the wiki already files under that page
+(the list may be empty). Judge that side by the page's own definition:
+  - the other name is that page when it is one of the known names, a
+    spelling of one, or another common name for exactly what the summary
+    defines;
+  - when the other side's context calls the page's topic broader, a related
+    term or an umbrella for it, that is one source's wording: weigh it
+    against the page's own summary, and return "same" when the summary and
+    the other side describe one thing;
+  - the rules for "different" still hold: a type, form, part or sub-topic
+    of what the page defines is a different thing.
+"""
+
+
 _DISAMBIGUATION_SYSTEM_PROMPT = """\
 You are an entity resolution assistant. For each pair of entities, decide
 whether they refer to the same real-world entity or concept.
 
 """ + _DISAMBIGUATION_SAME_SOURCE + """
+""" + _DISAMBIGUATION_WIKI_PAGE + """
 For each pair return:
   entity_a   — name of the first entity (copy from input)
   entity_b   — name of the second entity (copy from input)
@@ -1129,6 +1149,7 @@ and "Self-Attention" both talk about transformers, but attention is one
 mechanism inside the architecture, not the architecture itself.
 
 """ + _DISAMBIGUATION_SAME_SOURCE + """
+""" + _DISAMBIGUATION_WIKI_PAGE + """
 For each pair return:
   entity_a   — name of the first concept (copy from input)
   entity_b   — name of the second concept (copy from input)
@@ -1145,6 +1166,8 @@ STRICTNESS RULES for this task:
       * paraphrases (e.g. "Chain of Thought Prompting" ≡ "CoT reasoning")
       * acronym/expansion pairs (e.g. "NLP" ≡ "Natural Language Processing")
       * historical rename of exactly the same concept
+      * a wiki page's known name, a spelling of one, or another common name
+        for exactly what the page's summary defines
   - Return "different" whenever one concept is a sub-topic, mechanism, component,
     application, or technique of the other — even when they appear together often.
   - When in doubt, prefer "different" over "same". Wrong merges are costly to
@@ -1172,8 +1195,9 @@ def disambiguate_entities(
 
     Accepts up to 10 pairs per call (caller is responsible for batching).
     Each pair is a dict with keys entity_a and entity_b, each a dict with
-    at least: name (str), type (str), context (str); and same_source
-    (bool), which both prompts read as a hint.
+    at least: name (str), type (str), context (str), and on a side that is
+    a wiki page known_names (list[str]); and same_source (bool), which both
+    prompts read as a hint.
 
     Raises:
         LLMRateLimitedError  — bucket exhausted after 60s wait
