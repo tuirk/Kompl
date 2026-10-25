@@ -158,8 +158,8 @@ def test_across_kinds_context_asks_only_for_names_alike_enough(client, encoder, 
 def test_a_page_is_asked_about_by_meaning_through_its_summary(client, encoder):
     """Closest by meaning (owner decision 2026-10-25): a name the title alone
     never brings near a page is asked about it when its context is like the
-    page's "title: summary", after the name-alike pairs; at most three pages
-    per name, none under 0.6, and never a person against anything else."""
+    page's "title: summary", after the name-alike pairs; at most five pages
+    per name, none under 0.5, and never a person against anything else."""
     summary = "A condition affecting the ability to distinguish certain shades of color."
     vectors = {
         "Colorblindness": _toward(1.0, 0, 9), "Colorblindness: x": _toward(1.0, 1, 9),
@@ -167,18 +167,20 @@ def test_a_page_is_asked_about_by_meaning_through_its_summary(client, encoder):
         f"Color Vision Deficiency: {summary}": _toward(0.71, 1, 7),
         "Kei Ito": _toward(1.0, 2, 9), "Kei Ito: x": _toward(1.0, 1, 9),
     }
-    for k, sim in enumerate((0.69, 0.68, 0.65, 0.59)):
+    for k, sim in enumerate((0.69, 0.68, 0.65, 0.59, 0.55, 0.45)):
         vectors[f"Page {k}"] = _toward(0.0, 3, 10 + k)
         vectors[f"Page {k}: about {k}"] = _toward(sim, 1, 10 + k)
     encoder(vectors)
     pages = [{"title": "Color Vision Deficiency", "page_type": "concept", "summary": summary},
-             *({"title": f"Page {k}", "page_type": "concept", "summary": f"about {k}"} for k in range(4))]
+             *({"title": f"Page {k}", "page_type": "concept", "summary": f"about {k}"} for k in range(6))]
     data = _embedding(client, [_entity("Colorblindness", "CONCEPT", "x"), _entity("Kei Ito", "PERSON", "x")], pages)
     assert _asked(data) == []
     assert _asked(data, by_meaning=True) == [
         ("Colorblindness", "Color Vision Deficiency", 0.3, 0.71),
         ("Colorblindness", "Page 0", 0.0, 0.69),
         ("Colorblindness", "Page 1", 0.0, 0.68),
+        ("Colorblindness", "Page 2", 0.0, 0.65),
+        ("Colorblindness", "Page 3", 0.0, 0.59),
     ]
 
 

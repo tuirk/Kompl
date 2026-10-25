@@ -179,8 +179,10 @@ def where(side: dict[str, Any], groups: list[dict[str, Any]]) -> tuple[Any, ...]
 
 def fold(groups: list[dict[str, Any]], pairs: list[dict[str, Any]], verdicts: list[dict[str, Any] | None]) -> _Union:
     """Groups bound to a page hold it; then each 'same' verdict joins its two
-    sides, verdicts touching the wiki first, a lone name joining one group
-    only and two pages never joining (route.ts applySame)."""
+    sides, verdicts touching the wiki first and two pages never joining
+    (route.ts applySame). A lone name already joined brings its group along,
+    unless it is an abbreviation of the other side or Layer 3 called a name
+    pair across the two different."""
     u = _Union()
     for k, g in enumerate(groups):
         if g["method"] in ANCHORED:
@@ -191,18 +193,47 @@ def fold(groups: list[dict[str, Any]], pairs: list[dict[str, Any]], verdicts: li
         return any(s[0] == "page" or (s[0] == "group" and groups[s[1]]["method"] in ANCHORED) for s in sides)
 
     order = sorted(range(len(pairs)), key=lambda k: not touches_wiki(pairs[k]))
+    different = [(label(p["entity_a"]), label(p["entity_b"])) for p, v in zip(pairs, verdicts)
+                 if v is not None and v["decision"] == "different"]
     merged: set[tuple[Any, ...]] = set()
     for k in order:
         verdict = verdicts[k]
         if verdict is None or verdict["decision"] != "same":
             continue
-        x, y = label(pairs[k]["entity_a"]), label(pairs[k]["entity_b"])
-        lone = [s for s in (x, y) if s[0] == "entity"]
-        if any(s in merged for s in lone):
+        a, b = pairs[k]["entity_a"], pairs[k]["entity_b"]
+        x, y = label(a), label(b)
+        chained = False
+        for hub, other, hx, ox in ((a, b, x, y), (b, a, y, x)):
+            if hx not in merged:
+                continue
+            if is_abbreviation(hub["name"], other["name"]) or is_abbreviation(other["name"], hub["name"]):
+                chained = True
+                break
+            ends = {u.find(hx), u.find(ox)}
+            if any({u.find(p), u.find(q)} == ends for p, q in different):
+                chained = True
+                break
+        if chained:
             continue
         if u.union(x, y):
-            merged.update(lone)
+            merged.update(s for s in (x, y) if s[0] == "entity")
     return u
+
+
+def is_abbreviation(short: str, long: str) -> bool:
+    """lib/resolve-ranking.ts isAbbreviation: one word in capitals whose
+    letters appear in `long` in order, the first one starting it."""
+    letters = [c for c in short.lower() if c.isalpha()]
+    text = long.lower()
+    first = next((c for c in text if c.isalnum()), "")
+    if len(letters) < 2 or short != short.upper() or short == short.lower() or " " in short or letters[0] != first:
+        return False
+    pos = 0
+    for c in letters:
+        pos = text.find(c, pos) + 1
+        if pos == 0:
+            return False
+    return True
 
 
 def judge(item: dict[str, Any], base_url: str, model: str | None, rng: random.Random | None = None) -> dict[str, Any]:

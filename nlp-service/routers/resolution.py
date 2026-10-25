@@ -35,6 +35,7 @@ Implementation notes:
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import re
 import threading
@@ -1118,8 +1119,11 @@ _CROSS_KIND_CONTEXT_MIN_NAME_SIMILARITY = 0.6
 # every pair it saw right. Meaning cannot tell such pairs apart by itself
 # (SARS-CoV / SARS-CoV-2 0.78, mpox / Monkeypox 0.69), so it only nominates
 # and Layer 3 decides, after the name-alike pairs (_layer3_rank).
-_MEANING_CANDIDATES = 3
-_MEANING_MIN_SIMILARITY = 0.6
+# On the dev split's real extractions the true pairs scored 0.51-0.61 and
+# ranked 3rd-10th among their name's neighbours (one article's names all
+# read alike), so 3 at 0.6 found 1 of 5 (owner decision 2026-10-25: wider).
+_MEANING_CANDIDATES = 5
+_MEANING_MIN_SIMILARITY = 0.5
 
 # A concept and a named thing can be one topic ("UNESCO World Heritage" /
 # "UNESCO World Heritage list"), so Layer 2 compares them; only Layer 3 may
@@ -1825,6 +1829,8 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 # disambiguation is a core resolve layer, so a hard cap bounds spend without
 # silently disabling every compile.
 DISAMBIGUATE_MAX_PAIRS = 600
+# LLM batches of one /resolve/disambiguate request sent at once.
+_DISAMBIGUATE_PARALLEL = 4
 
 
 class DisambiguateSide(EntityInput):
@@ -1986,34 +1992,49 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
                 for k in capped_pairs}
     failed = 0
 
-    def _call_in_batches(indices: list[int], pair_kind: str) -> None:
-        nonlocal failed
-        for batch_start in range(0, len(indices), 10):
-            batch = indices[batch_start:batch_start + 10]
-            payload = [
-                {"entity_a": _llm_side(p.entity_a), "entity_b": _llm_side(p.entity_b), "same_source": p.same_source}
-                for p in (req.pairs[k] for k in batch)
-            ]
-            try:
-                resp = disambiguate_entities(payload, model=req.compile_model, pair_kind=pair_kind)
-            except LLMRateLimitedError as e:
-                raise HTTPException(status_code=429, detail=str(e)) from e
-            except CostCeilingError as e:
-                raise HTTPException(status_code=503, detail=str(e)) from e
-            except LLMCompileError as e:
-                # The providers charge the daily cap inside the call, so the
-                # ceiling arrives wrapped; it still stops the request.
-                if isinstance(e.__cause__, CostCeilingError):
-                    raise HTTPException(status_code=503, detail=str(e.__cause__)) from e
+    def _call(batch: list[int], pair_kind: str) -> Any:
+        """One LLM batch: its response, or the LLMCompileError that left it
+        undecided. The rate limit and the cost ceiling stop the request."""
+        payload = [
+            {"entity_a": _llm_side(p.entity_a), "entity_b": _llm_side(p.entity_b), "same_source": p.same_source}
+            for p in (req.pairs[k] for k in batch)
+        ]
+        try:
+            return disambiguate_entities(payload, model=req.compile_model, pair_kind=pair_kind)
+        except LLMRateLimitedError as e:
+            raise HTTPException(status_code=429, detail=str(e)) from e
+        except CostCeilingError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except LLMCompileError as e:
+            # The providers charge the daily cap inside the call, so the
+            # ceiling arrives wrapped; it still stops the request.
+            if isinstance(e.__cause__, CostCeilingError):
+                raise HTTPException(status_code=503, detail=str(e.__cause__)) from e
+            return e
+
+    jobs: list[tuple[list[int], str]] = []
+    for pair_kind, concept in (("entity", False), ("concept", True)):
+        for page in (False, True):
+            indices = [k for k in capped_pairs if is_concept[k] == concept and has_page[k] == page]
+            jobs += [(indices[s:s + 10], pair_kind) for s in range(0, len(indices), 10)]
+
+    # A few batches at once (owner decision 2026-10-25), so asking more
+    # pairs does not make the compile wait longer; the cost ceiling is
+    # reserved per call under a lock (llm_client._cap_lock).
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=_DISAMBIGUATE_PARALLEL)
+    try:
+        futures = [pool.submit(_call, batch, pair_kind) for batch, pair_kind in jobs]
+        for (batch, _kind), future in zip(jobs, futures):
+            resp = future.result()
+            if isinstance(resp, LLMCompileError):
                 # One bad batch (unparseable JSON, a dropped call) leaves its
                 # pairs undecided, kept separate like an 'ambiguous' verdict;
                 # the other batches' verdicts, already paid for, still count.
-                logger.warning("disambiguate: batch of %d pairs failed: %s", len(batch), e)
+                logger.warning("disambiguate: batch of %d pairs failed: %s", len(batch), resp)
                 failed += len(batch)
                 for k in batch:
-                    answer(k, "ambiguous", f"llm_failed: {e}"[:300])
+                    answer(k, "ambiguous", f"llm_failed: {resp}"[:300])
                 continue
-
             verdicts = _verdicts_by_pair([req.pairs[k] for k in batch], resp.results)
             for k, r in zip(batch, verdicts):
                 if r is None:
@@ -2022,12 +2043,8 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
                     answer(k, r.decision, r.reason, _same_canonical(req.pairs[k], r.canonical))
                 else:
                     answer(k, r.decision, r.reason, r.canonical)
-
-    for pair_kind, concept in (("entity", False), ("concept", True)):
-        for page in (False, True):
-            indices = [k for k in capped_pairs if is_concept[k] == concept and has_page[k] == page]
-            if indices:
-                _call_in_batches(indices, pair_kind)
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
 
     results = [a for a in answers if a is not None]
     assert len(results) == len(req.pairs)

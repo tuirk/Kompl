@@ -60,7 +60,7 @@ import { buildMentionPin, KIND_FAMILIES } from '../../../../lib/mention-pin';
 import { sessionMentionRows } from '../../../../lib/mention-rows';
 import { numericConflict } from '../../../../lib/name-guard';
 import { pageSide } from '../../../../lib/resolve-page-sides';
-import { disambiguatePairCap, rankForLayer3 } from '../../../../lib/resolve-ranking';
+import { disambiguatePairCap, isAbbreviation, rankForLayer3 } from '../../../../lib/resolve-ranking';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -394,22 +394,40 @@ export async function POST(request: Request) {
     // Session entities already in a merged group: Layer 2's (Layer 1's passed
     // through), then each Layer 3 'same'. An entity can sit in several pairs
     // ("APCA" vs "APCA contrast algorithm" and vs an existing page), and it
-    // joins one group only — the first 'same' wins, and verdicts touching an
-    // existing page come first, so the page does. A 'different' verdict on
+    // joins one group only — verdicts touching an existing page come first,
+    // so the page takes it, and a later 'same' on it joins its group with the
+    // other side (owner decision 2026-10-25: "2019-nCoV" = "2019 novel
+    // coronavirus" and "2019 novel coronavirus" = "SARS-CoV-2" are one
+    // page). memberOf keeps the group each one joined. A 'different' verdict on
     // another pair must not also emit it as a singleton, or plan sees the
     // name twice and writes it to two pages (2026-10-17, session e55c740b).
     // Keyed with the kind too: a group's names cover the kinds it can hold,
     // so a CONCEPT "Chrome" beside an ORG group "Chrome" from the same
     // source is still its own entity.
     const mergedKeys = new Set<string>();
+    const memberOf = new Map<string, number>();
     const entityKey = (e: EntityInput) => `${e.name}|||${e.source_id}|||${e.type}`;
-    for (const g of groups) {
+    const markMerged = (e: EntityInput, gi: number) => {
+      mergedKeys.add(entityKey(e));
+      memberOf.set(entityKey(e), gi);
+    };
+    groups.forEach((g, gi) => {
       const family = KIND_FAMILIES.find((f) => f.includes(g.type));
       const kinds = family === undefined ? [g.type] : family;
       for (const name of [g.canonical, ...g.aliases]) {
-        for (const sid of g.source_ids) for (const kind of kinds) mergedKeys.add(`${name}|||${sid}|||${kind}`);
+        for (const sid of g.source_ids) {
+          for (const kind of kinds) markMerged({ name, source_id: sid, type: kind, context: '' }, gi);
+        }
       }
-    }
+    });
+    // The group a pair side stands for now: its group, or the group a lone
+    // name already joined; null for a lone name still on its own (or a
+    // malformed group reference).
+    const sideGroup = (e: EntityInput): number | null => {
+      if (isGroupRef(e)) return groupOf(e);
+      const gi = memberOf.get(entityKey(e));
+      return gi === undefined ? null : find(gi);
+    };
     // Names whose numbers differ are never one thing ("Python 2" / "Python 3"),
     // so a verdict never folds them together, even through a third name.
     // The one exception is the two names of a pair asked as closest by
@@ -420,6 +438,10 @@ export async function POST(request: Request) {
     const numbersClash = (xs: string[], ys: string[]) =>
       xs.some((x) => ys.some((y) => numericConflict(x, y) === 'hard' && !renamed.has(nameKey(x, y))));
     const namesOf = (g: ResolvedGroup) => [g.canonical, ...g.aliases];
+    // Name pairs Layer 3 called different in this run: a chain never joins
+    // two groups across one of them.
+    const differentKeys = new Set<string>();
+    const saidDifferent = (xs: string[], ys: string[]) => xs.some((x) => ys.some((y) => differentKeys.has(nameKey(x, y))));
 
     const addName = (g: ResolvedGroup, name: string) => {
       if (name !== g.canonical && !g.aliases.includes(name)) g.aliases.push(name);
@@ -433,7 +455,7 @@ export async function POST(request: Request) {
       if (numbersClash(namesOf(groups[gi]), [e.name])) return false;
       addName(groups[gi], e.name);
       if (!groups[gi].source_ids.includes(e.source_id)) groups[gi].source_ids.push(e.source_id);
-      mergedKeys.add(entityKey(e));
+      markMerged(e, gi);
       return true;
     };
     const rename = (g: ResolvedGroup, canonical: string) => {
@@ -468,9 +490,22 @@ export async function POST(request: Request) {
     const applySame = (pair: AmbiguousPair, picked: string): boolean => {
       if (pair.by_meaning === true) renamed.add(nameKey(pair.entity_a.name, pair.entity_b.name));
       const sides = [pair.entity_a, pair.entity_b];
-      const ids = sides.map(groupOf).filter((k): k is number => k !== null);
-      if (ids.length !== sides.filter(isGroupRef).length) return false; // malformed group reference
-      const lone = loneSides(pair);
+      if (sides.some((e) => isGroupRef(e) && groupOf(e) === null)) return false; // malformed group reference
+      const ids = sides.map(sideGroup).filter((k): k is number => k !== null);
+      if (ids.length === 2 && ids[0] === ids[1]) return true; // one group already
+      // A lone name that already joined a group brings it along (a chain),
+      // unless it is an abbreviation of the other side: "CI" called the
+      // same as "Continuous Integration" and as "Confidence Interval" must
+      // not make them one. Nor across a pair Layer 3 called different.
+      for (const [hub, other] of [[pair.entity_a, pair.entity_b], [pair.entity_b, pair.entity_a]]) {
+        const gi = isGroupRef(hub) ? null : memberOf.get(entityKey(hub));
+        if (gi === undefined || gi === null) continue;
+        if (isAbbreviation(hub.name, other.name) || isAbbreviation(other.name, hub.name)) return false;
+        const otherNames = isExistingPage(other) ? [other.name]
+          : sideGroup(other) !== null ? namesOf(groups[sideGroup(other)!]) : [other.name];
+        if (saidDifferent(namesOf(groups[find(gi)]), otherNames)) return false;
+      }
+      const lone = loneSides(pair).filter((e) => !memberOf.has(entityKey(e)));
       if (ids.length + lone.length === 0) return false; // two pages: nothing of this session's
       const page = sides.find(isExistingPage);
       if (page) {
@@ -494,7 +529,7 @@ export async function POST(request: Request) {
           source_ids: [lone[0].source_id],
           method: 'existing_page_title',
         });
-        mergedKeys.add(entityKey(lone[0]));
+        markMerged(lone[0], groups.length - 1);
         return true;
       }
       if (ids.length === 2) return join(ids[0], ids[1], picked);
@@ -512,7 +547,7 @@ export async function POST(request: Request) {
         source_ids: [...new Set(lone.map((e) => e.source_id))],
         method: 'llm',
       });
-      for (const e of lone) mergedKeys.add(entityKey(e));
+      for (const e of lone) markMerged(e, groups.length - 1);
       return true;
     };
 
@@ -590,6 +625,11 @@ export async function POST(request: Request) {
       const verdicts = new Map(
         disambResult.results.filter((r) => r.pair_id !== null).map((r) => [r.pair_id, r] as const)
       );
+      for (const pair of sent) {
+        if (verdicts.get(pair.pair_id)?.decision === 'different') {
+          differentKeys.add(nameKey(pair.entity_a.name, pair.entity_b.name));
+        }
+      }
 
       // Verdicts touching the wiki are applied first, then the rest, each in
       // the ranked order.
@@ -601,12 +641,10 @@ export async function POST(request: Request) {
       for (const pair of foldOrder) {
         const result = verdicts.get(pair.pair_id);
         const lone = loneSides(pair);
-        const alreadyMerged = lone.some((e) => mergedKeys.has(entityKey(e)));
-        const applied =
-          result?.decision === 'same' && !!result.canonical && !alreadyMerged && applySame(pair, result.canonical);
-        // "different", "ambiguous", a side already merged or two pages — real
-        // session entities flow back to singletons (merged ones are dropped
-        // below); the sentinel and group sides are discarded.
+        const applied = result?.decision === 'same' && !!result.canonical && applySame(pair, result.canonical);
+        // "different", "ambiguous", a same that cannot apply or two pages —
+        // real session entities flow back to singletons (merged ones are
+        // dropped below); the sentinel and group sides are discarded.
         if (!applied) ambiguousRemaining.push(...lone);
       }
     }
