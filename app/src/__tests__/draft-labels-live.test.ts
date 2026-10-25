@@ -104,3 +104,69 @@ describe('compile/draft — category list', () => {
     expect(((await res.json()) as { drafted: number }).drafted).toBe(11);
   });
 });
+
+/** A session of `n` source summaries, one source each. */
+function seedSummaries(session_id: string, n: number): void {
+  seedCompileProgress(handle!.db, session_id);
+  for (let i = 0; i < n; i++) {
+    const source_id = seedSource(handle!.db, {
+      onboarding_session_id: session_id,
+      title: `Article ${i}`,
+      raw_markdown: `Article ${i} is about many things.`,
+    });
+    seedExtraction(handle!.db, { source_id, llm_output: { entities: [], concepts: [], relationships: [] } });
+    seedPagePlan(handle!.db, { session_id, title: `Article ${i}`, page_type: 'source-summary', source_ids: [source_id] });
+  }
+}
+
+function startDraft(session_id: string): Promise<Response> {
+  return draftPOST(
+    new Request('http://test/api/compile/draft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id }),
+    })
+  );
+}
+
+describe('compile/draft — the first compile of a wiki without labels', () => {
+  it('drafts one source summary alone first, so the others are offered its label', async () => {
+    handle = setupTestDb();
+    const session_id = 'sess-first-labels';
+    seedSummaries(session_id, 4);
+    const held = holdDrafts();
+
+    const response = startDraft(session_id);
+
+    await heldCount(held, 1);
+    // Nothing else starts while the first summary is out.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(held).toHaveLength(1);
+    expect(held[0].categories).toEqual([]);
+    held[0].release();
+
+    await heldCount(held, 4);
+    for (const h of held.slice(1)) expect(h.categories).toEqual([`Label of ${held[0].title}`]);
+    for (const h of held.slice(1)) h.release();
+    const res = await response;
+    expect(res.status).toBe(200);
+    // One draft call per summary: drafting the first alone adds none.
+    expect(held).toHaveLength(4);
+    expect(((await res.json()) as { drafted: number }).drafted).toBe(4);
+  });
+
+  it('drafts the summaries in parallel when the wiki already has a label', async () => {
+    handle = setupTestDb();
+    const session_id = 'sess-has-labels';
+    seedPage(handle.db, { page_id: 'old', title: 'Old page', category: 'Travel' });
+    seedSummaries(session_id, 4);
+    const held = holdDrafts();
+
+    const response = startDraft(session_id);
+
+    await heldCount(held, 4);
+    expect(held.every((h) => h.categories.join() === 'Travel')).toBe(true);
+    for (const h of held) h.release();
+    expect((await response).status).toBe(200);
+  });
+});

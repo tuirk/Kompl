@@ -7,7 +7,7 @@
  * (excluding provenance-only). Calls /pipeline/draft-page on the nlp-service
  * for each page, in layer order:
  *
- *   1. Source summaries (parallel, ≤5 concurrent)
+ *   1. Source summaries (parallel; with no label to offer, one drafts alone first)
  *   2. Entity pages (parallel)
  *   3. Concept pages (parallel)
  *   4. Comparison pages (needs entity drafts for context)
@@ -915,14 +915,18 @@ export async function POST(request: Request) {
 
     // Each finished draft adds its label at once, so drafts that start later,
     // in this layer or the next, are offered it.
-    const results = await pLimit(
-      tasks.map((task) => async () => {
-        const r = await task();
-        categoryLabels.addFromDraft(r.markdown);
-        return r;
-      }),
-      DRAFT_CONCURRENCY,
-    );
+    const labelled = tasks.map((task) => async () => {
+      const r = await task();
+      categoryLabels.addFromDraft(r.markdown);
+      return r;
+    });
+    // A wiki's first compile has no label to offer: one summary drafts alone
+    // first, so the rest start with its label instead of each inventing a
+    // near copy (owner decision 2026-10-25). Same calls, one draft's wait.
+    const firstAlone = layer === 'source-summary' && categoryLabels.list().length === 0 && labelled.length > 1;
+    const results = firstAlone
+      ? [...(await pLimit(labelled.slice(0, 1), 1)), ...(await pLimit(labelled.slice(1), DRAFT_CONCURRENCY))]
+      : await pLimit(labelled, DRAFT_CONCURRENCY);
 
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
