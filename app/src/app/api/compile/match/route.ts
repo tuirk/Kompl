@@ -44,6 +44,7 @@ import {
 } from '@/lib/db';
 import { NO_RECHECKS, recheckStoredTriages } from '@/lib/compile/triage-recheck';
 import { callTriage, triageFailureOf, type MatchEntry, type TriageFailure, type TriageResponse } from '@/lib/triage-call';
+import { SAVED_LINKS_PAGE_ID } from '@/lib/lint-result';
 import { namesInSource, pickTriageCandidates, sharesSubject } from '@/lib/triage-candidates';
 import { claimsAbout, readExtraction, readTriageInput, subjectNames, triageAliases } from '@/lib/triage-evidence';
 import { recordTriageFailure, removeTriagePair } from '@/lib/triage-rechecks';
@@ -107,8 +108,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ session_id, skipped: true, matches: [], stats: NO_MATCH_STATS });
   }
 
-  // Build TF-IDF candidate corpus from non-summary pages
-  const candidatePages = getPagesByType(['entity', 'concept', 'comparison', 'overview']);
+  // Build TF-IDF candidate corpus from non-summary pages. Kompl's own Saved
+  // Links page is an overview too, but no source ever updates it (an eval run
+  // planned 10 updates of it on 2026-10-25, one failing as no_pages_to_list).
+  const candidatePages = getPagesByType(['entity', 'concept', 'comparison', 'overview'])
+    .filter((p) => p.page_id !== SAVED_LINKS_PAGE_ID);
   if (candidatePages.length === 0) {
     return NextResponse.json({ session_id, skipped: true, matches: [], stats: NO_MATCH_STATS });
   }

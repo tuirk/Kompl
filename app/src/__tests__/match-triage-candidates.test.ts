@@ -83,6 +83,21 @@ describe('triage candidates from shared entities', () => {
     expect(stats.candidates_found).toBe(1);
   });
 
+  it('never offers the Saved Links page, though TF-IDF finds it', async () => {
+    handle = setupTestDb();
+    pages(['Ethereum']);
+    seedPage(handle.db, { page_id: 'saved-links', title: 'Saved Links', page_type: 'overview' });
+    source(['Ethereum']);
+    const stub = stubFetch({
+      triage: answerAll(['Ethereum']),
+      answers: { '/extract/tfidf-overlap': tfidf([['saved-links', 0.9]]) },
+    });
+
+    await runMatch();
+
+    expect(stub.triaged).toEqual(['Ethereum']);
+  });
+
   it('follows the resolved name, not the spelling the source used', async () => {
     handle = setupTestDb();
     pages(['Ethereum']);
