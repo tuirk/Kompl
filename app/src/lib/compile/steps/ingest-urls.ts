@@ -25,6 +25,7 @@ import {
   insertSource,
   markStagingFailed,
   markStagingIngested,
+  resolveIngestFailuresForUrl,
   storeRawMarkdown,
   type StagingRow,
 } from '../../db';
@@ -37,6 +38,16 @@ import { pickSourceDate } from '../../source-dates';
 import { runPerItemStep } from '../step-runner';
 
 const INGEST_URLS_CONCURRENCY = 5;
+
+/**
+ * The link is in the wiki now: its Saved Links rows, from whichever session
+ * failed it, are marked resolved (issue #139), and the page is rebuilt.
+ */
+function resolveSavedLink(urls: Array<string | null | undefined>, sourceId: string): void {
+  let resolved = 0;
+  for (const url of new Set(urls)) if (url) resolved += resolveIngestFailuresForUrl(url, sourceId);
+  if (resolved > 0) void regenerateSavedLinksPage().catch(() => {});
+}
 
 /**
  * Payload shape the /stage endpoint writes for connector='url' rows.
@@ -93,6 +104,7 @@ export async function runIngestUrlsStep(
       // Cross-session dedup: skip scrape entirely if we already have this URL.
       const urlDupe = findSourceByUrl(payload.url);
       if (urlDupe) {
+        resolveSavedLink([payload.url], urlDupe.source_id);
         markStagingIngested(row.stage_id, urlDupe.source_id);
         duplicatesThisBatch++;
         return;
@@ -112,6 +124,7 @@ export async function runIngestUrlsStep(
       // wasted scrape for the one URL that slipped through.
       const hashDupe = findSourceByContentHash(convertResult.content_hash);
       if (hashDupe) {
+        resolveSavedLink([payload.url, convertResult.source_url], hashDupe.source_id);
         markStagingIngested(row.stage_id, hashDupe.source_id);
         duplicatesThisBatch++;
         return;
@@ -150,6 +163,7 @@ export async function runIngestUrlsStep(
       // The URL ends up in Saved Links via the onFailure path below; we
       // never insert a `sources` row with watch-page chrome anymore.
 
+      resolveSavedLink([payload.url, convertResult.source_url], sourceId);
       markStagingIngested(row.stage_id, sourceId);
     },
     onFailure: async (row, error) => {

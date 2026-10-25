@@ -39,6 +39,7 @@ import { buildFtsQuery } from './fts-query';
 import { numericConflict } from './name-guard';
 import { COMPARISON_RELATIONS, quoteVerifiedColumn, quoteVerifiedFromColumn, relationKey } from './relation-rows';
 import type { SourceMentionRows } from './mention-rows';
+import { urlKey, urlKeyCandidates } from './url-key';
 
 // Model registry lives in llm-models.ts (client-safe, no DB imports);
 // re-exported here so server code keeps importing it from '@/lib/db'.
@@ -3335,24 +3336,87 @@ export interface InsertIngestFailureArgs {
   session_id?: string | null;
 }
 
-export function insertIngestFailure(args: InsertIngestFailureArgs): void {
-  openDb()
+/**
+ * One Saved Links row per link (issue #139): the same page however it is
+ * written (host case, a trailing slash; lib/url-key.ts, as the agent
+ * duplicate checks spell it). Anything that isn't a URL matches only itself.
+ */
+function savedLinkKey(url: string): string {
+  return urlKey(url) ?? url;
+}
+
+/** The unresolved rows of the link `url` names, newest first. */
+function unresolvedFailuresForLink(url: string): string[] {
+  const key = savedLinkKey(url);
+  const candidates = urlKey(url) ? urlKeyCandidates(key) : [url.toLowerCase()];
+  const rows = openDb()
     .prepare(
+      `SELECT failure_id, source_url FROM ingest_failures
+        WHERE resolved_source_id IS NULL
+          AND lower(source_url) IN (${candidates.map(() => '?').join(', ')})
+        ORDER BY datetime(date_attempted) DESC, rowid DESC`
+    )
+    .all(...candidates) as Array<{ failure_id: string; source_url: string }>;
+  return rows.filter((r) => savedLinkKey(r.source_url) === key).map((r) => r.failure_id);
+}
+
+/**
+ * Record a link that could not be imported. A link that already has an
+ * unresolved row updates it instead of adding one: the newest error, the
+ * session that last tried (so retry-failed finds it), title and preview
+ * kept when this attempt brings none, and one more attempt counted.
+ */
+export function insertIngestFailure(args: InsertIngestFailureArgs): void {
+  const db = openDb();
+  const values = {
+    failure_id: args.failure_id,
+    source_url: args.source_url ?? null,
+    title_hint: args.title_hint ?? null,
+    date_saved: args.date_saved ?? null,
+    error: args.error,
+    source_type: args.source_type ?? 'url',
+    metadata: args.metadata ?? null,
+    session_id: args.session_id ?? null,
+  };
+  db.transaction(() => {
+    const [existing] = values.source_url ? unresolvedFailuresForLink(values.source_url) : [];
+    if (existing) {
+      db.prepare(
+        `UPDATE ingest_failures
+            SET error          = @error,
+                date_attempted = CURRENT_TIMESTAMP,
+                source_type    = @source_type,
+                session_id     = COALESCE(@session_id, session_id),
+                title_hint     = COALESCE(@title_hint, title_hint),
+                metadata       = COALESCE(@metadata, metadata),
+                date_saved     = COALESCE(date_saved, @date_saved),
+                attempts       = attempts + 1
+          WHERE failure_id = @existing`
+      ).run({ ...values, existing });
+      return;
+    }
+    db.prepare(
       `INSERT OR IGNORE INTO ingest_failures
          (failure_id, source_url, title_hint, date_saved, error, source_type, metadata, session_id)
        VALUES
          (@failure_id, @source_url, @title_hint, @date_saved, @error, @source_type, @metadata, @session_id)`
-    )
-    .run({
-      failure_id: args.failure_id,
-      source_url: args.source_url ?? null,
-      title_hint: args.title_hint ?? null,
-      date_saved: args.date_saved ?? null,
-      error: args.error,
-      source_type: args.source_type ?? 'url',
-      metadata: args.metadata ?? null,
-      session_id: args.session_id ?? null,
-    });
+    ).run(values);
+  })();
+}
+
+/**
+ * The link was imported (in any session): its unresolved rows are marked
+ * resolved by the new source, so it leaves Saved Links. The rows are kept.
+ * Returns how many rows it resolved.
+ */
+export function resolveIngestFailuresForUrl(url: string, sourceId: string): number {
+  const db = openDb();
+  return db.transaction(() => {
+    const ids = unresolvedFailuresForLink(url);
+    const mark = db.prepare('UPDATE ingest_failures SET resolved_source_id = ? WHERE failure_id = ?');
+    for (const id of ids) mark.run(sourceId, id);
+    return ids.length;
+  })();
 }
 
 /**
@@ -3388,10 +3452,20 @@ export interface SavedLinkRow {
   error: string;
   source_type: string;
   metadata: string | null;
+  /** Failed attempts for this link, rows saved before one row per link included. */
+  attempts: number;
 }
 
+/**
+ * One row per link, newest attempt first (issue #139). Rows saved before
+ * failures were merged read as one: the newest row's error and date, every
+ * row's attempts, and the title, preview and saved date the newest row
+ * lacks taken from older ones. A link already in the wiki (a source with
+ * the same address, however it was written) is left out.
+ */
 export function getUnresolvedLinks(): SavedLinkRow[] {
-  return openDb()
+  const db = openDb();
+  const rows = db
     .prepare(
       `SELECT failure_id,
               source_url,
@@ -3400,44 +3474,53 @@ export function getUnresolvedLinks(): SavedLinkRow[] {
               date_attempted,
               error,
               source_type,
-              metadata
+              metadata,
+              attempts
          FROM ingest_failures
         WHERE resolved_source_id IS NULL
           AND source_url IS NOT NULL
-        ORDER BY date_attempted DESC`
+        ORDER BY datetime(date_attempted) DESC, rowid DESC`
     )
     .all() as SavedLinkRow[];
-}
-
-export function deleteIngestFailure(failureId: string): boolean {
-  const info = openDb()
-    .prepare('DELETE FROM ingest_failures WHERE failure_id = ?')
-    .run(failureId);
-  return info.changes > 0;
+  if (rows.length === 0) return [];
+  const inWiki = new Set(
+    (db
+      .prepare(`SELECT source_url FROM sources WHERE source_url IS NOT NULL AND compile_status != 'collected'`)
+      .all() as Array<{ source_url: string }>).map((r) => savedLinkKey(r.source_url))
+  );
+  const byLink = new Map<string, SavedLinkRow>();
+  for (const row of rows) {
+    const key = savedLinkKey(row.source_url);
+    if (inWiki.has(key)) continue;
+    const link = byLink.get(key);
+    if (!link) {
+      byLink.set(key, { ...row });
+      continue;
+    }
+    link.attempts += row.attempts;
+    link.title ??= row.title;
+    link.metadata ??= row.metadata;
+    link.date_saved = row.date_saved ?? link.date_saved; // older rows come later: the first save wins
+  }
+  return [...byLink.values()];
 }
 
 /**
- * Delete ingest_failures rows matching (session_id, source_url) pairs.
- * Called by /api/compile/retry-failed before flipping the corresponding
- * staging rows back to 'pending', so a successful retry leaves no ghost
- * row in the Saved Links / /api/sources/failures surfaces (which filter
- * by resolved_source_id IS NULL). If the retry fails again, ingest-urls
- * re-inserts the row. Idempotent — missing rows are fine.
+ * Dismiss a saved link: the row, and every other unresolved row of the
+ * same link (rows saved before one row per link), so none takes its place.
  */
-export function deleteIngestFailuresBySourceUrls(
-  sessionId: string,
-  sourceUrls: string[]
-): number {
-  if (sourceUrls.length === 0) return 0;
-  const placeholders = sourceUrls.map(() => '?').join(', ');
-  const info = openDb()
-    .prepare(
-      `DELETE FROM ingest_failures
-        WHERE session_id = ?
-          AND source_url IN (${placeholders})`
-    )
-    .run(sessionId, ...sourceUrls);
-  return info.changes;
+export function deleteIngestFailure(failureId: string): boolean {
+  const db = openDb();
+  return db.transaction(() => {
+    const row = db
+      .prepare('SELECT source_url, resolved_source_id FROM ingest_failures WHERE failure_id = ?')
+      .get(failureId) as { source_url: string | null; resolved_source_id: string | null } | undefined;
+    if (!row) return false;
+    const ids = row.source_url && row.resolved_source_id === null ? unresolvedFailuresForLink(row.source_url) : [];
+    const drop = db.prepare('DELETE FROM ingest_failures WHERE failure_id = ?');
+    for (const id of new Set([failureId, ...ids])) drop.run(id);
+    return true;
+  })();
 }
 
 /**
@@ -4147,6 +4230,7 @@ export interface IngestFailureExportRow {
   resolved_source_id: string | null;
   metadata: string | null;
   session_id: string | null;
+  attempts: number;
 }
 
 /** The links saved but not fetched (the Saved Links page), resolved ones too. */
@@ -4154,7 +4238,7 @@ export function getAllIngestFailures(): IngestFailureExportRow[] {
   return openDb()
     .prepare(
       `SELECT failure_id, source_url, title_hint, date_saved, date_attempted, error,
-              source_type, resolved_source_id, metadata, session_id
+              source_type, resolved_source_id, metadata, session_id, attempts
          FROM ingest_failures
         ORDER BY date_attempted, failure_id`
     )

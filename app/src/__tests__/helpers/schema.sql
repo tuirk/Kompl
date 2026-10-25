@@ -171,7 +171,9 @@ CREATE TABLE ingest_failures (
   source_type TEXT NOT NULL DEFAULT 'url',
   resolved_source_id TEXT,
   metadata JSON,
-  session_id TEXT
+  session_id TEXT,
+  -- v30: failed attempts for this link (one Saved Links row per link).
+  attempts INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE vector_backfill_queue (

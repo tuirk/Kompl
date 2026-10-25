@@ -6,7 +6,9 @@
  * for the URL ones), stubs triggerSessionCompile, and asserts:
  *   - failed rows flip to 'pending' with cleared error fields
  *   - ingested rows untouched
- *   - matching ingest_failures rows deleted (ghost-row cleanup)
+ *   - the link's ingest_failures row kept: it stays in Saved Links until the
+ *     retry imports it (then any session's rows are resolved) or fails again
+ *     (then the row counts one more attempt); issue #139
  *   - compile_progress reset: status='queued', all steps 'pending',
  *     started_at preserved, completed_at/error/current_step cleared
  *   - n8n trigger called exactly once
@@ -132,7 +134,7 @@ describe('POST /api/compile/retry-failed', () => {
     });
   }
 
-  it('flips failed rows, cleans ingest_failures ghosts, resets compile_progress, triggers n8n', async () => {
+  it('flips failed rows, keeps the Saved Links row, resets compile_progress, triggers n8n', async () => {
     const seeded = seedScenario();
 
     const res = await POST(post({ session_id: sessionId }));
@@ -154,11 +156,12 @@ describe('POST /api/compile/retry-failed', () => {
       expect(ingested.status).toBe('ingested');
     }
 
-    // Ghost row deleted
+    // The link stays in Saved Links until the retry imports it.
     const remainingFailures = getIngestFailures().filter(
       (f) => f.source_url === seeded.failedUrls[0]
     );
-    expect(remainingFailures).toHaveLength(0);
+    expect(remainingFailures).toHaveLength(1);
+    expect(remainingFailures[0].resolved_source_id).toBeNull();
 
     // compile_progress reset
     const cp = getCompileProgress(sessionId)!;

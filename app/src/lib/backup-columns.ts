@@ -54,6 +54,11 @@ export function restorePageTypeFromBackup(value: unknown): string | null {
   return typeof value === 'string' && /^[a-z][a-z-]{0,39}$/.test(value) && value !== 'archived' ? value : null;
 }
 
+/** ingest_failures.attempts (v30): a positive whole number, else 1 (one failure, as before the column). */
+export function failureAttemptsFromBackup(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : 1;
+}
+
 /**
  * page_plans.used_source_ids (v30): a JSON list of source ids, kept as
  * written, or null (approval then credits every plan source).

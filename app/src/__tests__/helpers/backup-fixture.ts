@@ -280,7 +280,7 @@ export function seedWiki(db: Database.Database, scale: WikiScale): SeededWiki {
     );
     const failure = db.prepare(
       `INSERT INTO ingest_failures (failure_id, source_url, title_hint, date_saved, date_attempted, error,
-         source_type, resolved_source_id, metadata, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         source_type, resolved_source_id, metadata, session_id, attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const dis = db.prepare(
       `INSERT INTO disagreements (disagreement_id, page_id, found_by, kind, status, owner_verdict, owner_verdict_at,
@@ -310,7 +310,7 @@ export function seedWiki(db: Database.Database, scale: WikiScale): SeededWiki {
       failure.run(`rt-fail-${pad(k)}`, `https://example.org/saved/${k}`, k % 2 ? `Saved ${words(3)}` : null,
         k % 3 ? '2024-12-01' : null, ts(k, 109), 'firecrawl_error: 403', k % 2 ? 'url' : 'saved-link',
         k % 7 === 0 ? sourceIds[k % scale.sources] : null, k % 2 ? JSON.stringify({ title: words(3) }) : null,
-        sessionIds[k % sessionIds.length]);
+        sessionIds[k % sessionIds.length], 1 + (k % 4));
       const verdict = [null, 'confirmed', 'dismissed'][k % 3];
       const a = sourceIds[k % scale.sources];
       const b = sourceIds[(k + 3) % scale.sources];

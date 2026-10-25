@@ -258,6 +258,8 @@ export default function SavedLinksInteractive({
             author,
             hostnameOf(link.source_url),
             link.error ? ingestFailureReason(link.error) : null,
+            // One row per link: a link that failed again says how often (issue #139).
+            link.attempts > 1 ? `failed ${link.attempts} times` : null,
           ].filter((p): p is string => !!p);
 
           return (

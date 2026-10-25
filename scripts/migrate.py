@@ -630,6 +630,22 @@ def _ensure_page_hold(conn: sqlite3.Connection) -> bool:
     return added
 
 
+def _ensure_ingest_failure_attempts(conn: sqlite3.Connection) -> bool:
+    """Add ingest_failures.attempts when missing. Returns True when added.
+
+    attempts  how many times the link failed to import. Saved Links shows
+              one row per link: a later failure of the same link (the same
+              address as app/src/lib/url-key.ts spells it) updates that row
+              and counts here instead of adding a row. Existing rows read 1,
+              and older images insert rows that read 1.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(ingest_failures)").fetchall()}
+    if not cols or "attempts" in cols:
+        return False
+    conn.execute("ALTER TABLE ingest_failures ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1")
+    return True
+
+
 # The claim check's saved verdicts (plan 3.3 and 3.6;
 # app/src/lib/claim-check/verdicts.ts): each pair of claims from two
 # different sources is judged once, and its verdict is kept so neither the
@@ -732,6 +748,10 @@ def migrate():
         if _ensure_page_hold(conn):
             conn.commit()
             print("  added pages.restore_page_type and archive_reason (v30)")
+        # ingest_failures.attempts joined the same way.
+        if _ensure_ingest_failure_attempts(conn):
+            conn.commit()
+            print("  added ingest_failures.attempts (v30)")
         print(f"Database already at version {current}, nothing to do.")
         conn.close()
         return
@@ -1105,6 +1125,8 @@ def migrate():
         _ensure_claim_verdicts(conn)
         # Pages archived until a failed rewrite succeeds.
         _ensure_page_hold(conn)
+        # One Saved Links row per link, with its attempt count.
+        _ensure_ingest_failure_attempts(conn)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

@@ -12,6 +12,7 @@ import { referenceCheck, type SkippedRows } from '@/lib/backup-references';
 import { screenAliasesNowOrLater } from '@/lib/alias-screen';
 import {
   compileModelFromBackup,
+  failureAttemptsFromBackup,
   restorePageTypeFromBackup,
   sourceCompileStateFromBackup,
   textOrNull,
@@ -453,8 +454,8 @@ export async function POST(request: Request) {
       db.prepare(
         `INSERT OR IGNORE INTO ingest_failures
            (failure_id, source_url, title_hint, date_saved, date_attempted, error,
-            source_type, resolved_source_id, metadata, session_id)
-         VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, COALESCE(?, 'url'), ?, ?, ?)`
+            source_type, resolved_source_id, metadata, session_id, attempts)
+         VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, COALESCE(?, 'url'), ?, ?, ?, ?)`
       ).run(
         f.failure_id as string,
         textOrNull(f.source_url),
@@ -465,7 +466,8 @@ export async function POST(request: Request) {
         textOrNull(f.source_type),
         textOrNull(f.resolved_source_id),
         textOrNull(f.metadata),
-        textOrNull(f.session_id)
+        textOrNull(f.session_id),
+        failureAttemptsFromBackup(f.attempts)
       );
     }
 

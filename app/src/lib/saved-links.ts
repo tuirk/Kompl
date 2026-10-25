@@ -74,7 +74,8 @@ function buildMarkdown(links: SavedLinkRow[]): string {
     // errors used to show as `{"detail":{"detail":"firecrawl_error",…`).
     // Asterisks are escaped so the reason can't break the italics.
     const reason = ingestFailureReason(link.error).replace(/\*/g, '\\*');
-    lines.push(`- [${title}](${link.source_url}) — ${dateStr} · *${reason}*`);
+    const tries = link.attempts > 1 ? ` · failed ${link.attempts} times` : '';
+    lines.push(`- [${title}](${link.source_url}) — ${dateStr} · *${reason}*${tries}`);
     if (meta.description) {
       lines.push(`  > ${truncate(meta.description, 160)}`);
     }
