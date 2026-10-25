@@ -135,8 +135,8 @@ export function seedWiki(db: Database.Database, scale: WikiScale): SeededWiki {
 
     const page = db.prepare(
       `INSERT INTO pages (page_id, title, page_type, category, summary, content_path, previous_content_path,
-         last_updated, source_count, created_at, pending_content, draft_rules)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         last_updated, source_count, created_at, pending_content, draft_rules, restore_page_type, archive_reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const fts = db.prepare('INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)');
     pageIds.forEach((id, j) => {
@@ -162,12 +162,14 @@ export function seedWiki(db: Database.Database, scale: WikiScale): SeededWiki {
         id, titles[j], j % 50 === 7 ? 'archived' : ['entity', 'concept', 'source-summary', 'comparison', 'overview'][j % 5],
         j % 4 === 0 ? null : `Category ${j % 12}`, words(20), `/data/pages/${id}.md.gz`, previous,
         ts(j, 53), 1 + (j % 3), ts(j, 41), isPending ? markdown : null, j % 3 === 0 ? 'v0.4' : null,
+        // Half the archived pages are held after a failed rewrite (lib/page-hold.ts).
+        j % 100 === 7 ? 'entity' : null, j % 100 === 7 ? `Kompl could not rewrite this page (${words(4)}).` : null,
       );
       fts.run(id, titles[j], markdown);
     });
     const saved = '# Saved Links\n\n- [A saved link](https://example.org/saved/0) — 2025-01-01 · *Could not fetch*\n';
     page.run('saved-links', 'Saved Links', 'overview', null, null, '/data/pages/saved-links.md.gz', null,
-      ts(1), 0, ts(1), null, null);
+      ts(1), 0, ts(1), null, null, null, null);
     fts.run('saved-links', 'Saved Links', saved);
     writeGz('pages/saved-links.md.gz', saved, files);
 

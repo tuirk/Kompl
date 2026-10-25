@@ -607,6 +607,29 @@ def _ensure_source_dates(conn: sqlite3.Connection) -> bool:
     return added
 
 
+def _ensure_page_hold(conn: sqlite3.Connection) -> bool:
+    """Add pages.restore_page_type and archive_reason when missing.
+    Returns True when either was added.
+
+    A page that could not be rewritten after one of its sources was deleted
+    is archived (page_type 'archived') until a rewrite succeeds, so the
+    deleted source's material leaves the wiki (app/src/lib/page-hold.ts):
+    restore_page_type  the type the page returns as once it is rewritten
+    archive_reason     why it was archived, in plain words, for the page
+    Both are read only while page_type is 'archived'. Additive, no backfill.
+    Older images never name the columns and show such a page as archived.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(pages)").fetchall()}
+    if not cols:
+        return False
+    added = False
+    for col in ("restore_page_type", "archive_reason"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE pages ADD COLUMN {col} TEXT")
+            added = True
+    return added
+
+
 # The claim check's saved verdicts (plan 3.3 and 3.6;
 # app/src/lib/claim-check/verdicts.ts): each pair of claims from two
 # different sources is judged once, and its verdict is kept so neither the
@@ -705,6 +728,10 @@ def migrate():
         if _ensure_claim_verdicts(conn):
             conn.commit()
             print("  added the claim_verdicts table (v30)")
+        # pages.restore_page_type / archive_reason joined the same way.
+        if _ensure_page_hold(conn):
+            conn.commit()
+            print("  added pages.restore_page_type and archive_reason (v30)")
         print(f"Database already at version {current}, nothing to do.")
         conn.close()
         return
@@ -1076,6 +1103,8 @@ def migrate():
         _ensure_source_dates(conn)
         # The claim check's saved verdicts (CLAIM_VERDICTS_SQL above).
         _ensure_claim_verdicts(conn)
+        # Pages archived until a failed rewrite succeeds.
+        _ensure_page_hold(conn)
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",

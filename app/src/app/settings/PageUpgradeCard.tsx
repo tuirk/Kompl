@@ -196,6 +196,7 @@ export default function PageUpgradeCard() {
   const run = overview?.run ?? null;
   const running = run?.status === 'running';
   const n = overview?.candidates ?? 0;
+  const held = overview?.held ?? 0;
   const estimate = overview?.estimate ?? null;
   const modelLabel = overview?.model.label ?? '';
   const setAside = overview?.set_aside ?? [];
@@ -315,9 +316,19 @@ export default function PageUpgradeCard() {
 
       {n > 0 && !running && (
         <>
-          <p style={{ ...TEXT, color: 'var(--fg-secondary)' }}>
-            <strong>{pagesWere(n)}</strong> written by an earlier version.
-          </p>
+          {n - held > 0 && (
+            <p style={{ ...TEXT, color: 'var(--fg-secondary)' }}>
+              <strong>{pagesWere(n - held)}</strong> written by an earlier version.
+            </p>
+          )}
+          {held > 0 && (
+            <p style={{ ...TEXT, color: 'var(--fg-secondary)' }}>
+              <strong>{held === 1 ? '1 page is' : `${held} pages are`}</strong> archived because a source behind{' '}
+              {held === 1 ? 'it' : 'them'} was deleted and the rewrite without it failed. Updating rebuilds{' '}
+              {held === 1 ? 'it' : 'them'} from the remaining sources and puts {held === 1 ? 'it' : 'them'} back in the
+              wiki.
+            </p>
+          )}
           {estimate && costPhrase && durationPhrase ? (
             <p style={TEXT}>
               Updating them with <strong>{modelLabel}</strong> costs {costPhrase} and takes about {durationPhrase}.

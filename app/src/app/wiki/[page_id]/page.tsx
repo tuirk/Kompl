@@ -51,6 +51,7 @@ import {
 import { safeExternalUrl } from '../../../lib/safe-url';
 import WikiToc, { type TocHeading } from '../../../components/WikiToc';
 import { getNumberedSources, getSourceTitleSet } from '../../../lib/page-sources';
+import { getPageHold } from '../../../lib/page-hold';
 
 const SAVED_LINKS_PAGE_ID = 'saved-links';
 
@@ -188,6 +189,8 @@ export default async function WikiPageDetail({ params }: PageProps) {
   if (!page) notFound();
 
   const rawMarkdown = readPageMarkdown(page_id);
+  // Archived after a failed rewrite (lib/page-hold.ts): says why, and reads as its own type.
+  const hold = page.page_type === 'archived' ? getPageHold(page_id) : null;
   const entities = rawMarkdown ? parseFrontmatterEntities(rawMarkdown) : [];
   const titleMap = getPageTitleMap();
   const sourceTitles = getSourceTitleSet();
@@ -196,7 +199,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
   // numbered source list below owns it), turn citations into numbered
   // placeholders, then expand wikilinks, linking each page once. Citations go
   // first: legacy citation groups can contain [[wikilinks]].
-  const shown = rawMarkdown ? displayPageBody(rawMarkdown, page.page_type) : null;
+  const shown = rawMarkdown ? displayPageBody(rawMarkdown, hold?.restore_page_type ?? page.page_type) : null;
   const scan = shown ? scanCitations(shown, (t) => sourceTitles.has(t.toLowerCase())) : null;
   const cleanMarkdown = scan
     ? expandWikilinksForDisplay(scan.markdown, (t) => titleMap.get(t.toLowerCase()), page_id)
@@ -264,6 +267,30 @@ export default async function WikiPageDetail({ params }: PageProps) {
             <span className="meta">{page.source_count} source{page.source_count !== 1 ? 's' : ''}</span>
           </div>
         </div>
+
+        {hold && (
+          <div
+            role="note"
+            style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-hover)',
+              borderRadius: 6,
+              padding: '0.9em 1.1em',
+              marginBottom: '1.75rem',
+              color: 'var(--fg-secondary)',
+              lineHeight: 1.6,
+              maxWidth: '70ch',
+            }}
+          >
+            <strong style={{ color: 'var(--fg)' }}>Archived until it is rewritten.</strong>{' '}
+            {hold.reason ?? 'Kompl could not rewrite this page after one of its sources was deleted.'} It is left out
+            of the wiki, search and the graph until it is rebuilt from its remaining sources, which{' '}
+            <Link href="/settings#page-upgrade" style={{ color: 'var(--accent)' }}>
+              Update pages
+            </Link>{' '}
+            in Settings does.
+          </div>
+        )}
 
         {(page.summary || entities.length > 0) && (
           <section style={{ marginBottom: '2rem' }}>

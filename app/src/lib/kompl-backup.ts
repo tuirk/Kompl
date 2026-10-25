@@ -44,6 +44,7 @@ import {
   DATA_ROOT,
 } from './db';
 import { getPageDraftRulesMap } from './draft-rules';
+import { getPageHoldColumns } from './page-hold';
 import { isBackedUpSetting } from './backup-settings';
 import { getAllDisagreements } from './disagreement-backfill';
 import { getAllClaimVerdicts } from './claim-check/verdicts';
@@ -116,10 +117,22 @@ export async function buildKomplBackup(opts: { includeVectors: boolean }): Promi
   // draft_rules (v27) says which writing rules each page follows, so a
   // restored wiki offers the same pages for an update. Older releases'
   // imports ignore the extra field.
+  // restore_page_type / archive_reason (v30) keep a page archived after a
+  // failed rewrite restorable (lib/page-hold.ts).
   const draftRules = getPageDraftRulesMap();
+  const holds = getPageHoldColumns();
   dbFolder.file(
     'pages.json',
-    JSON.stringify(pages.map((p) => ({ ...p, draft_rules: draftRules.get(p.page_id) ?? null })), null, 2),
+    JSON.stringify(
+      pages.map((p) => ({
+        ...p,
+        draft_rules: draftRules.get(p.page_id) ?? null,
+        restore_page_type: holds.get(p.page_id)?.restore_page_type ?? null,
+        archive_reason: holds.get(p.page_id)?.archive_reason ?? null,
+      })),
+      null,
+      2,
+    ),
   );
   dbFolder.file('provenance.json', JSON.stringify(getAllProvenance(), null, 2));
   // Every alias row, set aside or not, with how it was made and its status

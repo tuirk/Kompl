@@ -107,5 +107,6 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     pages_rewritten: result.pages_rewritten,
     pages_archived: result.pages_archived,
     pages_noted: result.pages_noted,
+    pages_hidden: result.pages_hidden,
   });
 }

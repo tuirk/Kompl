@@ -5,7 +5,9 @@
  * Two-tier cascade for each affected page:
  *   - 0 or 1 remaining sources → permanently delete the page
  *   - 2+ remaining, deleted source < min_source_chars → keep, append provenance note
- *   - 2+ remaining, deleted source ≥ min_source_chars → keep, recompile from remaining
+ *   - 2+ remaining, deleted source ≥ min_source_chars → keep, recompile from remaining;
+ *     if that rewrite fails (after one retry of a temporary failure), archive
+ *     the page until a rewrite succeeds (lib/page-hold.ts, issue #8)
  *
  *   The "short source" threshold is the same `min_source_chars` Setting the
  *   compile pipeline reads at plan time (plan/route.ts), so the UI is the
@@ -63,6 +65,7 @@ import {
   setPageSourceCount,
 } from './db';
 import { recompilePage } from './recompile';
+import { REWRITE_RETRY_DELAY_MS, holdPage, isRetryableRewriteError, rewriteFailedReason } from './page-hold';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 const PAGES_DIR = path.join(DATA_ROOT, 'pages');
@@ -72,6 +75,8 @@ export interface SourceDeleteCounts {
   pages_rewritten: number;
   pages_archived: number;
   pages_noted: number;
+  /** Archived until a rewrite succeeds: the rewrite from the remaining sources failed. */
+  pages_hidden: number;
 }
 
 export type SourceDeleteResult =
@@ -79,10 +84,43 @@ export type SourceDeleteResult =
   | { status: 'not_found'; source_id: string }
   | { status: 'error'; source_id: string; error: string };
 
-type PageOutcome = 'deleted' | 'recompiled' | 'archived' | 'note_fallback';
+type PageOutcome = 'deleted' | 'recompiled' | 'archived' | 'note_fallback' | 'hidden';
 
 export interface BulkDeleteState {
   handledPages: Map<string, PageOutcome>;
+  /** A retry failed during this bulk: later pages are not retried (lib/page-hold.ts). */
+  retryFailed?: boolean;
+}
+
+/** A rewrite that failed, and how many times it was tried. */
+class RewriteFailure extends Error {
+  constructor(readonly error: unknown, readonly attempts: number) {
+    super(String(error));
+  }
+}
+
+/**
+ * recompilePage, tried once more after a temporary failure. Once a retry
+ * has failed during this delete, later pages are not retried: the outage is
+ * evident, and each retry would add its wait to the delete.
+ */
+async function recompileWithOneRetry(
+  pageId: string,
+  sourceId: string,
+  retry: { retryFailed?: boolean },
+): Promise<{ outcome: 'rewritten' | 'archived' }> {
+  try {
+    return await recompilePage(pageId, sourceId);
+  } catch (err) {
+    if (retry.retryFailed || !isRetryableRewriteError(err)) throw new RewriteFailure(err, 1);
+  }
+  await new Promise((resolve) => setTimeout(resolve, REWRITE_RETRY_DELAY_MS));
+  try {
+    return await recompilePage(pageId, sourceId);
+  } catch (err) {
+    retry.retryFailed = true;
+    throw new RewriteFailure(err, 2);
+  }
 }
 
 export async function deleteOneSourceWithCascade(
@@ -124,7 +162,9 @@ export async function deleteOneSourceWithCascade(
       pages_rewritten: 0,
       pages_archived: 0,
       pages_noted: 0,
+      pages_hidden: 0,
     };
+    const retry: { retryFailed?: boolean } = bulkState ?? {};
     const today = new Date().toISOString().split('T')[0];
 
     for (const page of affectedPages) {
@@ -146,6 +186,9 @@ export async function deleteOneSourceWithCascade(
             break;
           case 'note_fallback':
             counts.pages_noted++;
+            break;
+          case 'hidden':
+            counts.pages_hidden++;
             break;
         }
         continue;
@@ -214,37 +257,39 @@ export async function deleteOneSourceWithCascade(
         counts.pages_noted++;
         bulkState?.handledPages.set(page.page_id, 'note_fallback');
       } else {
+        let outcome: 'rewritten' | 'archived';
         try {
-          const { outcome } = await recompilePage(page.page_id, sourceId);
-          setPageSourceCount(page.page_id, remainingCount);
-          if (outcome === 'archived') {
-            logActivity('page_archived', {
-              source_id: sourceId,
-              details: { ...baseDetails, reason: 'source_deleted', source_chars: sourceChars },
-            });
-            counts.pages_archived++;
-            bulkState?.handledPages.set(page.page_id, 'archived');
-          } else {
-            logActivity('page_recompiled', {
-              source_id: sourceId,
-              details: { ...baseDetails, reason: 'source_deleted', source_chars: sourceChars },
-            });
-            counts.pages_rewritten++;
-            bulkState?.handledPages.set(page.page_id, 'recompiled');
-          }
+          ({ outcome } = await recompileWithOneRetry(page.page_id, sourceId, retry));
         } catch (err) {
-          const fullPage = getPage(page.page_id);
-          void addProvenanceNote(
-            fullPage?.content_path ?? null,
-            `Source "${source.title}" deleted on ${today}. Rewrite failed.`,
-          ).catch(() => {});
+          // The page still holds the deleted source's material: archive it
+          // until a rewrite succeeds, with the reason it shows under
+          // "Show archived" (lib/page-hold.ts).
+          const failure = err instanceof RewriteFailure ? err : new RewriteFailure(err, 1);
+          holdPage(page.page_id, rewriteFailedReason(source.title, today));
           setPageSourceCount(page.page_id, remainingCount);
           logActivity('page_recompile_failed', {
             source_id: sourceId,
-            details: { ...baseDetails, error: String(err) },
+            details: { ...baseDetails, error: String(failure.error), attempts: failure.attempts, hidden: true },
           });
-          counts.pages_noted++;
-          bulkState?.handledPages.set(page.page_id, 'note_fallback');
+          counts.pages_hidden++;
+          bulkState?.handledPages.set(page.page_id, 'hidden');
+          continue;
+        }
+        setPageSourceCount(page.page_id, remainingCount);
+        if (outcome === 'archived') {
+          logActivity('page_archived', {
+            source_id: sourceId,
+            details: { ...baseDetails, reason: 'source_deleted', source_chars: sourceChars },
+          });
+          counts.pages_archived++;
+          bulkState?.handledPages.set(page.page_id, 'archived');
+        } else {
+          logActivity('page_recompiled', {
+            source_id: sourceId,
+            details: { ...baseDetails, reason: 'source_deleted', source_chars: sourceChars },
+          });
+          counts.pages_rewritten++;
+          bulkState?.handledPages.set(page.page_id, 'recompiled');
         }
       }
     }

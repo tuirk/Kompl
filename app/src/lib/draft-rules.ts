@@ -35,6 +35,7 @@
 import type Database from 'better-sqlite3';
 
 import { getDb, getSetting, setSetting } from './db';
+import { DRAFT_TYPE_SQL, HELD_PAGE_SQL } from './page-hold';
 import { CURRENT_DRAFT_RULES } from './writing-rules';
 
 export { CURRENT_DRAFT_RULES } from './writing-rules';
@@ -108,11 +109,13 @@ const APP_LIST = [...APP_PAGE_IDS];
 /**
  * A page an update could rebuild: an LLM-drafted type, not an app page, and
  * at least one active source (a page whose sources are all archived is
- * hidden from the wiki and has nothing to rebuild from). Followed by a
- * condition on p.draft_rules, compared with CURRENT_DRAFT_RULES.
+ * hidden from the wiki and has nothing to rebuild from). A page archived
+ * after a failed rewrite counts with the type it returns as
+ * (lib/page-hold.ts). Followed by a condition on p.draft_rules, compared
+ * with CURRENT_DRAFT_RULES.
  */
 const DRAFTED_PAGE_WHERE = `
-      p.page_type IN (${TYPE_LIST.map(() => '?').join(', ')})
+      ${DRAFT_TYPE_SQL} IN (${TYPE_LIST.map(() => '?').join(', ')})
   AND p.page_id NOT IN (${APP_LIST.map(() => '?').join(', ')})
   AND EXISTS (
         SELECT 1
@@ -121,12 +124,15 @@ const DRAFTED_PAGE_WHERE = `
          WHERE pr.page_id = p.page_id
            AND s.status = 'active'
       )`;
-/** ...written under other rules (NULL included): offered for an update. */
+/**
+ * ...written under other rules (NULL included), or archived after a failed
+ * rewrite, whose text may still carry a deleted source: offered for an update.
+ */
 const CANDIDATE_WHERE = `${DRAFTED_PAGE_WHERE}
-  AND (p.draft_rules IS NULL OR p.draft_rules <> ?)`;
-/** ...written under the current rules. */
+  AND (p.draft_rules IS NULL OR p.draft_rules <> ? OR ${HELD_PAGE_SQL})`;
+/** ...written under the current rules, and live. */
 const CURRENT_WHERE = `${DRAFTED_PAGE_WHERE}
-  AND p.draft_rules = ?`;
+  AND p.draft_rules = ? AND NOT ${HELD_PAGE_SQL}`;
 const CANDIDATE_PARAMS = [...TYPE_LIST, ...APP_LIST, CURRENT_DRAFT_RULES];
 
 export interface UpgradeCandidate {
@@ -141,7 +147,7 @@ export interface UpgradeCandidate {
 function listOutdatedPages(): UpgradeCandidate[] {
   return getDb()
     .prepare(
-      `SELECT p.page_id, p.title, p.page_type, p.created_at, p.last_updated
+      `SELECT p.page_id, p.title, ${DRAFT_TYPE_SQL} AS page_type, p.created_at, p.last_updated
          FROM pages p
         WHERE ${CANDIDATE_WHERE}
         ORDER BY p.created_at ASC, p.page_id ASC`,

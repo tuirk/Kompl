@@ -45,6 +45,16 @@ export function compileModelFromBackup(value: unknown): string | null {
 }
 
 /**
+ * pages.restore_page_type (v30, lib/page-hold.ts): the type a page archived
+ * after a failed rewrite returns as. A page type's spelling, never
+ * 'archived'; anything else is null (the page then stays archived for good,
+ * as in backups made before the column).
+ */
+export function restorePageTypeFromBackup(value: unknown): string | null {
+  return typeof value === 'string' && /^[a-z][a-z-]{0,39}$/.test(value) && value !== 'archived' ? value : null;
+}
+
+/**
  * page_plans.used_source_ids (v30): a JSON list of source ids, kept as
  * written, or null (approval then credits every plan source).
  */

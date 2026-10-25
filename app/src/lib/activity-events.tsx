@@ -399,7 +399,7 @@ function renderPageContradictionDetected(row: FeedActivityRow): RowContent {
 }
 
 function renderPageRecompileFailed(row: FeedActivityRow): RowContent {
-  const { str } = makeGetters(row);
+  const { d, str } = makeGetters(row);
   const detailTitle = str('title');
   const page_id = str('page_id');
   const pageName = detailTitle ?? page_id ?? '…';
@@ -407,7 +407,10 @@ function renderPageRecompileFailed(row: FeedActivityRow): RowContent {
     ? <Link href={`/wiki/${page_id}`} style={LINK_STYLE}><strong>{pageName}</strong></Link>
     : <strong>{pageName}</strong>;
   const errMsg = str('error');
-  const secondary = errMsg ? <span style={MONO_ERR}>{errMsg}</span> : null;
+  // A page archived until it is rewritten (lib/page-hold.ts) says so.
+  const hidden = d?.hidden === true;
+  const text = hidden ? `archived until it is rewritten${errMsg ? ` · ${errMsg}` : ''}` : errMsg;
+  const secondary = text ? <span style={MONO_ERR}>{text}</span> : null;
   const action = page_id
     ? <Link href={`/wiki/${page_id}`} style={{ ...LINK_STYLE, color: 'var(--danger)' }}>View</Link>
     : null;

@@ -2981,10 +2981,15 @@ export function getProvenanceForPage(pageId: string): Array<{ source_id: string;
  * The only caller is recompilePage() when a source delete leaves a page with no
  * remaining provenance. If you're looking for the missing UI — it is intentionally
  * missing.
+ *
+ * That archive is for good, so it also ends a hold (lib/page-hold.ts): a page
+ * with no sources left is never offered back for a rewrite.
  */
 export function archivePage(pageId: string): void {
   const db = openDb();
-  db.prepare(`UPDATE pages SET page_type = 'archived' WHERE page_id = ?`).run(pageId);
+  db.prepare(
+    `UPDATE pages SET page_type = 'archived', restore_page_type = NULL, archive_reason = NULL WHERE page_id = ?`
+  ).run(pageId);
   db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(pageId);
 }
 

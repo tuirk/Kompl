@@ -14,8 +14,14 @@
  *   Phase 3c         — page_links resync
  *   Phase 3b (f&f)   — vector refresh, retried like a compile's
  *
- * Throws on draft or write failure — caller catches and falls back to
- * decrementPageSourceCount so the source deletion still completes.
+ * Throws when the page can't be redrafted (draft failure, no readable
+ * sources) — the caller retries a temporary failure once, then archives the
+ * page until a rewrite succeeds (lib/page-hold.ts). Once Phase 2 has
+ * committed, the new text is the page: a failed file write is left to the
+ * boot reconciler, as for every commit path, and does not throw.
+ *
+ * A page archived that way returns as its own type in the same Phase 2
+ * transaction as its new text.
  */
 
 import {
@@ -43,6 +49,7 @@ import { removeEmptyContradictionSections } from './page-sections';
 import { recordPageDisagreements } from './disagreements';
 import { sourceDates, withSourceDate } from './source-dates';
 import { upsertVectorWithRetry } from './vector-upsert';
+import { draftPageType, releaseHeldPage } from './page-hold';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -127,7 +134,7 @@ async function callWritePage(pageId: string, markdown: string): Promise<WritePag
  *                       `{ outcome: 'archived' }` when the page was archived
  *                       because no sources remained. Caller uses this to log
  *                       the correct activity event and increment the right counter.
- * @throws               On draft or write failure. Caller must catch and fall back.
+ * @throws               When the page can't be redrafted. Caller must catch.
  */
 export async function recompilePage(
   pageId: string,
@@ -149,6 +156,9 @@ export async function recompilePage(
     archivePage(pageId);
     return { outcome: 'archived' };
   }
+
+  // A page held after an earlier failed rewrite is drafted as its own type.
+  const pageType = draftPageType(page);
 
   // ── Build source contents for re-drafting ─────────────────────────────────
   // Provenance gains a row on every compile; send each source once.
@@ -180,7 +190,7 @@ export async function recompilePage(
   // Dates tell a claim that changed over time from a disagreement (plan 3.1).
   const dates = sourceDates(getDb(), sourceContents.map((sc) => sc.source_id));
   const drafted = await callDraftPage(
-    page.page_type,
+    pageType,
     page.title,
     sourceContents.map((sc) => withSourceDate({ ...sc, citation_label: labels.get(sc.source_id.toLowerCase()) }, dates)),
     existingCategories,
@@ -188,14 +198,14 @@ export async function recompilePage(
   );
   // Same safety nets as the compile draft and crossref steps.
   let newMarkdown = normalizeFrontmatter(labelsToStoredCitations(rewordLabelSubjects(drafted).markdown, labels));
-  if (page.page_type !== 'source-summary') {
+  if (pageType !== 'source-summary') {
     newMarkdown = removeEmptyContradictionSections(newMarkdown).markdown;
   }
   newMarkdown = tidyDraftLinks(newMarkdown, {
     blocked: new Set([...sourceOnlyTitles(getAllPages()), page.title.toLowerCase()]),
     sourceText: sourceContents.map((sc) => sc.markdown).join('\n'),
     keepRelated: relatedLinkTargets(readPageMarkdown(pageId) ?? ''),
-    trimRelated: page.page_type !== 'source-summary',
+    trimRelated: pageType !== 'source-summary',
   }).markdown;
 
   // ── Phase 2: sync transaction — update pages + setPendingContent + FTS5 ──
@@ -218,7 +228,10 @@ export async function recompilePage(
 
     // Drafted from scratch with this version's prompt and cleanup, so the
     // page now follows the current writing rules (lib/draft-rules.ts).
-    if (isDraftedPage(page)) setPageDraftRules(db, pageId, CURRENT_DRAFT_RULES);
+    if (isDraftedPage({ page_id: pageId, page_type: pageType })) setPageDraftRules(db, pageId, CURRENT_DRAFT_RULES);
+
+    // A held page returns now that its text no longer carries the deleted source.
+    releaseHeldPage(db, pageId);
 
     // FTS5 upsert: strip frontmatter before indexing
     const bodyForFts = newMarkdown.replace(/^---[\s\S]*?---\n*/m, '');
@@ -232,9 +245,16 @@ export async function recompilePage(
   })();
 
   // ── Phase 3a (awaited): flush pending_content to disk via nlp-service ────
-  // Throws on failure — caller catches and falls back to decrementPageSourceCount.
-  const writeResult = await callWritePage(pageId, newMarkdown);
-  clearPendingContent(pageId, writeResult.previous_path);
+  // On failure pending_content stays set and the boot reconciler
+  // (instrumentation.ts) writes the file, as for every commit path.
+  let flushed = false;
+  try {
+    const writeResult = await callWritePage(pageId, newMarkdown);
+    clearPendingContent(pageId, writeResult.previous_path);
+    flushed = true;
+  } catch (err) {
+    console.error('[recompile] flush failed; the boot reconciler will retry', pageId, err);
+  }
 
   // ── Phase 3c: sync page_links — clear stale wikilinks, insert current ones ─
   // Must run after Phase 3a so the new markdown is available in newMarkdown.
@@ -243,12 +263,16 @@ export async function recompilePage(
   syncPageWikilinks(getDb(), pageId, newMarkdown, getPageTitleMap());
 
   // ── Phase 3b: vector refresh — fire-and-forget, retried like a compile's ─
-  void upsertVectorWithRetry(pageId, {
-    title: page.title,
-    page_type: page.page_type,
-    category: page.category ?? '',
-    source_count: newSourceCount,
-  });
+  // It reads the flushed file; if the flush failed, the boot reconciler
+  // refreshes the vector once it writes the file.
+  if (flushed) {
+    void upsertVectorWithRetry(pageId, {
+      title: page.title,
+      page_type: pageType,
+      category: page.category ?? '',
+      source_count: newSourceCount,
+    });
+  }
 
   return { outcome: 'rewritten' };
 }

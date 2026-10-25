@@ -42,6 +42,7 @@ import { LONG_HTTP_AGENT } from './long-http-agent';
 import { stripFrontmatter } from './markdown';
 import { removeEmptyContradictionSections } from './page-sections';
 import { commitPageRewrite, pageVersionToken, type CreditChange } from './page-rewrite';
+import { draftPageType } from './page-hold';
 import { sourceDates, withSourceDate } from './source-dates';
 import { injectWikilinks, type WikilinkTarget } from './wikilink-injector';
 
@@ -107,8 +108,9 @@ function assertFlushed(pageId: string): void {
   }
 }
 
+/** A page archived after a failed rewrite (lib/page-hold.ts) counts as the type it returns as. */
 export function canRedraft(page: { page_id: string; page_type: string }): boolean {
-  return isDraftedPage(page);
+  return isDraftedPage({ page_id: page.page_id, page_type: draftPageType(page) });
 }
 
 interface DraftSource {
@@ -222,6 +224,9 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
     throw new RedraftError('page_not_redraftable', 422, 'Only pages Kompl writes from sources can be updated.');
   }
 
+  // A held page is drafted as its own type and returns as it on commit.
+  const pageType = draftPageType(page);
+
   return withPageLock(pageId, async () => {
     assertNoCompileRunning();
     assertFlushed(pageId);
@@ -254,7 +259,7 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
     let drafted: string;
     try {
       drafted = await draftPage({
-        page_type: page.page_type,
+        page_type: pageType,
         title: page.title,
         source_contents: sources.map((s) =>
           withSourceDate({ ...s, citation_label: labels.get(s.source_id.toLowerCase()) }, dates),
@@ -280,7 +285,7 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
 
     // Same safety nets as the compile draft and crossref steps.
     let markdown = normalizeFrontmatter(labelsToStoredCitations(rewordLabelSubjects(drafted).markdown, labels));
-    if (page.page_type !== 'source-summary') markdown = removeEmptyContradictionSections(markdown).markdown;
+    if (pageType !== 'source-summary') markdown = removeEmptyContradictionSections(markdown).markdown;
     const aliasesByTitle = new Map<string, string[]>();
     for (const a of getAliases()) {
       const list = aliasesByTitle.get(a.canonical_name) ?? [];
@@ -294,7 +299,7 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
       sourceText: sources.map((s) => s.markdown).join('\n'),
       surfaces: new Map(targets.map((t) => [t.title.toLowerCase(), t.aliases ?? []])),
       keepRelated: relatedLinkTargets(previous),
-      trimRelated: page.page_type !== 'source-summary',
+      trimRelated: pageType !== 'source-summary',
     }).markdown;
 
     // Gate 2, as for compiled drafts: a thin draft never replaces the page.
@@ -318,6 +323,7 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
       markdown,
       expectedToken,
       draftRules: CURRENT_DRAFT_RULES,
+      releaseHold: true,
       activity: options.quiet
         ? null
         : {

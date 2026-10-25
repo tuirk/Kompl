@@ -84,6 +84,7 @@ import {
   type PageUpgradeRun,
   type PageUpgradeStopReason,
 } from './page-upgrade-state';
+import { listHeldPageIds } from './page-hold';
 import { RedraftError, redraftPage } from './redraft';
 import { isWikiRepairRunning } from './wiki-repair/state';
 
@@ -320,6 +321,8 @@ export interface PageUpgradeOverview {
   rules: string;
   /** Pages written under earlier rules that an update can rebuild. */
   candidates: number;
+  /** Of those, pages archived after a failed rewrite, which an update brings back (lib/page-hold.ts). */
+  held: number;
   /** Pages Kompl drafts that already follow the current rules. */
   current_pages: number;
   /** Pages an update could not rebuild; not offered again until they change. */
@@ -352,6 +355,10 @@ export async function getPageUpgradeOverview(opts: { withEstimate: boolean }): P
   const overview: PageUpgradeOverview = {
     rules: CURRENT_DRAFT_RULES,
     candidates: candidates.length,
+    held: (() => {
+      const heldIds = listHeldPageIds();
+      return candidates.filter((c) => heldIds.has(c.page_id)).length;
+    })(),
     current_pages: countCurrentPages(),
     set_aside: listSetAsidePages(),
     model: { id: model, label: LLM_MODEL_INFO[model].label },

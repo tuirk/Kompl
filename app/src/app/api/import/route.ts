@@ -12,6 +12,7 @@ import { referenceCheck, type SkippedRows } from '@/lib/backup-references';
 import { screenAliasesNowOrLater } from '@/lib/alias-screen';
 import {
   compileModelFromBackup,
+  restorePageTypeFromBackup,
   sourceCompileStateFromBackup,
   textOrNull,
   usedSourceIdsFromBackup,
@@ -223,12 +224,14 @@ export async function POST(request: Request) {
     for (const p of pages) {
       // draft_rules exists from schema v27. Older backups don't carry it and
       // import as NULL: "written by an earlier version", offered for an update.
+      // restore_page_type / archive_reason (v30, lib/page-hold.ts): a page
+      // archived after a failed rewrite; older backups import it as archived.
       db.prepare(
         `INSERT OR IGNORE INTO pages
            (page_id, title, page_type, category, summary, content_path,
             previous_content_path, last_updated, source_count, created_at,
-            draft_rules)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            draft_rules, restore_page_type, archive_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         p.page_id as string,
         p.title as string,
@@ -243,7 +246,9 @@ export async function POST(request: Request) {
         p.last_updated as string,
         (p.source_count as number | null) ?? 0,
         p.created_at as string,
-        sanitizeDraftRules(p.draft_rules)
+        sanitizeDraftRules(p.draft_rules),
+        restorePageTypeFromBackup(p.restore_page_type),
+        textOrNull(p.archive_reason)
       );
 
       // Decompress synchronously for FTS5 — buffer already in memory from Phase 1

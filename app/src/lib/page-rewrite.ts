@@ -33,6 +33,7 @@ import { extractFrontmatterField } from './yaml-frontmatter';
 import { recordPageDisagreements } from './disagreements';
 import { recordPageContributions } from './plan-provenance';
 import { upsertVectorWithRetry } from './vector-upsert';
+import { releaseHeldPage } from './page-hold';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -129,6 +130,13 @@ export async function commitPageRewrite(args: {
   credits?: CreditChange;
   /** A new label for the page (the wiki repair's label merge). */
   category?: string;
+  /**
+   * The text was drafted from the page's current sources (a page update), so
+   * a page archived after a failed rewrite returns (lib/page-hold.ts).
+   * Edits of the existing text (Restore, the wiki repair's link and label
+   * fixes) leave such a page archived.
+   */
+  releaseHold?: boolean;
 }): Promise<RewriteResult> {
   const { pageId, markdown, expectedToken, draftRules, activity, credits } = args;
   const page = getPage(pageId);
@@ -141,9 +149,11 @@ export async function commitPageRewrite(args: {
   const category = extractFrontmatterField(markdown, 'category');
 
   const db = getDb();
+  let pageType = page.page_type;
   // ── Phase 2: sync transaction ──
   const committed = db.transaction((): boolean => {
     if (pageVersionToken(pageId) !== expectedToken) return false;
+    if (args.releaseHold) pageType = releaseHeldPage(db, pageId) ?? pageType;
     db.prepare(
       `UPDATE pages
           SET summary = COALESCE(?, summary),
@@ -190,7 +200,7 @@ export async function commitPageRewrite(args: {
   if (flushed) {
     void upsertVectorWithRetry(pageId, {
       title: page.title,
-      page_type: page.page_type,
+      page_type: pageType,
       category: args.category ?? page.category ?? category ?? '',
       source_count: page.source_count,
     });

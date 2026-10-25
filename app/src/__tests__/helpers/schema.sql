@@ -38,7 +38,11 @@ CREATE TABLE pages (
   pending_content TEXT,
   -- v27: writing rules the page's text was drafted under ('v0.4');
   -- NULL = written by an earlier version (lib/draft-rules.ts).
-  draft_rules TEXT
+  draft_rules TEXT,
+  -- v30: a page archived because its rewrite after a source delete failed
+  -- (lib/page-hold.ts): the type it returns as, and why it was archived.
+  restore_page_type TEXT,
+  archive_reason TEXT
 );
 
 CREATE TABLE provenance (
