@@ -557,6 +557,34 @@ function renderWikiRepair(row: FeedActivityRow): RowContent {
   };
 }
 
+const REDO_POINT_TEXT: Record<string, string> = {
+  plan: 'pages planned again',
+  write: 'pages written again',
+  save: 'pages saved again',
+};
+
+/** A redo of the last compile (lib/compile-redo/finish.ts). */
+function renderCompileRedo(row: FeedActivityRow): RowContent {
+  const { str, num } = makeGetters(row);
+  const n = (k: string) => num(k) ?? 0;
+  const spent = num('spent_usd');
+  const parts = [
+    `${n('saved')} saved`,
+    n('archived') > 0 ? `${n('archived')} archived` : '',
+    n('skipped') > 0 ? `${n('skipped')} skipped (changed since)` : '',
+    spent !== null ? `$${spent.toFixed(2)} spent` : '',
+  ];
+  const session = str('session_id');
+  return {
+    primary: <>Last compile redone: {REDO_POINT_TEXT[str('point') ?? ''] ?? 'pages redone'}</>,
+    secondary: <span style={MONO_DIM}>{parts.filter(Boolean).join(' · ')}</span>,
+    action: session
+      ? <Link href={`/onboarding/progress?session_id=${encodeURIComponent(session)}`} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+      : null,
+    isError: false,
+  };
+}
+
 function renderLintComplete(row: FeedActivityRow): RowContent {
   const { d } = makeGetters(row);
   const raw = d as Record<string, unknown> | null;
@@ -921,6 +949,7 @@ export const ACTIVITY_EVENTS = {
   compile_retried:        { key: 'compile_retried',        badge: { label: 'RETRYING',   tone: 'dim'  as Tone }, render: renderCompileRetried },
   // A save that left a page alone because it changed after its draft was written.
   compile_page_skipped:   { key: 'compile_page_skipped',   badge: { label: 'SKIPPED',    tone: 'dim'  as Tone }, render: renderPageAction('not saved: the page changed after this draft was written') },
+  compile_redo:           { key: 'compile_redo',           badge: { label: 'REDONE',     tone: 'neut' as Tone }, render: renderCompileRedo },
   compile_trigger_failed: { key: 'compile_trigger_failed', badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   compile_failed:         { key: 'compile_failed',         badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   // ── Sources ─────────────────────────────────────────────────────────────

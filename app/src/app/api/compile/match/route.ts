@@ -42,6 +42,7 @@ import {
   readRawMarkdown,
   updateCompileStep,
 } from '@/lib/db';
+import { activeRedo } from '@/lib/compile-redo/state';
 import { NO_RECHECKS, recheckStoredTriages } from '@/lib/compile/triage-recheck';
 import { callTriage, triageFailureOf, type MatchEntry, type TriageFailure, type TriageResponse } from '@/lib/triage-call';
 import { SAVED_LINKS_PAGE_ID } from '@/lib/lint-result';
@@ -111,8 +112,13 @@ export async function POST(request: Request) {
   // Build TF-IDF candidate corpus from non-summary pages. Kompl's own Saved
   // Links page is an overview too, but no source ever updates it (an eval run
   // planned 10 updates of it on 2026-10-25, one failing as no_pages_to_list).
+  // A re-plan of this compile (lib/compile-redo/) leaves out the pages the
+  // compile itself created: the sources would only match their own text,
+  // and the new plan decides from scratch whether those pages stay.
+  const redo = activeRedo(session_id);
+  const ownPages = new Set(redo?.point === 'plan' ? redo.own_pages.map((p) => p.page_id) : []);
   const candidatePages = getPagesByType(['entity', 'concept', 'comparison', 'overview'])
-    .filter((p) => p.page_id !== SAVED_LINKS_PAGE_ID);
+    .filter((p) => p.page_id !== SAVED_LINKS_PAGE_ID && !ownPages.has(p.page_id));
   if (candidatePages.length === 0) {
     return NextResponse.json({ session_id, skipped: true, matches: [], stats: NO_MATCH_STATS });
   }

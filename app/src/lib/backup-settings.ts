@@ -6,6 +6,7 @@
 
 import { ALIAS_SCREEN_THROUGH_KEY, ALIAS_SCREEN_VERSION_KEY } from './alias-screen';
 import { CLAIM_CHECK_FLAG, WIKI_CHECK_FLAG } from './claim-check/flag';
+import { COMPILE_REDO_STATE_KEY } from './compile-redo/state';
 import { AGENT_ADD_SOURCES_KEY } from './db';
 import { DISAGREEMENTS_BACKFILL_KEY } from './disagreement-backfill';
 import { PAGE_UPGRADE_FLAG } from './page-upgrade-state';
@@ -36,6 +37,9 @@ const NOT_BACKED_UP = new Set([
   // The last wiki repair run on this install (lib/wiki-repair/state.ts): its
   // backup file and the pages it left waiting belong to this database.
   WIKI_REPAIR_STATE_KEY,
+  // The redo of this install's last compile (lib/compile-redo/state.ts):
+  // its session and pages belong to this database.
+  COMPILE_REDO_STATE_KEY,
   // Which of this database's alias rows the alias screen has looked at
   // (lib/alias-screen.ts); a backup's ids mean nothing here.
   ALIAS_SCREEN_VERSION_KEY,

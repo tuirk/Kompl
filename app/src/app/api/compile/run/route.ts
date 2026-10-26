@@ -45,6 +45,9 @@ import { runIngestTextsStep } from '@/lib/compile/steps/ingest-texts';
 import { failIfNothingIngested } from '@/lib/compile/steps/ingest-outcome';
 import { runClaimsStep, skipClaimsStepIfOff } from '@/lib/compile/steps/claims';
 import { runLabelsStep } from '@/lib/compile/steps/labels';
+import { finishRedo } from '@/lib/compile-redo/finish';
+import { RedoPlanTooLargeError, applyReplanResult } from '@/lib/compile-redo/reset';
+import { activeRedo, type RedoRecord } from '@/lib/compile-redo/state';
 import { sanitizeLogValue } from '@/lib/log-safe';
 import { LONG_HTTP_AGENT, makeDispatcher } from '@/lib/long-http-agent';
 import { MAX_TRIAGE_CANDIDATES_PER_SOURCE } from '@/lib/triage-candidates';
@@ -212,6 +215,8 @@ interface CommitResult {
   thin_drafts_skipped: number;
   sources_activated: number;
   flush_failures: number;
+  /** Pages left alone because they changed after their draft (commit's staleness guard). */
+  changed_pages_skipped?: number;
 }
 
 async function callCommit(sessionId: string, planCount: number): Promise<CommitResult> {
@@ -322,7 +327,9 @@ async function finishPipeline(run: CompileRun, planCount: number): Promise<void>
   assertCommitComplete(run, commitResult);
 
   const thinMsg = commitResult.thin_drafts_skipped > 0 ? `, ${commitResult.thin_drafts_skipped} thin drafts skipped` : '';
-  run.step('commit', 'done', `${commitResult.committed} pages, ${commitResult.sources_activated} sources committed${thinMsg}`);
+  const changed = commitResult.changed_pages_skipped ?? 0;
+  const changedMsg = changed > 0 ? `, ${changed} pages left alone (changed since their draft)` : '';
+  run.step('commit', 'done', `${commitResult.committed} pages, ${commitResult.sources_activated} sources committed${thinMsg}${changedMsg}`);
   // Commit has taken this session's plans, so the stored pairs its re-checks
   // answered are settled and can go (lib/triage-rechecks.ts).
   clearSessionRecheckVerdicts(sessionId);
@@ -339,6 +346,11 @@ async function finishPipeline(run: CompileRun, planCount: number): Promise<void>
   // sources' claims now that their pages exist. Never fails the compile
   // (lib/compile/steps/claims.ts).
   await timed(sessionId, 'claims', () => runClaimsStep(run));
+
+  // A redo of this compile ends here, every page saved and on disk: archive
+  // what a re-plan dropped and record the outcome (lib/compile-redo/finish.ts).
+  const redo = activeRedo(sessionId);
+  if (redo && run.isCurrent) await finishRedo(redo, commitResult);
 
   run.complete();
 }
@@ -394,6 +406,87 @@ async function resumeWithoutSources(run: CompileRun): Promise<void> {
   await finishPipeline(run, planCount);
 }
 
+function matchDetail(matchResult: { skipped: boolean; stats: Record<string, number> }): string {
+  if (matchResult.skipped) return 'First compile — no existing pages';
+  // Surface candidates_found + sources_checked so the UI can distinguish
+  // "match found 0 candidates above the TF-IDF threshold" from "match
+  // acted on N candidates and decided u/c/s on each". Without these counts
+  // the prior `0u/0c/0s` rendering looked identical to a bug.
+  // triage_failed: candidates whose triage call failed (no decision made).
+  // rechecked / recheck_answered / recheck_dropped: stored failures from
+  // earlier compiles (lib/compile/triage-recheck.ts).
+  // Read defensively: match responses without the fields count as 0.
+  const s = matchResult.stats;
+  const triageFailed = s.triage_failed ?? 0;
+  const rechecked = s.rechecked ?? 0;
+  const recheckDropped = s.recheck_dropped ?? 0;
+  return (
+    `${s.candidates_found} candidates from ${s.sources_checked} sources → ${s.updates}u/${s.contradictions}c/${s.skips}s` +
+    (triageFailed > 0 ? ` · ${triageFailed} failed` : '') +
+    (rechecked > 0 || recheckDropped > 0
+      ? ` · ${rechecked} rechecked, ${s.recheck_answered ?? 0} answered, ${recheckDropped} dropped`
+      : '')
+  );
+}
+
+function planStepDone(sessionId: string): boolean {
+  const row = getDb().prepare('SELECT steps FROM compile_progress WHERE session_id = ?').get(sessionId) as
+    | { steps: string }
+    | undefined;
+  try {
+    return (JSON.parse(row?.steps ?? '{}') as Record<string, { status?: string }>).plan?.status === 'done';
+  } catch {
+    return false;
+  }
+}
+
+// A redo of this compile (lib/compile-redo/): never fetches or extracts
+// (FR-3). A re-plan runs resolve, match and plan again from the stored
+// extractions (once: a Retry after a later step failed finds plan done);
+// a re-save writes no draft (FR-14). The rest is the normal pipeline.
+async function runRedoPipeline(run: CompileRun, redo: RedoRecord): Promise<void> {
+  const { sessionId } = run;
+  console.log('[compile:%s] redo from %s', sanitizeLogValue(sessionId), redo.point);
+  if (redo.point === 'plan' && !planStepDone(sessionId)) {
+    const sourceCount = getSourcesBySession(sessionId).length;
+    run.step('resolve', 'running');
+    const resolved = await timed(sessionId, 'resolve', () => callResolve(sessionId, sourceCount));
+    run.step('resolve', 'done', `${resolved.canonical_entities.length} entities, ${resolved.canonical_concepts.length} concepts`);
+    run.assertActive();
+
+    run.step('match', 'running');
+    const matchResult = await timed(sessionId, 'match', () =>
+      callMatch(sessionId, resolved.canonical_entities, sourceCount, true)
+    );
+    run.step('match', 'done', matchDetail(matchResult));
+    run.assertActive();
+
+    run.step('plan', 'running');
+    await timed(sessionId, 'plan', () =>
+      callPlan(sessionId, resolved.canonical_entities, resolved.canonical_concepts, matchResult.matches)
+    );
+    let planned: number;
+    try {
+      planned = applyReplanResult(getDb(), redo);
+    } catch (err) {
+      if (!(err instanceof RedoPlanTooLargeError)) throw err;
+      run.step('plan', 'failed', err.message);
+      run.fail(err.message);
+      return;
+    }
+    run.step('plan', 'done', `${planned} pages planned`);
+    run.assertActive();
+  }
+
+  const planCounts = countPagePlansByStatus(sessionId);
+  const planCount = Object.values(planCounts).reduce((sum, c) => sum + c, 0);
+  if (redo.point !== 'save') {
+    if ((planCounts.planned ?? 0) + (planCounts.failed ?? 0) > 0) await runDraftStep(run, planCount);
+    else run.step('draft', 'done', 'no pages left to write');
+  }
+  await finishPipeline(run, planCount);
+}
+
 async function runCompilePipeline(run: CompileRun): Promise<void> {
   const { sessionId } = run;
   // Ingest steps check this before each item and before writing progress.
@@ -402,6 +495,12 @@ async function runCompilePipeline(run: CompileRun): Promise<void> {
   // The claim check's flag is read once here: off, its step is hidden from
   // the progress page for the whole run.
   skipClaimsStepIfOff(run);
+
+  const redo = activeRedo(sessionId);
+  if (redo) {
+    await runRedoPipeline(run, redo);
+    return;
+  }
 
   // ── Prelude (v18 onboarding v2 staging flow) ───────────────────────────
   // Only runs when the session has collect_staging rows. Legacy sessions
@@ -627,31 +726,7 @@ async function runCompilePipeline(run: CompileRun): Promise<void> {
   const matchResult = await timed(sessionId, 'match', () =>
     callMatch(sessionId, canonicalEntities, sourceCount, willPlan)
   );
-  if (matchResult.skipped) {
-    run.step('match', 'done', 'First compile — no existing pages');
-  } else {
-    // Surface candidates_found + sources_checked so the UI can distinguish
-    // "match found 0 candidates above the TF-IDF threshold" from "match
-    // acted on N candidates and decided u/c/s on each". Without these counts
-    // the prior `0u/0c/0s` rendering looked identical to a bug.
-    // triage_failed: candidates whose triage call failed (no decision made).
-    // rechecked / recheck_answered / recheck_dropped: stored failures from
-    // earlier compiles (lib/compile/triage-recheck.ts).
-    // Read defensively: match responses without the fields count as 0.
-    const s = matchResult.stats;
-    const triageFailed = s.triage_failed ?? 0;
-    const rechecked = s.rechecked ?? 0;
-    const recheckDropped = s.recheck_dropped ?? 0;
-    run.step(
-      'match',
-      'done',
-      `${s.candidates_found} candidates from ${s.sources_checked} sources → ${s.updates}u/${s.contradictions}c/${s.skips}s` +
-        (triageFailed > 0 ? ` · ${triageFailed} failed` : '') +
-        (rechecked > 0 || recheckDropped > 0
-          ? ` · ${rechecked} rechecked, ${s.recheck_answered ?? 0} answered, ${recheckDropped} dropped`
-          : '')
-    );
-  }
+  run.step('match', 'done', matchDetail(matchResult));
   run.assertActive();
 
   // planCount feeds dynamic-timeout sizing for callDraft / callCrossref /
