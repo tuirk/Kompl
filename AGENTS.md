@@ -118,6 +118,7 @@ Codex, Claude Desktop, Cursor, VS Code, Gemini CLI, Pi and Hermes are covered in
 | YouTube URL lands on Saved Links | No `YOUTUBE_API_KEY`, or the video has no captions | Add the key to `.env` ([README § API keys](README.md#api-keys)) |
 | Extraction fails on long sources with a Gemini 2.5 model | Upstream Gemini 2.5 repetition bug ([issue #7](https://github.com/tuirk/Kompl/issues/7)) | Switch the compile model in **Settings → AI model & spend** |
 | Wiki gone | `down -v`, the integration test, or a deleted volume | Restore the latest `.kompl.zip` |
+| Every request answers `403 unknown_host` | Kompl is reached by a host name it doesn't know (a reverse proxy, `host.docker.internal`) | Add the name to `KOMPL_ALLOWED_HOSTS` in `.env`, then `kompl restart` |
 
 For anything else: `kompl status`, `kompl logs` and
 [README § Everyday use](README.md#everyday-use).

@@ -21,9 +21,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const DB_PATH = process.env.DB_PATH ?? '/data/db/kompl.db';
-const DATA_ROOT = path.dirname(path.dirname(DB_PATH)); // /data
-const UPLOADS_DIR = path.join(DATA_ROOT, 'raw', 'uploads');
+import { UPLOADS_DIR } from '../../../../lib/upload-path';
 
 const ALLOWED_EXTENSIONS = new Set([
   '.pdf',

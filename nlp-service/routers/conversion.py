@@ -36,6 +36,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,10 @@ _MARKITDOWN_MIN_CHARS = 500
 # forever without this cap. On timeout we return None, which matches the
 # existing "too few chars" signal and triggers the Firecrawl fallback.
 _MARKITDOWN_URL_TIMEOUT_SECS = 20.0
+# Redirects a MarkItDown fetch follows, each checked by the SSRF guard
+# (_KeepBodySession). requests' own limit is 30.
+_MAX_REDIRECTS = 10
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 # Firecrawl answers 429 when the plan's requests per minute are used up; a
 # batch import (5 links at once, ingest-urls.ts) used to lose them all
 # (owner decision 2026-10-25: wait and retry). Wait as long as its message
@@ -642,10 +647,20 @@ def _convert_youtube(source_id: str, url: str) -> "ConvertResponse":
     )
 
 
+class _RedirectBlocked(Exception):
+    """A redirect pointed at an address the SSRF guard refuses."""
+
+
 class _KeepBodySession(requests.Session):
     """The session MarkItDown fetches a URL with: its own Accept header, and
     the body kept, so the page's publication date can be read from its HTML
-    after MarkItDown converts it, without fetching the page twice."""
+    after MarkItDown converts it, without fetching the page twice.
+
+    It follows redirects itself. requests would follow them unchecked, and
+    convert_url's SSRF guard sees only the first URL, so a public page that
+    answers 302 to http://app:3000/api/export or 169.254.169.254 was
+    fetched and stored. Each Location is checked like the first URL before
+    it is fetched (services/url_safety.py)."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -655,7 +670,21 @@ class _KeepBodySession(requests.Session):
 
     def get(self, url, **kwargs):  # type: ignore[override]
         kwargs["stream"] = False  # read whole, so the body is still there afterwards
+        kwargs["allow_redirects"] = False
         response = super().get(url, **kwargs)
+        for _hop in range(_MAX_REDIRECTS):
+            location = response.headers.get("location") if response.status_code in _REDIRECT_CODES else None
+            if not location:
+                break
+            url = urljoin(response.url, location)
+            try:
+                validate_outbound_url(url)
+            except ValueError as e:
+                raise _RedirectBlocked(f"{e} at {url}") from e
+            response = super().get(url, **kwargs)
+        else:
+            if response.status_code in _REDIRECT_CODES:
+                raise requests.TooManyRedirects(f"more than {_MAX_REDIRECTS} redirects")
         self.body = response.content
         self.content_type = response.headers.get("content-type", "")
         return response
@@ -725,7 +754,9 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     or the attempt exceeded _MARKITDOWN_URL_TIMEOUT_SECS — in all those cases
     the caller falls back to Firecrawl.
 
-    Never raises — all exceptions (including timeout) become None.
+    Never raises — all exceptions (including timeout) become None — except
+    _RedirectBlocked: a redirect to a refused address is refused like such a
+    URL, not handed on to Firecrawl.
     YouTube URLs are intercepted upstream by _convert_youtube (transcript-api +
     Data API v3) and never reach this function.
     """
@@ -743,6 +774,9 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     except concurrent.futures.TimeoutError:
         pool.shutdown(wait=False)
         return None
+    except _RedirectBlocked:
+        pool.shutdown(wait=False)
+        raise
     except Exception:
         pool.shutdown(wait=False)
         return None
@@ -827,6 +861,9 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     # from the URL — they never fetch the user URL itself — and keeping
     # them above preserves their network-free unit tests.
     #
+    # Redirects MarkItDown meets are checked the same way, hop by hop
+    # (_KeepBodySession). Firecrawl fetches from its own network.
+    #
     # Residual risk: MarkItDown re-resolves DNS internally, so an
     # attacker-controlled authoritative nameserver could rebind between
     # this check and the fetch (TOCTOU). Eliminating that requires
@@ -843,7 +880,13 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     started = time.monotonic()
     # Layer 1: MarkItDown (free, local). YouTube URLs are handled above and
     # never reach this layer.
-    markitdown_result = _try_markitdown_url(req.source_id, req.url)
+    try:
+        markitdown_result = _try_markitdown_url(req.source_id, req.url)
+    except _RedirectBlocked as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"url_blocked: redirect {e} — URL does not resolve to a fetchable public address",
+        ) from e
     if markitdown_result is not None:
         return markitdown_result
 

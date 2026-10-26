@@ -51,6 +51,13 @@ describe('isCrossSiteRequest', () => {
     expect(isCrossSiteRequest(req({ origin: 'http://evil.test:3000' }))).toBe(true);
   });
 
+  it("lets through Kompl behind a proxy that rewrites Host when the browser says the page is its own", () => {
+    const viaProxy = { origin: 'https://kompl.example.com', host: 'localhost:3000' };
+    expect(isCrossSiteRequest(req({ ...viaProxy, 'sec-fetch-site': 'same-origin' }))).toBe(false);
+    expect(isCrossSiteRequest(req(viaProxy))).toBe(true);
+    expect(isCrossSiteRequest(req({ ...viaProxy, host: 'evil.test:3000', 'sec-fetch-site': 'same-origin' }))).toBe(true);
+  });
+
   it('accepts the host names listed in KOMPL_ALLOWED_HOSTS (e.g. behind your own proxy)', () => {
     vi.stubEnv('KOMPL_ALLOWED_HOSTS', ' Kompl.Example.com , wiki.home:8443');
     expect(isCrossSiteRequest(sameSite('https://kompl.example.com'))).toBe(false);

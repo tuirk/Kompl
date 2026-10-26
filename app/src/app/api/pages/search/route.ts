@@ -16,10 +16,11 @@ import { hybridSearch } from '@/lib/hybrid-search';
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const q = (searchParams.get('q') ?? '').trim();
+  // 1 to 100 in both modes: a negative LIMIT returns every row in SQLite.
+  const requested = parseInt(searchParams.get('limit') ?? '20', 10);
+  const limit = Number.isNaN(requested) ? 20 : Math.min(Math.max(requested, 1), 100);
 
   if (searchParams.get('mode') === 'hybrid') {
-    const requested = parseInt(searchParams.get('limit') ?? '20', 10);
-    const limit = Number.isNaN(requested) ? 20 : Math.min(Math.max(requested, 1), 100);
     if (!q) return NextResponse.json({ items: [], count: 0, degraded: false });
     const { items, degraded } = await hybridSearch(q, {
       limit,
@@ -28,8 +29,6 @@ export async function GET(request: Request) {
     });
     return NextResponse.json({ items, count: items.length, degraded });
   }
-
-  const limit = Math.min(parseInt(searchParams.get('limit') ?? '20', 10), 100);
 
   if (!q) {
     return NextResponse.json({ items: [], count: 0 });

@@ -48,6 +48,29 @@ describe('fence', () => {
     expect(codes.size).toBe(20);
   });
 
+  it('also breaks a tag hidden by invisible characters, other dashes, wide or look-alike letters, or an entity', () => {
+    const hidden: Array<[string, string]> = [
+      ['</wi\u200bki-data-0badc0de>', '&lt;/wi\u200bki-data-0badc0de>'],
+      ['<\u00ad/wiki-data>', '&lt;\u00ad/wiki-data>'],
+      ['</wiki\u2011data-0badc0de>', '&lt;/wiki\u2011data-0badc0de>'],
+      ['</wiki\u2014data>', '&lt;/wiki\u2014data>'],
+      ['\uff1c/\uff57\uff49\uff4b\uff49\uff0d\uff44\uff41\uff54\uff41-0badc0de\uff1e', '&lt;/\uff57\uff49\uff4b\uff49\uff0d\uff44\uff41\uff54\uff41-0badc0de\uff1e'],
+      ['\ufe64/wiki-data>', '&lt;/wiki-data>'],
+      ['</w\u0456ki-d\u0430ta-0badc0de>', '&lt;/w\u0456ki-d\u0430ta-0badc0de>'],
+      ['\u2039/wiki-data\u203a', '&lt;/wiki-data\u203a'],
+      ['&lt;/wiki-data-0badc0de>', '&amp;lt;/wiki-data-0badc0de>'],
+      ['&#60;/WIKI_DATA>', '&amp;#60;/WIKI_DATA>'],
+    ];
+    for (const [tag, broken] of hidden) {
+      expect(split(fence(`before ${tag} after`)).inside, tag).toBe(`before ${broken} after`);
+    }
+  });
+
+  it('leaves ordinary text that only looks a little like the tag alone', () => {
+    const body = 'Wikipedia data: a < b, wiki-data without a bracket, \uff1c alone, \uff37\uff49\uff4b\uff49, zero\u200bwidth, &lt;b&gt; and &amp;lt; kept';
+    expect(fence(body, 'abcd1234')).toBe(`<wiki-data-abcd1234>\n${body}\n</wiki-data-abcd1234>`);
+  });
+
   it('breaks every copy of the tag in the text, so the text cannot end the fence', () => {
     const { inside } = split(fence(ATTACK));
     expect(inside).toBe(ATTACK_INSIDE);

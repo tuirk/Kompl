@@ -36,10 +36,11 @@ Future commits will add routers for:
   - pipeline    (commit 10 — /pipeline/draft, /pipeline/plan)
   - wiki        (commit 12 — wiki rebuild orchestration)
 
-Intentionally minimal: no middleware, no CORS, no logging config. This
-service runs on the internal Docker network only (n8n-sidecar pattern per
-CLAUDE.md rule #3) so there is no browser-origin concern and no need for
-request logging beyond what uvicorn emits by default.
+Intentionally minimal: no CORS, no logging config. This service runs on
+the internal Docker network (n8n-sidecar pattern per CLAUDE.md rule #3)
+and needs no request logging beyond what uvicorn emits by default. Its one
+middleware refuses Host names Kompl doesn't use (services/known_host.py):
+the port published on 127.0.0.1 is reachable by DNS rebinding.
 
 This service NEVER opens the SQLite database. rule #1 in CLAUDE.md: the
 only process that holds a kompl.db file descriptor is Next.js (plus the
@@ -64,6 +65,7 @@ from routers.pipeline import router as pipeline_router
 from routers.resolution import router as resolution_router
 from routers.storage import router as storage_router
 from routers.vectors import router as vectors_router
+from services.known_host import KnownHostMiddleware
 from services.vector_store import warm_up
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,7 @@ class HealthResponse(BaseModel):
 
 
 app = FastAPI(title="kompl-nlp-service", version="0.7.0")
+app.add_middleware(KnownHostMiddleware)
 
 app.include_router(claims_router)
 app.include_router(conversion_router)

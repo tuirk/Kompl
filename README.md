@@ -194,9 +194,12 @@ Not using MCP? The same data is on plain HTTP: `/api/pages/search?mode=hybrid`,
 `/api/wiki/index`.
 
 > ⚠ **Single-tenant.** There is no multi-user auth. Don't expose your instance to
-> the internet without putting your own auth in front of it. If your proxy serves
-> Kompl under its own host name, list that name in `KOMPL_ALLOWED_HOSTS` in `.env`,
-> or Kompl refuses to let agents add sources from it.
+> the internet without putting your own auth in front of it. Kompl answers only to
+> `localhost`, IP addresses and its own service names (`app`, `nlp-service`,
+> `n8n`), and refuses any change a page on another site asks for. If your proxy
+> serves Kompl under its own host name, or an agent in a container reaches it as
+> `host.docker.internal`, list that name in `KOMPL_ALLOWED_HOSTS` in `.env`, or
+> every request to it gets `403 unknown_host`.
 
 ## Everyday use
 

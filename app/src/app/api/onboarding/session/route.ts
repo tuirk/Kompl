@@ -46,6 +46,7 @@ import {
   type CompileProgressRow,
 } from '../../../../lib/db';
 import { isCompileRunLive } from '../../../../lib/compile/compile-run';
+import { isUploadPath } from '../../../../lib/upload-path';
 
 const CANCEL_WAIT_MS = 5_000;
 const CANCEL_POLL_MS = 250;
@@ -135,8 +136,10 @@ export async function DELETE(request: Request) {
 
   // Step 4: best-effort file unlinks post-commit. Ignore ENOENT since the
   // file may have already been unlinked (orphan cleanup, partial prior delete).
+  // Only files in the uploads folder: a row staged before the stage route
+  // checked its path could name any file, the database included.
   const unlinkResults = await Promise.allSettled(
-    result.file_paths.map((p) => fsPromises.unlink(p))
+    result.file_paths.filter(isUploadPath).map((p) => fsPromises.unlink(p))
   );
   const files_unlinked = unlinkResults.filter((r) => r.status === 'fulfilled').length;
 

@@ -15,13 +15,19 @@ def _build_app():
     return app
 
 
+def _client():
+    """A client that calls the service by a host name it answers to
+    (services/known_host.py refuses TestClient's default "testserver")."""
+    from fastapi.testclient import TestClient  # noqa: PLC0415
+    return TestClient(_build_app(), base_url="http://localhost")
+
+
 def test_health_returns_provider_keys_shape(monkeypatch):
     """/health must include {gemini: bool, deepseek: bool} under provider_keys."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
 
-    from fastapi.testclient import TestClient  # noqa: PLC0415
-    client = TestClient(_build_app())
+    client = _client()
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
@@ -36,8 +42,7 @@ def test_health_provider_keys_reflect_unset_env(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
-    from fastapi.testclient import TestClient  # noqa: PLC0415
-    client = TestClient(_build_app())
+    client = _client()
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
@@ -50,8 +55,7 @@ def test_health_provider_keys_reflect_partial_env(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
-    from fastapi.testclient import TestClient  # noqa: PLC0415
-    client = TestClient(_build_app())
+    client = _client()
     r = client.get("/health")
     body = r.json()
     assert body["provider_keys"]["gemini"] is True
@@ -63,7 +67,6 @@ def test_health_provider_keys_treat_whitespace_as_unset(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "   ")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
-    from fastapi.testclient import TestClient  # noqa: PLC0415
-    client = TestClient(_build_app())
+    client = _client()
     body = client.get("/health").json()
     assert body["provider_keys"]["gemini"] is False
