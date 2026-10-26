@@ -10,6 +10,14 @@ ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-26
+
+**What's new in 60 seconds:** [Kompl v0.4 video](https://youtu.be/6zVYz6aHU1k)
+
+A topic-map knowledge graph, recorded disagreements with a claim check,
+stricter name matching, Repair wiki, Redo, MCP 2.0's eight tools and safer
+backups. The database moves from v25 to v30 in one upgrade step at boot.
+
 ### MCP server
 
 - **Upgrading.** The MCP server is now 2.0.0 with eight tools. `list_pages`
@@ -400,6 +408,21 @@ ship with a `migrate.py` step that runs at boot.
 
 ### Added
 
+- **Redo part of the last compile (#140).** The progress page of the most
+  recent compile (finished, failed or cancelled) offers Redo from three
+  points: re-plan the pages, re-write the pages, or re-save them (no AI
+  writing calls). A preview shows the AI calls and cost on the current model,
+  and nothing starts until you confirm. Articles are never fetched or read
+  again; after a re-plan only pages that compile created are archived.
+- **Source pages show the source itself.** A source's own page holds its
+  stored text, whatever its length, followed by Key Facts, Entities and
+  Concepts the AI writes. Web pages are cut down to the article before they
+  are stored (site menus, newsletter boxes, related links, comments and
+  footers removed), locally and in about a tenth of a second per page.
+- **Retry is logged as yours.** A Retry you press shows in the activity
+  feed and in MCP `recent_changes` apart from automatic retries.
+- **Out of credit stops cleanly.** An empty AI provider account stops the
+  compile at once and says to top it up, instead of failing page by page.
 - **Disputes in the right panel and the activity feed.** When a page's
   text records a disagreement between its sources (a "Disputed: …" or
   "Contradictions" section citing two or more sources), the right panel
@@ -611,6 +634,11 @@ The fixes below come from a review of this release before it shipped
 
 ### Security
 
+- **Dependency updates:** Next.js 16.4.3 (remote code execution advisories),
+  sharp, undici (stays on 7), source-map-js, vite; in the MCP server
+  body-parser, zod, fast-uri and ip-address; in the CLI handlebars,
+  browserslist and brace-expansion. Dependabot now opens security updates
+  only.
 - **Other websites can't change Kompl:** a page you visit could stage
   sources, start a paid compile, lift the daily spend cap or switch the
   model, because only a few routes refused cross-site requests.
@@ -1258,7 +1286,8 @@ Initial public release.
 - **Auto-backup-on-start** is end-to-end wired but lacks regression tests
   on the start-time path.
 
-[Unreleased]: https://github.com/tuirk/Kompl/compare/v0.3.2.1...HEAD
+[Unreleased]: https://github.com/tuirk/Kompl/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tuirk/Kompl/releases/tag/v0.4.0
 [0.3.2.1]: https://github.com/tuirk/Kompl/releases/tag/v0.3.2.1
 [0.3.2]: https://github.com/tuirk/Kompl/releases/tag/v0.3.2
 [0.2.2]: https://github.com/tuirk/Kompl/releases/tag/v0.2.2

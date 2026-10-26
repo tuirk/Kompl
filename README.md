@@ -42,6 +42,10 @@ pattern across all ten without you having to ask.
 - **Runs on your machine, with your keys.** One Docker stack, a CLI, and your
   own DeepSeek or Gemini key. No accounts, no telemetry.
 
+**Watch the 1-minute demo:**
+
+[![Kompl, an open source LLM wiki your AI agent can read: 1-minute demo](https://img.youtube.com/vi/6zVYz6aHU1k/maxresdefault.jpg)](https://youtu.be/6zVYz6aHU1k)
+
 ![Kompl wiki in action](docs/assets/kompl-demo.gif)
 
 | Dashboard | Compiled wiki page |
@@ -114,7 +118,9 @@ kompl open       # or visit http://localhost:3000
 The onboarding wizard walks you through your first sources: paste a URL, drop a
 PDF, or import a bookmark or Twitter export.
 
-![Onboarding wizard](docs/assets/onboard.png)
+| 1. Choose your sources | 2. Review before compiling | 3. Watch it compile |
+|---|---|---|
+| ![Select your data sources: URL, file upload, bookmarks, Twitter/X, Apple Notes, Upnote](docs/assets/screens/onboard-sources.png) | ![The review page listing the staged sources](docs/assets/screens/onboard-review.png) | ![A compile's progress page with its steps](docs/assets/screens/onboard-progress.png) |
 
 ### API keys
 
