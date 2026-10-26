@@ -760,8 +760,12 @@ export async function POST(request: Request) {
       // (auto-approve off) refuses if the page changed since
       // (lib/approve-plan.ts). Nothing below awaits before the page is read
       // (readPageMarkdown), so the version and the text read agree.
+      // A create with an existing_page_id (a redo rewriting the page its
+      // compile made) records it too: commit skips the page if it changed.
       const baseVersion =
-        plan.action === 'update' && plan.existing_page_id ? pageTextVersionToken(plan.existing_page_id) : null;
+        (plan.action === 'update' || plan.action === 'create') && plan.existing_page_id
+          ? pageTextVersionToken(plan.existing_page_id)
+          : null;
 
       // Raw passthrough for 'original-source' pages — no LLM call.
       // Category + summary derived from existing NLP extraction (already ran at collect time).

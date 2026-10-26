@@ -7,6 +7,8 @@
  * Rule #5 — three phases per page plan:
  *   Phase 2 (sync db.transaction()):
  *     - idempotency guard: the plan must still be 'crossreffed'
+ *     - staleness guard: a page changed since its draft read it is skipped
+ *       (plan 'page_changed', activity 'compile_page_skipped')
  *     - insertPage()
  *     - setPendingContent() (outbox — markdown stored for boot reconciler)
  *     - draft_rules marker copied from a from-scratch plan (lib/draft-rules.ts)
@@ -65,33 +67,13 @@ import {
 } from '../../../../lib/db';
 import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from '../../../../lib/draft-rules';
 import { flushOutboxPage, reconcileOutbox } from '../../../../lib/outbox-flush';
+import { pageTextVersionToken } from '../../../../lib/page-rewrite';
+import { derivePlanPageId } from '../../../../lib/plan-page-id';
 import { recordPageDisagreements } from '../../../../lib/disagreements';
 import { contributingSourceIds, getPlanUsedSourceIds, recordPageContributions } from '../../../../lib/plan-provenance';
 import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
 import { syncPageWikilinks } from '../../../../lib/wikilinks';
 import { extractFrontmatterField } from '../../../../lib/yaml-frontmatter';
-
-// Derive the page_id a plan commits to. Single source of truth for the
-// slug algorithm — used by the commit loop, the wikilink pass, and the
-// durability scoping below. 'update' plans reuse the existing page;
-// 'create' plans get a title slug + plan_id suffix.
-function derivePlanPageId(plan: {
-  plan_id: string;
-  title: string;
-  action: string;
-  existing_page_id: string | null;
-}): string {
-  if (plan.action === 'update' && plan.existing_page_id) return plan.existing_page_id;
-  const suffix = plan.plan_id.replace(/-/g, '').slice(0, 8);
-  const base = plan.title
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .slice(0, 56)
-    .replace(/^-+|-+$/g, '');
-  return `${base || 'page'}-${suffix}`;
-}
 
 // Page ids this session's committed content plans wrote (current run AND
 // prior runs — plan rows keep draft_status='committed' across retries).
@@ -129,6 +111,21 @@ function planStillCrossreffed(plan_id: string): boolean {
     .prepare('SELECT draft_status FROM page_plans WHERE plan_id = ?')
     .get(plan_id) as { draft_status: string } | undefined;
   return row?.draft_status === 'crossreffed';
+}
+
+// Staleness guard (owner decision 2026-10-25, every compile save): a draft
+// written against a page (an update, or a redo rewriting the compile's own
+// page) records that page's version (page_plans.base_version). If the page
+// changed after that (Repair wiki, Update pages, an approval, a restore,
+// another compile), saving would overwrite the change: the plan is skipped
+// instead, as approval does (lib/approve-plan.ts). Read inside the commit
+// transaction, so nothing can change the page between check and write.
+function pageChangedSinceDraft(plan_id: string, page_id: string): boolean {
+  const row = getDb()
+    .prepare('SELECT base_version FROM page_plans WHERE plan_id = ?')
+    .get(plan_id) as { base_version: string | null } | undefined;
+  if (!row?.base_version) return false;
+  return pageTextVersionToken(page_id) !== row.base_version;
 }
 
 // Strip YAML frontmatter (--- ... ---) from the top of a markdown string.
@@ -184,6 +181,7 @@ async function commitSession(session_id: string): Promise<Response> {
   let pagesUpdated = 0;
   let thinCount = 0;
   let pendingApproval = 0;
+  let changedSkipped = 0;
   const allSourceIds = new Set<string>();
   // Track page_ids that were actually committed so the wikilink pass below
   // can exclude thin-draft and failed plans (which were never inserted into pages).
@@ -325,10 +323,20 @@ async function commitSession(session_id: string): Promise<Response> {
     // File is NOT written yet. pending_content stores the markdown so the boot
     // reconciler can re-attempt the flush if Phase 3a crashes.
     // updatePlanStatus('committed') is inside the transaction (Gap 3 fix).
-    let done: boolean;
+    let done: 'committed' | 'taken' | 'page_changed';
     try {
-      done = db.transaction((): boolean => {
-        if (!planStillCrossreffed(plan.plan_id)) return false;
+      done = db.transaction((): typeof done => {
+        if (!planStillCrossreffed(plan.plan_id)) return 'taken';
+        if (pageChangedSinceDraft(plan.plan_id, page_id)) {
+          updatePlanStatus(plan.plan_id, 'page_changed');
+          logActivity('compile_page_skipped', {
+            source_id: sourceIds[0] ?? null,
+            session_id,
+            step_key: 'commit',
+            details: { page_id, title: plan.title, plan_id: plan.plan_id, session_id },
+          });
+          return 'page_changed';
+        }
         insertPage({
           page_id,
           title: plan.title,
@@ -385,7 +393,7 @@ async function commitSession(session_id: string): Promise<Response> {
         // Plan status inside transaction — crash between txn commit and here
         // previously left plan stuck as 'crossreffed'. Now atomic with the page write.
         updatePlanStatus(plan.plan_id, 'committed');
-        return true;
+        return 'committed';
       })();
     } catch (txErr) {
       const txMsg = txErr instanceof Error ? txErr.message : String(txErr);
@@ -395,7 +403,11 @@ async function commitSession(session_id: string): Promise<Response> {
       continue;
     }
     // Another commit of this session got there first and owns its Phase 3.
-    if (!done) continue;
+    if (done === 'taken') continue;
+    if (done === 'page_changed') {
+      changedSkipped++;
+      continue;
+    }
 
     // Phase 3a (awaited): flush pending_content to disk via nlp-service.
     // pending_content stays populated until this succeeds, so the boot reconciler
@@ -498,6 +510,7 @@ async function commitSession(session_id: string): Promise<Response> {
       failed,
       thin_drafts_skipped: thinCount,
       pending_approval: pendingApproval,
+      changed_pages_skipped: changedSkipped,
       pages_created: pagesCreated,
       pages_updated: pagesUpdated,
       sources_activated: sourcesActivated,

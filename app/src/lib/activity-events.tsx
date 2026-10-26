@@ -919,6 +919,8 @@ export const ACTIVITY_EVENTS = {
   labels_merged:          { key: 'labels_merged',          badge: { label: 'MERGED',     tone: 'neut' as Tone }, render: renderLabelsMerged },
   compile_cancelled:      { key: 'compile_cancelled',      badge: { label: 'CANCELLED',  tone: 'dim'  as Tone }, render: renderCompileCancelled },
   compile_retried:        { key: 'compile_retried',        badge: { label: 'RETRYING',   tone: 'dim'  as Tone }, render: renderCompileRetried },
+  // A save that left a page alone because it changed after its draft was written.
+  compile_page_skipped:   { key: 'compile_page_skipped',   badge: { label: 'SKIPPED',    tone: 'dim'  as Tone }, render: renderPageAction('not saved: the page changed after this draft was written') },
   compile_trigger_failed: { key: 'compile_trigger_failed', badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   compile_failed:         { key: 'compile_failed',         badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   // ── Sources ─────────────────────────────────────────────────────────────

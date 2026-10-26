@@ -42,6 +42,7 @@ import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from './draf
 import { flushOutboxPage } from './outbox-flush';
 import { recordPageDisagreements } from './disagreements';
 import { pageTextVersionToken } from './page-rewrite';
+import { derivePlanPageId } from './plan-page-id';
 import { contributingSourceIds, recordPageContributions } from './plan-provenance';
 import { upsertVectorWithRetry } from './vector-upsert';
 import { syncPageWikilinks } from './wikilinks';
@@ -93,7 +94,9 @@ const TOPIC_PAGE_TYPES = new Set(['entity', 'concept', 'comparison', 'overview']
  *    title is not it).
  */
 function staleDraft(plan: PlanRow, sourceIds: string[]): StaleDraft | null {
-  if (plan.action === 'update' && plan.existing_page_id) {
+  // A create with an existing_page_id rewrites the page its compile made (a
+  // redo, lib/compile-redo/): stale when that page changed, like an update.
+  if ((plan.action === 'update' || plan.action === 'create') && plan.existing_page_id) {
     const changed =
       plan.base_version !== null
         ? pageTextVersionToken(plan.existing_page_id) !== plan.base_version
@@ -134,21 +137,8 @@ export async function commitSinglePlan(plan_id: string): Promise<CommitPlanResul
   const markdown = plan.draft_content;
   const sourceIds: string[] = JSON.parse(plan.source_ids);
 
-  // Determine page_id (mirrors compile/commit/route.ts page_id generation).
-  let page_id: string;
-  if (plan.action === 'update' && plan.existing_page_id) {
-    page_id = plan.existing_page_id;
-  } else {
-    const suffix = plan.plan_id.replace(/-/g, '').slice(0, 8);
-    const base = plan.title
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .slice(0, 56)
-      .replace(/^-+|-+$/g, '');
-    page_id = `${base || 'page'}-${suffix}`;
-  }
+  // Same page_id as compile commit would use (lib/plan-page-id.ts).
+  const page_id = derivePlanPageId(plan);
 
   // Frontmatter extraction — scoped to the YAML envelope only so body
   // content (e.g. user-supplied chat questions in FAQ drafts) cannot inject
