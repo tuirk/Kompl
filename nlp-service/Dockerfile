@@ -18,7 +18,7 @@
 
 # Pinned by digest for OpenSSF Scorecard Pinned-Dependencies. Dependabot's
 # docker ecosystem (.github/dependabot.yml) bumps weekly.
-FROM python:3.11-slim@sha256:6d85378d88a19cd4d76079817532d62232be95757cb45945a99fec8e8084b9c2
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
