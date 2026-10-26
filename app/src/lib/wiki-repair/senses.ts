@@ -140,6 +140,7 @@ export async function applySenseFixes(
   db: Database.Database,
   beforePage: () => void = () => {},
   outcome: LinkOutcome = { pages: 0, links: 0, missed: 0 },
+  runWrites?: Set<string>,
 ): Promise<LinkOutcome> {
   const raw = new Map<string, string | null>();
   for (const c of candidates(db)) {
@@ -160,6 +161,7 @@ export async function applySenseFixes(
       expectedToken: pageVersionToken(page.page_id),
       draftRules: null,
       activity: null,
+      runWrites,
     });
     if (result.ok) {
       outcome.pages++;

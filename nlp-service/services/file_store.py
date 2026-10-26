@@ -4,11 +4,14 @@ Architecture rule #4 (CLAUDE.md): any function that overwrites a content file
 MUST first move the existing file to a versioned name. This module is the
 canonical implementation of that rule for wiki pages.
 
-write_page(page_id, markdown) contract:
+write_page(page_id, markdown, archive=True) contract:
   - If /data/pages/{page_id}.md.gz already holds exactly this text, nothing is
     written or archived (the outbox can flush one page more than once).
   - If /data/pages/{page_id}.md.gz exists: move it to
     /data/pages/{page_id}.{timestamp}.md.gz before writing the new content.
+    With archive=False it is replaced instead: the caller wrote that text
+    itself moments ago (one wiki repair run writing a page several times),
+    so the version from before it stays the newest archive.
   - Write new gzip-compressed content to /data/pages/{page_id}.md.gz atomically
     (write to .tmp.gz in same directory, then os.replace onto final path).
   - After the new version is in place, keep only the newest
@@ -34,6 +37,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import time
 import zlib
 from pathlib import Path
@@ -50,8 +54,20 @@ MAX_ARCHIVED_VERSIONS = 2
 
 logger = logging.getLogger(__name__)
 
+# One write per page at a time. The write-page route is a sync handler, so
+# FastAPI runs concurrent requests on threads: interleaved, one write could
+# find the file already moved to an archive and replace the other's text
+# without archiving it.
+_page_locks: dict[str, threading.Lock] = {}
+_page_locks_guard = threading.Lock()
 
-def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
+
+def _page_lock(page_id: str) -> threading.Lock:
+    with _page_locks_guard:
+        return _page_locks.setdefault(page_id, threading.Lock())
+
+
+def write_page(page_id: str, markdown: str, archive: bool = True) -> tuple[str, str | None]:
     """Write a wiki page to gzip-compressed storage with version preservation.
 
     The write is atomic: content is written to a sibling .tmp.gz file in the
@@ -62,6 +78,10 @@ def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
     Args:
         page_id:  URL-safe page identifier (e.g. "bitcoin-abc12345")
         markdown: Compiled markdown content for this page version
+        archive:  False replaces the current file without archiving it, for a
+                  caller replacing text it wrote itself (the wiki repair's
+                  later writes of a page in one run); the newest archive is
+                  then returned as previous_path
 
     Returns:
         (current_path, previous_path)
@@ -77,7 +97,11 @@ def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
     """
     validate_page_id(page_id)
     os.makedirs(_PAGES_DIR, exist_ok=True)
+    with _page_lock(page_id):
+        return _write_page_locked(page_id, markdown, archive)
 
+
+def _write_page_locked(page_id: str, markdown: str, archive: bool) -> tuple[str, str | None]:
     current_path = str(safe_join(_PAGES_DIR, f"{page_id}.md.gz"))
     previous_path: str | None = None
     content_bytes = markdown.encode("utf-8")
@@ -97,12 +121,17 @@ def write_page(page_id: str, markdown: str) -> tuple[str, str | None]:
     # Microsecond suffix on the timestamp prevents collisions when the same
     # page_id is rewritten 3+ times within one wall-clock second (the
     # second-resolution format used to silently overwrite the second archive).
-    if os.path.exists(current_path):
+    if archive and os.path.exists(current_path):
         mtime = os.stat(current_path).st_mtime
         ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime(mtime))
         usec = int((mtime - int(mtime)) * 1_000_000)
         previous_path = str(safe_join(_PAGES_DIR, f"{page_id}.{ts}-{usec:06d}.md.gz"))
         os.replace(current_path, previous_path)
+    elif not archive:
+        # The caller's own text is replaced: the newest archive stays the
+        # page's previous version.
+        archives = _archive_names(page_id)
+        previous_path = str(safe_join(_PAGES_DIR, archives[-1])) if archives else None
 
     # Atomic write: write to .tmp.gz in the same directory (same filesystem),
     # then os.replace() onto the final path. dir=_PAGES_DIR is required —

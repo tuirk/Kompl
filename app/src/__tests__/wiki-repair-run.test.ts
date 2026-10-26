@@ -1,8 +1,9 @@
 /**
  * A wiki repair run (lib/wiki-repair/run.ts, steps.ts) on a seeded wiki with
  * a fake nlp-service (no real LLM call): backup first or nothing, each step's
- * effect, one activity row per step and one for the end, all or none with
- * the backup offered for a restore, the rule-7 guards (flag, fixed bounds,
+ * effect, one activity row per step and one for the end, a stop that does no
+ * later step with the backup offered for a restore and the next run
+ * finishing the rest, the rule-7 guards (flag, fixed bounds,
  * spend guard, daily ceiling) and the lock against compiles.
  */
 
@@ -31,7 +32,7 @@ import { DATA_ROOT, getSetting, getSourceIdsMentioning, insertPageLink, readPage
 import { REPAIR_CONFIRMED_METHOD, REPAIR_UNDECIDED_REASON } from '../lib/wiki-repair/aliases';
 import { MAX_REPAIR_ALIASES, REPAIR_ALIAS_BATCH, REPAIR_BACKUP_DIR, WIKI_REPAIR_FLAG } from '../lib/wiki-repair/limits';
 import { computeRepairPlan } from '../lib/wiki-repair/plan';
-import { WikiRepairError, requestWikiRepairStop, startWikiRepair } from '../lib/wiki-repair/run';
+import { WikiRepairError, getRepairOverview, requestWikiRepairStop, startWikiRepair } from '../lib/wiki-repair/run';
 import {
   __resetWikiRepairStateForTesting,
   isWikiRepairRunning,
@@ -136,6 +137,20 @@ describe('a full run', () => {
     expect(getSetting(WIKI_REPAIR_FLAG)).toBe('0');
   });
 
+  it("keeps each page's text from before the repair as its previous version, however often the run writes it", async () => {
+    const nlp = setup();
+    await runToEnd();
+    // The foundation page is rebuilt, then relabelled. Only the first write
+    // archives the file it replaces: two archives are kept per page, so
+    // archiving the run's own text would push out the text from before it,
+    // the version "Restore this version" puts back.
+    expect(nlp.writeArchives.filter((w) => w.page_id === EF)).toEqual([
+      { page_id: EF, archive: true },
+      { page_id: EF, archive: false },
+    ]);
+    expect(nlp.writeArchives.filter((w) => w.page_id === ETH)).toEqual([{ page_id: ETH, archive: true }]);
+  });
+
   it('fixes the links written through a name match the AI retires, and keeps the confirmed ones', async () => {
     const nlp = setup();
     const NOTE = 'page-note';
@@ -185,7 +200,7 @@ describe('backup first', () => {
   });
 });
 
-describe('all or none', () => {
+describe('a stopped run', () => {
   it('stops at the daily limit, does no later step, and offers the backup to restore', async () => {
     const nlp = setup();
     nlp.fail.disambiguate = 503;
@@ -256,6 +271,16 @@ describe('steps that stop or leave work', () => {
       steps_done: ['backup', 'aliases', 'mentions', 'links', 'senses', 'titles', 'pages'],
     });
     expect(handle!.db.prepare('SELECT category FROM pages WHERE page_id = ?').get(EF)).toEqual({ category: 'Crypto' });
+
+    // Only the labels are left, which the plan does not count: the repair is
+    // still offered, and the next run finishes them.
+    nlp.fail.labels = undefined;
+    __resetWikiRepairStateForTesting();
+    expect((await getRepairOverview({ withPlan: true })).nothing_to_do).toBe(false);
+    await runToEnd();
+    expect(readSavedRun()).toMatchObject({ status: 'finished' });
+    expect(handle!.db.prepare('SELECT category FROM pages WHERE page_id = ?').get(EF)).toEqual({ category: 'Cryptocurrency' });
+    expect((await getRepairOverview({ withPlan: true })).nothing_to_do).toBe(true);
   });
 
   it('keeps a page the model could not rewrite waiting for the next run, and goes on', async () => {

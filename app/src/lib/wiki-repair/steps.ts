@@ -11,13 +11,19 @@
  *   5. pages     the pages whose credited sources changed rebuilt from them
  *   6. labels    labels that mean the same thing merged
  *
- * All or none: the run stops at the first thing that goes wrong (the daily
- * spending limit, a rate limit, the NLP service, 3 failed pages in a row,
- * an unexpected error), on Stop, or when it has spent more than
- * REPAIR_MAX_OVERSPEND × the confirmed high estimate. It never goes on to a
- * later step after a stop; the backup stays, Settings says what was done and
- * offers it for a restore, and the pages still to rebuild stay listed for
- * the next run. One activity row per finished step, one for the end.
+ * Not all or none: a transaction cannot span the AI calls, so each step
+ * commits as it goes (name matches, credits, then one page at a time). The
+ * run stops at the first thing that goes wrong (the daily spending limit, a
+ * rate limit, the NLP service, 3 failed pages in a row, an unexpected
+ * error), on Stop (before the next page or AI call), or when it has spent
+ * more than REPAIR_MAX_OVERSPEND × the confirmed high estimate. It never
+ * goes on to a later step after a stop, so the wiki keeps the steps before
+ * it and part of the step it stopped in. Two ways on, which Settings
+ * offers: run the repair again, which plans every step from the wiki as it
+ * is then and starts with the pages still to rebuild (they stay listed);
+ * or restore the backup into a new Kompl. Each page's text from before the
+ * run also stays its previous version ("Restore this version"). One
+ * activity row per finished step, one for the end.
  */
 
 import { getAliases, getDb, getPage, getSetting, logActivity, setSetting } from '../db';
@@ -138,6 +144,10 @@ function endRun(run: RepairRun, status: 'finished' | 'stopped', reason: RepairSt
 
 export async function runRepairSteps(run: RepairRun, ctx: StepContext): Promise<void> {
   const db = getDb();
+  // Pages this run has written: only its first write of a page archives the
+  // text it replaces, so the text from before the repair stays each page's
+  // previous version (lib/page-rewrite.ts).
+  const runWrites = new Set<string>();
   let lastUsage = ctx.usage;
   const measure = async () => {
     try {
@@ -203,7 +213,7 @@ export async function runRepairSteps(run: RepairRun, ctx: StepContext): Promise<
     await applyLinkFixes(db, () => {
       check();
       saveRun(run);
-    }, run.links);
+    }, run.links, runWrites);
     finishStep(run, 'links');
 
     // ── 4b. Links to the wrong sense of a word, and source titles (no AI call) ──
@@ -212,7 +222,7 @@ export async function runRepairSteps(run: RepairRun, ctx: StepContext): Promise<
     await applySenseFixes(db, () => {
       check();
       saveRun(run);
-    }, run.senses);
+    }, run.senses, runWrites);
     finishStep(run, 'senses');
     enter('titles');
     run.titles = { sources: applyTitleFixes(db) };
@@ -244,6 +254,7 @@ export async function runRepairSteps(run: RepairRun, ctx: StepContext): Promise<
           model: run.model as LlmModel,
           credits: { remove: pending.remove, add: pending.add },
           quiet: true,
+          runWrites,
         });
         drop();
         run.pages.rebuilt++;
@@ -288,7 +299,7 @@ export async function runRepairSteps(run: RepairRun, ctx: StepContext): Promise<
     enter('labels');
     const target = await call(() => consolidateWikiLabels(repairLabels(), run.model));
     await measure();
-    const outcome = await applyLabelMerges(db, target);
+    const outcome = await applyLabelMerges(db, target, runWrites);
     run.labels = { merged: outcome.merged, pages: outcome.pages };
     finishStep(run, 'labels');
 

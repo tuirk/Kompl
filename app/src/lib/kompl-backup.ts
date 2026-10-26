@@ -73,13 +73,13 @@ async function pageArchives(): Promise<Map<string, string[]>> {
 
 export async function buildKomplBackup(opts: { includeVectors: boolean }): Promise<Buffer> {
   const zip = new JSZip();
-  const sources = getAllSources();
-  // Every page, those hidden from the wiki because all their sources are
-  // archived included: provenance, links and aliases point at them, and a
-  // backup without them could not be restored at all.
-  const pages = getAllPages(true);
 
-  // Fetch vectors from nlp-service if requested (before building zip)
+  // Fetch vectors from nlp-service if requested, before reading any table:
+  // the fetch can take a minute, and every table is read after it in one
+  // snapshot, so a page committed meanwhile is in the backup with all its
+  // rows or not at all (a page missing from pages.json loses its provenance
+  // and links on restore). Such a page may lack its vector; the backfill
+  // embeds it.
   let vectorCount = 0;
   if (opts.includeVectors) {
     try {
@@ -99,11 +99,41 @@ export async function buildKomplBackup(opts: { includeVectors: boolean }): Promi
     }
   }
 
+  // Every table in one read transaction: one consistent snapshot.
+  const db = getDb();
+  const snapshot = db.transaction(() => ({
+    sources: getAllSources(),
+    // Every page, those hidden from the wiki because all their sources are
+    // archived included: provenance, links and aliases point at them, and a
+    // backup without them could not be restored at all.
+    pages: getAllPages(true),
+    schemaVersion: getSchemaVersion(),
+    draftRules: getPageDraftRulesMap(),
+    holds: getPageHoldColumns(),
+    provenance: getAllProvenance(),
+    aliases: getAllAliases(),
+    disagreements: getAllDisagreements(db),
+    claimVerdicts: getAllClaimVerdicts(db),
+    extractions: getAllExtractions(),
+    pageLinks: getAllPageLinks(),
+    entityMentions: getAllEntityMentions(),
+    relationshipMentions: getAllRelationshipMentions(),
+    drafts: getAllDrafts(),
+    activityLog: getAllActivityLog(),
+    compileProgress: getAllCompileProgress(),
+    chatMessages: getAllChatMessages(),
+    pagePlans: getAllPagePlans(),
+    ingestFailures: getAllIngestFailures(),
+    settings: getExportableSettings(),
+    pendingFlush: getPendingFlushPages(),
+  }))();
+  const { sources, pages } = snapshot;
+
   const manifest = {
     format: 'kompl',
     version: 1,
     exported_at: new Date().toISOString(),
-    schema_version: getSchemaVersion(),
+    schema_version: snapshot.schemaVersion,
     source_count: sources.length,
     page_count: pages.length,
     vector_count: vectorCount,
@@ -119,8 +149,7 @@ export async function buildKomplBackup(opts: { includeVectors: boolean }): Promi
   // imports ignore the extra field.
   // restore_page_type / archive_reason (v30) keep a page archived after a
   // failed rewrite restorable (lib/page-hold.ts).
-  const draftRules = getPageDraftRulesMap();
-  const holds = getPageHoldColumns();
+  const { draftRules, holds } = snapshot;
   dbFolder.file(
     'pages.json',
     JSON.stringify(
@@ -134,28 +163,28 @@ export async function buildKomplBackup(opts: { includeVectors: boolean }): Promi
       2,
     ),
   );
-  dbFolder.file('provenance.json', JSON.stringify(getAllProvenance(), null, 2));
+  dbFolder.file('provenance.json', JSON.stringify(snapshot.provenance, null, 2));
   // Every alias row, set aside or not, with how it was made and its status
   // (v29), so a restore keeps them. Older releases' imports ignore them.
-  dbFolder.file('aliases.json', JSON.stringify(getAllAliases(), null, 2));
+  dbFolder.file('aliases.json', JSON.stringify(snapshot.aliases, null, 2));
   // The disagreements record (v30) with the owner's verdicts, so a restore
   // keeps them. Older releases' imports ignore the file.
-  dbFolder.file('disagreements.json', JSON.stringify(getAllDisagreements(getDb()), null, 2));
+  dbFolder.file('disagreements.json', JSON.stringify(snapshot.disagreements, null, 2));
   // The claim check's saved verdicts (v30), so a restored wiki never pays
   // to judge the same claim pair again. Older releases' imports ignore it.
-  dbFolder.file('claim_verdicts.json', JSON.stringify(getAllClaimVerdicts(getDb()), null, 2));
-  dbFolder.file('extractions.json', JSON.stringify(getAllExtractions(), null, 2));
-  dbFolder.file('page_links.json', JSON.stringify(getAllPageLinks(), null, 2));
-  dbFolder.file('entity_mentions.json', JSON.stringify(getAllEntityMentions(), null, 2));
-  dbFolder.file('relationship_mentions.json', JSON.stringify(getAllRelationshipMentions(), null, 2));
-  dbFolder.file('drafts.json', JSON.stringify(getAllDrafts(), null, 2));
-  dbFolder.file('activity_log.json', JSON.stringify(getAllActivityLog(), null, 2));
-  dbFolder.file('compile_progress.json', JSON.stringify(getAllCompileProgress(), null, 2));
-  dbFolder.file('chat_messages.json', JSON.stringify(getAllChatMessages(), null, 2));
-  dbFolder.file('page_plans.json', JSON.stringify(getAllPagePlans(), null, 2));
+  dbFolder.file('claim_verdicts.json', JSON.stringify(snapshot.claimVerdicts, null, 2));
+  dbFolder.file('extractions.json', JSON.stringify(snapshot.extractions, null, 2));
+  dbFolder.file('page_links.json', JSON.stringify(snapshot.pageLinks, null, 2));
+  dbFolder.file('entity_mentions.json', JSON.stringify(snapshot.entityMentions, null, 2));
+  dbFolder.file('relationship_mentions.json', JSON.stringify(snapshot.relationshipMentions, null, 2));
+  dbFolder.file('drafts.json', JSON.stringify(snapshot.drafts, null, 2));
+  dbFolder.file('activity_log.json', JSON.stringify(snapshot.activityLog, null, 2));
+  dbFolder.file('compile_progress.json', JSON.stringify(snapshot.compileProgress, null, 2));
+  dbFolder.file('chat_messages.json', JSON.stringify(snapshot.chatMessages, null, 2));
+  dbFolder.file('page_plans.json', JSON.stringify(snapshot.pagePlans, null, 2));
   // The links the owner saved that could not be fetched, which the Saved
   // Links page lists. Older releases' imports ignore the file.
-  dbFolder.file('ingest_failures.json', JSON.stringify(getAllIngestFailures(), null, 2));
+  dbFolder.file('ingest_failures.json', JSON.stringify(snapshot.ingestFailures, null, 2));
   // The schema version travels in manifest.json. Older Kompl releases copy
   // every settings row on import, so a schema_version row here would
   // overwrite an older install's own version and leave it "degraded".
@@ -163,7 +192,7 @@ export async function buildKomplBackup(opts: { includeVectors: boolean }): Promi
   dbFolder.file(
     'settings.json',
     JSON.stringify(
-      getExportableSettings().filter((s) => isBackedUpSetting(s.key)),
+      snapshot.settings.filter((s) => isBackedUpSetting(s.key)),
       null,
       2,
     ),
@@ -181,7 +210,7 @@ export async function buildKomplBackup(opts: { includeVectors: boolean }): Promi
   // A page committed but not yet written to disk (pages.pending_content,
   // CLAUDE.md rule 5) goes in with that newest text: its file is older or
   // missing.
-  const pendingText = new Map(getPendingFlushPages().map((p) => [p.page_id, p.pending_content]));
+  const pendingText = new Map(snapshot.pendingFlush.map((p) => [p.page_id, p.pending_content]));
   const archives = await pageArchives();
   const pagesFolder = zip.folder('pages')!;
   for (const p of pages) {

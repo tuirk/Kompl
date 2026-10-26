@@ -716,7 +716,14 @@ def migrate():
             "SELECT value FROM settings WHERE key = 'schema_version'"
         ).fetchone()
         current = int(row[0]) if row else 0
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        # Only a database with no settings table yet is new. Any other error
+        # (locked, a disk error, a damaged file) stops here: read as version 0
+        # it would rerun every step, and v6 drops and recreates aliases.
+        if not str(exc).startswith("no such table"):
+            conn.close()
+            print(f"ERROR: could not read the schema version from {DB_PATH}: {exc}", file=sys.stderr)
+            raise
         current = 0
 
     if current >= SCHEMA_VERSION:

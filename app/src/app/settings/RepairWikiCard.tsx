@@ -138,7 +138,7 @@ export default function RepairWikiCard() {
             Spent {formatSpent(run.spent_usd)} so far; the estimate was{' '}
             {formatCostRange(run.confirmed.cost_usd_low, run.confirmed.cost_usd_high)}.
           </div>
-          {run.stop_requested && <div>Stopping after the current step…</div>}
+          {run.stop_requested && <div>Stopping once the current page or AI call is done…</div>}
           <div style={{ color: 'var(--fg-dim)', marginTop: '0.35rem' }}>
             New compiles wait until the repair finishes. A copy of your wiki from before the repair is saved.
           </div>
@@ -171,7 +171,7 @@ export default function RepairWikiCard() {
           {`Repair your wiki with ${overview.model.label}? It costs ${formatCostRange(e.cost_usd_low, e.cost_usd_high)} and takes about ${formatDuration(e.minutes_low, e.minutes_high)}. `}
           {'Kompl saves a copy of your wiki first and does not start without it. New compiles wait until the repair finishes. '}
           {`It stops on its own if it would spend more than ${formatUsd(overview.max_overspend * e.cost_usd_high)}, at today's spending limit, or if anything goes wrong; you can also stop it. `}
-          {'If it stops part-way, it says what was done and the saved copy puts your wiki back as it was.'}
+          {'If it stops part-way, what it did so far stays done and it says what that was: select Repair wiki again to finish, or restore the saved copy to put your wiki back as it was.'}
           <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.75rem' }}>
             <button type="button" className="btn-outline" style={PILL} onClick={() => setConfirming(false)} disabled={busy}>
               Cancel

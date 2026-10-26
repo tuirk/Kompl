@@ -69,7 +69,7 @@ it('never runs a wiki health check, even when the last one is long overdue', asy
 // ── backup ───────────────────────────────────────────────────────────────────
 
 it('saves a backup when the last one is more than 36 hours old', async () => {
-  const bytes = new TextEncoder().encode('zip-bytes')
+  const bytes = new TextEncoder().encode('PK\x03\x04zip-bytes')
   fetchMock
     .mockResolvedValueOnce(makeSettings({ last_backup_at: OVERDUE() }))
     .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => bytes.buffer } as unknown as MockResponse)
@@ -77,8 +77,58 @@ it('saves a backup when the last one is more than 36 hours old', async () => {
   await runStartupTasks(baseConfig)
 
   expect(calledUrls()[1]).toContain('/api/export?format=kompl')
-  expect(fs.readFileSync(backupFile(), 'utf-8')).toBe('zip-bytes')
+  expect(fs.readFileSync(backupFile(), 'utf-8')).toBe('PK\x03\x04zip-bytes')
   expect(output()).toContain('saved')
+  expect(fs.readdirSync(path.dirname(backupFile()))).toEqual(['kompl-backup.kompl.zip'])
+})
+
+/** A good backup from an earlier start. */
+function seedBackup(): void {
+  fs.mkdirSync(path.dirname(backupFile()), { recursive: true })
+  fs.writeFileSync(backupFile(), 'PK\x03\x04the good one')
+}
+
+it('keeps the last backup when the download is empty or not a zip', async () => {
+  seedBackup()
+  fetchMock
+    .mockResolvedValueOnce(makeSettings({ last_backup_at: OVERDUE() }))
+    .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) } as unknown as MockResponse)
+
+  await runStartupTasks(baseConfig)
+
+  expect(fs.readFileSync(backupFile(), 'utf-8')).toBe('PK\x03\x04the good one')
+  expect(output()).not.toContain('saved')
+  expect(output()).toContain('the last backup was kept')
+})
+
+it('keeps the last backup when writing the new one fails halfway', async () => {
+  seedBackup()
+  const realWrite = fs.writeFileSync
+  // The disk fills after a few bytes of the new backup.
+  jest.spyOn(fs, 'writeFileSync').mockImplementation((file, data) => {
+    realWrite(file, (data as Buffer).subarray(0, 5))
+    throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
+  })
+  fetchMock
+    .mockResolvedValueOnce(makeSettings({ last_backup_at: OVERDUE() }))
+    .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => new TextEncoder().encode('PK\x03\x04a newer backup').buffer } as unknown as MockResponse)
+
+  await runStartupTasks(baseConfig)
+
+  expect(fs.readFileSync(backupFile(), 'utf-8')).toBe('PK\x03\x04the good one')
+  expect(fs.readdirSync(path.dirname(backupFile()))).toEqual(['kompl-backup.kompl.zip'])
+  expect(output()).toContain('the last backup was kept')
+})
+
+it('gives the export minutes, not two, since a backup carries the whole wiki', async () => {
+  const timeout = jest.spyOn(AbortSignal, 'timeout')
+  fetchMock
+    .mockResolvedValueOnce(makeSettings({ last_backup_at: OVERDUE() }))
+    .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => new TextEncoder().encode('PK\x03\x04zip').buffer } as unknown as MockResponse)
+
+  await runStartupTasks(baseConfig)
+
+  expect(Math.max(...timeout.mock.calls.map(([ms]) => ms))).toBeGreaterThanOrEqual(10 * 60_000)
 })
 
 it('skips the backup when the last one is within 36 hours', async () => {

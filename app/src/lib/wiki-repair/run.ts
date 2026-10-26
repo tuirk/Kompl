@@ -1,7 +1,8 @@
 /**
  * Repair wiki (plan Phase 4, owner decisions D1, D2, D7): one wiki-level
  * run from Settings > Wiki health that puts right what earlier name matching
- * got wrong, all or none, after a backup:
+ * got wrong, step by step after a backup (a stopped run is finished by the
+ * next one, or undone from the backup: ./steps.ts):
  *   1. a full backup on the data volume (lib/wiki-repair/backup.ts); no
  *      backup, no run
  *   2. set-aside name matches confirmed or retired by the AI (./aliases.ts)
@@ -11,7 +12,11 @@
  *      links to the wrong sense of a one-word name turned back into words
  *      (./senses.ts) and source titles put on one line (./titles.ts), no AI
  *   5. the pages whose sources changed rebuilt from them, through the
- *      outbox, previous versions kept (lib/redraft.ts)
+ *      outbox (lib/redraft.ts)
+ * Each page's text from before the run stays its previous version, however
+ * often the run writes the page ("Restore this version" puts it back): only
+ * the run's first write of a page archives what it replaces (runWrites in
+ * ./steps.ts, lib/page-rewrite.ts).
  *   6. labels that mean the same thing merged (./labels.ts)
  * Steps 2–6 run in ./steps.ts.
  *
@@ -109,8 +114,16 @@ export interface RepairOverview {
   max_overspend: number;
 }
 
-/** No name pair to ask about, no page to rewrite, no link to correct and no title to clean. */
+/**
+ * No name pair to ask about, no page to rewrite, no link to correct and no
+ * title to clean, and the last run did not stop before its last step. The
+ * plan does not count the label merge (the AI decides whether any labels
+ * mean the same thing), so a run that stopped before it is still offered:
+ * running again finishes it.
+ */
 function nothingToRepair(plan: RepairPlan): boolean {
+  const last = currentRun();
+  if (last?.status === 'stopped' && !last.steps_done.includes('labels')) return false;
   return (
     plan.aliases.length === 0 && plan.pages_high === 0 && plan.link_pages_high === 0 && plan.sense_pages === 0 && plan.title_sources === 0
   );

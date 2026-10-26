@@ -102,6 +102,8 @@ export interface FakeNlp {
   disambiguateBodies: Array<{ pairs: Array<{ pair_id: string; entity_a: { name: string }; entity_b: { name: string } }> }>;
   draftBodies: Array<{ title: string; source_contents: Array<{ source_id: string }> }>;
   writes: string[];
+  /** Each page write and whether it archived the file it replaced (file_store.py). */
+  writeArchives: Array<{ page_id: string; archive: boolean }>;
   labelBodies: Array<{ existing_labels: string[]; new_labels: string[] }>;
   verdict: (a: string, b: string) => { decision: string; reason: string };
   onDisambiguate?: () => void;
@@ -122,6 +124,7 @@ export function mockRepairNlp(db: Database.Database): FakeNlp {
     disambiguateBodies: [],
     draftBodies: [],
     writes: [],
+    writeArchives: [],
     labelBodies: [],
     verdict: (a) => DEFAULT_VERDICTS[a] ?? { decision: 'same', reason: 'same thing' },
   };
@@ -162,8 +165,9 @@ export function mockRepairNlp(db: Database.Database): FakeNlp {
         return Response.json({ markdown: pageMarkdown(body.title, page.category, `Rewritten [S1]. ${BODY}`) });
       }
       if (u.endsWith('/storage/write-page')) {
-        const { page_id, markdown } = json(init) as { page_id: string; markdown: string };
+        const { page_id, markdown, archive } = json(init) as { page_id: string; markdown: string; archive?: boolean };
         nlp.writes.push(page_id);
+        nlp.writeArchives.push({ page_id, archive: archive ?? true });
         writePageFile(page_id, markdown);
         return Response.json({ current_path: `/data/pages/${page_id}.md.gz`, previous_path: `/data/pages/${page_id}.20261024-120000.md.gz` });
       }

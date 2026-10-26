@@ -168,7 +168,7 @@ export function RunOutcome({ run }: { run: RepairRunView }) {
     <div style={PANEL} role="status">
       <div style={{ color: stopped ? 'var(--warning)' : 'var(--fg)' }}>
         {stopped
-          ? `The repair stopped because ${STOP_TEXT[run.stop_reason ?? ''] ?? 'of a problem'}. The steps marked ✓ were done; the rest were not.`
+          ? `The repair stopped because ${STOP_TEXT[run.stop_reason ?? ''] ?? 'of a problem'}. The steps marked ✓ were done; the step it stopped in may be part done (see its count), and the rest were not started. Your wiki keeps what was done. To finish, select Repair wiki again: it carries on from your wiki as it is now.`
           : 'The last repair finished.'}
       </div>
       <RunSteps run={run} />
@@ -191,7 +191,6 @@ export function RunOutcome({ run }: { run: RepairRunView }) {
           Your wiki as it was before this repair is saved.{' '}
           <a href="/api/wiki/repair/backup" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>Download that copy</a>.{' '}
           {REPAIR_COPY_RESTORE}
-          {stopped && ' Or select Repair wiki again to finish what is left.'}
         </div>
       )}
       {run.pages_waiting > 0 && (

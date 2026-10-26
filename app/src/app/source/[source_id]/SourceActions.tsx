@@ -40,6 +40,7 @@ export default function SourceActions({
   const [status, setStatus] = useState(currentStatus);
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [recompileState, setRecompileState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
 
   async function handleArchiveToggle() {
@@ -56,10 +57,14 @@ export default function SourceActions({
 
   async function handleDelete() {
     setBusy(true);
+    setDeleteError(null);
     const res = await fetch(`/api/sources/${sourceId}`, { method: 'DELETE' });
     if (res.ok) {
       router.push('/sources');
     } else {
+      // 409 says why (a compile, the wiki repair or the page update is running).
+      const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+      setDeleteError(res.status === 409 && typeof body?.error === 'string' ? body.error : 'The source could not be deleted. Try again.');
       setBusy(false);
     }
   }
@@ -202,6 +207,11 @@ export default function SourceActions({
             Cancel
           </button>
         </>
+      )}
+      {deleteError && (
+        <span role="alert" style={{ fontSize: '0.875rem', color: 'var(--danger, #ef4444)', flexBasis: '100%' }}>
+          {deleteError}
+        </span>
       )}
     </div>
   );

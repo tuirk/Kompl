@@ -196,6 +196,49 @@ def test_rewriting_identical_content_keeps_the_real_history(isolated_pages_dir):
     assert _read_gz(current) == "v3"
 
 
+def test_a_writer_rewriting_its_own_text_keeps_the_version_from_before_it(isolated_pages_dir):
+    """One wiki repair run can write a page up to four times (links, senses,
+    rebuild, labels). Archiving each write pushed the text from before the
+    repair out of the MAX_ARCHIVED_VERSIONS window, so "Restore this version"
+    could no longer put it back. The run's later writes pass archive=False:
+    they replace the run's own text, and the newest archive stays the text
+    from before the run."""
+    current, _ = file_store.write_page("bitcoin", "older")
+    base = os.path.getmtime(current) - 100
+    os.utime(current, (base, base))
+    file_store.write_page("bitcoin", "before the repair")
+    os.utime(current, (base + 10, base + 10))
+    _, before_repair = file_store.write_page("bitcoin", "repair: links fixed")
+    assert before_repair is not None
+
+    for n, text in enumerate(["repair: senses fixed", "repair: rebuilt", "repair: relabelled"]):
+        os.utime(current, (base + 20 + n, base + 20 + n))
+        again, previous = file_store.write_page("bitcoin", text, archive=False)
+        assert again == current
+        assert previous == before_repair
+
+    assert _read_gz(current) == "repair: relabelled"
+    archives = sorted(isolated_pages_dir.glob("bitcoin.*.md.gz"))
+    assert [_read_gz(a) for a in archives] == ["older", "before the repair"]
+    assert str(archives[-1]) == before_repair
+
+
+def test_write_page_route_passes_archive_through(isolated_pages_dir):
+    from routers.storage import WritePageRequest, storage_write_page
+
+    storage_write_page(WritePageRequest(page_id="tron", markdown="v1"))
+    first = storage_write_page(WritePageRequest(page_id="tron", markdown="v2"))
+    again = storage_write_page(WritePageRequest(page_id="tron", markdown="v3", archive=False))
+    assert again.previous_path == first.previous_path
+    assert [_read_gz(a) for a in isolated_pages_dir.glob("tron.*.md.gz")] == ["v1"]
+
+
+def test_an_unarchived_write_of_a_new_page_returns_no_previous(isolated_pages_dir):
+    current, previous = file_store.write_page("doge", "first", archive=False)
+    assert previous is None
+    assert _read_gz(current) == "first"
+
+
 def test_identical_rewrite_of_a_page_without_archives_returns_no_previous(isolated_pages_dir):
     file_store.write_page("doge", "only version")
     current, previous = file_store.write_page("doge", "only version")
@@ -233,6 +276,42 @@ def test_new_file_reaches_disk_before_it_replaces_the_page(isolated_pages_dir, m
     assert events.index("fsync") < events.index("replace-tmp")
     if os.name == "posix":
         assert events[-1] == "fsync", "directory entry must be synced after the rename"
+
+
+def test_concurrent_writes_of_one_page_take_turns(isolated_pages_dir, monkeypatch):
+    """write_page is a sync route handler, so FastAPI runs two requests for
+    the same page on two threads. Interleaved, the second could find the
+    file already moved to an archive and replace the first one's text
+    without archiving it. One write per page at a time."""
+    import threading
+    import time as time_mod
+
+    file_store.write_page("monero", "v0")
+    inside = {"now": 0, "most": 0}
+    guard = threading.Lock()
+    real_equals = file_store._current_content_equals
+
+    def slow_equals(path, content_bytes):
+        with guard:
+            inside["now"] += 1
+            inside["most"] = max(inside["most"], inside["now"])
+        time_mod.sleep(0.05)
+        with guard:
+            inside["now"] -= 1
+        return real_equals(path, content_bytes)
+
+    monkeypatch.setattr(file_store, "_current_content_equals", slow_equals)
+    threads = [threading.Thread(target=file_store.write_page, args=("monero", text)) for text in ("vA", "vB")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert inside["most"] == 1
+    archived = sorted(_read_gz(a) for a in isolated_pages_dir.glob("monero.*.md.gz"))
+    current = file_store.read_page("monero")
+    # Every version survives: v0 and the first write archived, the second current.
+    assert sorted([*archived, current]) == ["v0", "vA", "vB"]
 
 
 def test_read_page_returns_decompressed_content(isolated_pages_dir):

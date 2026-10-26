@@ -89,6 +89,12 @@ const btnOutline: React.CSSProperties = {
 
 const COL = '40px 120px 1fr 140px 200px';
 
+/** The reason a delete was refused (409), as the route words it. */
+async function deleteRefusal(res: Response): Promise<string | null> {
+  const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+  return typeof body?.error === 'string' ? body.error : null;
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function SourcesTable({ initialSources, onMutation }: { initialSources: SourceWithCount[]; onMutation?: () => void }) {
@@ -178,8 +184,11 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
     setSources((prev) => prev.filter((s) => s.source_id !== sourceId));
     setSelectedIds((prev) => { const n = new Set(prev); n.delete(sourceId); return n; });
 
+    let refusal: string | null = null;
     try {
       const res = await fetch(`/api/sources/${sourceId}`, { method: 'DELETE' });
+      // 409: a compile, the wiki repair or the page update is running; say so.
+      if (res.status === 409) refusal = await deleteRefusal(res);
       if (!res.ok && res.status !== 204) throw new Error(`${res.status}`);
       onMutation?.();
     } catch {
@@ -191,7 +200,7 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
           return next;
         });
       }
-      setErrorIds((prev) => new Map(prev).set(sourceId, 'Failed — try again'));
+      setErrorIds((prev) => new Map(prev).set(sourceId, refusal ?? 'Failed — try again'));
     } finally {
       setLoadingIds((prev) => { const s = new Set(prev); s.delete(sourceId); return s; });
     }
@@ -286,12 +295,14 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
     // 'not_found' is treated as success: the row was already gone (e.g. another
     // tab deleted it) — keep it removed, no error badge.
     const failed = new Set<string>();
+    let refusal: string | null = null;
     try {
       const res = await fetch('/api/sources/bulk-delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids }),
       });
+      if (res.status === 409) refusal = await deleteRefusal(res);
       if (!res.ok) throw new Error(`${res.status}`);
       const body = await res.json() as {
         results?: Array<{ source_id: string; status: 'ok' | 'not_found' | 'error' }>;
@@ -317,7 +328,7 @@ export default function SourcesTable({ initialSources, onMutation }: { initialSo
       });
       setErrorIds((prev) => {
         const m = new Map(prev);
-        failed.forEach((id) => m.set(id, 'Failed — try again'));
+        failed.forEach((id) => m.set(id, refusal ?? 'Failed — try again'));
         return m;
       });
     }

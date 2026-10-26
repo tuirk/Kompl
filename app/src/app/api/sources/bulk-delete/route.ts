@@ -20,7 +20,11 @@
  *   - ids: array of source_ids. 1..MAX_IDS entries. Duplicates silently deduped.
  *   - any other top-level field → 400.
  *
- * Response (always 200): {
+ * The batch is one turn among source deletes, which run one at a time.
+ * 409 (nothing deleted) while a compile, the wiki repair or the page update
+ * runs: they rewrite the same pages (lib/source-delete.ts).
+ *
+ * Response (200 otherwise): {
  *   bulk_id: string,
  *   count: number,
  *   summary: { ok: number, not_found: number, error: number },
@@ -36,6 +40,7 @@ import { NextResponse } from 'next/server';
 
 import {
   deleteOneSourceWithCascade,
+  inSourceDeleteTurn,
   type BulkDeleteState,
   type SourceDeleteResult,
 } from '../../../../lib/source-delete';
@@ -75,10 +80,15 @@ export async function POST(request: Request) {
   const bulkId = randomUUID();
   const bulkState: BulkDeleteState = { handledPages: new Map() };
 
-  const results: SourceDeleteResult[] = [];
-  for (const id of dedupedIds) {
-    results.push(await deleteOneSourceWithCascade(id, batchSiblingIds, bulkId, bulkState));
-  }
+  const turn = await inSourceDeleteTurn(async () => {
+    const out: SourceDeleteResult[] = [];
+    for (const id of dedupedIds) {
+      out.push(await deleteOneSourceWithCascade(id, batchSiblingIds, bulkId, bulkState));
+    }
+    return out;
+  });
+  if (!turn.ok) return NextResponse.json(turn.blocked, { status: 409 });
+  const results = turn.value;
 
   const summary = results.reduce(
     (acc, r) => {

@@ -1,7 +1,7 @@
 /**
  * The wiki repair's wrong-sense link step (lib/wiki-repair/senses.ts) and
- * source title step (lib/wiki-repair/titles.ts): both free, both all or none
- * after the run's backup; page text changes through the outbox commit.
+ * source title step (lib/wiki-repair/titles.ts): both free, both after the
+ * run's backup; page text changes through the outbox commit.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';

@@ -77,8 +77,12 @@ export interface LabelOutcome {
   missed: number;
 }
 
-/** Gives every page with a merged label its new one. */
-export async function applyLabelMerges(db: Database.Database, target: Map<string, string>): Promise<LabelOutcome> {
+/** Gives every page with a merged label its new one. `runWrites`: lib/page-rewrite.ts. */
+export async function applyLabelMerges(
+  db: Database.Database,
+  target: Map<string, string>,
+  runWrites?: Set<string>,
+): Promise<LabelOutcome> {
   const outcome: LabelOutcome = { merged: 0, pages: 0, missed: 0 };
   if (target.size === 0) return outcome;
   const used = new Set<string>();
@@ -104,6 +108,7 @@ export async function applyLabelMerges(db: Database.Database, target: Map<string
           draftRules: null,
           activity: null,
           category: into,
+          runWrites,
         });
         if (result.ok) outcome.pages++;
         else outcome.missed++;

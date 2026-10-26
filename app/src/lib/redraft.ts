@@ -66,11 +66,12 @@ export class RedraftError extends Error {
   }
 }
 
-// One action per page at a time. On globalThis so dev-server reloads share it.
+// One action per page at a time: also taken by the rewrite after a source
+// delete (lib/recompile.ts). On globalThis so dev-server reloads share it.
 const locks: Set<string> = ((globalThis as { __komplPageActionLocks?: Set<string> }).__komplPageActionLocks ??=
   new Set<string>());
 
-async function withPageLock<T>(pageId: string, fn: () => Promise<T>): Promise<T> {
+export async function withPageLock<T>(pageId: string, fn: () => Promise<T>): Promise<T> {
   if (locks.has(pageId)) {
     throw new RedraftError('page_action_in_progress', 409, 'This page is already being updated or restored.');
   }
@@ -220,6 +221,8 @@ export interface RedraftOptions {
   credits?: CreditChange;
   /** No activity row per page: the wiki repair records its run as a whole. */
   quiet?: boolean;
+  /** The pages this wiki repair run has written (commitPageRewrite). */
+  runWrites?: Set<string>;
 }
 
 /** Rebuild a page from all its current sources. One LLM call. */
@@ -341,6 +344,7 @@ export async function redraftPage(pageId: string, options: RedraftOptions = {}):
         remove: options.credits.remove,
         add: options.credits.add.filter((id) => sources.some((s) => s.source_id === id)),
       },
+      runWrites: options.runWrites,
     });
     if (!result.ok) {
       throw new RedraftError('page_changed', 409, 'The page changed while it was being updated. Nothing was replaced; try again.');

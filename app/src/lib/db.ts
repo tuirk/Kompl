@@ -336,23 +336,28 @@ export function getSource(sourceId: string): SourceRow | null {
 
 
 /**
- * Delete a source row and return its file_path for cleanup by the caller.
- * Returns null if the source does not exist.
+ * Delete a source row and return the path of its raw file for cleanup by the
+ * caller. Returns null if the source does not exist.
  * Intended to be called INSIDE a db.transaction() callback (sync only).
+ *
+ * The path comes from the source id (rawFilePath), never from the stored
+ * file_path column: a restored backup can put any path there, and the
+ * caller unlinks what this returns.
  */
 export function deleteSource(sourceId: string): string | null {
   const db = openDb();
   const row = db
-    .prepare('SELECT file_path FROM sources WHERE source_id = ?')
-    .get(sourceId) as { file_path: string } | null;
+    .prepare('SELECT 1 FROM sources WHERE source_id = ?')
+    .get(sourceId);
   if (!row) return null;
+  const filePath = rawFilePath(sourceId);
   // Must delete child rows before parent — foreign_keys = ON enforces this.
   db.prepare('DELETE FROM extractions WHERE source_id = ?').run(sourceId);
   db.prepare('DELETE FROM sources WHERE source_id = ?').run(sourceId);
   // Invalidate archived-page-ids cache — the deleted source's provenance rows
   // have been removed, which may change which pages are "all-archived".
   _archivedIdsCache = null;
-  return row.file_path;
+  return filePath;
 }
 
 // ============================================================================
@@ -666,6 +671,8 @@ export function searchPages(query: string, limit = 20, excludePageIds?: Set<stri
  * Run a prebuilt FTS5 MATCH expression (see lib/fts-query.ts), best match
  * first. Optional filters apply before LIMIT, so a filtered search isn't cut
  * short by pages it would drop. Category matches case-insensitively.
+ * Archived pages never match: they carry no search row, but a restore
+ * made before import left them out still gave them one.
  */
 export function searchPagesFts(
   ftsQuery: string,
@@ -682,6 +689,7 @@ export function searchPagesFts(
          FROM pages_fts f
          JOIN pages p ON p.page_id = f.page_id
         WHERE pages_fts MATCH ?
+          AND p.page_type != 'archived'
           AND (? IS NULL OR p.category = ? COLLATE NOCASE)
           AND (? IS NULL OR p.page_type = ?)
         ORDER BY rank
@@ -1857,6 +1865,11 @@ export function getSourcePage(sourceId: string, title: string): PageRow | null {
  * concept, comparison or overview page with that title. Source pages and
  * archived pages are left out, so a source titled "Ethereum" never becomes
  * the Ethereum page. An entity or concept page wins, then the oldest.
+ *
+ * A page held after a failed rewrite (lib/page-hold.ts: page_type
+ * 'archived', restore_page_type set) counts as the type it returns as, after
+ * any live page: it keeps its title, and the plan leaves it alone instead of
+ * making a second page with that title.
  */
 export function getTopicPageByTitle(title: string): PageRow | null {
   const row = openDb()
@@ -1864,8 +1877,10 @@ export function getTopicPageByTitle(title: string): PageRow | null {
       `SELECT ${PLAN_PAGE_COLUMNS}
          FROM pages p
         WHERE p.title = ? COLLATE NOCASE
-          AND p.page_type IN ('entity', 'concept', 'comparison', 'overview')
-        ORDER BY CASE WHEN p.page_type IN ('entity', 'concept') THEN 0 ELSE 1 END,
+          AND (CASE WHEN p.page_type = 'archived' THEN p.restore_page_type ELSE p.page_type END)
+              IN ('entity', 'concept', 'comparison', 'overview')
+        ORDER BY CASE WHEN p.page_type = 'archived' THEN 1 ELSE 0 END,
+                 CASE WHEN p.page_type IN ('entity', 'concept') OR p.restore_page_type IN ('entity', 'concept') THEN 0 ELSE 1 END,
                  p.created_at, p.page_id
         LIMIT 1`
     )
@@ -2822,8 +2837,10 @@ export function getSourceProvenanceMap(sourceId: string): Array<{
 }
 
 /**
- * Return pages that have at least one provenance link from the given source.
- * Used by cascade delete to determine which pages are affected.
+ * Return pages that have at least one provenance link from the given source,
+ * each once. Used by cascade delete to determine which pages are affected:
+ * a source can hold several rows on one page ('mentioned' next to 'updated'),
+ * and the delete must rewrite such a page once, not once per row.
  */
 export function getPagesBySourceId(sourceId: string): Array<{
   page_id: string;
@@ -2832,12 +2849,23 @@ export function getPagesBySourceId(sourceId: string): Array<{
 }> {
   return openDb()
     .prepare(
-      `SELECT p.page_id, p.title, p.source_count
+      `SELECT DISTINCT p.page_id, p.title, p.source_count
          FROM pages p
          JOIN provenance pr ON p.page_id = pr.page_id
         WHERE pr.source_id = ?`
     )
     .all(sourceId) as Array<{ page_id: string; title: string; source_count: number }>;
+}
+
+/**
+ * Remove one source's provenance rows from one page. A source delete calls
+ * it as it handles each page, so the pages it has not reached yet still
+ * name the source if it stops halfway (lib/source-delete.ts).
+ */
+export function removeSourceFromPage(pageId: string, sourceId: string): void {
+  openDb()
+    .prepare('DELETE FROM provenance WHERE page_id = ? AND source_id = ?')
+    .run(pageId, sourceId);
 }
 
 /**
@@ -2968,8 +2996,10 @@ export function cleanupPendingPlansForDeletedSource(
 
 /**
  * Drop the ids of deleted sources from a plan about to be committed, and
- * return the ids that remain. Deleting a source is not blocked while a
- * compile runs; an id left in the plan fails the provenance foreign key and
+ * return the ids that remain. A compile can start while a source is being
+ * deleted (a delete is refused while a compile runs, not the other way
+ * round: lib/source-delete.ts); an id left in the plan fails the provenance
+ * foreign key and
  * rolls back the whole page update, new sources included. The shrunk list is
  * written back, so a draft queued for approval stays approvable. A plan left
  * with no sources is deleted, as cleanupPendingPlansForDeletedSource does for

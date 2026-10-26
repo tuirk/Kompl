@@ -5,11 +5,25 @@
  * what a backup made before the column existed restores.
  */
 
+import path from 'node:path';
+
 import { isLlmModel } from './llm-models';
 
 /** A text column: the string, or null. */
 export function textOrNull(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
+}
+
+/**
+ * sources.file_path: where the source's raw text was kept. Kompl finds the
+ * raw file from the source id and never opens or deletes this path, but a
+ * crafted zip could name any file here (e.g. /data/db/kompl.db). A path is
+ * kept only when it names this source's raw file (<data root>/raw/<id>.md.gz);
+ * anything else becomes `rawPath`, where this install keeps the file.
+ */
+export function sourceFilePathFromBackup(sourceId: string, value: unknown, rawPath: string): string {
+  if (typeof value !== 'string' || !path.isAbsolute(value) || value.split(/[\\/]/).includes('..')) return rawPath;
+  return path.basename(value) === `${sourceId}.md.gz` && path.basename(path.dirname(value)) === 'raw' ? value : rawPath;
 }
 
 /** compile_status values a restore keeps ('collected' was retired by migrate.py). */

@@ -47,14 +47,20 @@ export const DRAFT_TYPE_SQL = "(CASE WHEN p.page_type = 'archived' THEN p.restor
 /**
  * Worth one more try? recompilePage throws 'llm_rate_limited' (429),
  * 'draft_page_failed: <status> ...' and fetch's TypeError when nlp-service
- * can't be reached. A timeout, the spending limit (503 daily_cost_ceiling)
- * and anything about the sources themselves would fail the same way again.
+ * can't be reached; 'page_changed' when the page changed during the draft,
+ * and the page lock's 'page_action_in_progress' (lib/redraft.ts) while
+ * another action is on the page: the retry drafts from the page as it is
+ * then. A timeout, the spending limit (503 daily_cost_ceiling) and anything
+ * about the sources themselves would fail the same way again.
  */
 export function isRetryableRewriteError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   if (err.name === 'TimeoutError' || err.name === 'AbortError') return false;
   if (err instanceof TypeError) return true;
-  return err.message === 'llm_rate_limited' || /^draft_page_failed: 5\d\d\b/.test(err.message);
+  if ((err as { code?: unknown }).code === 'page_action_in_progress') return true;
+  return (
+    err.message === 'llm_rate_limited' || err.message === 'page_changed' || /^draft_page_failed: 5\d\d\b/.test(err.message)
+  );
 }
 
 /** The reason the page shows while it is held. */

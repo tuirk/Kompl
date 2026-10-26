@@ -102,11 +102,11 @@ function applyCredits(pageId: string, credits: CreditChange, markdown: string): 
   });
 }
 
-async function writePageFile(pageId: string, markdown: string): Promise<{ previous_path: string | null }> {
+async function writePageFile(pageId: string, markdown: string, archive: boolean): Promise<{ previous_path: string | null }> {
   const res = await fetch(`${NLP_SERVICE_URL}/storage/write-page`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ page_id: pageId, markdown }),
+    body: JSON.stringify(archive ? { page_id: pageId, markdown } : { page_id: pageId, markdown, archive: false }),
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`write_page_failed: ${res.status} ${await res.text().catch(() => '')}`);
@@ -137,6 +137,15 @@ export async function commitPageRewrite(args: {
    * fixes) leave such a page archived.
    */
   releaseHold?: boolean;
+  /**
+   * The pages one wiki repair run has written so far (lib/wiki-repair/steps.ts),
+   * added to as each is written. The run's first write of a page archives the
+   * text from before the run; its later writes of that page (links, senses,
+   * rebuild, labels) replace the run's own text unarchived. Two archives are
+   * kept per page (nlp-service file_store.py), so archiving every write would
+   * push out the pre-repair text, the version "Restore this version" puts back.
+   */
+  runWrites?: Set<string>;
 }): Promise<RewriteResult> {
   const { pageId, markdown, expectedToken, draftRules, activity, credits } = args;
   const page = getPage(pageId);
@@ -180,9 +189,10 @@ export async function commitPageRewrite(args: {
   // ── Phase 3a: flush to disk (archives the previous version) ──
   let flushed = false;
   try {
-    const written = await writePageFile(pageId, markdown);
+    const written = await writePageFile(pageId, markdown, !args.runWrites?.has(pageId));
     clearPendingContent(pageId, written.previous_path);
     flushed = true;
+    args.runWrites?.add(pageId);
   } catch (err) {
     console.error('[page-rewrite] flush failed; the boot reconciler will retry', pageId, err);
   }

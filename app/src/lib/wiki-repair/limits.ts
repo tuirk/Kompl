@@ -33,3 +33,6 @@ export const REPAIR_MAX_CONSECUTIVE_FAILURES = 3;
 
 /** Folder under the data volume (DATA_ROOT) the backup before each run is saved to. */
 export const REPAIR_BACKUP_DIR = 'backups';
+
+/** Backups before a repair kept on the data volume, newest first; older ones are deleted. */
+export const REPAIR_BACKUPS_KEPT = 3;

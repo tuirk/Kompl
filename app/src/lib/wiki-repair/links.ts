@@ -188,12 +188,14 @@ export interface LinkOutcome {
 /**
  * Corrects every page's links through unused name matches, one outbox
  * commit per page, counting into `outcome` as it goes (the run's record).
- * `beforePage` runs before each page (the run's stop check and save).
+ * `beforePage` runs before each page (the run's stop check and save);
+ * `runWrites` are the pages the run has written (lib/page-rewrite.ts).
  */
 export async function applyLinkFixes(
   db: Database.Database,
   beforePage: () => void = () => {},
   outcome: LinkOutcome = { pages: 0, links: 0, missed: 0 },
+  runWrites?: Set<string>,
 ): Promise<LinkOutcome> {
   const unused = unusedAliasPairs(db);
   const titles = titleMap(db);
@@ -215,6 +217,7 @@ export async function applyLinkFixes(
       expectedToken: pageVersionToken(page.page_id),
       draftRules: null,
       activity: null,
+      runWrites,
     });
     if (result.ok) {
       outcome.pages++;

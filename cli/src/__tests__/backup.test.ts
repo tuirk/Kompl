@@ -91,7 +91,7 @@ it('calls process.exit(1) when export endpoint returns non-ok', async () => {
 
 it('writes backup file on success', async () => {
   mockCheckHealth.mockResolvedValue({ status: 'ok' })
-  const fakeZip = Buffer.from('PK\x03\x04fake-zip')
+  const fakeZip = new TextEncoder().encode('PK\x03\x04fake-zip')
   fetchMock.mockResolvedValue({
     ok: true,
     arrayBuffer: async () => fakeZip.buffer,
@@ -100,9 +100,25 @@ it('writes backup file on success', async () => {
   const { backupCommand } = require('../commands/backup')
   await backupCommand({ output: '/tmp/test-backup.kompl.zip' })
 
+  // Written beside its name, then renamed over the last backup.
   expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-    '/tmp/test-backup.kompl.zip',
-    expect.any(Buffer)
+    '/tmp/test-backup.kompl.zip.partial',
+    expect.any(Buffer),
+    { flush: true }
   )
+  expect(mockFs.renameSync).toHaveBeenCalledWith('/tmp/test-backup.kompl.zip.partial', '/tmp/test-backup.kompl.zip')
   expect(exitSpy).not.toHaveBeenCalled()
+})
+
+it('writes nothing when the export is not a backup', async () => {
+  mockFs.writeFileSync.mockClear()
+  mockFs.renameSync.mockClear()
+  mockCheckHealth.mockResolvedValue({ status: 'ok' })
+  fetchMock.mockResolvedValue({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) })
+
+  const { backupCommand } = require('../commands/backup')
+  await expect(backupCommand({ output: '/tmp/test-backup.kompl.zip' })).rejects.toThrow('process.exit(1)')
+
+  expect(mockFs.writeFileSync).not.toHaveBeenCalled()
+  expect(mockFs.renameSync).not.toHaveBeenCalled()
 })

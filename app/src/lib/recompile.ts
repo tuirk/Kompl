@@ -6,17 +6,22 @@
  * source_count (which leaves stale content), we re-draft the page using only
  * the remaining sources and commit the result.
  *
- * Flow (outbox, CLAUDE.md rule 5):
+ * Flow (outbox, CLAUDE.md rule 5), under the page lock (lib/redraft.ts):
  *   Phase 1 (async)  — read remaining sources, call /pipeline/draft-page
- *   Phase 2 (sync)   — db.transaction: update pages + pending_content +
- *                      draft_rules marker + FTS5 + disagreements record
- *   Phase 3a (await) — /storage/write-page, then clearPendingContent
+ *   Phase 2 (sync)   — db.transaction: version check (lib/page-rewrite.ts),
+ *                      update pages + pending_content + draft_rules marker +
+ *                      FTS5 + disagreements record, and the deleted source's
+ *                      provenance rows on the page
+ *   Phase 3a (await) — /storage/write-page, then clear the outbox if it
+ *                      still holds this text
  *   Phase 3c         — page_links resync
  *   Phase 3b (f&f)   — vector refresh, retried like a compile's
  *
  * Throws when the page can't be redrafted (draft failure, no readable
- * sources) — the caller retries a temporary failure once, then archives the
- * page until a rewrite succeeds (lib/page-hold.ts). Once Phase 2 has
+ * sources, another action on the page, or 'page_changed': a compile, page
+ * update or restore changed it during the draft) — the caller retries a
+ * temporary failure once, then archives the page until a rewrite succeeds
+ * (lib/page-hold.ts). Once Phase 2 has
  * committed, the new text is the page: a failed file write is left to the
  * boot reconciler, as for every commit path, and does not throw.
  *
@@ -33,7 +38,8 @@ import {
   archivePage,
   updatePageContent,
   setPendingContent,
-  clearPendingContent,
+  clearPendingContentIfUnchanged,
+  removeSourceFromPage,
   getCategoryGroups,
   getCompileModel,
   getPageTitleMap,
@@ -52,6 +58,8 @@ import { recordPageDisagreements } from './disagreements';
 import { sourceDates, withSourceDate } from './source-dates';
 import { upsertVectorWithRetry } from './vector-upsert';
 import { draftPageType, releaseHeldPage } from './page-hold';
+import { pageVersionToken } from './page-rewrite';
+import { withPageLock } from './redraft';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -128,12 +136,16 @@ async function callWritePage(pageId: string, markdown: string): Promise<WritePag
 /**
  * Re-draft a page using only its remaining sources (post-deletion).
  *
- * Precondition: removeProvenanceForSource(removedSourceId) has already been
- * called, so getProvenanceForPage(pageId) returns only remaining sources.
+ * The deleted source still has its provenance rows on the page until the
+ * new text commits; they go in the same transaction.
  *
  * @param pageId         The page to recompile.
- * @param removedSourceId The source that was just deleted (for logging only —
- *                        its provenance rows are already gone).
+ * @param removedSourceId The source being deleted: left out of the draft,
+ *                        and its rows on this page removed on commit.
+ * @param batchSiblingIds Other sources deleted in the same bulk delete. The
+ *                        page is drafted without them too: their turn finds
+ *                        the page already handled and skips it, so text
+ *                        drafted from them would stay with no credit.
  * @returns              `{ outcome: 'rewritten' }` on normal redraft, or
  *                       `{ outcome: 'archived' }` when the page was archived
  *                       because no sources remained. Caller uses this to log
@@ -142,7 +154,18 @@ async function callWritePage(pageId: string, markdown: string): Promise<WritePag
  */
 export async function recompilePage(
   pageId: string,
-  removedSourceId: string
+  removedSourceId: string,
+  batchSiblingIds: ReadonlySet<string> = new Set(),
+): Promise<{ outcome: 'rewritten' | 'archived' }> {
+  // One action per page at a time: a page update or restore of this page
+  // holds it off, and the caller tries again once (lib/page-hold.ts).
+  return withPageLock(pageId, () => rewriteFromRemaining(pageId, removedSourceId, batchSiblingIds));
+}
+
+async function rewriteFromRemaining(
+  pageId: string,
+  removedSourceId: string,
+  batchSiblingIds: ReadonlySet<string>,
 ): Promise<{ outcome: 'rewritten' | 'archived' }> {
   // ── Fetch page metadata ───────────────────────────────────────────────────
   const page = getPage(pageId);
@@ -151,9 +174,14 @@ export async function recompilePage(
     // Treat as archived-equivalent: nothing to rewrite, nothing to count.
     return { outcome: 'archived' };
   }
+  // Taken before the draft call and checked in Phase 2, so a compile that
+  // touched the page meanwhile is never overwritten (lib/page-rewrite.ts).
+  const expectedToken = pageVersionToken(pageId);
 
-  // ── Get remaining sources (provenance already pruned by caller) ───────────
-  const remainingProvenance = getProvenanceForPage(pageId);
+  // ── Get remaining sources: all but the deleted one and its batch siblings ─
+  const remainingProvenance = getProvenanceForPage(pageId).filter(
+    (p) => p.source_id !== removedSourceId && !batchSiblingIds.has(p.source_id),
+  );
 
   if (remainingProvenance.length === 0) {
     // Edge case: all provenance removed between check and now.
@@ -169,7 +197,6 @@ export async function recompilePage(
   const sourceContents: SourceContent[] = [];
   const seenSources = new Set<string>();
   for (const prov of remainingProvenance) {
-    if (prov.source_id === removedSourceId) continue; // belt-and-suspenders
     if (seenSources.has(prov.source_id)) continue;
     seenSources.add(prov.source_id);
     const src = getSource(prov.source_id);
@@ -221,7 +248,9 @@ export async function recompilePage(
   const newSourceCount = sourceContents.length;
   const expectedPath = `/data/pages/${pageId}.md.gz`;
 
-  db.transaction(() => {
+  const committed = db.transaction((): boolean => {
+    if (pageVersionToken(pageId) !== expectedToken) return false;
+
     updatePageContent(
       pageId,
       expectedPath,
@@ -248,15 +277,21 @@ export async function recompilePage(
 
     // Disagreements the committed text records (lib/disagreements.ts).
     recordPageDisagreements(db, { page_id: pageId, title: page.title }, newMarkdown);
+
+    // The deleted source's credit leaves with its material.
+    removeSourceFromPage(pageId, removedSourceId);
+    return true;
   })();
+  if (!committed) throw new Error('page_changed');
 
   // ── Phase 3a (awaited): flush pending_content to disk via nlp-service ────
   // On failure pending_content stays set and the boot reconciler
-  // (instrumentation.ts) writes the file, as for every commit path.
+  // (instrumentation.ts) writes the file, as for every commit path. Newer
+  // text another writer queued during the write stays queued.
   let flushed = false;
   try {
     const writeResult = await callWritePage(pageId, newMarkdown);
-    clearPendingContent(pageId, writeResult.previous_path);
+    clearPendingContentIfUnchanged(pageId, writeResult.previous_path, newMarkdown);
     flushed = true;
   } catch (err) {
     console.error('[recompile] flush failed; the boot reconciler will retry', pageId, err);

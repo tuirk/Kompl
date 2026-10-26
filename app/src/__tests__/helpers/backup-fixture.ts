@@ -158,14 +158,16 @@ export function seedWiki(db: Database.Database, scale: WikiScale): SeededWiki {
       if (isPending) pending.set(id, markdown);
       if (!isPending) writeGz(`pages/${id}.md.gz`, markdown, files);
       else if (j % 2 === 0) writeGz(`pages/${id}.md.gz`, `# ${titles[j]}\n\nStale text.\n`, files);
+      const archived = j % 50 === 7;
       page.run(
-        id, titles[j], j % 50 === 7 ? 'archived' : ['entity', 'concept', 'source-summary', 'comparison', 'overview'][j % 5],
+        id, titles[j], archived ? 'archived' : ['entity', 'concept', 'source-summary', 'comparison', 'overview'][j % 5],
         j % 4 === 0 ? null : `Category ${j % 12}`, words(20), `/data/pages/${id}.md.gz`, previous,
         ts(j, 53), 1 + (j % 3), ts(j, 41), isPending ? markdown : null, j % 3 === 0 ? 'v0.4' : null,
         // Half the archived pages are held after a failed rewrite (lib/page-hold.ts).
         j % 100 === 7 ? 'entity' : null, j % 100 === 7 ? `Kompl could not rewrite this page (${words(4)}).` : null,
       );
-      fts.run(id, titles[j], markdown);
+      // Archived pages carry no search row (archivePage, holdPage).
+      if (!archived) fts.run(id, titles[j], markdown);
     });
     const saved = '# Saved Links\n\n- [A saved link](https://example.org/saved/0) — 2025-01-01 · *Could not fetch*\n';
     page.run('saved-links', 'Saved Links', 'overview', null, null, '/data/pages/saved-links.md.gz', null,

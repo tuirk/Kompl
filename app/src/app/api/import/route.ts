@@ -6,7 +6,7 @@ import path from 'path';
 import zlib from 'zlib';
 import { NextResponse } from 'next/server';
 
-import { getDb, DATA_ROOT, getDailyCapUsd, logActivity, safePreviousContentPath, setDailyCapUsd } from '@/lib/db';
+import { getDb, DATA_ROOT, getDailyCapUsd, logActivity, rawFilePath, safePreviousContentPath, setDailyCapUsd } from '@/lib/db';
 import { aliasRecordFromBackup } from '@/lib/alias-records';
 import { referenceCheck, type SkippedRows } from '@/lib/backup-references';
 import { screenAliasesNowOrLater } from '@/lib/alias-screen';
@@ -15,10 +15,12 @@ import {
   failureAttemptsFromBackup,
   restorePageTypeFromBackup,
   sourceCompileStateFromBackup,
+  sourceFilePathFromBackup,
   textOrNull,
   usedSourceIdsFromBackup,
 } from '@/lib/backup-columns';
 import { isBackedUpSetting } from '@/lib/backup-settings';
+import { MAX_IMPORT_ENTRIES, MAX_IMPORT_UNPACKED_BYTES } from '@/lib/import-limits';
 import { sanitizeDraftRules } from '@/lib/draft-rules';
 import { backfillDisagreements, importDisagreements } from '@/lib/disagreement-backfill';
 import { importClaimVerdicts } from '@/lib/claim-check/verdicts';
@@ -34,8 +36,52 @@ import { isSafeId } from '@/lib/safe-paths';
 import { resyncAllWikilinks } from '@/lib/wikilinks';
 import { countUserPages, SYSTEM_PAGE_IDS } from '@/lib/wiki-empty';
 
+/** The backup unpacks to more than a restore holds (lib/import-limits.ts). */
+class BackupTooLarge extends Error {}
+
+const TOO_LARGE_MESSAGE =
+  `This file unpacks to more than Kompl restores at once (${MAX_IMPORT_UNPACKED_BYTES / 1024 ** 3} GB or ` +
+  `${MAX_IMPORT_ENTRIES.toLocaleString('en-US')} files), more than a Kompl backup holds; it may be damaged or not a ` +
+  'Kompl backup. Nothing was restored.';
+
+/**
+ * One zip entry, unpacked as a stream and counted against what the whole
+ * restore may unpack, so a zip bomb stops at the limit instead of filling
+ * memory. Throws BackupTooLarge past it.
+ */
+function unpack(entry: JSZip.JSZipObject, budget: { bytes: number }): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const stream = entry.nodeStream('nodebuffer');
+    stream.on('data', (chunk: Buffer) => {
+      budget.bytes -= chunk.length;
+      if (budget.bytes < 0) {
+        // Paused with no reader, the stream unpacks no further.
+        stream.removeAllListeners('data');
+        stream.pause();
+        reject(new BackupTooLarge());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    stream.on('error', reject);
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+  });
+}
 
 export async function POST(request: Request) {
+  try {
+    return await restoreBackup(request);
+  } catch (err) {
+    // Thrown before the restore writes anything: every entry is read first.
+    if (err instanceof BackupTooLarge) {
+      return NextResponse.json({ error: 'backup_too_large', message: TOO_LARGE_MESSAGE }, { status: 413 });
+    }
+    throw err;
+  }
+}
+
+async function restoreBackup(request: Request): Promise<Response> {
   // Parse multipart
   let form: FormData;
   try {
@@ -56,9 +102,17 @@ export async function POST(request: Request) {
   } catch {
     return NextResponse.json({ error: 'invalid_zip' }, { status: 422 });
   }
+  if (Object.keys(zip.files).length > MAX_IMPORT_ENTRIES) throw new BackupTooLarge();
+  // Every entry read below unpacks against this one budget, all of them
+  // before the restore writes anything.
+  const budget = { bytes: MAX_IMPORT_UNPACKED_BYTES };
+  const readText = async (name: string): Promise<string | undefined> => {
+    const entry = zip.file(name);
+    return entry ? (await unpack(entry, budget)).toString('utf-8') : undefined;
+  };
 
   // Validate manifest
-  const manifestRaw = await zip.file('manifest.json')?.async('string');
+  const manifestRaw = await readText('manifest.json');
   if (!manifestRaw) {
     return NextResponse.json({ error: 'invalid_format: no manifest' }, { status: 422 });
   }
@@ -92,24 +146,26 @@ export async function POST(request: Request) {
   // Phase 1 (async): Pre-read all zip content into memory
   // -------------------------------------------------------------------------
 
-  const sources = JSON.parse((await zip.file('db/sources.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const pages   = JSON.parse((await zip.file('db/pages.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const provenance  = JSON.parse((await zip.file('db/provenance.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const aliases     = JSON.parse((await zip.file('db/aliases.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const extractions = JSON.parse((await zip.file('db/extractions.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const pageLinks            = JSON.parse((await zip.file('db/page_links.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const entityMentions       = JSON.parse((await zip.file('db/entity_mentions.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const relationshipMentions = JSON.parse((await zip.file('db/relationship_mentions.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const drafts               = JSON.parse((await zip.file('db/drafts.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const activityLog          = JSON.parse((await zip.file('db/activity_log.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const compileProgress      = JSON.parse((await zip.file('db/compile_progress.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const chatMessages         = JSON.parse((await zip.file('db/chat_messages.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const pagePlans            = JSON.parse((await zip.file('db/page_plans.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const disagreements        = JSON.parse((await zip.file('db/disagreements.json')?.async('string')) ?? '[]') as unknown[];
-  const claimVerdicts        = JSON.parse((await zip.file('db/claim_verdicts.json')?.async('string')) ?? '[]') as unknown[];
-  const ingestFailures       = JSON.parse((await zip.file('db/ingest_failures.json')?.async('string')) ?? '[]') as Record<string, unknown>[];
-  const settings    = JSON.parse((await zip.file('db/settings.json')?.async('string')) ?? '[]') as Record<string, string>[];
-  const schemaContent = (await zip.file('schema.md')?.async('string')) ?? null;
+  const sources = JSON.parse((await readText('db/sources.json')) ?? '[]') as Record<string, unknown>[];
+  const pages   = JSON.parse((await readText('db/pages.json')) ?? '[]') as Record<string, unknown>[];
+  const provenance  = JSON.parse((await readText('db/provenance.json')) ?? '[]') as Record<string, unknown>[];
+  const aliases     = JSON.parse((await readText('db/aliases.json')) ?? '[]') as Record<string, unknown>[];
+  const extractions = JSON.parse((await readText('db/extractions.json')) ?? '[]') as Record<string, unknown>[];
+  const pageLinks            = JSON.parse((await readText('db/page_links.json')) ?? '[]') as Record<string, unknown>[];
+  const entityMentions       = JSON.parse((await readText('db/entity_mentions.json')) ?? '[]') as Record<string, unknown>[];
+  const relationshipMentions = JSON.parse((await readText('db/relationship_mentions.json')) ?? '[]') as Record<string, unknown>[];
+  const drafts               = JSON.parse((await readText('db/drafts.json')) ?? '[]') as Record<string, unknown>[];
+  const activityLog          = JSON.parse((await readText('db/activity_log.json')) ?? '[]') as Record<string, unknown>[];
+  const compileProgress      = JSON.parse((await readText('db/compile_progress.json')) ?? '[]') as Record<string, unknown>[];
+  const chatMessages         = JSON.parse((await readText('db/chat_messages.json')) ?? '[]') as Record<string, unknown>[];
+  const pagePlans            = JSON.parse((await readText('db/page_plans.json')) ?? '[]') as Record<string, unknown>[];
+  const disagreements        = JSON.parse((await readText('db/disagreements.json')) ?? '[]') as unknown[];
+  const claimVerdicts        = JSON.parse((await readText('db/claim_verdicts.json')) ?? '[]') as unknown[];
+  const ingestFailures       = JSON.parse((await readText('db/ingest_failures.json')) ?? '[]') as Record<string, unknown>[];
+  const settings    = JSON.parse((await readText('db/settings.json')) ?? '[]') as Record<string, string>[];
+  const schemaContent = (await readText('schema.md')) ?? null;
+  // Restored in Phase 3, after the transaction; read now with the rest.
+  const vectorsJson = await readText('vectors.json');
 
   // Validate ids before any write. page_id/source_id flow into file paths
   // and routes (readPageMarkdown asserts and THROWS on bad ids — a row with
@@ -137,10 +193,10 @@ export async function POST(request: Request) {
   for (const [relPath, entry] of Object.entries(zip.files)) {
     if (entry.dir) continue;
     if (relPath.startsWith('raw/')) {
-      rawBuffers.set(path.basename(relPath), Buffer.from(await entry.async('arraybuffer')));
+      rawBuffers.set(path.basename(relPath), await unpack(entry, budget));
     }
     if (relPath.startsWith('pages/')) {
-      pageBuffers.set(path.basename(relPath), Buffer.from(await entry.async('arraybuffer')));
+      pageBuffers.set(path.basename(relPath), await unpack(entry, budget));
     }
   }
 
@@ -207,7 +263,7 @@ export async function POST(request: Request) {
         s.source_type as string,
         (s.source_url as string | null) ?? null,
         s.content_hash as string,
-        s.file_path as string,
+        sourceFilePathFromBackup(s.source_id as string, s.file_path, rawFilePath(s.source_id as string)),
         (s.status as string | null) ?? 'active',
         s.date_ingested as string,
         (s.metadata as string | null) ?? null,
@@ -251,6 +307,11 @@ export async function POST(request: Request) {
         restorePageTypeFromBackup(p.restore_page_type),
         textOrNull(p.archive_reason)
       );
+
+      // Archived pages carry no search row, as archivePage and holdPage
+      // leave them: a page held after a failed rewrite may still hold a
+      // deleted source's material.
+      if (p.page_type === 'archived') continue;
 
       // Decompress synchronously for FTS5 — buffer already in memory from Phase 1
       const buf = pageBuffers.get(`${p.page_id as string}.md.gz`);
@@ -590,7 +651,6 @@ export async function POST(request: Request) {
   // If the zip contains pre-computed embeddings, restore them directly
   // (no re-embedding needed). Otherwise, or when they are empty, unreadable
   // or refused, every page is embedded again by the backfill endpoint.
-  const vectorsJson = await zip.file('vectors.json')?.async('string');
   const NLP_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
   const backfillVectors = () =>
     void fetch(`${process.env.APP_URL ?? 'http://app:3000'}/api/compile/backfill-vectors`, {

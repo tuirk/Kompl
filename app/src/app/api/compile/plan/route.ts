@@ -38,6 +38,7 @@ import {
   hasPendingCreate,
   insertPagePlan,
   readRawMarkdown,
+  type PageRow,
 } from '../../../../lib/db';
 import { recordTriageContradiction } from '../../../../lib/compile/triage-disagreement';
 import { countKinds, decidePageKind, isPageKind, sourceKinds, type PageKind } from '../../../../lib/page-kind';
@@ -103,6 +104,16 @@ const SELF_TYPED_PAGES = new Set<string>(['entity', 'concept', 'comparison', 'ov
 
 // The pages Rules 2-5 update by title (db.ts getTopicPageByTitle).
 const TOPIC_PAGE_TYPES = ['entity', 'concept', 'comparison', 'overview'] as const;
+
+/**
+ * A page held after a failed rewrite (lib/page-hold.ts) may still hold a
+ * deleted source's material, and an update keeps a page's text. It keeps its
+ * title and is left alone (neither updated nor made again) until a rewrite
+ * from its sources brings it back (Settings > Wiki health).
+ */
+function isHeld(page: PageRow | null): boolean {
+  return page?.page_type === 'archived';
+}
 
 function updatePageType(
   existing: { page_type: string } | null,
@@ -275,6 +286,7 @@ export async function POST(request: Request) {
     if (countSourcesMentioning(subject.canonical) < entityThreshold) continue;
 
     const existing = getTopicPageByTitle(subject.canonical);
+    if (isHeld(existing)) continue;
     if (!existing && waitsForApproval(subject.canonical, TOPIC_PAGE_TYPES)) continue;
     let page_type: PlannedPage['page_type'];
     if (existing && !isPageKind(existing.page_type)) {
@@ -336,6 +348,7 @@ export async function POST(request: Request) {
     const compTitle = `${from} vs ${to}`;
     // Like Rules 2 and 3: a source page with this title is not the comparison.
     const existingComp = getTopicPageByTitle(compTitle);
+    if (isHeld(existingComp)) continue;
     if (!existingComp && waitsForApproval(compTitle, ['comparison'])) continue;
     plans.push({
       plan_id: randomUUID(),
@@ -378,6 +391,7 @@ export async function POST(request: Request) {
 
     const overviewTitle = `${category} Overview`;
     const existingOverview = getTopicPageByTitle(overviewTitle);
+    if (isHeld(existingOverview)) continue;
     if (!existingOverview && waitsForApproval(overviewTitle, ['overview'])) continue;
     plans.push({
       plan_id: randomUUID(),
