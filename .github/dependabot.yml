@@ -3,13 +3,14 @@ version: 2
 # Routine minor and patch bumps are skipped: version updates are opened only
 # for new major versions. A minor or patch bump that fixes a vulnerability
 # still arrives as a security update, because `update-types` ignores never
-# block security updates. Each entry repeats the rule (no YAML anchors).
+# block security updates. Checks run monthly; security updates arrive as soon
+# as GitHub knows of the vulnerability, whatever the schedule. Each entry
+# repeats the rule (no YAML anchors).
 updates:
   - package-ecosystem: npm
     directory: /app
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
@@ -25,8 +26,7 @@ updates:
   - package-ecosystem: npm
     directory: /mcp-server
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
@@ -39,8 +39,7 @@ updates:
   - package-ecosystem: npm
     directory: /cli
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
@@ -53,8 +52,7 @@ updates:
   - package-ecosystem: pip
     directory: /nlp-service
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
@@ -76,8 +74,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
@@ -91,8 +88,7 @@ updates:
   - package-ecosystem: docker
     directory: /nlp-service
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 3
@@ -100,8 +96,7 @@ updates:
   - package-ecosystem: docker
     directory: /app
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "09:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 3
