@@ -5,7 +5,7 @@ All notable changes to Kompl are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The application surface (Next.js API, CLI, MCP server, settings) follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The SQLite schema
-uses a separate monotonic version (currently `v29`); breaking schema changes
+uses a separate monotonic version (currently `v30`); breaking schema changes
 ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
@@ -526,6 +526,111 @@ ship with a `migrate.py` step that runs at boot.
   Checked against the May–October 2026 backups: every one imports into this
   release, upgrades from v0.3.2.1 keep every row, and a backup made here
   restores into v0.3.2.1 with all pages.
+
+The fixes below come from a review of this release before it shipped
+(2026-10-26).
+
+- **Name matching no longer chains two meanings of an abbreviation:** "CI"
+  named by two sources and called the same as both "Continuous Integration"
+  and "Confidence Interval" no longer makes all three one page, also when the
+  abbreviation and one expansion were already one page by their spelling
+  ("Continuous Integration (CI)"), and two groups never join across names
+  the AI check called different. A name the
+  AI check adds to a group is stored as an AI match, not as the group's
+  spelling rule.
+- **More names that are one thing become one page:** "Full Name (ABBR)",
+  "ABBR" and "Full Name" in one compile join, a bracketed name meets other
+  spellings of its full name ("Organisation…" / "Organization…"), a group
+  the AI check forms takes the kind most of its names have, and people are
+  matched by meaning to people's pages (and nothing else is).
+- **Same-named pairs keep their own verdicts:** Mercury (person) and Mercury
+  (place) no longer swap verdicts when the model answers out of order.
+- **Large wikis resolve faster and spend fewer AI checks:** page vectors are
+  kept between compiles, and each name is asked about at most the two wiki
+  titles it adds words to that are most like it.
+- **Links:** "Vertigo is…" at the start of a sentence no longer links the
+  film on a page that also writes "vertigo".
+- **A slow compile no longer loses pages:** the writing step allows a round
+  per layer (and one for the first summary written alone), stops starting
+  pages once Kompl stops waiting, and a late draft can no longer undo the
+  pages a Retry already wrote.
+- **Cut-off pages are never saved:** a page or the wiki schema the model
+  stopped early (filtered, overloaded, or out of room twice) fails and is
+  retried instead of being saved half-written.
+- **AI calls finish inside Kompl's wait, and every paid attempt counts:**
+  retries and waits stop in time, a call waiting at the daily limit is
+  refused instead of let through, and attempts that timed out count toward
+  the daily limit.
+- **An empty DeepSeek account stops the compile** at once and says to top up
+  the account, instead of failing every page and suggesting a higher daily
+  limit.
+- **Redo is safer:** a redo started again keeps track of the compile's own
+  pages and of pages others changed, and a re-written update starts from the
+  page as it was before the compile.
+- **An update skipped because its page changed can be retried:** it shows as
+  failed with the reason, and Retry writes it again on the current page.
+- **Disagreements stay with their own section:** when a redraft drops or
+  reorders Disputed/Changed sections that cite the same sources, each finding
+  and your Confirm/Dismiss stay with the right topic.
+- **Source dates come only from bylines:** a date in a sentence ("released
+  on December 3, 2008") or a table row no longer dates a source. Dates read
+  from text are checked again once at startup.
+- **"Quoted from" means whole words:** a quote no longer counts as found
+  inside a longer word ("likely" in "unlikely"), and a quote with "…" needs
+  its parts close together.
+- **Claim-check findings survive redrafts:** a disagreement the page text
+  already recorded comes back as the check's finding if a redraft drops the
+  section.
+- **created_by keeps characters right:** "Mickey Mouse created_by The Walt
+  Disney Company" is no longer reversed.
+- **Faster whole-wiki check on large wikis:** finding claim pairs is several
+  times faster and runs once less per check.
+- **Research brief and map:** a "now:" line comes from the right section on
+  pages with code blocks, and a line whose "part of" may be outdated stays on
+  the map when a current "related to" names it.
+- **Deleting a source is safe to interrupt:** a delete stopped by a restart
+  is finished by deleting again; deletes run one at a time and are refused,
+  with the reason, while a compile, repair or page update runs; a page a
+  compile just updated is never overwritten; each page is rewritten once;
+  and a bulk delete no longer leaves one deleted source's text behind.
+- **Repair keeps your pages' old text:** after a repair, "Restore this
+  version" puts back each page's text from before it. A stopped repair says
+  what it left half done, and Repair wiki again finishes it. Only the newest
+  three backups made before a repair stay in `/data/backups`.
+- **Restores:** held and archived pages stay out of search, and a page held
+  after a failed rewrite keeps its title, so no duplicate page is created.
+- **Backups:** a backup with vectors is one consistent snapshot, and
+  `kompl backup` and the start-up backup never replace a good backup with a
+  broken or empty one (they write a `.partial` file and rename it), with ten
+  minutes to download.
+- **Migration** stops with the reason instead of rebuilding the aliases table
+  when the schema version can't be read.
+- **Settings save all or nothing:** a request with one bad value changes
+  nothing, and a malformed request gets 400 instead of 500. Keyword search
+  keeps `limit` between 1 and 100.
+
+### Security
+
+- **Other websites can't change Kompl:** a page you visit could stage
+  sources, start a paid compile, lift the daily spend cap or switch the
+  model, because only a few routes refused cross-site requests.
+  `app/src/proxy.ts` now refuses every write that comes from another site.
+- **DNS rebinding:** the app and the NLP service answer only to `localhost`,
+  IP addresses, their service names (`app`, `nlp-service`, `n8n`) and the
+  names in `KOMPL_ALLOWED_HOSTS`; any other host name gets `403
+  unknown_host`. **If you reach Kompl through a reverse proxy or as
+  `host.docker.internal`, add that name to `KOMPL_ALLOWED_HOSTS`.**
+- **Links can't redirect into your machine:** every redirect of a link Kompl
+  fetches is checked before it is followed. A redirect to a private or
+  internal address is refused and the link goes to Saved Links.
+- **No path from a request or a backup can delete a file:** a staged upload
+  must be a file in Kompl's uploads folder, and deleting a source removes
+  only the raw file Kompl derives from its id, never a path a backup stored.
+  Staging takes only http(s) links.
+- **Restores are bounded:** a backup that unpacks to more than 1 GB or
+  200,000 files is refused before anything is written.
+- **MCP fence:** a fence tag spelled with invisible, wide or look-alike
+  characters is broken like a plain one.
 
 ## [0.3.2.1] — 2026-09-01
 
