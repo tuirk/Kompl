@@ -42,9 +42,7 @@ pattern across all ten without you having to ask.
 - **Runs on your machine, with your keys.** One Docker stack, a CLI, and your
   own DeepSeek or Gemini key. No accounts, no telemetry.
 
-**Watch the 1-minute demo:**
-
-[![Kompl, an open source LLM wiki your AI agent can read: 1-minute demo](https://img.youtube.com/vi/6zVYz6aHU1k/maxresdefault.jpg)](https://youtu.be/6zVYz6aHU1k)
+▶ **Watch the 1-minute demo:** [Kompl, an open source LLM-wiki your AI agent can read](https://youtu.be/6zVYz6aHU1k)
 
 ![Kompl wiki in action](docs/assets/kompl-demo.gif)
 
