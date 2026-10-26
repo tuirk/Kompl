@@ -12,8 +12,13 @@
  * like pageRewrittenSince.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import zlib from 'node:zlib';
+
 import type Database from 'better-sqlite3';
 
+import { DATA_ROOT, safePreviousContentPath } from '../db';
 import { derivePlanPageId } from '../plan-page-id';
 
 export interface CompilePage {
@@ -80,4 +85,52 @@ export function compilePages(db: Database.Database, sessionId: string): CompileP
     out.set(page_id, { page_id, title: plan.title, plan_id: plan.plan_id, action: createdHere ? 'create' : 'update', changed });
   }
   return [...out.values()];
+}
+
+/**
+ * The page's text from before this compile first wrote it, or null when no
+ * kept version shows it. A redo that writes an update again starts from it:
+ * the page now holds the very update being redone, so updating the page as
+ * it is could not undo a bad update.
+ *
+ * nlp-service keeps the last versions of a page (file_store.py
+ * MAX_ARCHIVED_VERSIONS) named by the time each was written. The one from
+ * before the compile is the newest written before the compile's first save
+ * of the page (its first page_compiled or draft_approved row). That version
+ * was read by the compile's draft, well before its save, so it is never
+ * written in the same second as the save.
+ */
+export function pageTextBeforeCompile(db: Database.Database, sessionId: string, pageId: string): string | null {
+  const first = db
+    .prepare(
+      `SELECT MIN(a.timestamp) AS at
+         FROM activity_log a
+        WHERE json_extract(a.details, '$.page_id') = ?
+          AND ((a.action_type = 'page_compiled' AND a.session_id = ?)
+            OR (a.action_type = 'draft_approved'
+                AND json_extract(a.details, '$.plan_id') IN (SELECT plan_id FROM page_plans WHERE session_id = ?)))`,
+    )
+    .get(pageId, sessionId, sessionId) as { at: string | null } | undefined;
+  if (!first?.at) return null;
+  // '2026-10-26 12:34:56' → '20261026-123456', the archive names' stamp.
+  const savedAt = first.at.replace(/[-:]/g, '').replace(' ', '-').slice(0, 15);
+
+  const pagesDir = path.join(DATA_ROOT, 'pages');
+  let names: string[];
+  try {
+    names = fs.readdirSync(pagesDir);
+  } catch {
+    return null;
+  }
+  const before = names
+    .filter((n) => n.startsWith(`${pageId}.`) && safePreviousContentPath(pageId, path.join(pagesDir, n)))
+    .map((n) => ({ n, stamp: n.slice(pageId.length + 1, pageId.length + 16) }))
+    .filter((a) => a.stamp < savedAt)
+    .sort((a, b) => (a.n < b.n ? 1 : -1));
+  if (before.length === 0) return null;
+  try {
+    return zlib.gunzipSync(fs.readFileSync(path.join(pagesDir, before[0].n))).toString('utf-8');
+  } catch {
+    return null;
+  }
 }

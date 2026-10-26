@@ -108,6 +108,12 @@ def _get_model_prices(model: str) -> dict[str, float]:
 
 _RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 
+# Errors after the request went out, before a readable answer came back:
+# DeepSeek may have answered and billed it (llm_client._record_unanswered).
+_SENT_ERRORS = (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError)
+# Errors before the request reached DeepSeek: nothing to bill.
+_UNSENT_ERRORS = (httpx.ConnectError, httpx.PoolTimeout, httpx.WriteTimeout, httpx.WriteError)
+
 _DEFAULT_TIMEOUT_S = 600.0
 # Tries for a 429 on a step that does not otherwise retry (waits 2, 4, 8 s).
 _CONCURRENCY_ATTEMPTS = 4
@@ -233,22 +239,28 @@ class DeepSeekProvider:
         # until _unpack records the cost.
         with llm_client._spend_reservation(req):
             for attempt in range(max_attempts):
+                # A call with a deadline (llm_client._CALL_DEADLINE_S) sends
+                # no attempt that cannot end before the app stops waiting,
+                # and waits for an answer only until then.
+                timeout = _STEP_TIMEOUT_S.get(req.step, _DEFAULT_TIMEOUT_S)
+                left = llm_client._time_left(req)
+                if left is not None:
+                    if left < llm_client._MIN_ATTEMPT_S:
+                        if last_exc is None:
+                            raise TimeoutError(f"no time left for {req.step} before the app stops waiting")
+                        break
+                    timeout = min(timeout, left)
                 if not limiter.try_acquire("deepseek"):
                     raise llm_client.LLMRateLimitedError(
                         f"llm_rate_limited: bucket exhausted on {req.step}"
                     )
                 try:
-                    response = client.post("/v1/chat/completions", json=body,
-                                           timeout=_STEP_TIMEOUT_S.get(req.step, _DEFAULT_TIMEOUT_S))
-                except (
-                    httpx.ConnectError,
-                    httpx.PoolTimeout,
-                    httpx.ReadTimeout,
-                    httpx.WriteTimeout,
-                    httpx.RemoteProtocolError,
-                    httpx.WriteError,
-                    httpx.ReadError,
-                ) as e:
+                    response = client.post("/v1/chat/completions", json=body, timeout=timeout)
+                except _SENT_ERRORS as e:
+                    llm_client._record_unanswered(req)
+                    last_exc = e
+                    err_class = type(e).__name__
+                except _UNSENT_ERRORS as e:
                     last_exc = e
                     err_class = type(e).__name__
                 else:
@@ -285,9 +297,15 @@ class DeepSeekProvider:
         raise last_exc
 
     def _unpack(self, req: LLMRequest, response: httpx.Response) -> LLMResult:
-        data = response.json()
-        choice = data["choices"][0]
-        text = choice["message"]["content"] or ""
+        try:
+            data = response.json()
+            choice = data["choices"][0]
+            text = choice["message"]["content"] or ""
+        except Exception:
+            # A 200 is billed even when it cannot be read.
+            from services import llm_client  # lazy
+            llm_client._record_unanswered(req)
+            raise
         finish_reason = choice.get("finish_reason", "stop")
         # DeepSeek-native usage shape:
         usage_native = {
@@ -302,8 +320,8 @@ class DeepSeekProvider:
         # dispatcher then calls back into provider.cost_usd(model, usage)
         # where ``usage`` is the same Gemini-shape dict — see ``cost_usd``
         # below for how DeepSeek translates back.
+        from services import llm_client  # lazy
         if usage_native["prompt_tokens"] or usage_native["completion_tokens"]:
-            from services import llm_client  # lazy
             llm_client._check_and_record_cost(
                 req.model,
                 usage_native["prompt_tokens"],            # -> prompt_tokens
@@ -311,6 +329,9 @@ class DeepSeekProvider:
                 usage_native["completion_tokens"],        # -> output_tokens
                 0,                                          # -> thought_tokens (folded into completion_tokens)
             )
+        else:
+            # Billed, but the answer reports no usage: count the worst case.
+            llm_client._record_unanswered(req)
 
         parsed: BaseModel | None = None
         parse_error: Exception | None = None

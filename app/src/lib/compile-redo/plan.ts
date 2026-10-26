@@ -20,7 +20,7 @@ import type { PageEstimateInput } from '../page-upgrade-estimate';
 import { pageTextVersionToken } from '../page-rewrite';
 import { compilePages } from './baseline';
 import type { RedoEstimateInput } from './estimate';
-import { MAX_REDO_PAGES, REPLAN_HIGH_FACTOR, REPLAN_SLACK_PAGES, type RedoPage, type RedoPoint } from './state';
+import { MAX_REDO_PAGES, REPLAN_HIGH_FACTOR, REPLAN_SLACK_PAGES, activeRedo, type RedoPage, type RedoPoint } from './state';
 
 /** A page of unknown length counts as this long in the estimate. */
 const DEFAULT_PAGE_CHARS = 4_000;
@@ -111,6 +111,16 @@ export function computeRedoPlan(db: Database.Database, sessionId: string, point:
   const changedByPlan = new Map(written.filter((p) => p.changed).map((p) => [p.plan_id, p]));
   const size = sizer();
   const skipped = new Map<string, RedoPage>();
+  // A redo of this session that stopped before it finished reset the plans
+  // these reads rely on: the pages it left alone stay left alone, and the
+  // compile's own pages it knew stay ones a re-plan may archive
+  // (lib/compile-redo/start.ts carries both into the new record).
+  const earlier = activeRedo(sessionId);
+  const leftAlone = new Set((earlier?.skipped ?? []).map((p) => p.page_id));
+  for (const p of earlier?.skipped ?? []) {
+    skipped.set(p.page_id, p);
+    changedIds.add(p.page_id);
+  }
   const work: PlanRow[] = [];
   const sizes: PageEstimateInput[] = [];
   // Re-plan low end: every source always gets its own summary page again.
@@ -123,6 +133,7 @@ export function computeRedoPlan(db: Database.Database, sessionId: string, point:
     for (const p of plans) {
       const held = p.draft_status === 'draft_too_thin' || (autoApprove && p.draft_status === 'pending_approval');
       if (!held || !p.draft_content) continue;
+      if (p.existing_page_id && leftAlone.has(p.existing_page_id)) continue;
       if (p.existing_page_id && p.base_version !== null && pageTextVersionToken(p.existing_page_id) !== p.base_version) {
         skipped.set(p.existing_page_id, { page_id: p.existing_page_id, title: p.title });
         continue;
@@ -179,7 +190,15 @@ export function computeRedoPlan(db: Database.Database, sessionId: string, point:
         ? plans.filter((p) => p.draft_status !== 'rejected').map((p) => ({ page_id: pageOf.get(p.plan_id) ?? p.existing_page_id ?? '', title: p.title }))
         : work.map((p) => ({ page_id: pageOf.get(p.plan_id) ?? p.existing_page_id ?? '', title: p.title })),
     max_pages: maxPages,
-    may_archive: point === 'plan' ? written.filter((p) => p.action === 'create' && !p.changed).map(({ page_id, title }) => ({ page_id, title })) : [],
+    may_archive:
+      point === 'plan'
+        ? [
+            ...(earlier?.own_pages ?? []).map(({ page_id, title }) => ({ page_id, title })),
+            ...written
+              .filter((p) => p.action === 'create' && !p.changed && !earlier?.own_pages.some((o) => o.page_id === p.page_id))
+              .map(({ page_id, title }) => ({ page_id, title })),
+          ]
+        : [],
     skipped: [...skipped.values()],
     waiting_drafts: point === 'save' ? 0 : waiting,
     sources,

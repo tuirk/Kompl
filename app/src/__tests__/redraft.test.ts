@@ -369,6 +369,18 @@ One source gives 2009 [S1]. Another gives 2008 [S2].`,
     expect(handle.db.prepare('SELECT * FROM pages WHERE page_id = ?').get(pageId)).toEqual(before);
   });
 
+  it('says to top up an empty provider account, not to raise the limit (audit M7)', async () => {
+    handle = setupTestDb();
+    const pageId = seedRedraftablePage(handle);
+    // nlp-service names DeepSeek's 402 in its 503 (llm_client.cost_ceiling_detail).
+    const calls = mockNlp(pageId, {
+      draft: { status: 503, detail: 'provider_out_of_credit: the DeepSeek account has no credit left; top it up and retry' },
+    });
+    await expectRedraftError(redraftPage(pageId), 'provider_out_of_credit', 503);
+    await expect(redraftPage(pageId)).rejects.toThrow('The AI provider account has no credit left.');
+    expect(calls.writes).toHaveLength(0);
+  });
+
   it('never overwrites a page that changed during the LLM call', async () => {
     handle = setupTestDb();
     const pageId = seedRedraftablePage(handle);

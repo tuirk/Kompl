@@ -261,6 +261,14 @@ class LLMCompileError(Exception):
 _LIMIT_ERRORS = (LLMRateLimitedError, CostCeilingError)
 
 
+def cost_ceiling_detail(e: CostCeilingError) -> str:
+    """The detail of the 503 a router answers for ``e``. An empty provider
+    account keeps the status, so whatever stops at the daily cap stops at it
+    too, but is named apart (``provider_out_of_credit: ...``): raising the
+    cap would not help, topping up the account does."""
+    return str(e) if isinstance(e, ProviderOutOfCreditError) else "daily_cost_ceiling"
+
+
 def _parse_failure_tail(
     step: str,
     expected_wrapper: str,
@@ -340,10 +348,39 @@ _spend_settled = threading.Condition(_cap_lock)
 _in_flight: dict[str, Any] = {"calls": 0, "usd": 0.0}
 # How often a waiting call re-reads the spend and cap files (midnight reset,
 # a cap raised in Settings), and the longest it waits for calls in flight:
-# 600 s is the longest provider HTTP timeout (DeepSeek), so a call that never
-# settles cannot hold the others back forever.
+# 600 s is the longest provider HTTP timeout (DeepSeek). A call still waiting
+# then is refused at the cap; letting every waiting call out at once would
+# pass the cap by several calls.
 _SPEND_WAIT_POLL_S = 5.0
 _SPEND_WAIT_MAX_S = 600.0
+
+# The app stops waiting for an nlp-service call after a fixed time
+# (AbortSignal.timeout at its call site); an answer that comes later is
+# paid for and thrown away. These calls end inside that wait, retries and
+# waits at the cap included, with 30 s to spare: draft 600 s (app
+# compile/draft, lib/redraft.ts, lib/recompile.ts), extract 900 s
+# (compile/extract), schema 600 s (compile/schema). Keys are the calls,
+# values seconds from the start of the call.
+_APP_WAIT_SPARE_S = 30.0
+_CALL_DEADLINE_S: dict[str, float] = {
+    "draft_page": 600.0 - _APP_WAIT_SPARE_S,
+    "extract": 900.0 - _APP_WAIT_SPARE_S,
+    "schema": 600.0 - _APP_WAIT_SPARE_S,
+}
+# An attempt with less time than this left is not sent: a draft, extract or
+# schema answer takes longer, so it would be cut off and paid for nothing.
+_MIN_ATTEMPT_S = 60.0
+
+
+def _call_deadline(call: str) -> float:
+    """When this call must be done (time.monotonic()), for LLMRequest.extra["deadline"]."""
+    return time.monotonic() + _CALL_DEADLINE_S[call]
+
+
+def _time_left(req: LLMRequest) -> float | None:
+    """Seconds left before the request's deadline; None when it has none."""
+    deadline = req.extra.get("deadline")
+    return None if deadline is None else deadline - time.monotonic()
 
 # Cache the daily cap for 30 s to avoid a filesystem read on every LLM call.
 # 30 s is short enough that a Settings UI change takes effect quickly without
@@ -482,20 +519,33 @@ def _check_and_record_cost(
         _write_cap(cap_data)
 
 
-def _estimate_call_usd(req: LLMRequest) -> float:
-    """Worst-case cost of one call, known before it is sent.
-
-    The prompt at ~4 chars per token plus the full max_output_tokens at the
-    output rate: thinking counts against that limit on every supported
-    provider (Gemini max_output_tokens, DeepSeek max_tokens).
-    """
+def _worst_case_tokens(req: LLMRequest) -> tuple[int, int]:
+    """(prompt, output) tokens of one call at most: the prompt at ~4 chars
+    per token, and the full max_output_tokens: thinking counts against that
+    limit on every supported provider (Gemini max_output_tokens, DeepSeek
+    max_tokens)."""
     prompt_chars = sum(len(m.get("content", "")) for m in req.messages)
+    return prompt_chars // 4 + 1, req.max_output_tokens
+
+
+def _estimate_call_usd(req: LLMRequest) -> float:
+    """Worst-case cost of one call, known before it is sent."""
+    prompt, output = _worst_case_tokens(req)
     return get_provider(req.model).cost_usd(req.model, {
-        "prompt_token_count":         prompt_chars // 4 + 1,
+        "prompt_token_count":         prompt,
         "cached_content_token_count": 0,
-        "candidates_token_count":     req.max_output_tokens,
+        "candidates_token_count":     output,
         "thoughts_token_count":       0,
     })
+
+
+def _record_unanswered(req: LLMRequest) -> None:
+    """Record the worst-case cost of an attempt that was sent but whose
+    answer never came back readable: it timed out, the connection broke, or
+    the 200 could not be read. The provider may still bill it, and without
+    this a stalled call never counted against the daily cap."""
+    prompt, output = _worst_case_tokens(req)
+    _check_and_record_cost(req.model, prompt, 0, output, 0)
 
 
 def _reserve_spend(req: LLMRequest) -> float:
@@ -507,10 +557,13 @@ def _reserve_spend(req: LLMRequest) -> float:
     until it is recorded. Parallel calls near the cap therefore wait for calls
     in flight to settle instead of all going out at once, and spend passes the
     cap by at most about one call. A cap of 0 is unlimited: nothing waits or
-    is refused. After _SPEND_WAIT_MAX_S a waiting call goes out anyway.
+    is refused. A call still waiting after _SPEND_WAIT_MAX_S, or when only
+    _MIN_ATTEMPT_S of its own deadline is left, is refused at the cap.
     """
     estimate = _estimate_call_usd(req)
     deadline = time.monotonic() + _SPEND_WAIT_MAX_S
+    if req.extra.get("deadline") is not None:
+        deadline = min(deadline, req.extra["deadline"] - _MIN_ATTEMPT_S)
     with _spend_settled:
         while True:
             daily_cap = _read_daily_cap_usd()
@@ -521,15 +574,17 @@ def _reserve_spend(req: LLMRequest) -> float:
                     f"Today's spend: ${spent:.4f}. "
                     f"Resets at midnight UTC."
                 )
-            if (
-                daily_cap <= 0
-                or spent + _in_flight["usd"] < daily_cap
-                or time.monotonic() >= deadline
-            ):
+            if daily_cap <= 0 or spent + _in_flight["usd"] < daily_cap:
                 _in_flight["calls"] += 1
                 _in_flight["usd"] += estimate
                 return estimate
-            _spend_settled.wait(_SPEND_WAIT_POLL_S)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise CostCeilingError(
+                    f"Daily LLM spend limit (${daily_cap:.2f}) nearly reached: the calls in flight "
+                    f"may use the rest. Today's spend: ${spent:.4f}. Resets at midnight UTC."
+                )
+            _spend_settled.wait(min(_SPEND_WAIT_POLL_S, left))
 
 
 def _release_spend(estimate: float) -> None:
@@ -920,6 +975,8 @@ def extract_source(
     )
 
     provider = get_provider(model)
+    # Both calls below, retries included, end inside the app's extract wait.
+    deadline = _call_deadline("extract")
     try:
         result = provider.complete(LLMRequest(
             model=model,
@@ -932,6 +989,7 @@ def extract_source(
             max_output_tokens=32768,
             temperature=0.0,
             step="extract",
+            extra={"deadline": deadline},
         ))
     except _LIMIT_ERRORS:
         raise
@@ -1021,6 +1079,7 @@ def extract_source(
             max_output_tokens=32768,
             temperature=0.0,
             step="extract-fallback",
+            extra={"deadline": deadline},
         ))
     except _LIMIT_ERRORS:
         raise
@@ -1421,6 +1480,12 @@ _DRAFT_PAGE_MAX_OUTPUT_TOKENS = 32768
 _DRAFT_PAGE_ATTEMPTS = 2
 # Finish reasons meaning the output ceiling was hit: Gemini, DeepSeek.
 _OUTPUT_CAP_FINISH = frozenset({"MAX_TOKENS", "LENGTH"})
+# The finish reason of an answer that ended normally, as both providers
+# report it upper-cased (Gemini STOP, DeepSeek "stop"). Any other reason
+# means the text was cut short, with HTTP 200 all the same: the output
+# ceiling, a filter (Gemini SAFETY, RECITATION; DeepSeek content_filter) or
+# the provider (Gemini OTHER; DeepSeek insufficient_system_resource).
+_FINISHED = "STOP"
 
 _CITATION_RULES = """\
 CITATIONS:
@@ -1538,7 +1603,7 @@ def draft_page(
     Raises:
         LLMRateLimitedError  — bucket exhausted
         CostCeilingError     — daily $ cap exceeded
-        LLMCompileError      — empty response
+        LLMCompileError      — empty response, or one cut short (out of room twice, filtered)
     """
     system_prompt = _DRAFT_PAGE_PROMPTS.get(page_type, _DRAFT_PAGE_PROMPTS["entity"])
 
@@ -1718,7 +1783,9 @@ def draft_page(
     prompt += cat_suffix
 
     provider = get_provider(model)
+    deadline = _call_deadline("draft_page")
     for attempt in range(1, _DRAFT_PAGE_ATTEMPTS + 1):
+        started = time.monotonic()
         try:
             result = provider.complete(LLMRequest(
                 model=model,
@@ -1731,15 +1798,27 @@ def draft_page(
                 max_output_tokens=_DRAFT_PAGE_MAX_OUTPUT_TOKENS,
                 temperature=0.3,
                 step="draft_page",
-                extra={"retry": False},
+                extra={"retry": False, "deadline": deadline},
             ))
         except _LIMIT_ERRORS:
             raise
         except Exception as e:
             raise LLMCompileError(f"draft_page_llm_failed: {e}") from e
-        if str(result.finish_reason).upper() not in _OUTPUT_CAP_FINISH:
+        finish = str(result.finish_reason).upper()
+        if finish == _FINISHED:
             break
+        if finish not in _OUTPUT_CAP_FINISH:
+            # Cut short by a filter or the provider: what came back is part
+            # of a page, never saved as one.
+            raise LLMCompileError(f"draft_page_incomplete: '{title}' stopped before the end ({finish})")
         print(f"[draft] '{title}' ran out of output room (attempt {attempt})", file=sys.stderr, flush=True)
+        # Asked again, the draft takes about as long: one that cannot end
+        # before the app stops waiting would be paid for and thrown away.
+        if attempt < _DRAFT_PAGE_ATTEMPTS and deadline - time.monotonic() < time.monotonic() - started:
+            raise LLMCompileError(
+                f"draft_page_truncated: '{title}' ran out of output room "
+                f"({_DRAFT_PAGE_MAX_OUTPUT_TOKENS} tokens), with no time left to ask again"
+            )
     else:
         raise LLMCompileError(
             f"draft_page_truncated: '{title}' ran out of output room "
@@ -2023,7 +2102,7 @@ def generate_schema(pages_summary: list[dict[str, Any]], model: str = _DEFAULT_M
     Raises:
         LLMRateLimitedError  — bucket exhausted
         CostCeilingError     — daily $ cap exceeded
-        LLMCompileError      — empty response
+        LLMCompileError      — empty response, or one that stopped before the end
     """
     import json as _json
 
@@ -2045,11 +2124,18 @@ def generate_schema(pages_summary: list[dict[str, Any]], model: str = _DEFAULT_M
             max_output_tokens=8192,
             temperature=0.0,
             step="schema",
+            extra={"deadline": _call_deadline("schema")},
         ))
     except _LIMIT_ERRORS:
         raise
     except Exception as e:
         raise LLMCompileError(f"generate_schema_llm_failed: {e}") from e
+
+    # Every later draft reads schema.md as house rules: a schema cut short
+    # (out of output room, filtered) is never returned to be saved.
+    finish = str(result.finish_reason).upper()
+    if finish != _FINISHED:
+        raise LLMCompileError(f"generate_schema_incomplete: the schema stopped before the end ({finish})")
 
     raw_text = result.text
     if not raw_text:

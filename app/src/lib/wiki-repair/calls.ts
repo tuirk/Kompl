@@ -7,6 +7,7 @@
 
 import type { LlmModel } from '../llm-models';
 import { makeDispatcher } from '../long-http-agent';
+import { OUT_OF_CREDIT_MESSAGE, isOutOfCredit } from '../out-of-credit';
 import type { RepairPricing } from './estimate';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
@@ -58,7 +59,10 @@ export async function postNlp<T>(path: string, body: unknown, timeoutMs: number)
   } catch (err) {
     throw new RepairCallError('nlp_unreachable', `Kompl's NLP service did not answer: ${String(err)}`);
   }
-  if (res.status === 503) throw new RepairCallError('daily_cost_ceiling', "Today's AI spending limit is reached.");
+  if (res.status === 503) {
+    const detail = await res.text().catch(() => '');
+    throw new RepairCallError('daily_cost_ceiling', isOutOfCredit(res.status, detail) ? OUT_OF_CREDIT_MESSAGE : "Today's AI spending limit is reached.");
+  }
   if (res.status === 429) throw new RepairCallError('rate_limited', 'The AI model is busy (rate-limited).');
   if (!res.ok) {
     const detail = await res.text().catch(() => '');

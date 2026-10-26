@@ -271,6 +271,8 @@ def test_parallel_calls_near_the_cap_wait_instead_of_all_going_out(
 def test_a_call_that_never_settles_holds_others_back_only_for_a_while(
     cap_dir, mock_gemini, mock_limiter, monkeypatch
 ):
+    """The waiting call is refused at the cap, not sent: letting every call
+    still waiting out at once passed the cap by several calls (audit M5)."""
     _gemini_usage(mock_gemini.models.generate_content.return_value, 0)
     _set_spend(cap_dir, cap_usd=1.0, spent_usd=0.0)
     monkeypatch.setattr(llm_client, "_SPEND_WAIT_MAX_S", 0.2)
@@ -278,8 +280,28 @@ def test_a_call_that_never_settles_holds_others_back_only_for_a_while(
     # A hung call holding more than the whole budget.
     monkeypatch.setattr(llm_client, "_in_flight", {"calls": 1, "usd": 5.0})
 
-    assert "## Content" in _CALL_SITES["draft_page"]()
-    assert mock_gemini.models.generate_content.call_count == 1
+    with pytest.raises(llm_client.CostCeilingError, match=r"Daily LLM spend limit \(\$1.00\) nearly reached"):
+        _CALL_SITES["draft_page"]()
+    mock_gemini.models.generate_content.assert_not_called()
+    assert llm_client._in_flight == {"calls": 1, "usd": 5.0}
+
+
+def test_a_waiting_call_is_refused_in_time_for_the_app(cap_dir, mock_gemini, mock_limiter, monkeypatch):
+    """A call with a deadline waits at the cap only while an attempt could
+    still end before the app stops waiting (audit M5)."""
+    import time  # noqa: PLC0415
+
+    _set_spend(cap_dir, cap_usd=1.0, spent_usd=0.0)
+    monkeypatch.setattr(llm_client, "_SPEND_WAIT_POLL_S", 0.05)
+    monkeypatch.setattr(llm_client, "_MIN_ATTEMPT_S", 0.1)
+    monkeypatch.setattr(llm_client, "_CALL_DEADLINE_S", {**llm_client._CALL_DEADLINE_S, "draft_page": 0.3})
+    monkeypatch.setattr(llm_client, "_in_flight", {"calls": 1, "usd": 5.0})
+
+    started = time.monotonic()
+    with pytest.raises(llm_client.CostCeilingError, match="nearly reached"):
+        _CALL_SITES["draft_page"]()
+    assert time.monotonic() - started < 2
+    mock_gemini.models.generate_content.assert_not_called()
 
 
 def test_failed_send_frees_its_place(cap_dir, mock_gemini, mock_limiter):

@@ -88,6 +88,8 @@ def mock_gemini(monkeypatch):
     mock_response.text = "---\ntitle: Test\npage_type: source-summary\n---\n## Content\nBody."
     mock_response.usage_metadata.prompt_token_count = 100
     mock_response.usage_metadata.candidates_token_count = 50
+    # A finished answer: free-text calls accept only a normal stop.
+    mock_response.candidates = [MagicMock(finish_reason="FinishReason.STOP")]
     mock_client.models.generate_content.return_value = mock_response
 
     from services.providers import gemini as gemini_provider  # noqa: PLC0415

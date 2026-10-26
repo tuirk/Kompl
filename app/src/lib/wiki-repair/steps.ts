@@ -22,6 +22,7 @@
 
 import { getAliases, getDb, getPage, getSetting, logActivity, setSetting } from '../db';
 import { fetchLlmUsage, spendDelta, type LlmUsage } from '../page-upgrade';
+import { OUT_OF_CREDIT } from '../out-of-credit';
 import { RedraftError, redraftPage } from '../redraft';
 import type { LlmModel } from '../llm-models';
 import { applyAliasVerdicts, buildJudgePairs, judgeBatch, judgeBatches, listAliasesToJudge } from './aliases';
@@ -250,7 +251,7 @@ export async function runRepairSteps(run: RepairRun, ctx: StepContext): Promise<
       } catch (err) {
         const code = err instanceof RedraftError ? err.code : 'unexpected';
         const message = err instanceof Error ? err.message : String(err);
-        if (code === 'daily_cost_ceiling') stopAfter = new Stop('daily_cost_ceiling', message);
+        if (code === 'daily_cost_ceiling' || code === OUT_OF_CREDIT) stopAfter = new Stop('daily_cost_ceiling', message);
         else if (code === 'llm_rate_limited') stopAfter = new Stop('rate_limited', message);
         else if (code === 'session_in_progress') stopAfter = new Stop('error', message);
         else if (code === 'no_readable_sources' || SET_ASIDE_CODES.has(code)) {

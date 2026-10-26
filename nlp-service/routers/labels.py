@@ -23,6 +23,7 @@ from services.llm_client import (
     LLMCompileError,
     LLMRateLimitedError,
     consolidate_labels,
+    cost_ceiling_detail,
 )
 from services.llm_models import LLMModel
 
@@ -78,7 +79,7 @@ def pipeline_consolidate_labels(req: ConsolidateLabelsRequest) -> ConsolidateLab
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     items = [

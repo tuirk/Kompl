@@ -17,7 +17,7 @@
  *   2. resolve  — POST /api/compile/resolve
  *   3. match    — POST /api/compile/match (LLM triage vs existing pages)
  *   4. plan     — POST /api/compile/plan
- *   5. draft    — POST /api/compile/draft  (up to 15 min, Gemini calls)
+ *   5. draft    — POST /api/compile/draft  (a round of LLM calls per layer)
  *   6. crossref — POST /api/compile/crossref
  *   6b. labels  — merge duplicate category labels in the drafts (in process)
  *   7. commit   — POST /api/compile/commit
@@ -38,6 +38,7 @@ import {
 } from '@/lib/db';
 import { CompileCancelledError, CompileRun, CompileSupersededError } from '@/lib/compile/compile-run';
 import { describePromptCuts, type PlanPromptCut } from '@/lib/compile/draft-sources';
+import { wikiLabelCounts } from '@/lib/compile/draft-labels';
 import { runHealthCheckStep } from '@/lib/compile/steps/health-check';
 import { runIngestFilesStep } from '@/lib/compile/steps/ingest-files';
 import { runIngestUrlsStep } from '@/lib/compile/steps/ingest-urls';
@@ -49,6 +50,7 @@ import { finishRedo } from '@/lib/compile-redo/finish';
 import { RedoPlanTooLargeError, applyReplanResult } from '@/lib/compile-redo/reset';
 import { activeRedo, type RedoRecord } from '@/lib/compile-redo/state';
 import { sanitizeLogValue } from '@/lib/log-safe';
+import { OUT_OF_CREDIT_MESSAGE, OutOfCreditError, isOutOfCredit } from '@/lib/out-of-credit';
 import { LONG_HTTP_AGENT, makeDispatcher } from '@/lib/long-http-agent';
 import { MAX_TRIAGE_CANDIDATES_PER_SOURCE } from '@/lib/triage-candidates';
 import { MAX_TRIAGE_RECHECKS_PER_COMPILE, clearSessionRecheckVerdicts } from '@/lib/triage-rechecks';
@@ -56,6 +58,7 @@ import {
   computeResolveMs,
   computeMatchMs,
   computeDraftMs,
+  draftRounds,
   computeCrossrefMs,
   computeCommitMs,
 } from '@/lib/compile-timeouts';
@@ -81,6 +84,8 @@ async function throwOnError(
   ]);
   const snippet = body.replace(/\s+/g, ' ').trim().slice(0, 2000);
   console.error('[compile:%s] %s HTTP %d', sanitizeLogValue(sessionId), step, res.status);
+  // The session fails with what to do: top up the account, then Retry.
+  if (isOutOfCredit(res.status, body)) throw new OutOfCreditError();
   throw new Error(`${step} failed: ${res.status}${snippet ? ` — ${snippet}` : ''}`);
 }
 
@@ -171,16 +176,31 @@ async function callPlan(
   return res.json() as Promise<{ stats: { total: number } }>;
 }
 
+// The draft step's work by layer: its plans still to draft (planned or
+// failed; a provenance-only plan has nothing to draft), by page type.
+function draftLayerCounts(sessionId: string): Record<string, number> {
+  const rows = getDb()
+    .prepare(
+      `SELECT page_type, COUNT(*) AS n FROM page_plans
+        WHERE session_id = ? AND draft_status IN ('planned', 'failed') AND action != 'provenance-only'
+        GROUP BY page_type`
+    )
+    .all(sessionId) as Array<{ page_type: string; n: number }>;
+  return Object.fromEntries(rows.map((r) => [r.page_type, r.n]));
+}
+
 async function callDraft(
   sessionId: string,
-  planCount: number,
 ): Promise<{ drafted: number; failed: number; prompt_cuts?: PlanPromptCut[] }> {
-  // Dynamic timeout sized to planCount / DRAFT_CONCURRENCY batches × inner
-  // callDraftPage ceiling. See compile-timeouts.ts:computeDraftMs. Replaces
-  // the static 1.5M ms from PR #71 — that fired today at 16m on session
-  // 97f58805's 38-plan compile via undici's HeadersTimeoutError, because the
-  // static LONG_HTTP_AGENT.headersTimeout (16 min) was the real ceiling.
-  const timeoutMs = computeDraftMs(planCount);
+  // Dynamic timeout sized to the rounds of drafts the route runs, layer
+  // after layer (see compile-timeouts.ts:draftRounds). Replaces the static
+  // 1.5M ms from PR #71 — that fired today at 16m on session 97f58805's
+  // 38-plan compile via undici's HeadersTimeoutError, because the static
+  // LONG_HTTP_AGENT.headersTimeout (16 min) was the real ceiling. With no
+  // wiki label yet, the first summary drafts alone (DraftLabels).
+  const byType = draftLayerCounts(sessionId);
+  const firstAlone = (byType['source-summary'] ?? 0) > 1 && wikiLabelCounts().size === 0;
+  const timeoutMs = computeDraftMs(draftRounds(byType, firstAlone));
   const res = await fetch(`${APP_URL}/api/compile/draft`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -263,10 +283,10 @@ async function timed<T>(sessionId: string, step: string, fn: () => Promise<T>): 
   return r;
 }
 
-async function runDraftStep(run: CompileRun, planCount: number): Promise<void> {
+async function runDraftStep(run: CompileRun): Promise<void> {
   const { sessionId } = run;
   run.step('draft', 'running');
-  const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId, planCount));
+  const draftResult = await timed(sessionId, 'draft', () => callDraft(sessionId));
   const count =
     draftResult.failed > 0
       ? `${draftResult.drafted} drafts generated, ${draftResult.failed} failed — retry to re-attempt`
@@ -399,7 +419,7 @@ async function resumeWithoutSources(run: CompileRun): Promise<void> {
   const pendingDraftCount = (planCounts.planned ?? 0) + (planCounts.failed ?? 0);
   if (pendingDraftCount > 0) {
     console.log('[compile:%s] %d plans pending, sources already active — re-drafting', sanitizeLogValue(sessionId), pendingDraftCount);
-    await runDraftStep(run, planCount);
+    await runDraftStep(run);
   } else {
     run.step('draft', 'done', 'skipped (no drafts left to write)');
   }
@@ -481,7 +501,7 @@ async function runRedoPipeline(run: CompileRun, redo: RedoRecord): Promise<void>
   const planCounts = countPagePlansByStatus(sessionId);
   const planCount = Object.values(planCounts).reduce((sum, c) => sum + c, 0);
   if (redo.point !== 'save') {
-    if ((planCounts.planned ?? 0) + (planCounts.failed ?? 0) > 0) await runDraftStep(run, planCount);
+    if ((planCounts.planned ?? 0) + (planCounts.failed ?? 0) > 0) await runDraftStep(run);
     else run.step('draft', 'done', 'no pages left to write');
   }
   await finishPipeline(run, planCount);
@@ -597,9 +617,11 @@ async function runCompilePipeline(run: CompileRun): Promise<void> {
     );
     const queue = [...unextracted];
     let cancelled = false;
+    // The provider account is empty: every source left would fail the same way.
+    let outOfCredit = false;
 
     async function extractWorker(): Promise<void> {
-      while (queue.length > 0 && !cancelled) {
+      while (queue.length > 0 && !cancelled && !outOfCredit) {
         const src = queue.shift();
         if (!src) return;
         try {
@@ -615,6 +637,7 @@ async function runCompilePipeline(run: CompileRun): Promise<void> {
           extractSucceeded++;
         } catch (err) {
           extractFailed++;
+          if (err instanceof OutOfCreditError) outOfCredit = true;
           logActivity('extraction_failed', {
             source_id: src.source_id,
             session_id: sessionId,
@@ -644,6 +667,12 @@ async function runCompilePipeline(run: CompileRun): Promise<void> {
       // Cancellation already wrote the cancelled status via cancel route;
       // bail out without overwriting the step state.
       run.assertActive();
+    }
+    if (outOfCredit) {
+      // Stops the compile: Retry extracts the sources left once the account is topped up.
+      run.step('extract', 'failed', `${extractSucceeded}/${sources.length} sources extracted; ${OUT_OF_CREDIT_MESSAGE}`);
+      run.fail(OUT_OF_CREDIT_MESSAGE);
+      return;
     }
     if (extractSucceeded === 0) {
       run.step('extract', 'failed', `0/${sources.length} sources extracted`);
@@ -729,8 +758,8 @@ async function runCompilePipeline(run: CompileRun): Promise<void> {
   run.step('match', 'done', matchDetail(matchResult));
   run.assertActive();
 
-  // planCount feeds dynamic-timeout sizing for callDraft / callCrossref /
-  // callCommit. Fresh path takes it from callPlan's return; retry-skip path
+  // planCount feeds dynamic-timeout sizing for callCrossref / callCommit
+  // (callDraft reads its layers from page_plans). Fresh path takes it from callPlan's return; retry-skip path
   // derives it from the existing page_plans row count summed over statuses
   // that downstream steps still operate on (planned + failed for draft;
   // drafted + crossreffed for commit). Set inside the branches below.
@@ -746,7 +775,7 @@ async function runCompilePipeline(run: CompileRun): Promise<void> {
     run.step('plan', 'done', `${planCount} pages planned`);
     run.assertActive();
 
-    await runDraftStep(run, planCount);
+    await runDraftStep(run);
   } else if (pendingDraftCount > 0) {
     // Retry path: plans exist, some are still 'planned' or were marked
     // 'failed' on a prior Gemini error. Re-draft only those.
@@ -754,7 +783,7 @@ async function runCompilePipeline(run: CompileRun): Promise<void> {
     // crossref/commit timeouts size to the whole plan set, not just pending.
     planCount = Object.values(planCounts).reduce((sum, c) => sum + c, 0);
     console.log('[compile:%s] %d plans pending — re-drafting without re-planning', sanitizeLogValue(sessionId), pendingDraftCount);
-    await runDraftStep(run, planCount);
+    await runDraftStep(run);
   } else {
     // No plan work to do; downstream still runs against committed plans, so
     // crossref/commit need a planCount sized to the full plan set.

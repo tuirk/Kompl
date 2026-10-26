@@ -498,3 +498,49 @@ def test_draft_that_runs_out_of_room_twice_fails_and_is_never_returned(monkeypat
                               source_contents=[{"source_id": "s1", "title": "T", "markdown": "Content."}],
                               model="gemini-2.5-flash")
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("finish", ["CONTENT_FILTER", "INSUFFICIENT_SYSTEM_RESOURCE", "SAFETY", "RECITATION", "OTHER"])
+def test_draft_cut_short_by_a_filter_or_the_provider_is_never_returned(monkeypatch, mock_cost, finish):
+    """HTTP 200 with part of a page: DeepSeek content_filter and
+    insufficient_system_resource, Gemini SAFETY, RECITATION and OTHER
+    (audit M4). The part was committed as the page."""
+    calls = _draft_provider(monkeypatch, [finish, "STOP"])
+    with pytest.raises(llm_client.LLMCompileError, match="draft_page_incomplete"):
+        llm_client.draft_page(page_type="source-summary", title="T",
+                              source_contents=[{"source_id": "s1", "title": "T", "markdown": "Content."}],
+                              model="deepseek-flash")
+    assert len(calls) == 1
+
+
+def test_draft_with_a_lower_case_stop_is_finished(monkeypatch, mock_cost):
+    calls = _draft_provider(monkeypatch, ["stop"])
+    result = llm_client.draft_page(page_type="source-summary", title="T",
+                                   source_contents=[{"source_id": "s1", "title": "T", "markdown": "Content."}],
+                                   model="deepseek-flash")
+    assert result.markdown.endswith("Body.")
+    assert len(calls) == 1
+
+
+def _schema_provider(monkeypatch, finish):
+    from services.providers import LLMResult  # noqa: PLC0415
+
+    class _Provider:
+        def complete(self, req):
+            return LLMResult(text="# Wiki schema\n\n## Page types\n- source-summary: one per",
+                             parsed=None, parse_error=None, usage={}, finish_reason=finish)
+
+    monkeypatch.setattr(llm_client, "get_provider", lambda model: _Provider())
+
+
+@pytest.mark.parametrize("finish", ["MAX_TOKENS", "LENGTH", "CONTENT_FILTER", "SAFETY"])
+def test_schema_cut_short_is_never_returned(monkeypatch, mock_cost, finish):
+    """Every later draft reads schema.md as house rules (audit M4)."""
+    _schema_provider(monkeypatch, finish)
+    with pytest.raises(llm_client.LLMCompileError, match="generate_schema_incomplete"):
+        llm_client.generate_schema([{"title": "A", "page_type": "entity", "category": None}], model="deepseek-flash")
+
+
+def test_finished_schema_is_returned(monkeypatch, mock_cost):
+    _schema_provider(monkeypatch, "STOP")
+    assert llm_client.generate_schema([{"title": "A", "page_type": "entity"}]).startswith("# Wiki schema")

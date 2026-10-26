@@ -29,7 +29,7 @@ const COMMIT_FLOOR_MS   = 120_000; // 2 min
 const RESOLVE_PER_SOURCE_MS = 60_000;  // ~2 disambiguate batches × 30s avg
 const MATCH_PER_PAIR_MS     = 60_000;  // tfidf 30s + triage 30s, sequential
 const MATCH_RECHECK_MS      = 30_000;  // one triage call (lib/triage-call.ts timeout)
-const DRAFT_PER_BATCH_MS    = 600_000; // inner callDraftPage ceiling per batch
+const DRAFT_PER_ROUND_MS    = 630_000; // one round of parallel drafts: tfidf-rank 30s + inner callDraftPage 600s
 const CROSSREF_PER_PLAN_MS  = 30_000;  // wikilink injection per plan
 const COMMIT_PER_PLAN_MS    = 60_000;  // db tx + write-page 30s + vector-upsert 30s
 
@@ -73,11 +73,24 @@ export function computeMatchMs(sourceCount: number, candidatesPerSource = 3, rec
   return withSlack(raw, MATCH_FLOOR_MS);
 }
 
-// draft = ⌈planCount / DRAFT_CONCURRENCY⌉ batches × per-batch inner ceiling.
-// concurrency defaults to 10 (DRAFT_CONCURRENCY env in /api/compile/draft).
-export function computeDraftMs(planCount: number, concurrency = 10): number {
-  const batches = Math.max(1, Math.ceil(planCount / concurrency));
-  const raw = batches * DRAFT_PER_BATCH_MS;
+// Rounds of parallel drafts the draft step runs. /api/compile/draft drafts
+// its layers (LAYER_ORDER: summaries, entities, concepts, comparisons,
+// overviews) one after another, each in rounds of DRAFT_CONCURRENCY (10)
+// calls, and on a wiki's first compile one summary drafts alone first: a
+// round of its own. Original-source pages are copied, with no LLM call.
+// Sizing by plan count alone gave a 7-plan first compile one round (900 s)
+// for its 4-5.
+export function draftRounds(plansByType: Record<string, number>, firstAlone: boolean, concurrency = 10): number {
+  let rounds = firstAlone ? 1 : 0;
+  for (const [pageType, count] of Object.entries(plansByType)) {
+    if (pageType !== 'original-source' && count > 0) rounds += Math.ceil(count / concurrency);
+  }
+  return rounds;
+}
+
+// draft = rounds (draftRounds) × the ceiling of one round.
+export function computeDraftMs(rounds: number): number {
+  const raw = Math.max(1, rounds) * DRAFT_PER_ROUND_MS;
   return withSlack(raw, DRAFT_FLOOR_MS);
 }
 

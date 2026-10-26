@@ -18,6 +18,11 @@
  * budget can leave sources out or shorten them; those are reported in
  * prompt_cuts and the step detail (lib/compile/draft-sources.ts).
  *
+ * Once the orchestrator stops waiting (request.signal), or a draft finds the
+ * provider account out of credit (503 provider_out_of_credit, lib/out-of-
+ * credit.ts), no further draft starts. A draft that ends after another run
+ * took its plan is not written (updatePlanDraft).
+ *
  * Request:  { session_id: string }
  * Response: { session_id, drafted, failed, by_type, prompt_cuts }
  */
@@ -35,7 +40,7 @@ import {
   readPageMarkdown,
   readRawMarkdown,
   updatePlanDraft,
-  updatePlanFailed,
+  updatePlanDraftFailed,
   updateCompileStep,
   getDb,
 } from '../../../../lib/db';
@@ -64,6 +69,9 @@ import { removeEmptyContradictionSections } from '../../../../lib/page-sections'
 import { COMPARISON_RELATIONS, normalizeRelationType } from '../../../../lib/relation-rows';
 import { sourceDates, withSourceDate } from '../../../../lib/source-dates';
 import { DraftLabels, wikiLabelCounts } from '../../../../lib/compile/draft-labels';
+import { pageTextBeforeCompile } from '../../../../lib/compile-redo/baseline';
+import { activeRedo } from '../../../../lib/compile-redo/state';
+import { OUT_OF_CREDIT, OUT_OF_CREDIT_MESSAGE, OutOfCreditError, isOutOfCredit } from '../../../../lib/out-of-credit';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 // 10 concurrent draft calls. Tier-1 RPM is 1000/min and we use <1% of it,
@@ -152,6 +160,8 @@ async function callDraftPage(
       ...(compileModel ? { compile_model: compileModel } : {}),
     }),
     signal: AbortSignal.timeout(600_000), // 10 min — DeepSeek draft can match extract latency on dense sources. Gemini thinking adds margin on top. Same 600s budget as extract/resolve/schema for symmetry.
+    // nlp-service ends the call, its retries and waits included, 30 s before
+    // this (llm_client._CALL_DEADLINE_S): change both together.
     // LONG_HTTP_AGENT: undici default headersTimeout=300s would fire before
     // our 600s AbortSignal on dense source-summary drafts. Session 29be62eb
     // hit silent HeadersTimeoutError on 15/18 source-summaries (NLP server
@@ -163,6 +173,7 @@ async function callDraftPage(
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     if (res.status === 429) throw Object.assign(new Error('llm_rate_limited'), { status: 429 });
+    if (isOutOfCredit(res.status, detail)) throw new OutOfCreditError();
     if (res.status === 503) throw Object.assign(new Error('daily_cost_ceiling'), { status: 503 });
     throw new Error(`draft_page_failed: ${res.status} ${detail}`);
   }
@@ -305,15 +316,17 @@ async function capDossierByRelevance(
   return rebuilt;
 }
 
-// Run an array of async tasks with limited concurrency
+// Run an array of async tasks with limited concurrency. Once `stop` is
+// aborted no further task starts; those left out stay undefined.
 async function pLimit<T>(
   tasks: Array<() => Promise<T>>,
-  limit: number
-): Promise<Array<T | Error>> {
-  const results: Array<T | Error> = new Array(tasks.length);
+  limit: number,
+  stop?: AbortSignal,
+): Promise<Array<T | Error | undefined>> {
+  const results: Array<T | Error | undefined> = new Array(tasks.length);
   let idx = 0;
   async function worker() {
-    while (idx < tasks.length) {
+    while (idx < tasks.length && !stop?.aborted) {
       const i = idx++;
       try {
         results[i] = await tasks[i]();
@@ -532,6 +545,12 @@ export function buildDossier(
   return parts.join('\n\n');
 }
 
+// A draft this run finished, or failed, after another run had already taken
+// its plan (drafted, linked or saved it): nothing was written.
+function logPlanTaken(sessionId: string, planId: string): void {
+  console.log(JSON.stringify({ event: 'draft_plan_taken', session_id: sessionId, plan_id: planId }));
+}
+
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function POST(request: Request) {
@@ -676,6 +695,8 @@ export async function POST(request: Request) {
   // inventing a near copy: the wiki's labels, plus each label a draft of this
   // run chose, added as that draft finishes (lib/compile/draft-labels.ts).
   const categoryLabels = new DraftLabels(wikiLabelCounts().keys());
+  // A redo of this compile (lib/compile-redo/) rewrites what it wrote.
+  const redo = activeRedo(session_id) !== null;
 
   // Layer order for drafting. 'original-source' runs alongside source-summary (raw passthrough, no LLM).
   const LAYER_ORDER = ['original-source', 'source-summary', 'entity', 'concept', 'comparison', 'overview'] as const;
@@ -685,8 +706,21 @@ export async function POST(request: Request) {
   const byType: Record<string, number> = {};
   // Sources the prompt budget left out or shortened, per plan.
   const promptCuts: PlanPromptCut[] = [];
+  // Set when a draft finds the provider account empty: every further draft
+  // would fail the same way, so none starts and the step stops.
+  const outOfCredit = new AbortController();
+  // No draft starts once either fires.
+  const stop = new AbortController();
+  for (const signal of [request.signal, outOfCredit.signal]) {
+    if (signal.aborted) stop.abort();
+    else signal.addEventListener('abort', () => stop.abort(), { once: true });
+  }
 
   for (const layer of LAYER_ORDER) {
+    // The orchestrator stopped waiting (its timeout fired and it failed the
+    // session): start no more drafts. Plans not started keep their status,
+    // so the Retry drafts them once instead of this run paying for them too.
+    if (stop.signal.aborted) break;
     const layerPlans = plans.filter((p) => p.page_type === layer);
     if (layerPlans.length === 0) continue;
 
@@ -790,8 +824,8 @@ export async function POST(request: Request) {
         const summaryText = (firstClaim ?? firstConcept ?? src.markdown.slice(0, 120).replace(/\n/g, ' ')).trim();
         const rawDraft = `---\ntitle: ${yamlDoubleQuote(plan.title)}\ncategory: ${category}\nsummary: ${yamlDoubleQuote(summaryText)}\n---\n\n${src.markdown}`;
         // The user's own text: no writing rules apply (lib/draft-rules.ts).
-        updatePlanDraft(plan.plan_id, rawDraft, null, baseVersion);
-        return { pageType: plan.page_type, markdown: rawDraft };
+        const saved = updatePlanDraft(plan.plan_id, rawDraft, null, baseVersion);
+        return { pageType: plan.page_type, markdown: rawDraft, saved };
       }
 
       // Related pages: already-drafted pages. An overview's are its material:
@@ -822,9 +856,14 @@ export async function POST(request: Request) {
       // updatePlanDraft AFTER this call returns (always NULL on first pass), and
       // it has downstream commit semantics via approve-plan.ts, so overloading
       // it would corrupt the OFF-mode commit flow on draft failure.
+      // A redo writes an update again from the page as it was before this
+      // compile: the page now holds the update being redone
+      // (lib/compile-redo/baseline.ts). Without that version, the page as it is.
       const existingContent =
         plan.action === 'update' && plan.existing_page_id
-          ? readPageMarkdown(plan.existing_page_id) ?? undefined
+          ? (redo ? pageTextBeforeCompile(db, session_id, plan.existing_page_id) : null) ??
+            readPageMarkdown(plan.existing_page_id) ??
+            undefined
           : undefined;
 
       // Flag 3A — cap the dossier by TF-IDF relevance. Query is plan.title
@@ -911,45 +950,60 @@ export async function POST(request: Request) {
       // Drafted by this version's prompt and cleanup. The commit copies the
       // marker to the page only when the plan drafted from scratch, and
       // credits the sources the prompt carried (an overview: every plan source).
-      updatePlanDraft(
+      const saved = updatePlanDraft(
         plan.plan_id,
         markdown,
         CURRENT_DRAFT_RULES,
         baseVersion,
         isOverview ? null : reply.used_source_ids,
       );
-      return { pageType: plan.page_type, markdown };
+      return { pageType: plan.page_type, markdown, saved };
     });
 
     // Each finished draft adds its label at once, so drafts that start later,
     // in this layer or the next, are offered it.
     const labelled = tasks.map((task) => async () => {
-      const r = await task();
-      categoryLabels.addFromDraft(r.markdown);
-      return r;
+      try {
+        const r = await task();
+        if (r.saved) categoryLabels.addFromDraft(r.markdown);
+        return r;
+      } catch (err) {
+        if (err instanceof OutOfCreditError) outOfCredit.abort();
+        throw err;
+      }
     });
     // A wiki's first compile has no label to offer: one summary drafts alone
     // first, so the rest start with its label instead of each inventing a
     // near copy (owner decision 2026-10-25). Same calls, one draft's wait.
     const firstAlone = layer === 'source-summary' && categoryLabels.list().length === 0 && labelled.length > 1;
     const results = firstAlone
-      ? [...(await pLimit(labelled.slice(0, 1), 1)), ...(await pLimit(labelled.slice(1), DRAFT_CONCURRENCY))]
-      : await pLimit(labelled, DRAFT_CONCURRENCY);
+      ? [
+          ...(await pLimit(labelled.slice(0, 1), 1, stop.signal)),
+          ...(await pLimit(labelled.slice(1), DRAFT_CONCURRENCY, stop.signal)),
+        ]
+      : await pLimit(labelled, DRAFT_CONCURRENCY, stop.signal);
 
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
+      // Never started: the step stopped first.
+      if (r === undefined) continue;
       if (r instanceof Error) {
-        failed++;
         // Capture the actual error message in the page_plans row + log to
         // app stdout. Before this, every per-task failure was swallowed —
         // operators had no clue why a draft died. Session 29be62eb (15
         // source-summary HeadersTimeoutErrors) wasted 30+ min of debugging.
         console.error('[draft] plan_id=%s title=%s err=%s', layerPlans[i].plan_id, layerPlans[i].title, r.message);
-        updatePlanFailed(layerPlans[i].plan_id, r.message);
+        if (updatePlanDraftFailed(layerPlans[i].plan_id, r.message)) failed++;
+        else logPlanTaken(session_id, layerPlans[i].plan_id);
+      } else if (!r.saved) {
+        logPlanTaken(session_id, layerPlans[i].plan_id);
       } else {
         drafted++;
         byType[r.pageType] = (byType[r.pageType] ?? 0) + 1;
       }
+      // This run no longer owns the step's progress once the orchestrator
+      // stopped waiting for it.
+      if (request.signal.aborted) continue;
       // Live progress detail for the UI's "Writing pages" tracker. Without
       // this, the draft step shows just "PROCESSING" with no count while
       // earlier steps show "8/8 sources extracted" etc. Mirrors the per-
@@ -963,6 +1017,18 @@ export async function POST(request: Request) {
     }
   }
 
+  if (request.signal.aborted) {
+    console.log(JSON.stringify({ event: 'draft_stopped', reason: 'caller_gone', session_id, drafted, failed }));
+  }
+  if (outOfCredit.signal.aborted) {
+    // The orchestrator fails the session with this message; Retry drafts
+    // the plans left once the account is topped up.
+    console.log(JSON.stringify({ event: 'draft_stopped', reason: OUT_OF_CREDIT, session_id, drafted, failed }));
+    return NextResponse.json(
+      { error: OUT_OF_CREDIT, message: OUT_OF_CREDIT_MESSAGE, session_id, drafted, failed },
+      { status: 503 },
+    );
+  }
   return NextResponse.json(
     { session_id, drafted, failed, by_type: byType, prompt_cuts: promptCuts },
     { status: 200 },

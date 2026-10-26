@@ -46,6 +46,7 @@ import { extractionCheckCounts } from '../../../../lib/extraction-checks';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
 import { buildMentionPin } from '../../../../lib/mention-pin';
 import { buildSourceMentionRows } from '../../../../lib/mention-rows';
+import { OUT_OF_CREDIT, OutOfCreditError, isOutOfCredit } from '../../../../lib/out-of-credit';
 
 // "Garbage" source titles — what we get when MarkItDown can't pull a title
 // from PDF metadata and the cascade falls through to the filename stub.
@@ -217,6 +218,8 @@ async function callExtractLLM(payload: Record<string, unknown>): Promise<any> {
     // attempt 420 s (providers/deepseek.py _STEP_TIMEOUT_S), so a stalled
     // first attempt and its retry both fit; at 600 s here, one stalled
     // attempt used the whole window and no retry ever ran (2026-10-25).
+    // nlp-service ends the call, retries included, 30 s before this
+    // (llm_client._CALL_DEADLINE_S): change both together.
     signal: AbortSignal.timeout(900_000),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
     dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
@@ -224,6 +227,7 @@ async function callExtractLLM(payload: Record<string, unknown>): Promise<any> {
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     if (res.status === 429) throw Object.assign(new Error('llm_rate_limited'), { status: 429 });
+    if (isOutOfCredit(res.status, detail)) throw new OutOfCreditError();
     if (res.status === 503) throw Object.assign(new Error('daily_cost_ceiling'), { status: 503 });
     throw new Error(`extract_llm_failed: ${res.status} ${detail}`);
   }
@@ -441,6 +445,9 @@ export async function POST(request: Request) {
     const e = err as Error & { status?: number };
     if (e.status === 429) {
       return NextResponse.json({ error: 'llm_rate_limited' }, { status: 429 });
+    }
+    if (e instanceof OutOfCreditError) {
+      return NextResponse.json({ error: OUT_OF_CREDIT, message: e.message }, { status: 503 });
     }
     if (e.status === 503) {
       return NextResponse.json({ error: 'daily_cost_ceiling' }, { status: 503 });

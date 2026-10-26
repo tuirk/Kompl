@@ -42,6 +42,7 @@ import {
 } from './db';
 import { syncPageWikilinks } from './wikilinks';
 import { LONG_HTTP_AGENT } from './long-http-agent';
+import { OutOfCreditError, isOutOfCredit } from './out-of-credit';
 import { assignCitationLabels, labelsToStoredCitations, rewordLabelSubjects } from './citations';
 import { normalizeFrontmatter, relatedLinkTargets, sourceOnlyTitles, tidyDraftLinks } from './draft-cleanup';
 import { withSourceText } from './source-page-text';
@@ -91,6 +92,7 @@ async function callDraftPage(
       compile_model: compileModel,
     }),
     signal: AbortSignal.timeout(600_000), // 10 min — recompile-on-source-delete runs an extract LLM call. DeepSeek can take 200-400s on dense sources. 180s (prior) was Gemini-only sizing.
+    // nlp-service ends the call 30 s before this (llm_client._CALL_DEADLINE_S).
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
     dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
   });
@@ -98,6 +100,7 @@ async function callDraftPage(
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     if (res.status === 429) throw Object.assign(new Error('llm_rate_limited'), { status: 429 });
+    if (isOutOfCredit(res.status, detail)) throw new OutOfCreditError();
     if (res.status === 503) throw Object.assign(new Error('daily_cost_ceiling'), { status: 503 });
     throw new Error(`draft_page_failed: ${res.status} ${detail}`);
   }

@@ -17,6 +17,7 @@
 import { NextResponse } from 'next/server';
 import { getEffectiveCompileModel, getPagePlansByStatus } from '../../../../lib/db';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
+import { OUT_OF_CREDIT, OUT_OF_CREDIT_MESSAGE, isOutOfCredit } from '../../../../lib/out-of-credit';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 const SCHEMA_PATH = '/data/schema.md';
@@ -78,6 +79,7 @@ export async function POST(request: Request) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pages: pagesSummary, compile_model: getEffectiveCompileModel(session_id) }),
     signal: AbortSignal.timeout(600_000), // 10 min — generate-schema runs an LLM call; DeepSeek can take 200-400s on the page list. 120s (prior value) was Gemini-only sizing.
+    // nlp-service ends the call 30 s before this (llm_client._CALL_DEADLINE_S).
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
     dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
   });
@@ -85,6 +87,9 @@ export async function POST(request: Request) {
   if (!genRes.ok) {
     const detail = await genRes.text().catch(() => '');
     if (genRes.status === 429) return NextResponse.json({ error: 'llm_rate_limited' }, { status: 429 });
+    if (isOutOfCredit(genRes.status, detail)) {
+      return NextResponse.json({ error: OUT_OF_CREDIT, message: OUT_OF_CREDIT_MESSAGE }, { status: 503 });
+    }
     if (genRes.status === 503) return NextResponse.json({ error: 'daily_cost_ceiling' }, { status: 503 });
     console.error('[schema] generate failed:', genRes.status, detail);
     return NextResponse.json({ error: `generate_schema_failed: ${genRes.status} ${detail}` }, { status: 500 });

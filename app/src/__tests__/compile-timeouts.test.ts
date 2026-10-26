@@ -18,6 +18,7 @@ import {
   computeResolveMs,
   computeMatchMs,
   computeDraftMs,
+  draftRounds,
   computeCrossrefMs,
   computeCommitMs,
 } from '../lib/compile-timeouts';
@@ -39,7 +40,7 @@ const DISAMBIGUATE_PER_BATCH_MS = 120_000;
 // lib/resolve-ranking.ts disambiguatePairCap: 10 pairs per source, 120 to 600.
 const pairCap = (sources: number) => Math.min(600, Math.max(120, sources * 10));
 const MATCH_PER_PAIR_MS     = 60_000;
-const DRAFT_PER_BATCH_MS    = 600_000;
+const DRAFT_PER_ROUND_MS    = 630_000;
 const CROSSREF_PER_PLAN_MS  = 30_000;
 const COMMIT_PER_PLAN_MS    = 60_000;
 
@@ -121,37 +122,42 @@ describe('computeMatchMs', () => {
 });
 
 describe('computeDraftMs', () => {
-  it('returns 1-batch-worth at N=0 (Math.max(1, ...) keeps a single-batch budget)', () => {
-    // batches floor at 1 even when planCount=0; raw = 1 × 600_000
-    const raw = 1 * DRAFT_PER_BATCH_MS;
+  it('returns one round at 0 rounds (Math.max(1, ...) keeps a single-round budget)', () => {
+    const raw = 1 * DRAFT_PER_ROUND_MS;
     expect(computeDraftMs(0)).toBe(expected(raw, DRAFT_FLOOR_MS));
     expect(computeDraftMs(0)).toBeGreaterThanOrEqual(DRAFT_FLOOR_MS);
   });
 
-  it('returns the same as N=0 at N=1 (1 batch × 600s × 1.2 + 180s = 900s, > 600s floor)', () => {
-    const raw = 1 * DRAFT_PER_BATCH_MS;
-    expect(computeDraftMs(1)).toBe(expected(raw, DRAFT_FLOOR_MS));
-  });
-
-  it('uses default concurrency=10', () => {
-    const raw = Math.ceil(38 / 10) * DRAFT_PER_BATCH_MS; // 4 batches × 600s
-    expect(computeDraftMs(38)).toBe(expected(raw, DRAFT_FLOOR_MS));
+  it('allows one draft call plus its dossier ranking per round', () => {
+    expect(computeDraftMs(1)).toBe(expected(DRAFT_PER_ROUND_MS, DRAFT_FLOOR_MS));
+    expect(computeDraftMs(4)).toBe(expected(4 * DRAFT_PER_ROUND_MS, DRAFT_FLOOR_MS));
   });
 
   it('exceeds the static 1.5M ms that fired on session 97f58805 (38 plans)', () => {
-    // The whole point of the refactor: 38 plans needed >1.5M ms but PR #71's
-    // static value was exactly 1.5M ms.
-    expect(computeDraftMs(38)).toBeGreaterThan(1_500_000);
+    // 38 plans in one layer: 4 rounds. PR #71's static value was 1.5M ms.
+    expect(computeDraftMs(draftRounds({ entity: 38 }, false))).toBeGreaterThan(1_500_000);
+  });
+});
+
+describe('draftRounds', () => {
+  it('runs the layers one after another, each in rounds of 10', () => {
+    expect(draftRounds({ 'source-summary': 12, entity: 3, concept: 1 }, false)).toBe(2 + 1 + 1);
+    expect(draftRounds({ entity: 38 }, false, 5)).toBe(8);
   });
 
-  it('honors explicit concurrency', () => {
-    const raw = Math.ceil(38 / 5) * DRAFT_PER_BATCH_MS; // 8 batches at concurrency=5
-    expect(computeDraftMs(38, 5)).toBe(expected(raw, DRAFT_FLOOR_MS));
+  it('adds the round of the summary a first compile drafts alone', () => {
+    expect(draftRounds({ 'source-summary': 3 }, true)).toBe(2);
   });
 
-  it('scales linearly at N=100', () => {
-    const raw = Math.ceil(100 / 10) * DRAFT_PER_BATCH_MS; // 10 batches
-    expect(computeDraftMs(100)).toBe(expected(raw, DRAFT_FLOOR_MS));
+  it('counts no round for copied original-source pages or empty layers', () => {
+    expect(draftRounds({ 'original-source': 4, entity: 0 }, false)).toBe(0);
+  });
+
+  it('gives a 7-plan first compile its 5 rounds, not the 900 s it had (audit H3)', () => {
+    const rounds = draftRounds({ 'source-summary': 3, entity: 2, concept: 1, overview: 1 }, true);
+    expect(rounds).toBe(5);
+    expect(computeDraftMs(rounds)).toBe(expected(5 * DRAFT_PER_ROUND_MS, DRAFT_FLOOR_MS));
+    expect(computeDraftMs(rounds)).toBeGreaterThan(5 * 600_000);
   });
 });
 

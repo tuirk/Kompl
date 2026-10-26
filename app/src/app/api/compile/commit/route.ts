@@ -8,7 +8,8 @@
  *   Phase 2 (sync db.transaction()):
  *     - idempotency guard: the plan must still be 'crossreffed'
  *     - staleness guard: a page changed since its draft read it is skipped
- *       (plan 'page_changed', activity 'compile_page_skipped')
+ *       (activity 'compile_page_skipped'; an update's plan 'failed' for
+ *       Retry to write again, otherwise 'page_changed')
  *     - insertPage()
  *     - setPendingContent() (outbox — markdown stored for boot reconciler)
  *     - draft_rules marker copied from a from-scratch plan (lib/draft-rules.ts)
@@ -65,6 +66,7 @@ import {
   pruneDeletedPlanSources,
   backfillAliasCanonicalPageId,
 } from '../../../../lib/db';
+import { activeRedo } from '../../../../lib/compile-redo/state';
 import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from '../../../../lib/draft-rules';
 import { flushOutboxPage, reconcileOutbox } from '../../../../lib/outbox-flush';
 import { pageTextVersionToken } from '../../../../lib/page-rewrite';
@@ -127,6 +129,9 @@ function pageChangedSinceDraft(plan_id: string, page_id: string): boolean {
   if (!row?.base_version) return false;
   return pageTextVersionToken(page_id) !== row.base_version;
 }
+
+const PAGE_CHANGED_RETRY =
+  'The page changed after this update was written, so it was not saved. Retry writes the update again on the page as it is now.';
 
 // Strip YAML frontmatter (--- ... ---) from the top of a markdown string.
 // Used to measure actual content length before the thin-draft gate check.
@@ -193,6 +198,8 @@ async function commitSession(session_id: string): Promise<Response> {
   // The approve route runs full Phase 2/3a/3b from scratch, so no draft state
   // is ever stranded.
   const autoApprove = getAutoApprove();
+  // A redo leaves a page someone else changed alone (FR-8).
+  const redo = activeRedo(session_id) !== null;
 
   // Build source title map once before the loop — used to enrich page_compiled events.
   const sourceTitleMap = new Map<string, string>(
@@ -328,7 +335,13 @@ async function commitSession(session_id: string): Promise<Response> {
       done = db.transaction((): typeof done => {
         if (!planStillCrossreffed(plan.plan_id)) return 'taken';
         if (pageChangedSinceDraft(plan.plan_id, page_id)) {
-          updatePlanStatus(plan.plan_id, 'page_changed');
+          // An update carries this compile's new sources into the page: it
+          // is marked failed, so Retry writes it again on the page as it is
+          // now instead of the sources' update being dropped while they
+          // count as compiled. A page the compile created and a redo's
+          // pages are left alone.
+          if (plan.action === 'update' && !redo) updatePlanFailed(plan.plan_id, PAGE_CHANGED_RETRY);
+          else updatePlanStatus(plan.plan_id, 'page_changed');
           logActivity('compile_page_skipped', {
             source_id: sourceIds[0] ?? null,
             session_id,

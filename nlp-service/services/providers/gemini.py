@@ -202,32 +202,55 @@ def get_client() -> genai.Client:
 
 _RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 
+# Errors after the request went out, before an answer came back: Gemini may
+# have answered and billed it (llm_client._record_unanswered).
+_SENT_ERRORS = (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError)
+# Errors before the request reached Gemini: nothing to bill.
+_UNSENT_ERRORS = (httpx.ConnectError, httpx.PoolTimeout, httpx.WriteTimeout, httpx.WriteError)
+
+
+def _send(fn: Callable[[], T], req: LLMRequest) -> T:
+    """One attempt; an attempt sent without an answer counts its worst case."""
+    from services import llm_client  # lazy
+
+    try:
+        return fn()
+    except _SENT_ERRORS:
+        llm_client._record_unanswered(req)
+        raise
+
+
+def _no_time_left(req: LLMRequest) -> bool:
+    """A call with a deadline sends no attempt that cannot end before the
+    app stops waiting (llm_client._CALL_DEADLINE_S)."""
+    from services import llm_client  # lazy
+
+    left = llm_client._time_left(req)
+    return left is not None and left < llm_client._MIN_ATTEMPT_S
+
 
 def _with_retry(
-    fn: Callable[[], T], step: str, *, max_attempts: int = 3, base_delay: float = 0.5,
+    fn: Callable[[], T], req: LLMRequest, *, max_attempts: int = 3, base_delay: float = 0.5,
 ) -> T:
     # Lazy import: keeps the public LLMRateLimitedError type at the dispatcher
     # layer, avoids circular import at module load time.
     from services.llm_client import LLMRateLimitedError
 
+    step = req.step
     limiter = _get_limiter()
     last_exc: Exception | None = None
 
     for i in range(max_attempts):
+        if _no_time_left(req):
+            if last_exc is None:
+                raise TimeoutError(f"no time left for {step} before the app stops waiting")
+            break
         if not limiter.try_acquire("gemini"):
             raise LLMRateLimitedError(f"llm_rate_limited: bucket exhausted on {step}")
 
         try:
-            return fn()
-        except (
-            httpx.ConnectError,
-            httpx.PoolTimeout,
-            httpx.ReadTimeout,
-            httpx.WriteTimeout,
-            httpx.RemoteProtocolError,
-            httpx.WriteError,
-            httpx.ReadError,
-        ) as e:
+            return _send(fn, req)
+        except (*_SENT_ERRORS, *_UNSENT_ERRORS) as e:
             last_exc = e
             err_class = type(e).__name__
         except _APIError as e:
@@ -358,7 +381,15 @@ class GeminiProvider:
         client = get_client()
 
         def _call() -> Any:
-            return client.models.generate_content(model=req.model, contents=contents, config=config)
+            # With a deadline, an attempt waits only for what is left of it.
+            from services import llm_client  # lazy
+            left = llm_client._time_left(req)
+            call_config = config
+            if left is not None:
+                call_config = config.model_copy(
+                    update={"http_options": types.HttpOptions(timeout=max(1, int(left * 1000)))}
+                )
+            return client.models.generate_content(model=req.model, contents=contents, config=call_config)
 
         # Daily cap: refused here, before anything is sent, once today's
         # recorded spend has reached it; the place is held until the cost is
@@ -367,15 +398,17 @@ class GeminiProvider:
         from services import llm_client  # lazy
         with llm_client._spend_reservation(req):
             if req.extra.get("retry", True):
-                response = _with_retry(_call, step=req.step)
+                response = _with_retry(_call, req)
             else:
                 # Free-form / state-committing paths (draft_page, synthesize, digest):
                 # acquire the limiter manually and skip retry — semantically
                 # identical to the existing inline rate-limit checks.
+                if _no_time_left(req):
+                    raise TimeoutError(f"no time left for {req.step} before the app stops waiting")
                 limiter = _get_limiter()
                 if not limiter.try_acquire("gemini"):
                     raise llm_client.LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-                response = _call()
+                response = _send(_call, req)
 
             _log_usage(req.step, response)
             usage_dict = _read_usage_dict(response)

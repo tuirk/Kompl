@@ -19,7 +19,8 @@ import { POST as runPOST } from '../app/api/compile/run/route';
 import { POST as crossrefPOST } from '../app/api/compile/crossref/route';
 import { POST as commitPOST } from '../app/api/compile/commit/route';
 import { activeRedo, readRedo, saveRedo } from '../lib/compile-redo/state';
-import { startRedo } from '../lib/compile-redo/start';
+import { previewRedo, startRedo } from '../lib/compile-redo/start';
+import { isCompileRunLive } from '../lib/compile/compile-run';
 import { getCompileModel, getCompileProgress, getDb, setSetting, updatePlanDraft } from '../lib/db';
 import { pageTextVersionToken } from '../lib/page-rewrite';
 import { BODY, PRICING, SESSION, USAGE, seedFinishedCompile, touchPage, type RedoFixture } from './helpers/redo-fixture';
@@ -212,6 +213,55 @@ describe('redo pipeline', () => {
     expect(getCompileProgress(SESSION)!.status).toBe('failed');
     expect(calls).not.toContain('/api/compile/draft');
     expect(pageType(f.beta)).toBe('concept');
+  });
+
+  it('a re-plan started again after a refused one still knows the compile’s own and changed pages (audit M6)', async () => {
+    handle = setupTestDb();
+    const f = seedFinishedCompile(handle.db);
+    // Something else rewrote the summary page after the compile: FR-8.
+    touchPage(handle.db, f.summary);
+    stubServices({
+      plan: () => {
+        const add = getDb().prepare(
+          `INSERT INTO page_plans (plan_id, session_id, title, page_type, action, source_ids, draft_status)
+           VALUES (?, ?, ?, 'entity', 'create', ?, 'planned')`,
+        );
+        for (let i = 0; i < 40; i++) add.run(randomUUID(), SESSION, `Topic ${i}`, JSON.stringify(f.sources));
+      },
+    });
+    await redoAndRun('plan');
+    expect(getCompileProgress(SESSION)!.status).toBe('failed');
+    await vi.waitFor(() => expect(isCompileRunLive(SESSION)).toBe(false));
+
+    // "Start the redo again": the reset deleted the committed plans, so
+    // only the first redo's record still knows Alpha and Beta are the
+    // compile's own pages and the summary page was changed meanwhile.
+    stubServices({
+      plan: () => {
+        const add = getDb().prepare(
+          `INSERT INTO page_plans (plan_id, session_id, title, page_type, action, source_ids, existing_page_id, draft_status)
+           VALUES (?, ?, ?, ?, 'update', ?, ?, 'planned')`,
+        );
+        add.run(randomUUID(), SESSION, 'Source A', 'source-summary', JSON.stringify([f.sources[0]]), f.summary);
+        add.run(randomUUID(), SESSION, 'Alpha', 'entity', JSON.stringify(f.sources), f.alpha);
+      },
+    });
+    // The owner confirms what she sees: the same pages.
+    const preview = await previewRedo(SESSION, 'plan');
+    expect(preview.may_archive.map((p) => p.page_id).sort()).toEqual([f.alpha, f.beta].sort());
+    expect(preview.skipped.map((p) => p.page_id)).toEqual([f.summary]);
+    await redoAndRun('plan');
+
+    expect(getCompileProgress(SESSION)!.status).toBe('completed');
+    expect(pageType(f.beta)).toBe('archived');
+    const plan = (title: string) =>
+      handle!.db.prepare('SELECT action, draft_status FROM page_plans WHERE title = ?').get(title) as {
+        action: string;
+        draft_status: string;
+      };
+    expect(plan('Alpha')).toEqual({ action: 'create', draft_status: 'committed' });
+    expect(plan('Source A').draft_status).toBe('page_changed');
+    expect(readRedo()!.outcome!.archived.map((p) => p.page_id)).toEqual([f.beta]);
   });
 });
 

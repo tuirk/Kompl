@@ -64,6 +64,25 @@ def test_llm_routes_answer_503_at_the_cap(path, api, tmp_path, mock_gemini, mock
     mock_gemini.models.generate_content.assert_not_called()
 
 
+@pytest.mark.parametrize("path", sorted(_ROUTES))
+def test_llm_routes_name_an_empty_provider_account(path, api, monkeypatch):
+    """DeepSeek's 402: still a 503, so whatever stops at the cap stops, but
+    named apart so the app says to top up the account (audit M7)."""
+    def _empty_account(req):
+        raise llm_client.ProviderOutOfCreditError(
+            "provider_out_of_credit: the DeepSeek account has no credit left; top it up and retry"
+        )
+
+    provider = MagicMock()
+    provider.complete.side_effect = _empty_account
+    monkeypatch.setattr(llm_client, "get_provider", lambda model: provider)
+
+    resp = api.post(path, json={**_ROUTES[path], "compile_model": "deepseek-v4-pro"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"].startswith("provider_out_of_credit")
+
+
 def test_disambiguate_answers_503_at_the_cap(api, tmp_path, mock_gemini, mock_limiter):
     _set_spend(tmp_path, cap_usd=1.0, spent_usd=1.0)
     side = {"type": "ORG", "context": "c", "source_id": "s1"}

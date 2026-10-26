@@ -84,6 +84,7 @@ import {
   type PageUpgradeRun,
   type PageUpgradeStopReason,
 } from './page-upgrade-state';
+import { OUT_OF_CREDIT } from './out-of-credit';
 import { listHeldPageIds } from './page-hold';
 import { RedraftError, redraftPage } from './redraft';
 import { isWikiRepairRunning } from './wiki-repair/state';
@@ -641,7 +642,7 @@ async function processPages(
       } catch (err) {
         const code = err instanceof RedraftError ? err.code : 'unexpected';
         const message = err instanceof Error ? err.message : String(err);
-        if (code === 'daily_cost_ceiling') {
+        if (code === 'daily_cost_ceiling' || code === OUT_OF_CREDIT) {
           // Not the page's fault: it stays waiting for the next run.
           run.last_error = message;
           stopAfter = 'daily_cost_ceiling';

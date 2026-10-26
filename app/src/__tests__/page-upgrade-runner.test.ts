@@ -389,6 +389,17 @@ describe('stopping on its own', () => {
     expect(isUpgradeCandidate('page-3')).toBe(true);
   });
 
+  it('on an empty provider account, saying so (audit M7)', async () => {
+    seedCandidates(3);
+    const calls = redraftWith((_id, call) => {
+      if (call === 1) throw new RedraftError('provider_out_of_credit', 503, 'The AI provider account has no credit left.');
+    });
+    const run = await runToEnd(3);
+    expect(calls).toEqual(['page-1']);
+    expect(run).toMatchObject({ status: 'stopped', failed: 0, last_error: 'The AI provider account has no credit left.' });
+    expect(isUpgradeCandidate('page-1')).toBe(true);
+  });
+
   it(`after ${PAGE_UPGRADE_MAX_CONSECUTIVE_FAILURES} failures in a row; a success resets the count, a skip does not`, async () => {
     seedCandidates(8);
     const outcome: Record<number, string> = { 1: 'fail', 2: 'fail', 3: 'ok', 4: 'fail', 5: 'skip', 6: 'fail', 7: 'fail', 8: 'ok' };

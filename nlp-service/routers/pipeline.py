@@ -31,6 +31,7 @@ from services.llm_client import (
     LLMCompileError,
     LLMExtractionResponse,
     LLMRateLimitedError,
+    cost_ceiling_detail,
     crossref_pages,
     draft_page,
     extract_source,
@@ -90,7 +91,7 @@ def pipeline_extract_llm(req: ExtractLLMRequest) -> LLMExtractionResponse:
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -225,7 +226,7 @@ def pipeline_draft_page(req: DraftPageRequest) -> DraftPageResponse:
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -260,7 +261,7 @@ def pipeline_crossref(req: CrossrefRequest) -> CrossrefResponse:
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -333,7 +334,7 @@ def pipeline_triage(req: TriageRequest) -> TriageResponse:
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return TriageResponse(**result)
@@ -352,6 +353,6 @@ def pipeline_generate_schema(req: GenerateSchemaRequest) -> GenerateSchemaRespon
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

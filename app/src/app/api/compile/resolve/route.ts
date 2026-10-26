@@ -59,6 +59,7 @@ import { makeDispatcher } from '../../../../lib/long-http-agent';
 import { buildMentionPin, KIND_FAMILIES } from '../../../../lib/mention-pin';
 import { sessionMentionRows } from '../../../../lib/mention-rows';
 import { numericConflict } from '../../../../lib/name-guard';
+import { OUT_OF_CREDIT, OutOfCreditError, isOutOfCredit } from '../../../../lib/out-of-credit';
 import { pageSide } from '../../../../lib/resolve-page-sides';
 import { disambiguatePairCap, isAbbreviation, rankForLayer3 } from '../../../../lib/resolve-ranking';
 
@@ -207,6 +208,7 @@ async function callDisambiguate(
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     if (res.status === 429) throw Object.assign(new Error('llm_rate_limited'), { status: 429 });
+    if (isOutOfCredit(res.status, detail)) throw new OutOfCreditError();
     if (res.status === 503) throw Object.assign(new Error('daily_cost_ceiling'), { status: 503 });
     throw new Error(`disambiguate_failed: ${res.status} ${detail}`);
   }
@@ -761,6 +763,9 @@ export async function POST(request: Request) {
     const e = err as Error & { status?: number };
     if (e.status === 429) {
       return NextResponse.json({ error: 'llm_rate_limited' }, { status: 429 });
+    }
+    if (e instanceof OutOfCreditError) {
+      return NextResponse.json({ error: OUT_OF_CREDIT, message: e.message }, { status: 503 });
     }
     if (e.status === 503) {
       return NextResponse.json({ error: 'daily_cost_ceiling' }, { status: 503 });

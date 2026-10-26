@@ -29,7 +29,7 @@ import { compilePages } from './baseline';
 import { estimateRedo, type RedoEstimate } from './estimate';
 import { computeRedoPlan, type RedoPlan } from './plan';
 import { applyRedoReset } from './reset';
-import { MAX_REDO_PAGES, type RedoPoint, type RedoRecord } from './state';
+import { MAX_REDO_PAGES, activeRedo, type RedoPage, type RedoPoint, type RedoRecord } from './state';
 
 export class RedoError extends Error {
   constructor(
@@ -149,6 +149,12 @@ export async function previewRedo(sessionId: string, point: RedoPoint): Promise<
   return preview;
 }
 
+/** Both lists, each page once; an entry of the first list wins. */
+function mergePages<P extends RedoPage>(first: P[], second: P[]): P[] {
+  const seen = new Set(first.map((p) => p.page_id));
+  return [...first, ...second.filter((p) => !seen.has(p.page_id))];
+}
+
 const STARTING_KEY = '__komplCompileRedoStarting';
 
 function starting(): { on: boolean } {
@@ -206,6 +212,17 @@ export async function startRedo(input: {
     }
 
     const written = compilePages(db, input.sessionId);
+    // A redo of this session that stopped before it finished already reset
+    // its plans (a re-plan deletes the committed ones), so the plans no
+    // longer show the compile's own pages or the pages others changed: they
+    // carry on from its record (the plan above includes its skipped pages).
+    const earlier = activeRedo(input.sessionId);
+    const ownNow =
+      input.point === 'plan'
+        ? written
+            .filter((p) => p.action === 'create' && !p.changed)
+            .map((p) => ({ page_id: p.page_id, title: p.title, version: pageTextVersionToken(p.page_id) }))
+        : [];
     const record: RedoRecord = {
       session_id: input.sessionId,
       point: input.point,
@@ -222,12 +239,7 @@ export async function startRedo(input: {
         minutes_low: estimate.minutes_low,
         minutes_high: estimate.minutes_high,
       },
-      own_pages:
-        input.point === 'plan'
-          ? written
-              .filter((p) => p.action === 'create' && !p.changed)
-              .map((p) => ({ page_id: p.page_id, title: p.title, version: pageTextVersionToken(p.page_id) }))
-          : [],
+      own_pages: mergePages(earlier?.own_pages ?? [], ownNow),
       skipped: plan.skipped,
       usage_at_start: usage ? { date: usage.date, total_usd: usage.total_usd } : null,
       outcome: null,

@@ -40,6 +40,7 @@ import { withSourceText } from './source-page-text';
 import { APP_PAGE_IDS, CURRENT_DRAFT_RULES, DRAFTED_PAGE_TYPES, isDraftedPage } from './draft-rules';
 import type { LlmModel } from './llm-models';
 import { LONG_HTTP_AGENT } from './long-http-agent';
+import { OUT_OF_CREDIT, OUT_OF_CREDIT_MESSAGE, isOutOfCredit } from './out-of-credit';
 import { stripFrontmatter } from './markdown';
 import { removeEmptyContradictionSections } from './page-sections';
 import { commitPageRewrite, pageVersionToken, type CreditChange } from './page-rewrite';
@@ -171,6 +172,7 @@ async function draftPage(body: Record<string, unknown>): Promise<string> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      // nlp-service ends the call 30 s before this (llm_client._CALL_DEADLINE_S).
       signal: AbortSignal.timeout(600_000),
       // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
       dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
@@ -180,6 +182,9 @@ async function draftPage(body: Record<string, unknown>): Promise<string> {
   }
   if (res.status === 429) throw new RedraftError('llm_rate_limited', 429, 'The model is rate-limited. Try again in a minute.');
   if (res.status === 503) {
+    const detail = await res.text().catch(() => '');
+    // Raising the limit would not help an empty account (lib/out-of-credit.ts).
+    if (isOutOfCredit(res.status, detail)) throw new RedraftError(OUT_OF_CREDIT, 503, OUT_OF_CREDIT_MESSAGE);
     throw new RedraftError('daily_cost_ceiling', 503, "Today's LLM spending limit is reached. Try again tomorrow or raise the limit in Settings.");
   }
   if (!res.ok) {

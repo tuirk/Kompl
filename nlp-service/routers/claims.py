@@ -31,6 +31,7 @@ from services.llm_client import (
     CostCeilingError,
     LLMCompileError,
     LLMRateLimitedError,
+    cost_ceiling_detail,
     judge_claim_pairs,
 )
 from services.llm_models import LLMModel
@@ -115,7 +116,7 @@ def pipeline_judge_claims(req: JudgeClaimsRequest) -> JudgeClaimsResponse:
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     items = [

@@ -1708,6 +1708,12 @@ export function getPagesForSession(
  * that are not LLM-written (original-source passthroughs). `baseVersion`
  * (v30) is the version of the page an update draft read
  * (lib/page-rewrite.ts pageTextVersionToken); null for a new page.
+ *
+ * Only a plan still waiting for its draft ('planned', or 'failed' by an
+ * earlier attempt) takes it. A draft run that outlived its step (the
+ * orchestrator gave up and a Retry drafted, linked or saved the plan since)
+ * would otherwise move the plan back to 'drafted', where commit never reads
+ * it and the page is lost. Returns false when the plan was not waiting.
  */
 export function updatePlanDraft(
   planId: string,
@@ -1716,15 +1722,32 @@ export function updatePlanDraft(
   baseVersion: string | null = null,
   /** Sources the draft's prompt carried (v30); NULL credits every plan source (lib/plan-provenance.ts). */
   usedSourceIds: string[] | null = null,
-): void {
-  openDb()
+): boolean {
+  const result = openDb()
     .prepare(
       `UPDATE page_plans
           SET draft_content = ?, draft_status = 'drafted', draft_rules = ?, base_version = ?,
               used_source_ids = ?
-        WHERE plan_id = ?`
+        WHERE plan_id = ? AND draft_status IN ('planned', 'failed')`
     )
     .run(draftContent, draftRules, baseVersion, usedSourceIds ? JSON.stringify(usedSourceIds) : null, planId);
+  return result.changes > 0;
+}
+
+/**
+ * The draft step's failure write: updatePlanFailed, but only while the plan
+ * still waits for its draft, for the same reason as updatePlanDraft. Returns
+ * false when the plan was not waiting.
+ */
+export function updatePlanDraftFailed(planId: string, errorMessage: string): boolean {
+  const truncated = errorMessage.length > 1000 ? errorMessage.slice(0, 1000) + '… [truncated]' : errorMessage;
+  const result = openDb()
+    .prepare(
+      `UPDATE page_plans SET draft_status = 'failed', draft_error = ?
+        WHERE plan_id = ? AND draft_status IN ('planned', 'failed')`
+    )
+    .run(truncated, planId);
+  return result.changes > 0;
 }
 
 /**
