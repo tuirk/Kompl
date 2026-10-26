@@ -10,6 +10,8 @@
  *
  * Single-source cascade delete. Logic lives in lib/source-delete.ts and is
  * shared with the bulk endpoint. See that file for the cascade rules.
+ * Deletes run one at a time; 409 while a compile, the wiki repair or the
+ * page update runs.
  *
  * PATCH /api/sources/[source_id]
  *
@@ -19,7 +21,7 @@
 import { NextResponse } from 'next/server';
 
 import { getSource, logActivity, setSourceStatus } from '../../../../lib/db';
-import { deleteOneSourceWithCascade } from '../../../../lib/source-delete';
+import { deleteOneSourceWithCascade, inSourceDeleteTurn } from '../../../../lib/source-delete';
 
 interface RouteContext {
   params: Promise<{ source_id: string }>;
@@ -93,7 +95,9 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: 'source_id required' }, { status: 400 });
   }
 
-  const result = await deleteOneSourceWithCascade(source_id);
+  const turn = await inSourceDeleteTurn(() => deleteOneSourceWithCascade(source_id));
+  if (!turn.ok) return NextResponse.json(turn.blocked, { status: 409 });
+  const result = turn.value;
   if (result.status === 'not_found') {
     return NextResponse.json({ error: 'not_found' }, { status: 404 });
   }
@@ -107,5 +111,6 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     pages_rewritten: result.pages_rewritten,
     pages_archived: result.pages_archived,
     pages_noted: result.pages_noted,
+    pages_hidden: result.pages_hidden,
   });
 }

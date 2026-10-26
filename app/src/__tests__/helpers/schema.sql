@@ -1,4 +1,4 @@
--- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=25.
+-- Final schema for unit tests. Mirrors scripts/migrate.py at SCHEMA_VERSION=30.
 -- If migrate.py changes, update this file. Tests will fail loudly on drift.
 
 CREATE TABLE sources (
@@ -17,7 +17,11 @@ CREATE TABLE sources (
   onboarding_session_id TEXT,
   -- v25: cascade-winner + LLM-rescue idempotency
   title_source TEXT,
-  title_rescued_at TIMESTAMP
+  title_rescued_at TIMESTAMP,
+  -- v30: publication date (YYYY-MM-DD) and where it came from
+  -- (lib/source-dates.ts); NULL for sources added before.
+  published_at TEXT,
+  published_at_source TEXT
 );
 
 CREATE TABLE pages (
@@ -31,7 +35,14 @@ CREATE TABLE pages (
   last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
   source_count INTEGER DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  pending_content TEXT
+  pending_content TEXT,
+  -- v27: writing rules the page's text was drafted under ('v0.4');
+  -- NULL = written by an earlier version (lib/draft-rules.ts).
+  draft_rules TEXT,
+  -- v30: a page archived because its rewrite after a source delete failed
+  -- (lib/page-hold.ts): the type it returns as, and why it was archived.
+  restore_page_type TEXT,
+  archive_reason TEXT
 );
 
 CREATE TABLE provenance (
@@ -68,7 +79,14 @@ CREATE TABLE aliases (
   alias TEXT NOT NULL,
   canonical_name TEXT NOT NULL,
   canonical_page_id TEXT REFERENCES pages(page_id),
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  -- v29: how the alias was made and whether compiles use it
+  method TEXT,
+  score REAL,
+  session_id TEXT,
+  status TEXT DEFAULT 'active',
+  status_reason TEXT,
+  status_at DATETIME
 );
 
 CREATE TABLE settings (
@@ -106,7 +124,15 @@ CREATE TABLE page_plans (
   draft_content TEXT,
   draft_status TEXT DEFAULT 'planned',
   draft_error TEXT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  -- v27: writing rules the draft was made under; NULL for pre-v0.4 drafts.
+  draft_rules TEXT,
+  -- v30: the page's version when an update draft read it; NULL for new
+  -- pages and pre-v30 drafts.
+  base_version TEXT,
+  -- v30: JSON list of the sources the draft's prompt carried; NULL credits
+  -- every plan source (older drafts, original-source pages).
+  used_source_ids TEXT
 );
 
 CREATE TABLE compile_progress (
@@ -145,7 +171,9 @@ CREATE TABLE ingest_failures (
   source_type TEXT NOT NULL DEFAULT 'url',
   resolved_source_id TEXT,
   metadata JSON,
-  session_id TEXT
+  session_id TEXT,
+  -- v30: failed attempts for this link (one Saved Links row per link).
+  attempts INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE vector_backfill_queue (
@@ -167,6 +195,13 @@ CREATE TABLE relationship_mentions (
   relationship_type TEXT NOT NULL,
   source_id TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
   first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  -- v28: the extract LLM's one-sentence description of the relation;
+  -- NULL = not yet filled (lib/relation-backfill.ts).
+  description TEXT,
+  -- v30: the source's sentence for the relation and its check against the
+  -- source (1 found, 0 not found, NULL no quote); NULL before quotes.
+  quote TEXT,
+  quote_verified INTEGER,
   PRIMARY KEY (from_canonical, to_canonical, relationship_type, source_id)
 );
 
@@ -182,6 +217,66 @@ CREATE TABLE collect_staging (
   error_message TEXT,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
   ingested_at DATETIME
+);
+
+-- v30: match triage calls that gave no verdict, kept for a later compile to
+-- check again (lib/triage-rechecks.ts).
+CREATE TABLE triage_rechecks (
+  source_id TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  page_id TEXT NOT NULL REFERENCES pages(page_id) ON DELETE CASCADE,
+  reason TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  first_failed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_failed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  session_id TEXT NOT NULL,
+  verdict TEXT,
+  verdict_reason TEXT,
+  verdict_session_id TEXT,
+  PRIMARY KEY (source_id, page_id)
+);
+
+-- v30: every disagreement Kompl knows about on a page, with the owner's
+-- verdict (lib/disagreements.ts, scripts/migrate.py DISAGREEMENTS_SQL).
+CREATE TABLE disagreements (
+  disagreement_id TEXT PRIMARY KEY,
+  page_id TEXT NOT NULL REFERENCES pages(page_id) ON DELETE CASCADE,
+  found_by TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'possible',
+  owner_verdict TEXT,
+  owner_verdict_at DATETIME,
+  topic TEXT NOT NULL DEFAULT '',
+  reason TEXT,
+  anchor TEXT,
+  source_a TEXT REFERENCES sources(source_id) ON DELETE CASCADE,
+  quote_a TEXT,
+  source_b TEXT REFERENCES sources(source_id) ON DELETE CASCADE,
+  quote_b TEXT,
+  source_ids TEXT NOT NULL DEFAULT '[]',
+  match_key TEXT NOT NULL,
+  session_id TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  cleared_at DATETIME
+);
+
+-- v30: the claim check's saved verdicts, one per pair of claims
+-- (lib/claim-check/verdicts.ts, scripts/migrate.py CLAIM_VERDICTS_SQL).
+CREATE TABLE claim_verdicts (
+  pair_key TEXT PRIMARY KEY,
+  source_a TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  claim_a TEXT NOT NULL,
+  source_b TEXT NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  claim_b TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  verdict TEXT NOT NULL,
+  topic TEXT NOT NULL DEFAULT '',
+  reason TEXT,
+  newer TEXT,
+  found_by TEXT NOT NULL,
+  model TEXT,
+  session_id TEXT,
+  judged_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE VIRTUAL TABLE pages_fts USING fts5(
@@ -225,5 +320,16 @@ CREATE INDEX idx_relationship_mentions_pair ON relationship_mentions(from_canoni
 CREATE INDEX idx_relationship_mentions_source ON relationship_mentions(source_id);
 CREATE INDEX idx_collect_staging_session ON collect_staging(session_id);
 CREATE INDEX idx_collect_staging_session_status ON collect_staging(session_id, status);
+CREATE INDEX idx_triage_rechecks_page ON triage_rechecks(page_id);
+CREATE INDEX idx_triage_rechecks_first_failed ON triage_rechecks(first_failed_at);
+CREATE UNIQUE INDEX idx_disagreements_key ON disagreements(page_id, found_by, match_key);
+CREATE INDEX idx_disagreements_created ON disagreements(created_at);
+CREATE INDEX idx_disagreements_source_a ON disagreements(source_a);
+CREATE INDEX idx_disagreements_source_b ON disagreements(source_b);
+CREATE INDEX idx_claim_verdicts_source_a ON claim_verdicts(source_a);
+CREATE INDEX idx_claim_verdicts_source_b ON claim_verdicts(source_b);
+CREATE INDEX idx_claim_verdicts_judged ON claim_verdicts(found_by, judged_at);
 
-INSERT INTO settings (key, value) VALUES ('schema_version', '25');
+INSERT INTO settings (key, value) VALUES ('schema_version', '30');
+-- v26: fresh installs get an explicit compile_model row (DEFAULT_COMPILE_MODEL).
+INSERT INTO settings (key, value) VALUES ('compile_model', 'deepseek-flash');

@@ -12,10 +12,11 @@
  */
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Upload, BookOpen, MessageSquare, AlertTriangle } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Upload, BookOpen, Plug, AlertTriangle } from 'lucide-react';
 import { COMPILE_STEP_KEYS, COMPILE_STEP_LABELS } from '@/lib/compile-steps';
 import { toUserMessage } from '@/lib/service-errors';
+import ProcessQueue from './_dashboard-queue';
 
 // ── Active compile banner constants ────────────────────────────────────────
 const LS_KEY = 'kompl_active_compile';
@@ -388,158 +389,6 @@ function ServiceStatusBanner() {
   );
 }
 
-// ── Process queue ──────────────────────────────────────────────────────────
-
-interface SourceQueueRow {
-  source_id: string;
-  title: string;
-  source_type: string;
-  date_ingested: string;
-  compile_status: string;
-}
-
-const GREEN_DOT = <div style={{ width: 9, height: 9, borderRadius: '50%', background: 'rgba(var(--accent-rgb),0.5)', flexShrink: 0 }} />;
-const DIM_DOT   = <div style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--separator)',      flexShrink: 0 }} />;
-
-function getStatusCfg(status: string) {
-  switch (status) {
-    case 'active':
-    case 'extracted':
-    case 'in_progress':
-      return { border: 'rgba(var(--accent-rgb),0.4)', icon: GREEN_DOT, fillColor: 'rgba(var(--accent-rgb),0.3)', progress: 100, dim: false };
-    case 'failed':
-      return { border: 'rgba(var(--danger-rgb),0.4)', icon: <AlertTriangle size={13} style={{ color: 'var(--danger)' }} />, fillColor: 'var(--danger)', progress: 100, dim: false };
-    default:
-      return { border: 'rgba(var(--accent-rgb),0.15)', icon: DIM_DOT, fillColor: 'var(--separator)', progress: 100, dim: true };
-  }
-}
-
-const QUEUE_POLL_MS = 5000;
-
-function ProcessQueue() {
-  const [sources, setSources] = useState<SourceQueueRow[]>([]);
-  const [retrying, setRetrying] = useState<Set<string>>(new Set());
-  const [loadError, setLoadError] = useState(false);
-
-  const fetchSources = useCallback(() => {
-    void fetch('/api/sources?limit=4&sort_by=date_ingested&sort_order=desc')
-      .then(r => {
-        if (!r.ok) throw new Error(`${r.status}`);
-        return r.json();
-      })
-      .then((data: { sources: SourceQueueRow[] }) => {
-        setSources((data.sources ?? []).slice(0, 4));
-        setLoadError(false);
-      })
-      .catch(() => setLoadError(true));
-  }, []);
-
-  useEffect(() => {
-    fetchSources();
-    const id = setInterval(fetchSources, QUEUE_POLL_MS);
-    return () => clearInterval(id);
-  }, [fetchSources]);
-
-  const handleRetry = useCallback(async (sourceId: string) => {
-    setRetrying(prev => new Set(prev).add(sourceId));
-    try {
-      const res = await fetch(`/api/sources/${sourceId}/recompile`, { method: 'POST' });
-      if (!res.ok && res.status !== 409) throw new Error(`${res.status}`);
-      const body = (await res.json()) as { session_id?: string | null };
-      if (body.session_id) {
-        localStorage.setItem('kompl_active_compile', JSON.stringify({ session_id: body.session_id, source_count: 0 }));
-      }
-      // Optimistically flip status to pending so the card dims down
-      setSources(prev => prev.map(s => s.source_id === sourceId ? { ...s, compile_status: 'pending' } : s));
-    } catch {
-      // silently ignore — card retains failed state, user can try again
-    } finally {
-      setRetrying(prev => { const next = new Set(prev); next.delete(sourceId); return next; });
-    }
-  }, []);
-
-  if (loadError && sources.length === 0) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <p style={{ color: 'var(--danger)', fontSize: '0.9rem', margin: 0 }}>Couldn&apos;t load sources.</p>
-        <button onClick={() => fetchSources()} style={{
-          background: 'transparent', border: '1px solid var(--border)', color: 'var(--fg-secondary)',
-          padding: '4px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, cursor: 'pointer',
-          textTransform: 'uppercase', letterSpacing: '0.5px',
-        }}>Retry</button>
-      </div>
-    );
-  }
-  if (sources.length === 0) {
-    return <p style={{ color: 'var(--fg-muted)', fontSize: '0.9rem', margin: 0 }}>No sources yet.</p>;
-  }
-
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-      {sources.map((s) => {
-        const cfg = getStatusCfg(s.compile_status);
-        const [datePart] = s.date_ingested.split(' ');
-        const [, month, day] = datePart.split('-');
-        const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-        const ts = `${MONTHS[parseInt(month, 10) - 1]} ${parseInt(day, 10)}`;
-        const isFailed = s.compile_status === 'failed';
-        const isRetrying = retrying.has(s.source_id);
-        return (
-          <div
-            key={s.source_id}
-            style={{
-              background: 'var(--bg-card)',
-              borderLeft: `2px solid ${cfg.border}`,
-              padding: 16,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              minWidth: 0,
-              opacity: cfg.dim ? 0.5 : 1,
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-dim)', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
-                {ts}
-              </span>
-              {cfg.icon}
-            </div>
-            <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 14, lineHeight: '20px', color: 'var(--fg-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {s.title}
-            </div>
-            <div style={{ height: 4, background: 'var(--bg-track)', position: 'relative' }}>
-              <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${cfg.progress}%`, background: cfg.fillColor }} />
-            </div>
-            {isFailed && (
-              <button
-                onClick={() => void handleRetry(s.source_id)}
-                disabled={isRetrying}
-                style={{
-                  marginTop: 2,
-                  background: 'transparent',
-                  border: '1px solid rgba(var(--danger-rgb),0.3)',
-                  color: isRetrying ? 'var(--fg-dim)' : 'var(--danger)',
-                  fontFamily: 'var(--font-body)',
-                  fontWeight: 700,
-                  fontSize: 9,
-                  letterSpacing: '0.8px',
-                  textTransform: 'uppercase',
-                  padding: '4px 8px',
-                  cursor: isRetrying ? 'default' : 'pointer',
-                  transition: 'var(--transition-fast)',
-                  opacity: isRetrying ? 0.5 : 1,
-                }}
-              >
-                {isRetrying ? 'Queuing…' : '↻ Retry'}
-              </button>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 // ── Pending drafts ─────────────────────────────────────────────────────────
 
 interface DraftRow {
@@ -560,6 +409,9 @@ function PendingDrafts() {
   const [bulkResult, setBulkResult] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadError, setLoadError] = useState(false);
+  // Why a draft was not applied (e.g. its page changed since it was written);
+  // the draft stays in the list.
+  const [refused, setRefused] = useState<Record<string, string>>({});
 
   function toggleExpand(planId: string) {
     setExpanded(prev => {
@@ -586,9 +438,20 @@ function PendingDrafts() {
 
   async function approve(planId: string) {
     setBusy(planId);
-    await fetch(`/api/drafts/${planId}/approve`, { method: 'POST' });
-    setDrafts((prev) => prev.filter((d) => d.plan_id !== planId));
-    setBusy(null);
+    try {
+      const res = await fetch(`/api/drafts/${planId}/approve`, { method: 'POST' });
+      if (res.ok) {
+        setDrafts((prev) => prev.filter((d) => d.plan_id !== planId));
+      } else {
+        const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
+        const reason = body?.message ?? `Not applied (${body?.error ?? res.status}).`;
+        setRefused((prev) => ({ ...prev, [planId]: reason }));
+      }
+    } catch {
+      setRefused((prev) => ({ ...prev, [planId]: 'Not applied: the request failed. Try again.' }));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function reject(planId: string) {
@@ -616,8 +479,18 @@ function PendingDrafts() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: latestCompileSessionId }),
       });
-      const data = (await res.json()) as { approved: number; failed: number; total: number };
-      setBulkResult(`Approved ${data.approved} of ${data.total}${data.failed > 0 ? ` (${data.failed} failed)` : ''}`);
+      const data = (await res.json()) as {
+        approved: number;
+        failed: number;
+        total: number;
+        errors: Array<{ plan_id: string; error: string; message?: string }>;
+      };
+      setBulkResult(`Approved ${data.approved} of ${data.total}${data.failed > 0 ? ` (${data.failed} not applied)` : ''}`);
+      setRefused((prev) => {
+        const next = { ...prev };
+        for (const e of data.errors) next[e.plan_id] = e.message ?? `Not applied (${e.error}).`;
+        return next;
+      });
       refresh();
     } catch (err) {
       setBulkResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -706,6 +579,11 @@ function PendingDrafts() {
                   {d.draft_content_preview}
                 </div>
               )}
+              {refused[d.plan_id] && (
+                <p role="alert" style={{ marginTop: '0.4rem', marginBottom: 0, fontSize: 12, color: 'var(--danger)' }}>
+                  {refused[d.plan_id]}
+                </p>
+              )}
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
               {d.draft_content && (
@@ -782,7 +660,7 @@ export default function DashboardClient({ activeSession }: DashboardClientProps)
     : undefined;
 
   return (
-    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px calc(5rem + 32px)' }}>
+    <main style={{ maxWidth: 1040, margin: '0 auto', padding: '1.5rem 40px 5rem' }}>
 
       {/* Service health banner — red bar when nlp-service is down */}
       <ServiceStatusBanner />
@@ -953,9 +831,9 @@ export default function DashboardClient({ activeSession }: DashboardClientProps)
               <BookOpen size={18} style={{ color: 'var(--accent)', flexShrink: 0 }} />
             </Link>
 
-            {/* Secondary — Open Chat */}
+            {/* Secondary — Connect an AI agent over MCP (replaces the retired in-app chat) */}
             <Link
-              href="/chat"
+              href="/settings#integrations"
               style={{
                 display: 'flex',
                 flexDirection: 'row',
@@ -969,9 +847,9 @@ export default function DashboardClient({ activeSession }: DashboardClientProps)
               }}
             >
               <span style={{ fontFamily: 'var(--font-heading)', fontSize: 18, fontWeight: 400, color: 'var(--fg)' }}>
-                Open Chat
+                Connect your AI
               </span>
-              <MessageSquare size={21} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+              <Plug size={19} style={{ color: 'var(--accent)', flexShrink: 0 }} />
             </Link>
           </div>
         </div>

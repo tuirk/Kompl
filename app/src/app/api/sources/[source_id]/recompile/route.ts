@@ -9,7 +9,9 @@
  *
  * Guards:
  *   404 — source not found
- *   409 — source is already active (nothing to do)
+ *   409 — source is already active (nothing to do), or pages are being
+ *         updated to the current writing rules (page_upgrade_in_progress)
+ *         or the wiki is being repaired (wiki_repair_in_progress)
  *   422 — source has no session (legacy standalone, cannot recompile)
  *
  * Request:  (no body required)
@@ -24,6 +26,8 @@ import {
   getRunningCompileSession,
   logActivity,
 } from '@/lib/db';
+import { pageUpgradeBlock } from '@/lib/page-upgrade-state';
+import { wikiRepairBlock } from '@/lib/wiki-repair/state';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
 export async function POST(
@@ -39,6 +43,11 @@ export async function POST(
   if (source.compile_status === 'active') {
     return NextResponse.json({ error: 'source_already_compiled' }, { status: 409 });
   }
+
+  // No compile while pages are being updated to the current writing rules.
+  // Before the reset below, so a refused recompile changes nothing.
+  const upgrading = pageUpgradeBlock() ?? wikiRepairBlock();
+  if (upgrading) return NextResponse.json(upgrading, { status: 409 });
 
   // Reset compile_status so the pipeline picks it up again
   resetSourceForRecompile(source_id);

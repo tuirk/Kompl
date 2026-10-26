@@ -1,0 +1,17 @@
+{
+  "name": "kompl-e2e",
+  "private": true,
+  "description": "Read-only bug hunting against a running Kompl: a crawler and a one-step helper for a guided exploration. Not part of CI.",
+  "type": "module",
+  "scripts": {
+    "crawl": "node crawl.mjs",
+    "explore-step": "node explore-step.mjs"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "playwright": "1.63.0"
+  },
+  "overrides": {
+    "playwright-core": "1.63.0"
+  }
+}

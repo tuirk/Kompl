@@ -82,15 +82,15 @@ from services.llm_client import (
     LLMExtractionResponse,
     DisambiguationResponse,
     CrossrefResponse,
-    SelectPagesResponse,
-    SynthesizeResponse,
+    LabelMergeResponse,
+    ClaimJudgeResponse,
     _LINT_SYSTEM_PROMPT,
     _EXTRACTION_SYSTEM_PROMPT,
     _DISAMBIGUATION_SYSTEM_PROMPT,
     _DISAMBIGUATION_CONCEPT_SYSTEM_PROMPT,
     _CROSSREF_SYSTEM_PROMPT,
-    _SELECT_PAGES_SYSTEM_PROMPT,
-    _SYNTHESIZE_SYSTEM_PROMPT,
+    _LABEL_MERGE_SYSTEM_PROMPT,
+    _CLAIM_JUDGE_SYSTEM_PROMPT,
 )
 
 
@@ -224,48 +224,52 @@ def test_crossref_prompt_anchors_keys():
     assert "contradictions_found" in _CROSSREF_SYSTEM_PROMPT
 
 
-# ── SelectPagesResponse — wrapper key = "page_ids" ────────────────────────────
+# ── LabelMergeResponse — wrapper key = "merges" ───────────────────────────────
 
-def test_select_pages_canonical():
-    p = SelectPagesResponse.model_validate({"page_ids": ["abc", "def"]})
-    assert p.page_ids == ["abc", "def"]
-
-
-def test_select_pages_rejects_results_wrapper():
-    with pytest.raises(ValidationError):
-        SelectPagesResponse.model_validate({"results": ["abc"]})
-
-
-def test_select_pages_rejects_bare_list():
-    with pytest.raises(ValidationError):
-        SelectPagesResponse.model_validate(["abc"])
-
-
-def test_select_pages_prompt_anchors_page_ids():
-    assert "page_ids" in _SELECT_PAGES_SYSTEM_PROMPT
-
-
-# ── SynthesizeResponse — wrapper keys = "answer", "citations" ─────────────────
-
-def test_synthesize_canonical():
-    p = SynthesizeResponse.model_validate({
-        "answer": "The transformer architecture was introduced in 2017.",
-        "citations": [{"page_id": "p1", "page_title": "Transformer"}],
+def test_label_merge_canonical():
+    p = LabelMergeResponse.model_validate({
+        "merges": [{"label": "Crypto", "into": "Cryptocurrency", "reason": "short form"}],
     })
-    assert p.answer.startswith("The transformer")
-    assert p.citations[0].page_id == "p1"
+    assert p.merges[0].into == "Cryptocurrency"
 
 
-def test_synthesize_rejects_response_wrapper():
+def test_label_merge_rejects_mapping_wrapper():
     with pytest.raises(ValidationError):
-        SynthesizeResponse.model_validate({"response": {"answer": "x", "citations": []}})
+        LabelMergeResponse.model_validate({"mapping": {"Crypto": "Cryptocurrency"}})
 
 
-def test_synthesize_rejects_bare_list():
+def test_label_merge_rejects_bare_list():
     with pytest.raises(ValidationError):
-        SynthesizeResponse.model_validate([])
+        LabelMergeResponse.model_validate([])
 
 
-def test_synthesize_prompt_anchors_keys():
-    assert "answer" in _SYNTHESIZE_SYSTEM_PROMPT
-    assert "citations" in _SYNTHESIZE_SYSTEM_PROMPT
+def test_label_merge_prompt_anchors_keys():
+    for key in ("merges", "label", "into", "reason"):
+        assert key in _LABEL_MERGE_SYSTEM_PROMPT, f"missing key: {key}"
+
+
+
+# ── ClaimJudgeResponse — wrapper key = "judgements" ───────────────────────────
+
+def test_claim_judge_canonical():
+    p = ClaimJudgeResponse.model_validate({
+        "judgements": [{"pair_id": "p1", "topic": "launch year", "reason": "A gives 2008; B gives 2009.", "verdict": "disputed"}],
+    })
+    assert p.judgements[0].verdict == "disputed"
+
+
+def test_claim_judge_rejects_results_wrapper():
+    with pytest.raises(ValidationError):
+        ClaimJudgeResponse.model_validate({
+            "results": [{"pair_id": "p1", "topic": "t", "reason": "r", "verdict": "none"}],
+        })
+
+
+def test_claim_judge_rejects_bare_list():
+    with pytest.raises(ValidationError):
+        ClaimJudgeResponse.model_validate([{"pair_id": "p1", "topic": "t", "reason": "r", "verdict": "none"}])
+
+
+def test_claim_judge_prompt_anchors_keys():
+    for key in ("judgements", "pair_id", "topic", "reason", "verdict"):
+        assert key in _CLAIM_JUDGE_SYSTEM_PROMPT, f"missing key: {key}"

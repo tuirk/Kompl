@@ -1,0 +1,307 @@
+{
+  "about": "Labelled name pairs for the entity-resolution replay gate (scripts/resolve_replay.py). Each item is one compile session: sides a and b (a side with \"page\": true is an existing page title, not a session name, and may carry the page's \"summary\"), other names in the same session, existing pages and stored aliases. \"expected\" is whether a and b are one thing; \"why\" says so in one line; \"confidence\": \"low\" marks labels the owner should vet. Sources: the decision file of 2026-10-23 (item 1 gate list) and the known cases of the compile quality plan, phase 1A. Contexts are written for the replay, in the style of extraction contexts; the owner may swap in real ones. Keep these names out of the Layer 3 prompt examples (tests/test_resolve_replay.py checks).",
+  "items": [
+    {
+      "id": "pm-is-product-manager",
+      "a": {"name": "PM", "type": "CONCEPT", "source": "s1", "context": "The PM owns the product roadmap and decides which features ship after talking to customers."},
+      "b": {"name": "Product Manager", "type": "CONCEPT", "source": "s2", "context": "A Product Manager sets the product vision, writes the roadmap and prioritises features."},
+      "others": [{"name": "Project Manager", "type": "CONCEPT", "source": "s3", "context": "A Project Manager plans schedules, budgets and resources so a project finishes on time."}],
+      "expected": "same",
+      "why": "The context defines PM as the person who owns the roadmap: the product manager."
+    },
+    {
+      "id": "product-vs-project-manager",
+      "a": {"name": "Product Manager", "type": "CONCEPT", "source": "s2", "context": "A Product Manager sets the product vision, writes the roadmap and prioritises features."},
+      "b": {"name": "Project Manager", "type": "CONCEPT", "source": "s3", "context": "A Project Manager plans schedules, budgets and resources so a project finishes on time."},
+      "others": [{"name": "PM", "type": "CONCEPT", "source": "s1", "context": "The PM owns the product roadmap and decides which features ship after talking to customers."}],
+      "expected": "different",
+      "why": "Two roles that share the abbreviation PM; the PM hub must not chain them."
+    },
+    {
+      "id": "ci-is-continuous-integration",
+      "a": {"name": "CI", "type": "CONCEPT", "source": "s1", "context": "CI runs the whole test suite on every push and blocks merges that fail."},
+      "b": {"name": "Continuous Integration", "type": "CONCEPT", "source": "s2", "context": "Continuous Integration merges every change into the main branch and tests it automatically."},
+      "others": [{"name": "Confidence Interval", "type": "CONCEPT", "source": "s3", "context": "A 95% confidence interval gives the range likely to contain the true mean."}],
+      "expected": "same",
+      "why": "The context of CI describes testing every push: continuous integration."
+    },
+    {
+      "id": "continuous-integration-vs-confidence-interval",
+      "a": {"name": "Continuous Integration", "type": "CONCEPT", "source": "s2", "context": "Continuous Integration merges every change into the main branch and tests it automatically."},
+      "b": {"name": "Confidence Interval", "type": "CONCEPT", "source": "s3", "context": "A 95% confidence interval gives the range likely to contain the true mean."},
+      "others": [{"name": "CI", "type": "CONCEPT", "source": "s1", "context": "CI runs the whole test suite on every push and blocks merges that fail."}],
+      "expected": "different",
+      "why": "A software practice and a statistics term that share the abbreviation CI."
+    },
+    {
+      "id": "paul-graham-vs-paul-allen",
+      "a": {"name": "Paul Graham", "type": "PERSON", "source": "s1", "context": "Paul Graham co-founded Y Combinator and wrote essays on startups."},
+      "b": {"name": "Paul Allen", "type": "PERSON", "source": "s2", "context": "Paul Allen co-founded Microsoft with Bill Gates in 1975."},
+      "others": [{"name": "Paul", "type": "PERSON", "source": "s3", "context": "Paul argued that startups should do things that don't scale."}],
+      "expected": "different",
+      "why": "Two people; the first name Paul must not chain them."
+    },
+    {
+      "id": "wikipedia-vs-wikimedia",
+      "a": {"name": "Wikipedia", "type": "ORG", "source": "s1", "context": "Wikipedia is the free online encyclopedia anyone can edit."},
+      "b": {"name": "Wikimedia", "type": "ORG", "source": "s2", "context": "Wikimedia runs Commons, Wikidata and the other free-knowledge projects."},
+      "expected": "different",
+      "why": "The encyclopedia and the movement / foundation that runs many projects; one letter apart."
+    },
+    {
+      "id": "louis-vs-louise-martin",
+      "a": {"name": "Louis Martin", "type": "PERSON", "source": "s1", "context": "Louis Martin, the photographer, shot the 1962 series in Lyon."},
+      "b": {"name": "Louise Martin", "type": "PERSON", "source": "s2", "context": "Louise Martin, the curator, organised the retrospective in Paris."},
+      "expected": "different",
+      "why": "Two people whose first names are one letter apart."
+    },
+    {
+      "id": "john-edward-vs-john-edwards",
+      "a": {"name": "John Edward", "type": "PERSON", "source": "s1", "context": "John Edward hosted the television show Crossing Over."},
+      "b": {"name": "John Edwards", "type": "PERSON", "source": "s2", "context": "John Edwards was a US senator from North Carolina and a vice-presidential nominee."},
+      "expected": "different",
+      "why": "Two people; the surname is not a plural."
+    },
+    {
+      "id": "north-vs-south-korea",
+      "a": {"name": "North Korea", "type": "LOCATION", "source": "s1", "context": "North Korea tested a ballistic missile over the Sea of Japan."},
+      "b": {"name": "South Korea", "type": "LOCATION", "source": "s2", "context": "South Korea hosted the 2018 Winter Olympics in Pyeongchang."},
+      "expected": "different",
+      "why": "Sibling places that differ by one modifier."
+    },
+    {
+      "id": "kaunas-city-hall-vs-museum",
+      "a": {"name": "Kaunas City Hall", "type": "ORG", "source": "s1", "context": "Kaunas City Hall, the 'White Swan', stands in the Old Town square."},
+      "b": {"name": "Kaunas City Museum", "type": "ORG", "source": "s1", "context": "Kaunas City Museum shows the history of the city in the Old Town."},
+      "expected": "different",
+      "why": "Two buildings one source lists side by side (plan 1A known case)."
+    },
+    {
+      "id": "eth-is-ethereum",
+      "a": {"name": "ETH", "type": "PRODUCT", "source": "s1", "context": "ETH rose 8% after the network upgrade went live."},
+      "b": {"name": "Ethereum", "type": "PRODUCT", "source": "s2", "context": "Ethereum is a blockchain platform for smart contracts."},
+      "expected": "different",
+      "why": "ETH is the coin (ether); Ethereum is the platform it runs on. Related, not one page (owner, 2026-10-24)."
+    },
+    {
+      "id": "ml-is-machine-learning",
+      "a": {"name": "ML", "type": "CONCEPT", "source": "s1", "context": "ML models learn patterns from labelled training data."},
+      "b": {"name": "Machine Learning", "type": "CONCEPT", "source": "s2", "context": "Machine Learning lets computers learn from data without explicit rules."},
+      "expected": "same",
+      "why": "An acronym and its expansion, same meaning in both contexts."
+    },
+    {
+      "id": "karpathy-is-andrej-karpathy",
+      "a": {"name": "Karpathy", "type": "PERSON", "source": "s1", "context": "Karpathy explained tokenization in a two-hour lecture."},
+      "b": {"name": "Andrej Karpathy", "type": "PERSON", "source": "s2", "context": "Andrej Karpathy led the Autopilot vision team at Tesla."},
+      "expected": "same",
+      "why": "A surname and the full name of one person (plan 1A must still merge)."
+    },
+    {
+      "id": "english-vs-programming-language",
+      "a": {"name": "English", "type": "OTHER", "source": "s1", "context": "Prompts written in English work like a programming language for the model."},
+      "b": {"name": "programming language", "type": "CONCEPT", "source": "s1", "context": "The talk calls natural language the newest programming language."},
+      "expected": "different",
+      "why": "A natural language and the idea it is compared to (plan 1A known case)."
+    },
+    {
+      "id": "negotiation-vs-resource-trading",
+      "a": {"name": "Negotiation", "type": "CONCEPT", "source": "s1", "context": "Negotiation between players decides who gets the scarce cards."},
+      "b": {"name": "Resource trading", "type": "CONCEPT", "source": "s2", "context": "Resource trading lets players swap wood, brick and ore each turn."},
+      "expected": "different",
+      "why": "A skill and a game mechanic that appear together (plan 1A known case)."
+    },
+    {
+      "id": "set-collection-vs-route-planning",
+      "a": {"name": "Set collection", "type": "CONCEPT", "source": "s1", "context": "Set collection rewards players for gathering matching cards."},
+      "b": {"name": "Route planning", "type": "CONCEPT", "source": "s1", "context": "Route planning rewards players for linking cities on the map."},
+      "expected": "different",
+      "why": "Two board-game mechanics one source lists side by side (plan 1A known case)."
+    },
+    {
+      "id": "plugin-ecosystem-vs-ide-integrations",
+      "a": {"name": "plugin ecosystem", "type": "CONCEPT", "source": "s1", "context": "The editor's plugin ecosystem has thousands of community extensions."},
+      "b": {"name": "IDE integrations", "type": "CONCEPT", "source": "s1", "context": "IDE integrations bring the linter into VS Code and JetBrains editors."},
+      "expected": "different",
+      "why": "Related tooling topics, not one thing (plan 1A known case)."
+    },
+    {
+      "id": "failed-status-vs-compile-progress",
+      "a": {"name": "failed status surfacing", "type": "CONCEPT", "source": "s1", "context": "Failed status surfacing shows the user why a compile stopped."},
+      "b": {"name": "compile_progress.status", "type": "OTHER", "source": "s1", "context": "compile_progress.status holds running, completed or failed for each session."},
+      "expected": "different",
+      "why": "A feature and the column it reads (plan 1A known case)."
+    },
+    {
+      "id": "kei-ito-vs-masataka-okabe-page",
+      "a": {"name": "Kei Ito", "type": "PERSON", "source": "s1", "context": "Kei Ito wrote the original story of the visual novel."},
+      "b": {"name": "Masataka Okabe", "page": true, "page_type": "entity"},
+      "expected": "different",
+      "why": "Two people from one article; the name must not anchor to the other's page (plan 1A known case)."
+    },
+    {
+      "id": "nvda-vs-nava",
+      "a": {"name": "NVDA", "type": "ORG", "source": "s1", "context": "NVDA is a free screen reader for Windows."},
+      "b": {"name": "NAVA", "type": "ORG", "source": "s2", "context": "NAVA, the national accessibility agency, funds assistive technology research."},
+      "expected": "different",
+      "why": "Spelt alike, two organisations (plan 1A known case)."
+    },
+    {
+      "id": "webkit-vs-webaim",
+      "a": {"name": "WebKit", "type": "ORG", "source": "s1", "context": "WebKit is the browser engine behind Safari."},
+      "b": {"name": "WebAIM", "type": "ORG", "source": "s2", "context": "WebAIM publishes accessibility guides and the WAVE checker."},
+      "expected": "different",
+      "why": "Spelt alike, two organisations (plan 1A known case)."
+    },
+    {
+      "id": "chrome-vs-chroma",
+      "a": {"name": "Chrome", "type": "PRODUCT", "source": "s1", "context": "Chrome added a contrast checker to its developer tools."},
+      "b": {"name": "Chroma", "type": "PRODUCT", "source": "s2", "context": "Chroma is an open-source vector database for embeddings."},
+      "expected": "different",
+      "why": "A browser and a database one letter apart (plan 1A known case)."
+    },
+    {
+      "id": "vestibular-triggers-vs-disorders",
+      "a": {"name": "vestibular motion triggers", "type": "CONCEPT", "source": "s1", "context": "Parallax scrolling and zoom animations are vestibular motion triggers."},
+      "b": {"name": "vestibular motion disorders", "type": "CONCEPT", "source": "s2", "context": "People with vestibular motion disorders can feel dizzy from on-screen motion."},
+      "expected": "different",
+      "why": "What triggers symptoms and the condition itself (plan 1A known case)."
+    },
+    {
+      "id": "font-weight-vs-font-smoothing",
+      "a": {"name": "anti-aliasing and font weight", "type": "CONCEPT", "source": "s1", "context": "Anti-aliasing and font weight change how thin text renders on low-DPI screens."},
+      "b": {"name": "Antialiasing and font smoothing", "type": "CONCEPT", "source": "s2", "context": "Antialiasing and font smoothing settings differ between macOS and Windows."},
+      "expected": "different",
+      "why": "Weight and smoothing are different properties (plan 1A known case)."
+    },
+    {
+      "id": "contrast-ratio-vs-colour-contrast-ratio",
+      "a": {"name": "Contrast ratio", "type": "CONCEPT", "source": "s1", "context": "WCAG requires a contrast ratio of at least 4.5:1 for body text."},
+      "b": {"name": "Colour contrast ratio", "type": "CONCEPT", "source": "s2", "context": "The colour contrast ratio compares the luminance of text and background."},
+      "expected": "same",
+      "why": "One measure under two names (plan 1A must reach Layer 3)."
+    },
+    {
+      "id": "prefers-reduced-motion-vs-media-feature",
+      "a": {"name": "prefers-reduced-motion", "type": "CONCEPT", "source": "s1", "context": "prefers-reduced-motion lets a site turn off animations the user asked to avoid."},
+      "b": {"name": "prefers-reduced-motion media feature", "type": "CONCEPT", "source": "s2", "context": "The prefers-reduced-motion media feature reports the operating system's motion setting."},
+      "expected": "same",
+      "why": "The CSS feature and its full name (plan 1A must reach Layer 3)."
+    },
+    {
+      "id": "apca-page-vs-apca-contrast-algorithm",
+      "a": {"name": "APCA", "type": "CONCEPT", "source": "s1", "context": "APCA scores text contrast by perceived lightness rather than a ratio."},
+      "b": {"name": "APCA contrast algorithm", "type": "CONCEPT", "source": "s2", "context": "The APCA contrast algorithm is proposed for WCAG 3."},
+      "pages": [{"title": "APCA", "page_type": "concept"}],
+      "expected": "same",
+      "why": "The page APCA and a longer name for it (plan 1A must reach Layer 3, anchored)."
+    },
+    {
+      "id": "unesco-world-heritage-vs-list",
+      "a": {"name": "UNESCO World Heritage", "type": "CONCEPT", "source": "s1", "context": "UNESCO World Heritage status protects sites of outstanding universal value."},
+      "b": {"name": "UNESCO World Heritage list", "type": "ORG", "source": "s2", "context": "The old town was added to the UNESCO World Heritage list in 1994."},
+      "expected": "different",
+      "why": "The programme and its register of sites are separate things; the pair must still reach Layer 3 to be judged (owner, 2026-10-24)."
+    },
+    {
+      "id": "gpt-4-spellings",
+      "a": {"name": "GPT-4", "type": "PRODUCT", "source": "s1", "context": "GPT-4 passed the bar exam in the top decile."},
+      "b": {"name": "GPT 4", "type": "PRODUCT", "source": "s2", "context": "GPT 4 accepts images as well as text."},
+      "others": [{"name": "gpt4", "type": "PRODUCT", "source": "s3", "context": "The gpt4 API costs more per token than gpt-3.5."}],
+      "expected": "same",
+      "why": "Spellings of one model name (plan 1A must still merge)."
+    },
+    {
+      "id": "llm-plural",
+      "a": {"name": "LLM", "type": "CONCEPT", "source": "s1", "context": "An LLM predicts the next token from its context window."},
+      "b": {"name": "LLMs", "type": "CONCEPT", "source": "s2", "context": "LLMs are trained on large text corpora."},
+      "expected": "same",
+      "why": "A name and its plural (plan 1A must still merge)."
+    },
+    {
+      "id": "colorblindness-is-cvd-page-by-alias",
+      "a": {"name": "colorblindness", "type": "CONCEPT", "source": "dw", "context": "The condition of having reduced ability to distinguish certain colors, discussed in the article as a key consideration when choosing visualization colors."},
+      "b": {"name": "Color Vision Deficiency", "page": true, "page_type": "concept", "summary": "Color vision deficiency (CVD) is a condition in which a person is insensitive to some colors, usually because one or more cone types in the eye is missing or malfunctioning. Because lightness perception is generally unaffected, most CVD types need the same luminance contrast as standard vision, with red-on-black as the notable exception."},
+      "others": [{"name": "color vision deficiency", "type": "CONCEPT", "source": "dw", "context": "A broader term used in the article to refer to colorweakness and colorblindness among readers."}],
+      "aliases": [{"alias": "Colour-blindness", "canonical": "Color Vision Deficiency"}],
+      "expected": "same",
+      "why": "The page Color Vision Deficiency stores the alias Colour-blindness; colorblindness is its spelling (film run 2026-10-25, real summary and contexts)."
+    },
+    {
+      "id": "colorblindness-is-cvd-page-by-summary",
+      "a": {"name": "colorblindness", "type": "CONCEPT", "source": "dw", "context": "The condition of having reduced ability to distinguish certain colors, discussed in the article as a key consideration when choosing visualization colors."},
+      "b": {"name": "Color Vision Deficiency", "page": true, "page_type": "concept", "summary": "Color vision deficiency (CVD) is a condition in which a person is insensitive to some colors, usually because one or more cone types in the eye is missing or malfunctioning. Because lightness perception is generally unaffected, most CVD types need the same luminance contrast as standard vision, with red-on-black as the notable exception."},
+      "others": [{"name": "color vision deficiency", "type": "CONCEPT", "source": "dw", "context": "A broader term used in the article to refer to colorweakness and colorblindness among readers."}],
+      "expected": "same",
+      "why": "No stored alias: the page summary defines the same condition; one source calling CVD a broader term must not outweigh it (film run 2026-10-25)."
+    },
+    {
+      "id": "red-green-colorblindness-vs-cvd-page",
+      "a": {"name": "Red-green colorblindness", "type": "CONCEPT", "source": "cud", "context": "The most common form of colorblindness, involving problems in the red or green opsin gene; affected people are called protanopes or deuteranopes."},
+      "b": {"name": "Color Vision Deficiency", "page": true, "page_type": "concept", "summary": "Color vision deficiency (CVD) is a condition in which a person is insensitive to some colors, usually because one or more cone types in the eye is missing or malfunctioning. Because lightness perception is generally unaffected, most CVD types need the same luminance contrast as standard vision, with red-on-black as the notable exception."},
+      "aliases": [{"alias": "Colour-blindness", "canonical": "Color Vision Deficiency"}],
+      "expected": "different",
+      "why": "One form of colour vision deficiency, not the condition itself (real CUD extraction)."
+    },
+    {
+      "id": "deuteranopia-vs-cvd-page",
+      "a": {"name": "deuteranopia", "type": "CONCEPT", "source": "s1", "context": "A red-green color vision deficiency in which the green-sensitive cones are missing, so reds and greens are confused."},
+      "b": {"name": "Color Vision Deficiency", "page": true, "page_type": "concept", "summary": "Color vision deficiency (CVD) is a condition in which a person is insensitive to some colors, usually because one or more cone types in the eye is missing or malfunctioning. Because lightness perception is generally unaffected, most CVD types need the same luminance contrast as standard vision, with red-on-black as the notable exception."},
+      "aliases": [{"alias": "Colour-blindness", "canonical": "Color Vision Deficiency"}],
+      "expected": "different",
+      "why": "A type of colour vision deficiency, named in its own context as one; a type is never the page that defines the whole."
+    },
+    {
+      "id": "colorblindness-vs-cvd-entity-page-parenthetical",
+      "a": {"name": "Colorblindness", "type": "CONCEPT", "source": "dw", "context": "Color vision deficiency, discussed here as the condition affecting readers who must still be able to tell apart differently colored chart elements; red-green blindness is named as the most common type."},
+      "b": {"name": "Color Vision Deficiency (CVD)", "page": true, "page_type": "entity", "summary": "Color Vision Deficiency (CVD) is a visual condition affecting about 5% of the world’s population, in which one or more cone types are missing or not working as they should. Common deutan and protan types share standard luminance-contrast needs, with red-on-black pairings problematic for protan forms."},
+      "aliases": [{"alias": "Color vision deficiency", "canonical": "Color Vision Deficiency (CVD)"}],
+      "expected": "same",
+      "why": "Film run 2026-10-25 batch B, real title, page kind, summary and alias: never reached Layer 3 (name sim 0.5392, cross-kind)."
+    },
+    {
+      "id": "color-oracle-vs-colorblindness-simulation-page",
+      "a": {"name": "Color Oracle", "type": "PRODUCT", "source": "co", "context": "Free colour blindness simulator for Windows, Mac and Linux that shows the screen as people with common colour vision deficiencies see it."},
+      "b": {"name": "Color blindness simulation", "page": true, "page_type": "concept", "summary": "Color blindness simulation previews an image or interface as people with a colour vision deficiency would see it, so designers can check that colours stay distinguishable. Several free tools offer it."},
+      "expected": "different",
+      "why": "A tool that simulates colour blindness, not the technique the page defines. Alike only in context across kinds (0.45 by name, 0.77 with it, real MiniLM), under the 0.6 name floor, so never asked; contexts written for the replay."
+    },
+    {
+      "id": "wcag-contrast-ratio-vs-contrast-ratio",
+      "a": {"name": "Contrast ratio", "type": "CONCEPT", "source": "s1", "context": "Contrast ratio is calculated from the relative luminance of two colours and ranges from 1:1 to 21:1; WCAG asks for 4.5:1 for body text."},
+      "b": {"name": "WCAG contrast ratio", "type": "CONCEPT", "source": "s2", "context": "The WCAG contrast ratio, (L1 + 0.05) / (L2 + 0.05) on relative luminance, is known to give poor results for mid-tone colours."},
+      "expected": "same",
+      "why": "The one WCAG 2 luminance formula, once with its standard's name in front (film run 2026-10-25: both became pages in one compile)."
+    },
+    {
+      "id": "colorblindness-vs-cvd-concept-page-real",
+      "a": {"name": "Colorblindness", "type": "CONCEPT", "source": "dw", "context": "Reduced ability to distinguish certain colors, discussed in the article in relation to red-green, green-blind, and blue-blind readers."},
+      "b": {"name": "Color Vision Deficiency (CVD)", "page": true, "page_type": "concept", "summary": "A condition affecting the ability to distinguish certain shades of color, commonly involving one cone type. Sources describe its common types and its implications for luminance-based contrast and accessibility."},
+      "others": [
+        {"name": "Colorblind-safe color palettes", "type": "CONCEPT", "source": "dw", "context": "Color palettes designed so that colorblind readers can distinguish the colors, often using safe hues and lightness variation."},
+        {"name": "Colorblind simulators", "type": "CONCEPT", "source": "dw", "context": "Tools that simulate how colors appear to people with different types of colorblindness, used to test visualizations."}
+      ],
+      "aliases": [{"alias": "color vision deficiency", "canonical": "Color Vision Deficiency (CVD)"}],
+      "expected": "same",
+      "why": "Film run on 7ae2a33f batch B, real inputs: the concept page, its summary and stored alias, and the Datawrapper source's own names; became a second page."
+    },
+    {
+      "id": "sars-cov-2-is-2019-novel-coronavirus",
+      "a": {"name": "SARS-CoV-2", "type": "OTHER", "source": "ictv", "context": "The official name announced by ICTV for the virus responsible for COVID-19."},
+      "b": {"name": "2019 novel coronavirus", "type": "OTHER", "source": "ictv", "context": "The previous informal name for the virus now officially named SARS-CoV-2."},
+      "others": [
+        {"name": "SARS-CoV-2", "type": "OTHER", "source": "nature", "context": "The virus causing COVID-19, designated by the Coronaviridae Study Group and assigned to the species Severe acute respiratory syndrome-related coronavirus."},
+        {"name": "2019-nCoV", "type": "OTHER", "source": "nature", "context": "The provisional name used for the newly identified human coronavirus before it was designated SARS-CoV-2."}
+      ],
+      "expected": "same",
+      "why": "Held-out eval dev split (2026-10-25), real extractions of two sources that each name both: the virus's provisional and official names. Became two pages."
+    },
+    {
+      "id": "apca-is-apca-with-its-expansion-in-brackets",
+      "a": {"name": "APCA", "type": "PRODUCT", "source": "s1", "context": "A contrast algorithm that scores text by perceived lightness rather than a luminance ratio."},
+      "b": {"name": "APCA (Advanced Perceptual Contrast Algorithm)", "type": "CONCEPT", "source": "s2", "context": "The candidate contrast method proposed for WCAG 3."},
+      "expected": "same",
+      "why": "Film run on d43ac398 batch A: the abbreviation, and the abbreviation with its full name in brackets, became two pages."
+    }
+  ]
+}

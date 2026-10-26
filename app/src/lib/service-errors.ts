@@ -19,6 +19,8 @@
  * add a test row in `__tests__/service-errors.test.ts`.
  */
 
+import { CURRENT_DRAFT_RULES } from './writing-rules';
+
 export interface Remediation {
   title: string;
   body: string;
@@ -86,11 +88,6 @@ export const SERVICE_ERROR_MESSAGES = {
     body: 'Page commit failed at the database or storage layer. Outbox phase 1 succeeded but phase 3a (write-page) errored.',
     fix: 'Retry the action. If it persists, check `docker compose logs app`.',
   },
-  chat_synthesis_failed: {
-    title: 'Chat could not generate an answer. Try again.',
-    body: 'The LLM call inside the chat synthesis step failed — provider error, rate limit, or token cap.',
-    fix: 'Retry. If repeated, check the Settings → Daily-cap section and the provider dashboard for rate-limit status.',
-  },
   file_upload_failed: {
     title: 'File upload failed. Try again.',
     body: 'The browser-to-server upload errored before the file reached staging.',
@@ -110,6 +107,16 @@ export const SERVICE_ERROR_MESSAGES = {
     title: 'Another compile session is already running. Wait for it to finish or cancel it from the progress page.',
     body: 'Only one compile session per database is supported at a time.',
     fix: 'Visit the Progress page, wait for completion, or cancel the active session.',
+  },
+  page_upgrade_in_progress: {
+    title: `Kompl is updating pages to the ${CURRENT_DRAFT_RULES} writing rules. Start the compile once the update finishes, or stop the update in Settings → Wiki health.`,
+    body: 'The page update tracks its own LLM spending and writes pages one at a time, so a compile cannot run at the same time.',
+    fix: 'Wait for the update to finish, or select Stop in Settings → Wiki health.',
+  },
+  wiki_repair_in_progress: {
+    title: 'Kompl is repairing the wiki. Start the compile once the repair finishes, or stop the repair in Settings → Wiki health.',
+    body: 'The repair tracks its own AI spending and rewrites pages one at a time, so a compile cannot run at the same time.',
+    fix: 'Wait for the repair to finish, or select Stop in Settings → Wiki health.',
   },
 
   // ── Pre-stage health codes (consumed by /onboarding/health table) ──────

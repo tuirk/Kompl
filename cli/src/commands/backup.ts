@@ -3,6 +3,7 @@ import os from 'os'
 import path from 'path'
 import { spawnSync } from 'child_process'
 import pc from 'picocolors'
+import { BACKUP_TIMEOUT_MS, looksLikeZip, saveBackupFile } from '../backup-file.js'
 import { readConfig } from '../config.js'
 import { checkHealth } from '../health.js'
 
@@ -38,11 +39,11 @@ export async function backupCommand(opts: BackupOptions = {}): Promise<void> {
   let res: Response
   try {
     res = await fetch(`http://localhost:${config.port}/api/export?format=kompl`, {
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(BACKUP_TIMEOUT_MS),
     })
   } catch (err) {
     if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-      console.error(`  Backup       ${pc.red('●')} export timed out after 120s — is the app responsive?`)
+      console.error(`  Backup       ${pc.red('●')} export timed out after ${BACKUP_TIMEOUT_MS / 60_000} minutes — is the app responsive?`)
     } else {
       console.error(`  Backup       ${pc.red('●')} request failed: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -55,10 +56,12 @@ export async function backupCommand(opts: BackupOptions = {}): Promise<void> {
   }
 
   const buffer = Buffer.from(await res.arrayBuffer())
-
-  const dir = path.dirname(outPath)
-  fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(outPath, buffer)
+  // An empty or broken download never replaces the last backup.
+  if (!looksLikeZip(buffer)) {
+    console.error(`  Backup       ${pc.red('●')} the export was not a backup; nothing was written`)
+    process.exit(1)
+  }
+  saveBackupFile(outPath, buffer)
 
   const sizeKB = (buffer.byteLength / 1024).toFixed(1)
   console.log(`  Backup       ${pc.green('●')} saved → ${outPath}  (${sizeKB} KB)`)

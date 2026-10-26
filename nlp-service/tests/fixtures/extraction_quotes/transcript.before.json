@@ -1,0 +1,20 @@
+{
+  "title": "How the Rust borrow checker works",
+  "entities": [
+    {"name": "Rust", "type": "PRODUCT", "mentions": ["rust"], "context": "Programming language."},
+    {"name": "Go", "type": "PRODUCT", "mentions": ["go"], "context": "Programming language with a garbage collector."},
+    {"name": "Mozilla Research", "type": "ORG", "mentions": ["mozilla research"], "context": "Where the Rust team designed the borrow checker."}
+  ],
+  "concepts": [
+    {"name": "Borrow checker", "description": "The part of the Rust compiler that checks reference lifetimes."},
+    {"name": "Memory safety", "description": "Freedom from invalid memory access."}
+  ],
+  "claims": [
+    {"claim": "Rust provides memory safety without a garbage collector.", "confidence": "stated", "entities_involved": ["Rust", "Memory safety"]}
+  ],
+  "relationships": [
+    {"from_entity": "Rust", "to": "Go", "type": "related_to", "description": "Both are programming languages compared in the talk."}
+  ],
+  "contradictions": [],
+  "summary": "A talk on how the Rust borrow checker keeps references valid."
+}

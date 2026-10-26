@@ -1,122 +1,134 @@
-# AGENTS.md — Kompl operator guide
+# AGENTS.md — helping someone set up and run Kompl
 
-**For AI agents helping a user install, update, and use Kompl.**
+**For AI agents (Claude Code, Codex, Cursor, Gemini CLI and others) helping a user
+install, run, update or connect Kompl from this repo.**
 
-Use [README.md](README.md) as the source of truth for prerequisites, install, day-to-day commands, updating, backup, MCP setup, data handling, security, and known limitations. Install path: `projectDir` in `~/.kompl/config.json`.
+[README.md](README.md) is the source of truth for every step. This file adds the
+rules and pitfalls agents most often get wrong.
 
-## What is Kompl?
+## What Kompl is
 
-Kompl is a compounding LLM-wiki: it turns saved links, files, and bookmarks into an interlinked wiki **when each source arrives**, not when you ask later. For the full product description, see [README.md](README.md).
+Kompl turns saved links, files and bookmarks into an interlinked wiki **when each
+source arrives**, not when someone asks later. It runs locally as a Docker stack:
+the app at `http://localhost:3000`, an NLP service and n8n. The user's wiki
+lives on the Docker volume **`kompl-data`**, and the `kompl` CLI starts, stops,
+updates and backs it up. Once installed, the repo path is `projectDir` in
+`~/.kompl/config.json`.
 
 ---
 
-## Agent rules — wiki safety (read before any Docker command)
+## Installing
 
-The user's wiki (SQLite DB, page files, vectors) lives on the Docker named volume **`kompl-data`**. **You can destroy their entire wiki with one flag.** Treat that as irreversible until they restore from a `.kompl.zip`.
+Needs Docker running, Node.js 24+, about 5 GB of disk and 4 GB of free RAM, a
+Firecrawl key and a DeepSeek or Gemini key (YouTube is optional). See
+[README § Quick start](README.md#quick-start) and
+[README § API keys](README.md#api-keys).
 
-### NEVER without explicit user confirmation
+`node setup.js` from the repo root asks for the API keys, writes `.env`,
+installs the `kompl` CLI, builds the MCP server and starts the stack. It
+prompts interactively, so in a shell that can't answer prompts:
 
-**Do not run, suggest, or script any of the following unless the user has explicitly confirmed in this conversation that they accept losing their wiki** (or are on a fresh throwaway install with nothing to lose):
+1. Copy `.env.example` to `.env`.
+2. Ask the user to paste their keys into `.env` **themselves**. Keys should not
+   pass through your conversation, and `.env` must never be committed or shared.
+3. Run `node setup.js`. With `FIRECRAWL_API_KEY` and one of `DEEPSEEK_API_KEY` /
+   `GEMINI_API_KEY` already set, it skips the prompts.
+
+The first start takes 5–10 minutes while Docker builds the images. Run
+`kompl status` until the app is healthy, then `kompl open`.
+
+---
+
+## Wiki safety (read before any Docker command)
+
+**One flag can delete the user's entire wiki** (database, pages and search
+index). Treat that as irreversible unless they have a `.kompl.zip` backup.
+
+### Never without explicit confirmation
+
+Do not run, suggest or script any of these unless the user has said in this
+conversation that they accept losing their wiki, or the install is a fresh one
+with nothing to lose:
 
 | Command / action | Why it wipes data |
 |------------------|-------------------|
-| `docker compose down -v` | `-v` deletes named volumes including `kompl-data` |
-| `docker volume rm …` / deleting `kompl-data` in Docker Desktop | Direct volume deletion |
-| `bash scripts/integration-test.sh` | Runs `docker compose down -v` by design |
-| Re-installing into a new clone **and** removing old volumes | Orphaned or replaced `kompl-data` |
+| `docker compose down -v` | `-v` deletes the volumes, including `kompl-data` |
+| `docker volume rm …` / deleting `kompl-data` in Docker Desktop | Deletes the volume directly |
+| `bash scripts/integration-test.sh` | A developer test that runs `docker compose down -v` by design |
+| Reinstalling into a new clone **and** removing old volumes | Replaces or orphans `kompl-data` |
 
-If the user has **not** clearly said they want a full wipe, **stop and ask**. Do not imply these are routine cleanup steps.
+If they haven't clearly asked for a wipe, **stop and ask**. Never present these
+as routine cleanup.
 
-### If a destructive action is going to happen anyway
+### If a wipe is going to happen anyway
 
-When the user **has** explicitly ordered a wipe **or** you must run a destructive command for a stated reason:
+1. **Run `kompl backup` first**, every time. The automatic backup on
+   `kompl start` may be up to 36 hours old.
+2. Check that the file exists (default `~/.kompl/backups/kompl-backup.kompl.zip`,
+   or the `--output` path).
+3. Tell the user where it is **before** running the destructive command.
 
-1. **Run `kompl backup` first** — no exceptions.
-2. Confirm the backup file exists (default: `~/.kompl/backups/kompl-backup.kompl.zip`, or `--output` path they chose).
-3. Tell the user where the backup is **before** running the destructive command.
-4. Only then proceed.
+### Safe (the wiki is kept)
 
-Do not skip backup because auto-backup-on-start exists — it is best-effort and may be stale. **Always take a fresh `kompl backup` immediately before wipe.**
-
-### Safe by default (wiki preserved)
-
-These do **not** remove `kompl-data`: `kompl update`, `kompl start`, `kompl stop`, `kompl restart`, `docker compose up --build -d` (no `-v`), `docker compose down` without `-v`. Still recommend `kompl backup` before major upgrades.
-
-**Restore after wipe:** Settings → **Import Wiki** → upload `.kompl.zip`. See [README § Backup and restore](README.md#backup-and-restore).
-
----
-
-## Update pitfall agents miss
-
-`git pull` updates files on disk but **not** the running `app` / `nlp-service` Docker images. If the user pulled but does not see new UI, run **`kompl update`** (or `docker compose up --build -d`) — do not assume the feature is missing from `main`. Full steps: [README § Updating](README.md#updating).
+`kompl start`, `kompl stop`, `kompl restart`, `kompl update`,
+`docker compose up --build -d` and `docker compose down` without `-v`.
+Restore a backup under **Settings → Backup & restore → Import wiki**
+([README § Backup and restore](README.md#backup-and-restore)).
 
 ---
 
-## Troubleshooting (agent-specific)
+## Updating
+
+`git pull` changes the files on disk but **not** the running images, so new
+features don't appear until the images are rebuilt. Use **`kompl update`**: it
+pulls, rebuilds and restarts, and keeps the wiki. Don't conclude a feature is
+missing because it isn't visible after a pull. See
+[README § Updating](README.md#updating).
+
+---
+
+## Connecting the user's agent to their wiki (MCP)
+
+Kompl has no built-in chat; the user asks their wiki through an AI agent over
+MCP. Once Kompl is running, register the server. For Claude Code:
+
+```bash
+claude mcp add --scope user kompl-wiki -- node <projectDir>/mcp-server/dist/index.js
+```
+
+Codex, Claude Desktop, Cursor, VS Code, Gemini CLI, Pi and Hermes are covered in
+[README § Ask your wiki from your AI (MCP)](README.md#ask-your-wiki-from-your-ai-mcp).
+
+- Kompl must be running (`kompl start`) for the tools to answer.
+- After `kompl update`, restart the agent so it loads the rebuilt server.
+- `add_source` is the only tool that changes the wiki. It is **off** until the
+  user turns on *Let AI agents add sources* in **Settings → Connect your AI**.
+  Each addition starts a compile, which uses their LLM key and counts toward
+  their daily spend cap. Don't turn it on for them; let the user decide.
+
+---
+
+## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| New UI missing after `git pull` | Stale Docker image | `kompl update` — see [Updating](README.md#updating) |
-| YouTube URL on Saved Links | Missing `YOUTUBE_API_KEY`, no captions, or transcript blocked | [README prerequisites](README.md#before-you-start) |
-| `extract_llm_failed` on long PDFs (Gemini) | Known truncation — [issue #7](https://github.com/tuirk/Kompl/issues/7) | Switch to DeepSeek in Settings or split the source |
-| Wiki gone | `down -v`, integration tests, or volume delete | Restore from `.kompl.zip`; you should not have run destructive commands without explicit confirmation + `kompl backup` |
+| New UI missing after `git pull` | Images not rebuilt | `kompl update` |
+| MCP tools say Kompl isn't reachable | Kompl stopped, or `KOMPL_URL` points elsewhere | `kompl start`; `KOMPL_URL` defaults to `http://localhost:3000` |
+| Agent still shows old MCP tools | Agent loaded the server before the update | Restart the agent |
+| YouTube URL lands on Saved Links | No `YOUTUBE_API_KEY`, or the video has no captions | Add the key to `.env` ([README § API keys](README.md#api-keys)) |
+| Extraction fails on long sources with a Gemini 2.5 model | Upstream Gemini 2.5 repetition bug ([issue #7](https://github.com/tuirk/Kompl/issues/7)) | Switch the compile model in **Settings → AI model & spend** |
+| Wiki gone | `down -v`, the integration test, or a deleted volume | Restore the latest `.kompl.zip` |
+| Every request answers `403 unknown_host` | Kompl is reached by a host name it doesn't know (a reverse proxy, `host.docker.internal`) | Add the name to `KOMPL_ALLOWED_HOSTS` in `.env`, then `kompl restart` |
 
-For everything else: `kompl logs`, `kompl status`, and [README troubleshooting cues](README.md#after-setup).
-
----
-
-## Querying the wiki (MCP)
-
-Once Kompl is **running**, query the compiled wiki via the MCP server. Setup and tools: [README § Use with AI agents (MCP)](README.md#use-with-ai-agents-mcp).
+For anything else: `kompl status`, `kompl logs` and
+[README § Everyday use](README.md#everyday-use).
 
 ---
 
-## Changing Kompl source code
+## Changing Kompl's code
 
-If the user wants to **modify [tuirk/Kompl](https://github.com/tuirk/Kompl)** (not just run an install), see [CONTRIBUTING.md](CONTRIBUTING.md). After pulling code changes, run `docker compose up --build -d` from **`projectDir`**.
-
-**Never run `bash scripts/integration-test.sh` on the user's live wiki** without explicit confirmation and a fresh `kompl backup`.
-
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
-
-This project is indexed by GitNexus as **Kompl** (5789 symbols, 9852 relationships, 258 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/Kompl/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/Kompl/clusters` | All functional areas |
-| `gitnexus://repo/Kompl/processes` | All execution flows |
-| `gitnexus://repo/Kompl/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
+If the user wants to modify Kompl itself rather than run it, see
+[CONTRIBUTING.md](CONTRIBUTING.md). After code changes, rebuild with
+`docker compose up --build -d` from `projectDir`, or `kompl update` for pulled
+changes. Never run `bash scripts/integration-test.sh` against a wiki the user
+cares about.

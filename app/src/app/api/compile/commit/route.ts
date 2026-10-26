@@ -6,19 +6,30 @@
  *
  * Rule #5 — three phases per page plan:
  *   Phase 2 (sync db.transaction()):
+ *     - idempotency guard: the plan must still be 'crossreffed'
+ *     - staleness guard: a page changed since its draft read it is skipped
+ *       (activity 'compile_page_skipped'; an update's plan 'failed' for
+ *       Retry to write again, otherwise 'page_changed')
  *     - insertPage()
  *     - setPendingContent() (outbox — markdown stored for boot reconciler)
- *     - insertProvenance()
+ *     - draft_rules marker copied from a from-scratch plan (lib/draft-rules.ts)
+ *     - provenance for the sources the draft used, once per page
+ *       (lib/plan-provenance.ts)
  *     - pages_fts upsert
+ *     - disagreements the committed text records (lib/disagreements.ts)
  *     - insertActivity('page_compiled', ...)
  *     - updatePlanStatus('committed')
  *     NO await inside this callback — better-sqlite3 is sync-only.
  *   Phase 3a (awaited):
  *     - POST /storage/write-page → flush pending_content to disk
- *     - clearPendingContent() on success
+ *     - clear pending_content on success, only if it still holds the text
+ *       written (lib/outbox-flush.ts)
  *   Phase 3b (fire-and-forget):
  *     - alias canonical backfill
  *     - Vector upsert (retried 3× before queuing for backfill)
+ *   A provenance-only plan (a triage 'skip') changes no page text: its
+ *   Phase 2 links the sources ('mentioned' rows, source_count recounted)
+ *   and marks it committed; it has no Phase 3.
  *
  * Request:  { session_id: string }
  * Response: { session_id, committed, failed, thin_drafts_skipped,
@@ -49,38 +60,22 @@ import {
   updatePlanStatus,
   updatePlanFailed,
   getCurrentPageHash,
-  incrementPageSourceCount,
+  getPage,
+  linkSourcesToPage,
   setPendingContent,
-  clearPendingContent,
-  getPendingFlushPages,
+  pruneDeletedPlanSources,
   backfillAliasCanonicalPageId,
 } from '../../../../lib/db';
-import { flushPendingPage } from '../../../../lib/flush-pending';
+import { activeRedo } from '../../../../lib/compile-redo/state';
+import { copyPlanDraftRules, isDraftedPage, planDraftsFromScratch } from '../../../../lib/draft-rules';
+import { flushOutboxPage, reconcileOutbox } from '../../../../lib/outbox-flush';
+import { pageTextVersionToken } from '../../../../lib/page-rewrite';
+import { derivePlanPageId } from '../../../../lib/plan-page-id';
+import { recordPageDisagreements } from '../../../../lib/disagreements';
+import { contributingSourceIds, getPlanUsedSourceIds, recordPageContributions } from '../../../../lib/plan-provenance';
 import { upsertVectorWithRetry } from '../../../../lib/vector-upsert';
 import { syncPageWikilinks } from '../../../../lib/wikilinks';
 import { extractFrontmatterField } from '../../../../lib/yaml-frontmatter';
-
-// Derive the page_id a plan commits to. Single source of truth for the
-// slug algorithm — used by the commit loop, the wikilink pass, and the
-// durability scoping below. 'update' plans reuse the existing page;
-// 'create' plans get a title slug + plan_id suffix.
-function derivePlanPageId(plan: {
-  plan_id: string;
-  title: string;
-  action: string;
-  existing_page_id: string | null;
-}): string {
-  if (plan.action === 'update' && plan.existing_page_id) return plan.existing_page_id;
-  const suffix = plan.plan_id.replace(/-/g, '').slice(0, 8);
-  const base = plan.title
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .slice(0, 56)
-    .replace(/^-+|-+$/g, '');
-  return `${base || 'page'}-${suffix}`;
-}
 
 // Page ids this session's committed content plans wrote (current run AND
 // prior runs — plan rows keep draft_status='committed' across retries).
@@ -104,18 +99,39 @@ function getSessionCommittedPageIds(session_id: string): Set<string> {
 // empty-plans path too: a retry after a flush failure finds all plans
 // already 'committed', so this pass is the only thing that recovers the
 // stranded files without a server restart.
-async function reconcileSessionFlushes(sessionPageIds: ReadonlySet<string>): Promise<number> {
-  let remaining = 0;
-  for (const row of getPendingFlushPages()) {
-    const result = await flushPendingPage(row.page_id, row.pending_content);
-    if (result.ok) {
-      clearPendingContent(row.page_id, result.previousPath);
-    } else if (sessionPageIds.has(row.page_id)) {
-      remaining++;
-    }
-  }
-  return remaining;
+function reconcileSessionFlushes(session_id: string): Promise<number> {
+  return reconcileOutbox(getSessionCommittedPageIds(session_id));
 }
+
+// Idempotency guard (CLAUDE.md rule 5), read inside each commit transaction.
+// Two commits of one session can overlap: a run whose commit call timed out
+// fails the session while the commit keeps going, and the retry starts a
+// second one. Only the first to reach a plan may commit it; committing it
+// twice doubled its provenance and activity rows.
+function planStillCrossreffed(plan_id: string): boolean {
+  const row = getDb()
+    .prepare('SELECT draft_status FROM page_plans WHERE plan_id = ?')
+    .get(plan_id) as { draft_status: string } | undefined;
+  return row?.draft_status === 'crossreffed';
+}
+
+// Staleness guard (owner decision 2026-10-25, every compile save): a draft
+// written against a page (an update, or a redo rewriting the compile's own
+// page) records that page's version (page_plans.base_version). If the page
+// changed after that (Repair wiki, Update pages, an approval, a restore,
+// another compile), saving would overwrite the change: the plan is skipped
+// instead, as approval does (lib/approve-plan.ts). Read inside the commit
+// transaction, so nothing can change the page between check and write.
+function pageChangedSinceDraft(plan_id: string, page_id: string): boolean {
+  const row = getDb()
+    .prepare('SELECT base_version FROM page_plans WHERE plan_id = ?')
+    .get(plan_id) as { base_version: string | null } | undefined;
+  if (!row?.base_version) return false;
+  return pageTextVersionToken(page_id) !== row.base_version;
+}
+
+const PAGE_CHANGED_RETRY =
+  'The page changed after this update was written, so it was not saved. Retry writes the update again on the page as it is now.';
 
 // Strip YAML frontmatter (--- ... ---) from the top of a markdown string.
 // Used to measure actual content length before the thin-draft gate check.
@@ -141,7 +157,7 @@ async function commitSession(session_id: string): Promise<Response> {
   if (plans.length === 0) {
     // Retry-after-flush-failure lands here (all plans already 'committed').
     // The reconcile pass is what actually re-flushes the stranded files.
-    const flushFailures = await reconcileSessionFlushes(getSessionCommittedPageIds(session_id));
+    const flushFailures = await reconcileSessionFlushes(session_id);
     return NextResponse.json(
       { session_id, committed: 0, failed: 0, pages_created: 0, pages_updated: 0, sources_activated: 0, flush_failures: flushFailures },
       { status: 200 }
@@ -170,6 +186,7 @@ async function commitSession(session_id: string): Promise<Response> {
   let pagesUpdated = 0;
   let thinCount = 0;
   let pendingApproval = 0;
+  let changedSkipped = 0;
   const allSourceIds = new Set<string>();
   // Track page_ids that were actually committed so the wikilink pass below
   // can exclude thin-draft and failed plans (which were never inserted into pages).
@@ -178,9 +195,11 @@ async function commitSession(session_id: string): Promise<Response> {
   const minDraftChars = getMinDraftChars();
   // OFF mode: when auto_approve='0', queue every content plan for manual approval
   // via /drafts. Provenance-only plans still auto-commit (zero content to review).
-  // The approve route runs full Phase 2/3a/3b from scratch — same path used by
-  // chat-save-draft today — so no draft state is ever stranded.
+  // The approve route runs full Phase 2/3a/3b from scratch, so no draft state
+  // is ever stranded.
   const autoApprove = getAutoApprove();
+  // A redo leaves a page someone else changed alone (FR-8).
+  const redo = activeRedo(session_id) !== null;
 
   // Build source title map once before the loop — used to enrich page_compiled events.
   const sourceTitleMap = new Map<string, string>(
@@ -199,29 +218,41 @@ async function commitSession(session_id: string): Promise<Response> {
       'running',
       `${i}/${plans.length} pages committed`,
     );
-    const sourceIds: string[] = JSON.parse(plan.source_ids);
+    // Sources deleted while the session compiled are dropped here (a plan
+    // left with none is deleted). No await between this and the plan's
+    // transaction, so no delete can slip in between.
+    const plannedSourceIds: string[] = JSON.parse(plan.source_ids);
+    const sourceIds = pruneDeletedPlanSources(plan.plan_id, plannedSourceIds);
+    if (sourceIds.length < plannedSourceIds.length) {
+      console.log(JSON.stringify({ ts: new Date().toISOString(), event: 'commit_deleted_sources_dropped', session_id, plan_id: plan.plan_id, dropped: plannedSourceIds.length - sourceIds.length, plan_dropped: sourceIds.length === 0 }));
+      if (sourceIds.length === 0) continue;
+    }
     sourceIds.forEach((s) => allSourceIds.add(s));
 
     if (plan.action === 'provenance-only') {
-      // provenance-only: insert provenance rows only, no page write
+      // A triage 'skip' verdict (plan Rule 6) links the source to a page
+      // whose text stays as it is. No draft, so no approval even with
+      // auto-approve off, and no file to write: this transaction is the
+      // whole commit (rule 5 Phase 2; nothing for Phase 3).
       try {
-        const existingPageId = plan.existing_page_id!;
-        const pageHash = getCurrentPageHash(existingPageId); // sync filesystem read before transaction
-        db.transaction(() => {
-          for (const sid of sourceIds) {
-            insertProvenance({
-              source_id: sid,
-              page_id: existingPageId,
-              content_hash: pageHash,
-              contribution_type: 'mentioned',
-            });
+        const existingPageId = plan.existing_page_id;
+        // Sync file read of the page's current text, before the transaction.
+        const pageHash = existingPageId ? getCurrentPageHash(existingPageId) : '';
+        const outcome = db.transaction((): 'linked' | 'taken' | 'page_gone' => {
+          if (!planStillCrossreffed(plan.plan_id)) return 'taken';
+          if (!existingPageId || !getPage(existingPageId)) {
+            // The page was deleted while the session compiled: nothing to link.
+            db.prepare('DELETE FROM page_plans WHERE plan_id = ?').run(plan.plan_id);
+            return 'page_gone';
           }
-          incrementPageSourceCount(existingPageId, sourceIds.length);
-          // Inside transaction — crash between commit and this call previously
-          // left plan stuck as 'crossreffed'. Now atomic with the provenance write.
+          linkSourcesToPage(existingPageId, sourceIds, pageHash);
           updatePlanStatus(plan.plan_id, 'committed');
+          return 'linked';
         })();
-        committed++;
+        if (outcome === 'linked') committed++;
+        if (outcome === 'page_gone') {
+          console.log(JSON.stringify({ ts: new Date().toISOString(), event: 'commit_deleted_page_dropped', session_id, plan_id: plan.plan_id, page_id: existingPageId }));
+        }
       } catch (txErr) {
         const txMsg = txErr instanceof Error ? txErr.message : String(txErr);
         console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'db_transaction_error', context: 'provenance_only_commit', plan_id: plan.plan_id, session_id, error: txMsg }));
@@ -299,8 +330,26 @@ async function commitSession(session_id: string): Promise<Response> {
     // File is NOT written yet. pending_content stores the markdown so the boot
     // reconciler can re-attempt the flush if Phase 3a crashes.
     // updatePlanStatus('committed') is inside the transaction (Gap 3 fix).
+    let done: 'committed' | 'taken' | 'page_changed';
     try {
-      db.transaction(() => {
+      done = db.transaction((): typeof done => {
+        if (!planStillCrossreffed(plan.plan_id)) return 'taken';
+        if (pageChangedSinceDraft(plan.plan_id, page_id)) {
+          // An update carries this compile's new sources into the page: it
+          // is marked failed, so Retry writes it again on the page as it is
+          // now instead of the sources' update being dropped while they
+          // count as compiled. A page the compile created and a redo's
+          // pages are left alone.
+          if (plan.action === 'update' && !redo) updatePlanFailed(plan.plan_id, PAGE_CHANGED_RETRY);
+          else updatePlanStatus(plan.plan_id, 'page_changed');
+          logActivity('compile_page_skipped', {
+            source_id: sourceIds[0] ?? null,
+            session_id,
+            step_key: 'commit',
+            details: { page_id, title: plan.title, plan_id: plan.plan_id, session_id },
+          });
+          return 'page_changed';
+        }
         insertPage({
           page_id,
           title: plan.title,
@@ -308,38 +357,36 @@ async function commitSession(session_id: string): Promise<Response> {
           category,
           summary,
           content_path: expectedPath,
-          previous_content_path: null, // set by clearPendingContent after Phase 3a
+          previous_content_path: null, // set when Phase 3a clears the outbox
         });
 
         // Outbox: store markdown for Phase 3a flush + crash recovery.
         setPendingContent(page_id, markdown);
 
-        const contribType = plan.action === 'update' ? 'updated' : 'created';
-        for (const sid of sourceIds) {
-          insertProvenance({
-            source_id: sid,
-            page_id,
-            content_hash: contentHash,
-            contribution_type: contribType,
-          });
+        // Writing-rules marker (lib/draft-rules.ts): a page drafted from
+        // scratch takes its draft's marker; an update keeps the page's own.
+        if (planDraftsFromScratch(plan) && isDraftedPage({ page_id, page_type: plan.page_type })) {
+          copyPlanDraftRules(db, plan.plan_id, page_id);
         }
 
-        // Derive source_count from provenance — the ground truth. Must run
-        // AFTER the insertProvenance loop so the new rows are visible to the
-        // subquery. COUNT(DISTINCT source_id) handles provenance's allowed
-        // duplicate (source_id, page_id) rows (e.g. 'created' + 'updated'
-        // for the same source across sessions).
-        db.prepare(
-          `UPDATE pages SET source_count = (
-             SELECT COUNT(DISTINCT source_id) FROM provenance WHERE page_id = ?
-           ) WHERE page_id = ?`
-        ).run(page_id, page_id);
+        // Credit the sources the draft's prompt carried, once per page, and
+        // derive source_count from provenance (lib/plan-provenance.ts).
+        recordPageContributions(db, {
+          page_id,
+          source_ids: contributingSourceIds(sourceIds, getPlanUsedSourceIds(db, plan.plan_id)),
+          content_hash: contentHash,
+          contribution_type: plan.action === 'update' ? 'updated' : 'created',
+        });
 
         // FTS5 upsert
         db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(page_id);
         db.prepare(
           `INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)`
         ).run(page_id, plan.title, stripFrontmatter(markdown));
+
+        // Disagreements the committed text records (lib/disagreements.ts):
+        // synced in this transaction, in its own savepoint.
+        recordPageDisagreements(db, { page_id, title: plan.title }, markdown, { session_id });
 
         // Log to activity
         logActivity('page_compiled', {
@@ -359,6 +406,7 @@ async function commitSession(session_id: string): Promise<Response> {
         // Plan status inside transaction — crash between txn commit and here
         // previously left plan stuck as 'crossreffed'. Now atomic with the page write.
         updatePlanStatus(plan.plan_id, 'committed');
+        return 'committed';
       })();
     } catch (txErr) {
       const txMsg = txErr instanceof Error ? txErr.message : String(txErr);
@@ -367,14 +415,18 @@ async function commitSession(session_id: string): Promise<Response> {
       failed++;
       continue;
     }
+    // Another commit of this session got there first and owns its Phase 3.
+    if (done === 'taken') continue;
+    if (done === 'page_changed') {
+      changedSkipped++;
+      continue;
+    }
 
     // Phase 3a (awaited): flush pending_content to disk via nlp-service.
     // pending_content stays populated until this succeeds, so the boot reconciler
-    // can re-attempt if Phase 3a crashes before clearPendingContent runs.
-    const flushResult = await flushPendingPage(page_id, markdown);
-    if (flushResult.ok) {
-      clearPendingContent(page_id, flushResult.previousPath);
-    } else {
+    // can re-attempt if Phase 3a crashes before it is cleared. The flush
+    // re-reads the outbox and clears it compare-and-set (lib/outbox-flush.ts).
+    if (!(await flushOutboxPage(page_id))) {
       console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'file_flush_failed', context: 'session_commit', plan_id: plan.plan_id, page_id, session_id }));
       // Plan is already committed in DB. pending_content stays populated —
       // the post-loop reconcileSessionFlushes() pass re-attempts it, and
@@ -462,7 +514,7 @@ async function commitSession(session_id: string): Promise<Response> {
   // 'completed' is never signalled while .md.gz files are missing from disk.
   // getSessionCommittedPageIds is read AFTER the loop so it includes plans
   // committed in this run as well as prior runs of the same session.
-  const flushFailures = await reconcileSessionFlushes(getSessionCommittedPageIds(session_id));
+  const flushFailures = await reconcileSessionFlushes(session_id);
 
   return NextResponse.json(
     {
@@ -471,6 +523,7 @@ async function commitSession(session_id: string): Promise<Response> {
       failed,
       thin_drafts_skipped: thinCount,
       pending_approval: pendingApproval,
+      changed_pages_skipped: changedSkipped,
       pages_created: pagesCreated,
       pages_updated: pagesUpdated,
       sources_activated: sourcesActivated,

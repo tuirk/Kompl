@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from services.llm_client import CostCeilingError, LLMCompileError, LLMRateLimitedError
+from services.draft_budget import SourceCut
+from services.llm_client import CostCeilingError, DraftPageResult, LLMCompileError, LLMRateLimitedError
 
 # Minimal valid request body.
 _BASE_REQUEST = {
@@ -29,13 +30,40 @@ _BASE_REQUEST = {
 
 def test_draft_page_success_returns_markdown(client):
     """POST /pipeline/draft-page returns 200 with a markdown field."""
-    with patch("routers.pipeline.draft_page", return_value="---\ntitle: T\n---\n## Body\nOK."):
+    result = DraftPageResult(markdown="---\ntitle: T\n---\n## Body\nOK.", used_source_ids=["src_1"], cuts=[])
+    with patch("routers.pipeline.draft_page", return_value=result):
         resp = client.post("/pipeline/draft-page", json=_BASE_REQUEST)
 
     assert resp.status_code == 200
     body = resp.json()
     assert "markdown" in body
     assert "---" in body["markdown"]
+    assert body["used_source_ids"] == ["src_1"]
+    assert body["cut_sources"] == []
+
+
+def test_draft_page_reports_what_the_prompt_budget_cut(client):
+    """The app records provenance from used_source_ids and shows cut_sources."""
+    request = {
+        **_BASE_REQUEST,
+        "source_contents": [
+            {"source_id": "old", "title": "Old", "markdown": "Old text.", "citation_label": "S1"},
+            {"source_id": "new", "title": "New", "markdown": "New text.", "citation_label": "S2", "is_new": True},
+        ],
+    }
+    result = DraftPageResult(
+        markdown="---\ntitle: T\n---\nOK.",
+        used_source_ids=["new"],
+        cuts=[SourceCut(source_id="old", sent_chars=0, cut_chars=9)],
+    )
+    with patch("routers.pipeline.draft_page", return_value=result) as fake:
+        resp = client.post("/pipeline/draft-page", json=request)
+
+    assert resp.status_code == 200
+    assert resp.json()["used_source_ids"] == ["new"]
+    assert resp.json()["cut_sources"] == [{"source_id": "old", "sent_chars": 0, "cut_chars": 9}]
+    sent = fake.call_args.kwargs["source_contents"]
+    assert [sc["is_new"] for sc in sent] == [False, True]
 
 
 def test_draft_page_returns_429_on_rate_limit(client):

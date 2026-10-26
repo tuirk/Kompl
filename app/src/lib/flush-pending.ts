@@ -2,7 +2,7 @@
  * Phase 3a flush helper — POST /storage/write-page for a single page.
  *
  * Shared by:
- *   - the boot reconciler (app/instrumentation.ts), which re-flushes any
+ *   - the boot reconciler (app/src/instrumentation.ts), which re-flushes any
  *     page where pending_content IS NOT NULL after a crash mid-Phase-3a
  *   - the commit route's post-loop durability pass
  *     (app/api/compile/commit/route.ts), which re-attempts stranded

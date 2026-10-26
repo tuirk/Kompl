@@ -16,31 +16,60 @@ This module NEVER opens kompl.db. Rule #1 in CLAUDE.md.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _CHROMA_DIR = "/data/vectors"
 _COLLECTION_NAME = "wiki_pages"
-# all-MiniLM-L6-v2 accepts up to 512 word-piece tokens (~2048 chars of prose)
+# all-MiniLM-L6-v2 reads at most 256 word pieces (its max_seq_length), about
+# 1,000 chars of prose; the model ignores the rest of these 2,000 chars.
 _MAX_EMBED_CHARS = 2000
 
 _client: Any = None
 _collection: Any = None
+# Held while the collection opens, so the startup warm-up and an early
+# request never open two clients on the same directory.
+_collection_lock = threading.Lock()
 
 
 def _get_collection() -> Any:
     global _client, _collection
     if _collection is not None:
         return _collection
-    import chromadb
-    _client = chromadb.PersistentClient(path=_CHROMA_DIR)
-    _collection = _client.get_or_create_collection(
-        name=_COLLECTION_NAME,
-        metadata={"hnsw:space": "cosine"},
-    )
-    logger.info("Chroma collection '%s' ready at %s", _COLLECTION_NAME, _CHROMA_DIR)
-    return _collection
+    with _collection_lock:
+        if _collection is not None:
+            return _collection
+        import chromadb
+        _client = chromadb.PersistentClient(path=_CHROMA_DIR)
+        _collection = _client.get_or_create_collection(
+            name=_COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+        logger.info("Chroma collection '%s' ready at %s", _COLLECTION_NAME, _CHROMA_DIR)
+        return _collection
+
+
+def warm_up() -> None:
+    """Load the embedding model and open the collection ahead of the first request.
+
+    Run once in a background thread at startup (main.py). Without it the first
+    search after a restart pays the model load, which outlasts the app's
+    search timeout, so that search comes back keyword-only. Never raises: a
+    failure here leaves the usual lazy load to the first request.
+    """
+    started = time.monotonic()
+    try:
+        _get_collection()
+    except Exception as e:
+        logger.warning("Vector store warm-up failed; the first request will open it: %s", e)
+    try:
+        _embed("warm-up")
+        logger.info("Embedding model and vector store warmed in %.1fs", time.monotonic() - started)
+    except Exception as e:
+        logger.warning("Embedding warm-up failed; the first request will load the model: %s", e)
 
 
 def _embed(text: str) -> list[float]:

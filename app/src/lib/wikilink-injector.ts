@@ -19,6 +19,8 @@
  * wikilink target is always the canonical title as passed in.
  */
 
+import { findWikilinks } from './wikilink-syntax';
+
 const MIN_SURFACE_LEN = 4;
 
 export interface WikilinkTarget {
@@ -37,20 +39,41 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function buildSurfaceMap(targets: WikilinkTarget[]): Map<string, string> {
-  // surfaceForm(lowercase) -> canonical title. First writer wins so a surface
-  // that happens to equal someone else's alias points to whichever target
-  // registered it first — caller controls ordering.
-  const map = new Map<string, string>();
+/**
+ * A one-word name written with a capital ("Vertigo", the film) links only
+ * where the text writes it with a capital too: lowercase "vertigo" is the
+ * common word ("benign paroxysmal positional vertigo" linked the film,
+ * film run 2026-10-25). A capital that only starts a sentence says nothing
+ * on a page that also writes the word in lowercase: "Vertigo is a spinning
+ * feeling" still linked the film (audit 2026-10-26). Names of several words
+ * keep matching in any case.
+ */
+function sameSense(surface: string, match: string, onlyStartsSentence: () => boolean): boolean {
+  const capital = /^\p{Lu}/u;
+  if (/\s/.test(surface) || !capital.test(surface)) return true;
+  return capital.test(match) && !onlyStartsSentence();
+}
+
+// Text before a word that starts a sentence: only list, quote or emphasis
+// marks since the line began, or a full stop, question or exclamation mark
+// and a space.
+const SENTENCE_START = /(?:^\s*(?:(?:[>*+-]|\d+[.)])\s+)*|[.!?]["'”’)\]]*\s+)[*_"'“‘(\[]*$/u;
+
+function buildSurfaceMap(targets: WikilinkTarget[]): Map<string, { title: string; surface: string }> {
+  // surfaceForm(lowercase) -> canonical title. First writer wins. Every page
+  // title registers before any alias, so an alias can never shadow another
+  // page's own title (a stored "Python" → "Python 2" alias must not hijack a
+  // "Python" page); among aliases the caller controls ordering.
+  const map = new Map<string, { title: string; surface: string }>();
+  const register = (surface: string | undefined, title: string) => {
+    if (!surface || surface.length < MIN_SURFACE_LEN) return;
+    const key = surface.toLowerCase();
+    if (!map.has(key)) map.set(key, { title, surface });
+  };
+  for (const t of targets) if (t.title) register(t.title, t.title);
   for (const t of targets) {
     if (!t.title) continue;
-    const registerSurface = (s: string | undefined) => {
-      if (!s || s.length < MIN_SURFACE_LEN) return;
-      const key = s.toLowerCase();
-      if (!map.has(key)) map.set(key, t.title);
-    };
-    registerSurface(t.title);
-    for (const a of t.aliases ?? []) registerSurface(a);
+    for (const a of t.aliases ?? []) register(a, t.title);
   }
   return map;
 }
@@ -118,23 +141,30 @@ function tokenizeLine(line: string): Segment[] {
 function injectIntoLine(
   line: string,
   pattern: RegExp,
-  surfaceMap: Map<string, string>,
-  used: Set<string>
+  surfaceMap: Map<string, { title: string; surface: string }>,
+  used: Set<string>,
+  writesLowercase: (word: string) => boolean
 ): { line: string; added: number } {
   const segments = tokenizeLine(line);
   let added = 0;
+  let start = 0; // where the segment begins in the line
   for (const seg of segments) {
+    const segStart = start;
+    start += seg.text.length;
     if (!seg.linkable) continue;
     pattern.lastIndex = 0;
-    seg.text = seg.text.replace(pattern, (match) => {
-      const key = match.toLowerCase();
-      const canonical = surfaceMap.get(key);
-      if (!canonical) return match;
+    seg.text = seg.text.replace(pattern, (match: string, _surface: string, offset: number) => {
+      const entry = surfaceMap.get(match.toLowerCase());
+      const onlyStartsSentence = () =>
+        SENTENCE_START.test(line.slice(0, segStart + offset)) && writesLowercase(match.toLowerCase());
+      if (!entry || !sameSense(entry.surface, match, onlyStartsSentence)) return match;
+      const canonical = entry.title;
       // Self-link guard — pages should not link to themselves. Callers can
       // pre-filter the surfaceMap to exclude the current page's own surfaces
       // if stricter guarantees are needed.
-      if (used.has(canonical)) return match;
-      used.add(canonical);
+      const usedKey = canonical.toLowerCase();
+      if (used.has(usedKey)) return match;
+      used.add(usedKey);
       added++;
       // If surface matches canonical exactly (case-insensitive), keep the
       // surface's original casing as the display text inside a single-part
@@ -163,8 +193,16 @@ export function injectWikilinks(
   let inFence = false;
   let linksAdded = 0;
   // Link each canonical title at most once per page so long pages don't get
-  // wikilink-flooded. First occurrence wins.
-  const usedCanonicals = new Set<string>();
+  // wikilink-flooded. First occurrence wins. Pages the draft already links
+  // count as used, so the injector never adds a second link to them.
+  const usedCanonicals = new Set<string>(findWikilinks(markdown).map((l) => l.target.toLowerCase()));
+  // Whether the page writes a word in lowercase anywhere, asked only for a
+  // capitalised one-word name at the start of a sentence.
+  const lowercase = new Map<string, boolean>();
+  const writesLowercase = (word: string): boolean => {
+    if (!lowercase.has(word)) lowercase.set(word, new RegExp(`\\b${escapeRegex(word)}\\b`).test(markdown));
+    return lowercase.get(word)!;
+  };
 
   for (let idx = 0; idx < lines.length; idx++) {
     const line = lines[idx];
@@ -198,7 +236,7 @@ export function injectWikilinks(
       continue;
     }
 
-    const { line: updated, added } = injectIntoLine(line, pattern, surfaceMap, usedCanonicals);
+    const { line: updated, added } = injectIntoLine(line, pattern, surfaceMap, usedCanonicals, writesLowercase);
     linksAdded += added;
     out.push(updated);
   }

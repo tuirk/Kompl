@@ -38,6 +38,15 @@ describe('POST /api/wiki/lint-pass', () => {
     );
   });
 
+  it('never lists Saved Links or an archived page as an orphan', async () => {
+    seedPage(handle.db, { page_id: 'saved-links', title: 'Saved Links', page_type: 'overview' });
+    seedPage(handle.db, { page_id: 'put-away', title: 'Put away', page_type: 'archived' });
+    seedPage(handle.db, { page_id: 'lonely', title: 'Lonely Page' });
+    const { body } = await postLint();
+    const ids = (body.orphan_pages as Array<{ page_id: string }>).map((p) => p.page_id);
+    expect(ids).toEqual(['lonely']);
+  });
+
   it('returns stale source-summary pages with last_updated', async () => {
     const page_id = seedPage(handle.db, {
       page_id: 'stale-one',
@@ -86,62 +95,67 @@ describe('POST /api/wiki/lint-pass', () => {
     expect(details.contradiction_count).toBeUndefined();
   });
 
-  it('skips when lint disabled and not manual', async () => {
-    setLintEnabled(false);
+  it('runs only when the user asks; older CLIs calling without manual are skipped', async () => {
+    // lint_enabled is on (beforeEach): it no longer starts a pass on its own.
     const { res, body } = await postLint({});
     expect(res.ok).toBe(true);
     expect(body.skipped).toBe(true);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled(); // no LLM call
+
+    const manual = await postLint({ manual: true });
+    expect(manual.body.skipped).toBeUndefined();
   });
 
-  it('enriches contradiction titles from page pairs', async () => {
-    seedPage(handle.db, {
-      page_id: 'page-a',
-      title: 'Alpha',
-      category: 'Tech',
-      summary: 'Alpha claims X',
-    });
-    seedPage(handle.db, {
-      page_id: 'page-b',
-      title: 'Beta',
-      category: 'Tech',
-      summary: 'Beta claims Y',
-    });
-    vi.mocked(fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        contradictions: [{
-          page_a: 'page-a',
-          page_b: 'page-b',
-          claim: 'X vs Y',
-          severity: 'major',
-        }],
-      }),
-    } as Response);
+  it('no longer asks the LLM about page summaries: the whole-wiki check finds disagreements', async () => {
+    // Two summaries in one category: the retired check 5 would have sent them.
+    seedPage(handle.db, { page_id: 'page-a', title: 'Alpha', category: 'Tech', summary: 'Alpha claims X' });
+    seedPage(handle.db, { page_id: 'page-b', title: 'Beta', category: 'Tech', summary: 'Beta claims Y' });
 
     const { body } = await postLint();
-    const contras = body.contradictions as Array<{
-      page_a_id: string;
-      page_a_title: string;
-      page_b_title: string;
-      claim: string;
-    }>;
-    expect(contras).toHaveLength(1);
-    expect(contras[0].page_a_title).toBe('Alpha');
-    expect(contras[0].page_b_title).toBe('Beta');
-    expect(contras[0].claim).toBe('X vs Y');
+
+    // The only call left is the saved-links page refresh; nothing goes to an LLM route.
+    const urls = vi.mocked(fetch).mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes('/pipeline/'))).toEqual([]);
+    expect(body.contradictions).toEqual([]);
   });
 
-  it('finds missing cross-refs from extractions', async () => {
+  it('finds missing cross-refs: names the extraction found in 3+ sources', async () => {
     const entity = 'Shared Entity Name';
     for (let i = 0; i < 3; i++) {
       const source_id = seedSource(handle.db, { source_id: `src-xref-${i}` });
       seedExtraction(handle.db, {
         source_id,
-        ner_output: { entities: [{ text: entity }] },
+        llm_output: { entities: [{ name: entity, type: 'CONCEPT' }] },
       });
     }
     const { body } = await postLint();
     const refs = body.missing_cross_refs as Array<{ entity_text: string; mention_count: number }>;
     expect(refs.some((r) => r.entity_text === entity && r.mention_count >= 3)).toBe(true);
+  });
+
+  it('does not report names that any page or alias already covers, whatever the case, or dates and ordinals', async () => {
+    seedPage(handle.db, { page_id: 'btc', title: 'Bitcoin', page_type: 'concept' });
+    seedPage(handle.db, { page_id: 'eth', title: 'Ethereum', page_type: 'entity' });
+    handle.db
+      .prepare(`INSERT INTO aliases (alias, canonical_name, canonical_page_id) VALUES ('ETH', 'Ethereum', 'eth')`)
+      .run();
+    for (let i = 0; i < 3; i++) {
+      const source_id = seedSource(handle.db, { source_id: `src-covered-${i}` });
+      seedExtraction(handle.db, {
+        source_id,
+        llm_output: {
+          entities: [
+            { name: 'bitcoin', type: 'ORG' },
+            { name: 'eth', type: 'ORG' },
+            { name: 'second', type: 'ORDINAL' },
+            { name: '2009', type: 'DATE' },
+            { name: 'Satoshi Nakamoto', type: 'PERSON' },
+          ],
+        },
+      });
+    }
+    const { body } = await postLint();
+    const refs = (body.missing_cross_refs as Array<{ entity_text: string }>).map((r) => r.entity_text);
+    expect(refs).toEqual(['Satoshi Nakamoto']);
   });
 });

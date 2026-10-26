@@ -3,6 +3,11 @@
  * Settings UI and activity feed.
  */
 
+import { isNonTopicName } from './missing-page-rules';
+
+/** Kompl's own Saved Links page: linked from nowhere by design, never an orphan. */
+export const SAVED_LINKS_PAGE_ID = 'saved-links';
+
 export interface LintOrphanPage {
   page_id: string;
   title: string;
@@ -141,9 +146,12 @@ export function normalizeLintResult(raw: Record<string, unknown> | null): LintRe
   if (!raw) return null;
   const run_duration_ms = typeof raw.run_duration_ms === 'number' ? raw.run_duration_ms : 0;
   return {
-    orphan_pages: parseOrphanPages(raw.orphan_pages),
+    // A result saved by an older check may list what the check now leaves
+    // out: Saved Links (written by Kompl, linked from nowhere by design) as
+    // an orphan, a number word such as "second" as a missing page.
+    orphan_pages: parseOrphanPages(raw.orphan_pages).filter((p) => p.page_id !== SAVED_LINKS_PAGE_ID),
     stale_pages: parseStalePages(raw.stale_pages),
-    missing_cross_refs: parseMissingCrossRefs(raw.missing_cross_refs),
+    missing_cross_refs: parseMissingCrossRefs(raw.missing_cross_refs).filter((m) => !isNonTopicName(m.entity_text)),
     dead_provenance: parseDeadProvenance(raw.dead_provenance),
     contradictions: parseContradictions(raw.contradictions),
     run_duration_ms,

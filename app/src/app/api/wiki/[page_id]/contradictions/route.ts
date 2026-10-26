@@ -5,7 +5,9 @@
  * Backed by activity_log rows with action_type='page_contradiction_detected'
  * — there's no separate table. See getPageContradictions in lib/db.ts.
  *
- * Powers the "Contradicting sources" sidebar panel on /wiki/[page_id].
+ * Kept for API callers. The right panel reads the disagreements record
+ * (lib/disagreements.ts), which takes these verdicts in on a page's first
+ * read.
  * Zero LLM cost, bounded by page_id scan over an indexed column.
  */
 

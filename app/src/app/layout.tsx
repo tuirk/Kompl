@@ -3,7 +3,7 @@ import { Suspense } from 'react';
 import { Space_Grotesk, Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import TopNav from '@/components/TopNav';
-import { ChatDrawerProvider } from '@/components/ChatDrawer';
+import PageUpgradeNotice from '@/components/PageUpgradeNotice';
 
 // Obsidian Kinetic — font loading via next/font (zero layout shift, self-hosted)
 const spaceGrotesk = Space_Grotesk({
@@ -25,7 +25,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Kompl',
+  // Pages set their own name ("Bitcoin" → "Bitcoin · Kompl") so browser tabs
+  // and history are tellable apart.
+  title: { default: 'Kompl', template: '%s · Kompl' },
   description: 'Stop saving. Start compiling.',
 };
 
@@ -37,46 +39,11 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${spaceGrotesk.variable} ${inter.variable} ${jetbrainsMono.variable}`}>
       <body style={{ paddingTop: 65 }}>
-        <ChatDrawerProvider>
-          <Suspense fallback={null}>
-            <TopNav />
-          </Suspense>
-          {children}
-        </ChatDrawerProvider>
-        <footer style={{
-          position: 'fixed',
-          bottom: 0,
-          right: 0,
-          left: 0,
-          height: 32,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'flex-end',
-          paddingRight: 20,
-          gap: 6,
-          background: 'var(--bg)',
-          borderTop: '1px solid var(--border)',
-          zIndex: 50,
-        }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ fontSize: 14 }}>🥞</span>
-            <span style={{
-              fontFamily: 'var(--font-heading)',
-              fontSize: 12,
-              color: 'var(--accent)',
-              letterSpacing: '0.04em',
-            }}>
-              <a
-                href="https://github.com/tuirk"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: 'inherit', textDecoration: 'none' }}
-              >
-                Tuirk
-              </a>
-            </span>
-          </span>
-        </footer>
+        <Suspense fallback={null}>
+          <TopNav />
+        </Suspense>
+        {children}
+        <PageUpgradeNotice />
       </body>
     </html>
   );

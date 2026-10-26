@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SavedLinkRow } from '../../../lib/db';
-import { LocalDayMonth } from '../../../components/LocalDate';
+import { LocalDate } from '../../../components/LocalDate';
 import { safeExternalUrl } from '../../../lib/safe-url';
+import { ingestFailureReason } from '../../../lib/ingest-error-copy';
 
 interface ParsedMetadata {
   title?: string | null;
@@ -256,7 +257,9 @@ export default function SavedLinksInteractive({
           const metaParts = [
             author,
             hostnameOf(link.source_url),
-            link.error,
+            link.error ? ingestFailureReason(link.error) : null,
+            // One row per link: a link that failed again says how often (issue #139).
+            link.attempts > 1 ? `failed ${link.attempts} times` : null,
           ].filter((p): p is string => !!p);
 
           return (
@@ -283,7 +286,7 @@ export default function SavedLinksInteractive({
               </div>
 
               <div style={{ padding: '20px 0', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-secondary)' }}>
-                <LocalDayMonth iso={link.date_saved ?? link.date_attempted} />
+                <LocalDate iso={link.date_saved ?? link.date_attempted} />
               </div>
 
               <div style={{ padding: '16px 0', minWidth: 0 }}>
@@ -293,7 +296,10 @@ export default function SavedLinksInteractive({
                 }}>
                   {displayTitle}
                 </div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', marginTop: 2 }}>
+                <div
+                  title={link.error ?? undefined}
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-dim)', marginTop: 2 }}
+                >
                   {metaParts.join(' · ')}
                 </div>
                 {meta.description && (

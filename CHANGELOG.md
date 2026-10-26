@@ -5,10 +5,632 @@ All notable changes to Kompl are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The application surface (Next.js API, CLI, MCP server, settings) follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The SQLite schema
-uses a separate monotonic version (currently `v25`); breaking schema changes
+uses a separate monotonic version (currently `v30`); breaking schema changes
 ship with a `migrate.py` step that runs at boot.
 
 ## [Unreleased]
+
+### MCP server
+
+- **Upgrading.** The MCP server is now 2.0.0 with eight tools. `list_pages`
+  is now `search_wiki` without a query (newest first, same filters and
+  paging) and `wiki_stats` is now `wiki_status`, so your agent asks to
+  approve Kompl's tools again; permission rules saved for the old names can
+  be removed. The server name (`kompl-wiki`), launch path and `KOMPL_URL`
+  are unchanged, so existing agent configs keep working. The first
+  `kompl start` after updating rebuilds the server; restart your agent to
+  load it.
+- **Setup for more agents.** The README and Settings → Connect your AI give
+  the setup for Claude Code, Codex, Claude Desktop, Cursor, VS Code, Gemini
+  CLI, Pi and Hermes, replacing the claim that Claude Code registers Kompl
+  on its own (the `.mcp.json` it relied on is not shipped).
+- **Tested end to end.** Integration stage 28 (`scripts/mcp-smoke.mjs`)
+  launches the built server over stdio and calls every tool against the
+  running app; it needs no API key.
+- **`search_wiki` understands questions.** It searches by meaning as well
+  as keywords (the local embedding model, no LLM), so "how do computers on a
+  network agree on one shared history" finds proof-of-work consensus and "who
+  created bitcoin" finds Satoshi Nakamoto; questions like these used to
+  return nothing. Results leave out archived pages and Saved Links, can be
+  filtered by category and page type, and page with `offset`. While the NLP
+  service is down or still loading its model, keyword matches come back with
+  a note saying so.
+- **Search by meaning works right after a restart.** The embedding model
+  (all-MiniLM-L6-v2, about 90 MB) now ships inside the NLP service image and
+  loads in the background at startup. Before, every new container (so every
+  `kompl update`) downloaded it from Hugging Face on first use, which needed
+  internet and took about 30 seconds; searches in that window came back
+  keyword-only, and the first compile's entity matching waited for the same
+  download. The NLP service no longer contacts Hugging Face at all.
+- **New `add_source`** lets an agent save links (up to 5 per call) or a note
+  to the wiki when the user asks. It is off until turned on in Settings →
+  Connect your AI, because each addition starts a compile that uses the AI
+  model. Agents can add 20 items a day, nothing is staged while a compile
+  runs, links already in the wiki are reported instead of added, and every
+  addition shows in the activity feed with the agent's name. The switch is
+  not carried in backups. Served by `POST /api/agent/sources`, which stages
+  and finalizes exactly like the app's Add sources flow.
+- **New `research_topic`** briefs an agent on a topic in one call: the most
+  relevant pages with their summaries and the cited lines that best match
+  the topic, one source list numbered across all of them (a source cited by
+  three pages has one number), what the pages record as disputed, and gaps
+  (names with no page, pages resting on one source). Served by
+  `GET /api/wiki/research`; no LLM.
+- **`read_page` shows where each claim comes from.** Every numbered source
+  now carries its address and date, the text matches what the page view
+  shows (so `[n]` numbers agree with the app), and the page lists the pages
+  it links to and from. `include_related` adds pages similar in meaning.
+- **Agents see how pages connect.** `read_page` lists the page's
+  connections, one per line, each with its relation read from the page's
+  side ("Uses: Proof-of-work consensus"), the sentence that explains it and
+  the source behind it: the page's own `[n]` when the page cites that
+  source, otherwise the source's title and id, with archived sources
+  marked. It shows 15 in full (the strongest: specific relations before
+  "Related to", then most sources) and names the other pages among the
+  rest, so every live page the old link lists named is still there; then "Also
+  linked" for pages linked with no typed relation. `research_topic` adds
+  "How these pages connect": up to 12 relations among the pack's pages or
+  to other pages, strongest first, cited with the pack's shared source
+  numbers; "related to" is left out where a more specific relation already
+  joins the two pages. `wiki_status` adds the knowledge graph's topic
+  clusters (the six biggest categories, with their pages, source pages not
+  counted, and the connections inside each) and up to five bridge pages,
+  the same ones the graph badges, with the topics they join. If that part
+  fails, the rest of the status still answers. It still only reports.
+  There are no new tools and no LLM calls.
+  Against an older Kompl app the tools answer as before, and MCP servers
+  built before this change keep working with the new app.
+- **New `read_source`** reads the original text Kompl compiled from, by
+  source id or by a page's citation `[n]`. With a query it returns only the
+  matching passages (ranked locally, no LLM); otherwise the text in
+  8,000-character windows. Served by `GET /api/sources/{id}/content`.
+- **New `list_sources`** lists what the user has added, newest first, with
+  how many pages each one feeds, so "did this link make it in?" has an
+  answer. Search matches titles and addresses; the Sources page search in
+  the app now matches addresses too.
+- **New `wiki_status`, replacing `wiki_stats`:** size, any running compile,
+  what waits for the user (drafts to review, failed imports) and gaps worth
+  filling: names mentioned in 3+ sources with no page, pages resting on one
+  source, unlinked pages, sources older than the stale threshold, and the
+  contradictions from the last health check. It reports and changes nothing
+  (`GET /api/wiki/status`: no LLM, no writes).
+- **New `recent_changes`:** what changed over the last N days or since a
+  time (sources added, pages created or updated with every source behind
+  each change, disputes, failures), one compile session item by item, or
+  one page's history: its compiles, events, and the sections that differ
+  from its previous version (`GET /api/wiki/changes`).
+- **Fewer false "missing pages" in the health check.** A name counts as
+  covered by any page title or alias, whatever the case (a "Bitcoin"
+  concept page covers "bitcoin"), and dates, amounts and ordinals ("second",
+  "2009") are no longer listed. Settings → Wiki health shows the same.
+- **Stays built.** Setup and `kompl update` now build the MCP server, and
+  `kompl start` rebuilds it once when its build is older than its source, so
+  AI agents run the code that matches the installed Kompl. Before, it was
+  built by hand once at install and never again. Restart your AI agent after
+  an update to load the new version.
+- **Failed calls are marked as errors** (`isError`) with a next step ("Start
+  it with `kompl start`", "Use search_wiki to find page ids"), and every tool
+  has a title and read-only annotations.
+- **MCP SDK 1.32.1** (fixes an advisory affecting 1.12–1.30) with refreshed
+  dependencies; `npm audit` reports none. The server has its own tests and CI
+  job.
+
+### Knowledge graph
+
+- **Relations keep their evidence.** Each typed relation the extractor finds
+  between two names (uses, part of, created by, competes with, contradicts,
+  related to) now stores its one-sentence explanation, e.g. "Bitcoin uses
+  proof-of-work consensus." Before, that sentence was dropped when the
+  relation was saved. Schema v27 → v28 adds `relationship_mentions.description`.
+  On the first start after upgrading, existing relations get their sentence
+  from the stored extractions (no LLM calls; only empty ones are filled), and
+  restoring an older backup fills them the same way. Backups carry the
+  column.
+- **Connections card on every page.** The right panel's "Linked from" list
+  becomes "Connections": the page's typed relations grouped by label (Part
+  of, Includes, Created by, Created, Uses, Used by, Competes with,
+  Contradicts, then "Related to", which shows 3 rows before "Show all"),
+  each with how many sources say so. Names with no page yet are listed and
+  marked. The arrow beside a connection opens the sentences that explain it,
+  each linking to its source; archived sources are marked "(archived)".
+  Pages linked either way with no typed relation follow under "Also linked".
+  Relations written with an alias of the page (e.g. "BTC") count for the
+  page. The page JSON behind MCP `read_page` (`/api/wiki/[page_id]/data`)
+  gains `connections` and keeps `links` and `backlinks`; the same data is at
+  `GET /api/wiki/[page_id]/connections`. The Saved Links page has no card.
+- **The graph is a topic map.** Pages are coloured and grouped into islands
+  by category, with each island's name over it when zoomed out; islands
+  that share connections sit side by side, and the layout is the same on
+  every visit. Lines show typed relations only, one per pair of pages,
+  wider when more sources say so. Hover a page to light up its neighbours. Click a page for its
+  type, category, summary and connections grouped by relation, each opening
+  to its evidence; click a line to see why the two pages connect: each
+  relation, its source count and the sentences behind it, linked to their
+  sources. The legend hides or shows each topic and page type, and has
+  toggles for source pages, "related to" lines, plain links and archived
+  pages (all off by default). The header counts the pages and connections
+  on screen. Page names never cover another name, and cover a page only
+  when a topic's main page has nowhere else to go; the side panel opens
+  over the map without moving it. The old "Relatedness" figure is gone, and
+  the Saved Links page no longer appears on the graph. `GET /api/wiki/graph`
+  now returns one line per page pair (`relations`, `wikilink`, `weight`),
+  each page's `degree`, and `missing`; only the graph page reads it.
+- **Explore the graph.** Focus on one page: `/wiki/graph?focus=<page_id>`
+  (also "Focus" in a page's panel and "See in graph" on its Connections
+  card) shows the page and the pages one line away; a header switch widens
+  it to two lines, and "Full map" (or the header's Graph tab) goes back. A
+  focused page with no typed relation says so and offers to show the plain
+  links or "related to" lines that join it. "Connect two pages" finds how
+  two pages are joined: type two titles, or click two pages on the map, and
+  the chain of lines between them lights up, preferring typed relations over
+  plain links and "related to", with each step's relation and the first
+  sentence behind it; it says so when nothing joins them. "Show missing
+  pages" in the legend (off by default) adds names that several sources
+  mention but that have no page yet, as dashed circles beside the pages they
+  are named with; this is a report, with no actions. Up to five pages that
+  lie on many of the shortest ways between pages of different topics on the
+  default view (typed relations, no source pages, no archived pages), with
+  neighbours in two or more topics, carry a "bridge" badge on the map and in their panel; the badges
+  do not change with the legend. The zoom buttons zoom about the selected
+  page or line, else the focused page, else the middle of the free part of
+  the map. With more than 3,000 lines on screen, only typed lines respond to
+  the pointer, which keeps hover and zoom smooth.
+- **Lines read without colour.** Lines are never coloured by topic, and
+  each line feature means one thing: brightness is how specific the
+  connection is (typed, then "related to", both at least 3:1 against the
+  background, then plain links, deliberately faint and off by default),
+  width is how many sources say so, an arrow
+  shows which way a directed relation reads (part of, uses, created by), a
+  zigzag marks competes with or contradicts, dashes lead to a missing page,
+  and the accent marks the clicked line or a path. Relation names appear
+  along the lines of the hovered or selected page and the hovered line, and
+  on every long typed line when zoomed in, never over a page name. The
+  legend shows each of these as drawn.
+- **Easier to read up close.** The map is spread out: lines are about 1.5
+  times longer and the topic islands sit further apart, so pages and their
+  names have more room (the whole map still fits on screen at first). When
+  you zoom in, page names and relation names now grow with the map (page
+  names up to 20 px, relation names up to 16 px, names always the larger),
+  and lines, arrows and zigzags get thicker, up to about twice as thick,
+  instead of staying small while the pages grow.
+- **Filters as a map control, and a key on hover.** The legend starts as a
+  small "Filters" button in the top left, like a map app's layers button,
+  so the map gets the room. When any filter differs from the default map,
+  the button says how many ("3 changed"). Click it to open the filter panel:
+  every row is a checkbox that shows whether that thing is on the map
+  (checked = shown), named for what it is (each topic and page type,
+  "Source pages", "Missing pages", "Archived pages", "“Related to” lines",
+  "Plain links"), with counts; × collapses it again. The ⓘ next to the
+  "Filters" title shows "How to read the map", the key to the dots and
+  lines: on hover, on keyboard focus, or on a click or tap; Escape or a
+  click elsewhere closes it. The page remembers whether the filters are
+  open, on every screen. Until you zoom or pan the map yourself, opening,
+  closing or resizing the filters slides it sideways to stay centred in the
+  room left free; once you have moved it, it stays where you put it. The
+  filter panel and the details panel on the right have a corner grip, like
+  a text box: drag it, or focus it and use the arrow keys, to make the
+  filters wider or taller and the panel wider. The page remembers the
+  sizes, and the map keeps clear of them. The "Connect two pages" button
+  reads "Close path finder" while the finder is open.
+- **A shorter Connections card.** The header counts the related pages and
+  names with no page yet (each once), "Also linked" has its own count, and
+  every group shows its first 8 rows ("Related to" its first 3) in full; the
+  rest sit behind "Show all" as compact rows, so every connection is still
+  listed. The graph's page panel keeps every row in full, evidence
+  included, behind the same "Show all".
+- **AI agents see the connections too:** `read_page`, `research_topic` and
+  `wiki_status` report them (see MCP server above).
+- **Relation types outside the vocabulary keep their direction.** A type
+  the extractor names on its own, such as "founded by", reads "Founded by"
+  from one page and "Founded" from the other; a type with no plain reverse
+  reads "Located in" and "← Located in" (the arrow: it reads from the other
+  page). Its two directions are no longer merged into one connection. The
+  Connections card, the graph and `read_page` all read it the same way.
+  Only competes with, contradicts and related to read the same both ways.
+
+### Wiki readability
+
+- **Numbered citations.** Pages cite sources as superscript numbers that
+  jump to a numbered source list (cited sources first). Pages drafted
+  earlier, which printed raw source UUIDs in assorted shapes, render the same
+  way; their stored text is not changed. New drafts cite with `[S1]`-style
+  labels that are stored as `[^source_id]` references, so a page never
+  contains raw ids.
+- **MCP `read_page`** returns the page body without frontmatter, with
+  citations as `[n]` and a matching numbered, de-duplicated source list.
+- **Piped wikilinks** (`[[Target|label]]`) render as links showing the label
+  instead of literal text, and count as links for backlinks and the graph.
+  Links from a page to itself render as plain text.
+- **Source lists no longer double-count:** provenance gains a row per
+  compile, so the page footer and the page-data API now show one row per
+  source (Bitcoin: 6, was 15). Recompiles send each source once.
+- **Search** finds hyphenated and possessive terms ("sha-256",
+  "proof-of-work", "bitcoin's"), in the app and through MCP `search_wiki`.
+- **Reading layout:** ~70-character lines (was ~100), larger body text,
+  always-underlined links, full-contrast summary, `--fg-dim` and
+  `--fg-subtle` raised to pass WCAG AA (were 2.5:1 and 4.2:1), a table of
+  contents that stays below the top bar and highlights the current section,
+  per-page tab titles ("Bitcoin · Kompl") and a proper "not found" page.
+- **Collapsible wiki sidebar:** the left panel folds into a slim icon rail
+  (the button at its top-left, or Ctrl+.) with links to all pages, the graph
+  and activity, and the article widens to fill the space. The choice is
+  remembered per browser, without flashing open on load; windows narrower
+  than 1200px start folded. Expanded, it reads more easily: larger titles,
+  the current page highlighted and scrolled into view, its category opened,
+  full titles on hover, and visible keyboard focus.
+- **Boot hook actually runs:** `instrumentation.ts` moved to `app/src/`.
+  Next.js never loaded it from `app/`, so the outbox's pending-page
+  reconciler had not run in any build; it now runs at every start, and the
+  one-time wikilink resync runs on the first start.
+- **README rewritten** around what Kompl does and MCP, with new screenshots
+  of the dashboard, a compiled page, the graph and Settings.
+
+### Page quality
+
+- **Drafts stay within their sources.** The entity, concept, comparison and
+  overview prompts now say to state only what the sources say (no added
+  origins, causes, rankings or "firsts"), define a contradiction as two
+  claims that cannot both be true (designed vs first released is not one),
+  cap "Related Concepts" at 5 and ask for four frontmatter keys only.
+  Citation labels are footnote markers, never words: "[S2] states that…"
+  used to render as "² states that…".
+- **Safety nets on every new draft**, whatever the model writes: a citation
+  label used as a word is reworded ("One source² states…"); invented
+  frontmatter (`sources: S1…`, `last_updated`, `status`, `contested`) is
+  dropped; empty "Contradictions: None" sections are removed; source notes
+  are never offered or kept as link targets; each page is linked once; and
+  Related lists keep at most 5 entries that the page or its sources mention
+  (entries a page already had are kept). The link injector no longer adds a
+  second link to a page the draft already links.
+- Existing pages are not changed on their own: the rules apply to pages
+  drafted or updated after the upgrade, and older pages can be updated from
+  Settings (below). A wiki's `schema.md` is not rewritten either; where it
+  conflicts with these rules, the rules win.
+- **Existing pages read cleaner right after the upgrade**, on display only
+  (stored pages are unchanged): each page is linked once in the body
+  (Related lists and tables keep their own links), links in headings and
+  code show as text, and "Contradictions" sections that only say there are
+  none are hidden.
+- **Obsidian and Markdown exports** turn citations into numbered footnotes
+  with definitions (`[^1]: Source title`), numbered like the page view, and
+  heal legacy page wrappers the way the page view does. Obsidian `sources:`
+  lists each source once (Bitcoin network: 5, was 12) and `date_updated` is
+  a date again. JSON and `.kompl` backups are unchanged.
+- **Saved Links** shows a readable reason for each failed link ("Reserved
+  test domain (.test) — not a real website", "Firecrawl credits used up")
+  instead of the raw error JSON; the raw error stays available on hover.
+- **Entity merging no longer joins different things.** Names whose numbers
+  differ never merge (Python 2 / Python 3, GPT-4 / GPT-4o, Windows 10 / 11),
+  in any resolution layer; version pairs are answered "different" without an
+  LLM call. A name that only adds words to another (Ethereum / Ethereum
+  Foundation, Bitcoin / Bitcoin network) is left to the embedding and LLM
+  layers instead of being merged on spelling, except people's names
+  (Karpathy / A. Karpathy / Andrej Karpathy). A merged group is named after
+  the name most sources use; for people, the fullest name.
+- **Existing wikis:** saved aliases that merged different versions
+  ("Python 3" → "Python 2", "Python" → "Python 2") are ignored from now on,
+  so new sources about Python 3 get their own page; the alias rows are
+  kept. Other saved merges keep routing as before.
+- **Update pages to the v0.4 writing rules** (Settings → Wiki health): a
+  compile only adds to a page, so pages written by an earlier version keep
+  their text. The card lists what changed, how many pages were written by an
+  earlier version, and what updating them costs and takes with the selected
+  model (an estimate from each page's sources and current length, the
+  model's prices and its measured speed, shown as a rounded range), with a
+  warning when that can pass today's spending limit. **Update all** rebuilds
+  them one at a time, oldest first, from all their current sources, with
+  progress, spend so far and a Stop button; new compiles can't start
+  meanwhile. A run only touches the pages counted when you confirmed, and
+  stops by itself if it spends more than 1.5 × the high estimate, at the
+  daily spending limit, after 3 failures in a row or when a compile starts.
+  Pages it can't rebuild (sources too short for a full page, or unreadable)
+  keep their text, are listed on the card, and aren't offered or charged
+  again until a compile changes them. Each page's previous version is
+  archived first, and **Restore this version** (under "View previous
+  version" on the page, when that version is available) puts it back. A
+  restored page keeps the text you chose: Update all doesn't rewrite it
+  again. A restart ends a run; Update all again continues with the pages
+  that are left, never charging a page twice. Leaving the pages is fine:
+  they still improve as new sources arrive. A one-time notice after
+  upgrading points to the card; a fresh install has no older pages, so it
+  doesn't see one. With nothing to update, the card says how many pages
+  follow the current rules and lists what changed. Schema v26 → v27 adds
+  `pages.draft_rules` (the rules a
+  page's text follows; NULL = written before v0.4, every existing page) and
+  `page_plans.draft_rules` (so a draft made under older rules that is
+  approved later is still offered for an update). Backups carry both; older
+  backups import as NULL. The nlp-service gains `GET /llm/pricing` for the
+  estimate. The rules version lives in one place (`lib/writing-rules.ts`):
+  a later release that changes the writing rules sets it and lists what
+  changed, and the card and the notice offer every page written under older
+  rules again.
+
+### Name matches (aliases)
+
+- **Each stored name match says how it was made.** When a compile decides
+  two names are one thing ("GPT 4" is "GPT-4"), it stores the match so later
+  sources go to the same page. Each match now records the rule or step that
+  made it, the compile it came from, and a status: active, set aside, or
+  retired. Schema v28 → v29 adds `aliases.method`, `score`, `session_id`,
+  `status`, `status_reason` and `status_at`; existing matches stay active.
+- **Matches that look wrong are set aside, not deleted.** Older versions
+  stored some matches the resolver no longer makes on its own, e.g.
+  "Ethereum" → "Ethereum Foundation" (one name plus extra words),
+  "Confidence Interval" → "Continuous Integration (CI)" (another meaning of
+  the abbreviation), or two names with different words that are not alike
+  by name alone (an acronym and its expansion, such as "ETH" → "Ethereum",
+  is left for the AI check to judge). After upgrading, Kompl checks the
+  matches made before this version (no AI calls) and sets those aside: new
+  sources no longer follow them, the Connections card, graph and MCP tools
+  no longer join names through them, and the activity feed lists them. A later compile that matches the
+  same names again restores one; a retired match is never restored. The
+  check needs the embedding model for the last kind; while the NLP service
+  is starting it waits and tries again.
+- **Exact page titles come first.** When a source names an existing entity or
+  concept page exactly, its mentions and relations count for that page, even
+  where a stored match points the name elsewhere.
+- Backups carry the new columns. Restoring an older backup brings its
+  matches back active and then checks them the same way.
+
+### Disagreements
+
+- **One format for disagreements.** Every page Kompl writes from several
+  sources records a live disagreement under "Disputed: <topic>", each side
+  cited, and a claim a later source superseded under "Changed: <topic>",
+  with each source's date. The draft prompts list the sources' dates (the
+  publication date when known, else the day the source was saved) and
+  their format wins over a wiki's `schema.md`. Concept pages now get the
+  contradictions the extraction found, as entity pages did.
+- **Headings are read wherever the word sits.** "Founding date (disputed)",
+  "#### Contradictions" and other headings older pages use count too, at
+  any level.
+- **One record of disagreements.** Schema v30 adds a `disagreements` table:
+  the page's own Disputed/Changed sections (synced in each page commit) and
+  the sources a compile flagged as contradicting a page, with room for the
+  claim check and the whole-wiki check to come. The page's right panel
+  lists them under Disagreements with Confirm and Dismiss; your verdict is
+  never overwritten by a later compile, and Undo takes it back. MCP
+  `read_page` lists a page's disagreements and `recent_changes` the new
+  ones, each marked confirmed or not.
+- After upgrading, Kompl fills the record once from every page's text and
+  the contradictions already logged (no AI calls), including disputes on
+  pages written before they reached the activity feed. Backups carry the
+  record with your verdicts; restoring an older backup fills it the same
+  way.
+
+### Added
+
+- **Disputes in the right panel and the activity feed.** When a page's
+  text records a disagreement between its sources (a "Disputed: …" or
+  "Contradictions" section citing two or more sources), the right panel
+  lists it with how many sources disagree and a link to the section, next
+  to new sources a compile flagged as contradicting the page. Compiles,
+  approvals, page updates, restores and recompiles log each newly recorded
+  dispute once (DISPUTE in the activity feed); a dispute reworded with the
+  same sources is not logged again. No extra LLM calls.
+- **Current models.** Compile model choices are now DeepSeek V4.1 Flash
+  (`deepseek-flash`), DeepSeek V4 Pro, Gemini 3.8 Flash, Gemini 3.5
+  Flash-Lite and Gemini 3.1 Pro (preview). Gemini 3 requests use
+  `thinking_level` and the default temperature, as Google requires for 3.x;
+  Gemini 2.5 requests are unchanged.
+
+### Changed
+
+- **Search understands questions.** The top bar's search and the Search page
+  use the same keyword-and-meaning search as MCP `search_wiki`, so "how deep
+  is the lake" finds the page about the lake; keyword search needed every
+  word to appear on the page. Results leave out archived pages and Saved
+  Links. A newer query cancels the one still running, so a slow answer can
+  no longer replace newer results or reopen the dropdown after the box was
+  cleared or left. While the NLP service is still loading its model, results
+  come from keyword matches alone.
+- **Wiki right panel restyled to match the sidebar:** On this page,
+  Disputes, Connections, You might also read, and View original source on
+  source notes, in readable 14px rows with hover and keyboard-focus states.
+- **Wiki health checks run when you ask.** Settings → Wiki health has a
+  **Run check** button and no longer a "Scheduled wiki health checks"
+  switch. The schedule only ever ran from `kompl start`, at most once per 36
+  hours, and its contradiction check spends LLM credit without asking.
+  `kompl start` still saves a local backup; older CLIs that still request a
+  check get it skipped. The `lint_enabled` setting is kept for older clients
+  and backups.
+- **Settings:** **Auto-approve wiki changes** moved into Advanced tuning, and
+  the Review section, which only held that switch, is gone.
+- **Wiki header:** a **Wiki | Graph** view switch replaces the Graph button
+  on the wiki and on the graph page (which drops its "← Wiki" link), the
+  search box that repeated the top bar's is gone, and **Add sources** is a
+  compact + button with a tooltip.
+- **Page history keeps the last 2 versions.** Each time a page is saved,
+  its current text is archived as before, and archives beyond the newest
+  2 are deleted. "View previous version" and "Restore this version" use
+  the newest one. Pages that are never saved again keep the archives they
+  already have.
+- **Default compile model for new installs: DeepSeek V4.1 Flash.** Schema
+  v25 → v26 writes an explicit `compile_model` row on every install:
+  existing installs that never picked a model are pinned to
+  `gemini-2.5-flash` (what they ran on), fresh installs get
+  `deepseek-flash`. Any model you already picked is kept.
+- **Gemini 2.5 and DeepSeek V4 Flash are now "legacy".** They stay valid and
+  selectable: Google only serves Gemini 2.5 to API projects that used it
+  before, and DeepSeek serves `deepseek-v4-flash` requests with V4.1 Flash
+  (Kompl now sends those as `deepseek-flash`).
+- **DeepSeek thinking is set explicitly on every call.** Steps with a zero
+  thinking budget (crossref, triage) now run with thinking disabled instead
+  of DeepSeek's default (on, high effort), which could use up triage's
+  512-token output limit.
+- **DeepSeek prices** updated to the current peak-hour list rates, so the
+  daily cap counts DeepSeek spend at what the invoice shows (2–4× more than
+  before). Off-peak hours cost half, so the cap now errs on the safe side.
+- **Settings page reorganised** into one page ordered by importance (AI model
+  & spend, Connect your AI, Review, Wiki health, Backup & restore, Advanced
+  tuning). The sidebar highlights the current section, every setting shows
+  its default, longer help moved behind "Details", and the five compile
+  tuning knobs are collapsed under Advanced. Removed the dead "Automation &
+  delivery" link.
+- **`setup.js`** asks for the DeepSeek key first and states Node ≥ 24.
+
+### Removed
+
+- **In-app chat.** The Chat button, chat drawer, `/chat` page, `/api/chat`,
+  `/api/chat/history`, `/api/chat/save-draft`, the nlp-service
+  `/chat/select-pages` and `/chat/synthesize` endpoints and the Settings
+  "Chat model" selector are gone. Query your wiki through the MCP server
+  instead (Settings → Connect your AI). `/chat` now redirects there.
+- **Global footer bar.** Layout offsets that reserved its 32px are gone too.
+
+### Kept for existing installs
+
+- Chat history stays in the `chat_messages` table and in exports; old
+  `.kompl.zip` backups (including their `db/chat_messages.json`) import
+  unchanged.
+- Chat drafts still awaiting approval keep their dashboard label, their
+  approve-all scoping and their cleanup when a cited page is deleted.
+- `GET /api/wiki/stats` stays as a read-only stats endpoint.
+
+### Fixed
+
+- **Extracted contradictions and concept definitions reach the draft:** the
+  draft step read field names the extractor never writes, so every "this
+  source disputes X" note and every concept definition was dropped before
+  the drafting model saw them. Each contradiction line now says which side
+  the source takes, so the model can't cite a source for the view it
+  rejects.
+- **Page summaries no longer show citation labels:** a draft that cited
+  inside its summary ("…dining and parks [S1][S2].") kept the raw labels
+  wherever the summary appears. The frontmatter clean-up every draft,
+  recompile and page update passes through now removes them.
+- **Related pages ("You might also read"):** archived pages are no longer
+  suggested, matches below 0.25 similarity no longer fill the list (it can
+  show fewer than five pages), the panel gives up after 3 seconds so a slow
+  NLP service can't hold up a wiki page, and failed searches are logged.
+  The Settings text now says what it counts: sources that aren't archived;
+  0 shows the panel whenever similar pages exist.
+- **Search vectors stay current:** page updates, restores and recompiles
+  refresh a page's vector with the same retries as a compile, and a page
+  whose save is completed at startup gets its vector refreshed too.
+- **CLI tests no longer overwrite your backup:** the `kompl start` tests ran
+  against the real home folder and could replace
+  `~/.kompl/backups/kompl-backup.kompl.zip` with an empty file. They now use a
+  temporary folder.
+- **CLI on a fresh clone:** `cli/package.json` gains a `prepare` script, so
+  `npm install` (run by `setup.js` and `kompl update`) builds `dist/`.
+  Before this, `kompl` failed with `Cannot find module '../dist/index.js'`
+  on any machine without an old local build.
+- **Importing an older backup** no longer overwrites the database's
+  `schema_version` (which made `/api/health` report the DB as broken until
+  the next restart). Backups from before v26 that kept the default model
+  import pinned to `gemini-2.5-flash`.
+- **Restoring a new backup on an older release** (up to v0.3.2.1) no longer
+  leaves that install "degraded": backups keep the schema version in
+  `manifest.json` only, so an older import can't copy it over its own.
+  Checked against the May–October 2026 backups: every one imports into this
+  release, upgrades from v0.3.2.1 keep every row, and a backup made here
+  restores into v0.3.2.1 with all pages.
+
+The fixes below come from a review of this release before it shipped
+(2026-10-26).
+
+- **Name matching no longer chains two meanings of an abbreviation:** "CI"
+  named by two sources and called the same as both "Continuous Integration"
+  and "Confidence Interval" no longer makes all three one page, also when the
+  abbreviation and one expansion were already one page by their spelling
+  ("Continuous Integration (CI)"), and two groups never join across names
+  the AI check called different. A name the
+  AI check adds to a group is stored as an AI match, not as the group's
+  spelling rule.
+- **More names that are one thing become one page:** "Full Name (ABBR)",
+  "ABBR" and "Full Name" in one compile join, a bracketed name meets other
+  spellings of its full name ("Organisation…" / "Organization…"), a group
+  the AI check forms takes the kind most of its names have, and people are
+  matched by meaning to people's pages (and nothing else is).
+- **Same-named pairs keep their own verdicts:** Mercury (person) and Mercury
+  (place) no longer swap verdicts when the model answers out of order.
+- **Large wikis resolve faster and spend fewer AI checks:** page vectors are
+  kept between compiles, and each name is asked about at most the two wiki
+  titles it adds words to that are most like it.
+- **Links:** "Vertigo is…" at the start of a sentence no longer links the
+  film on a page that also writes "vertigo".
+- **A slow compile no longer loses pages:** the writing step allows a round
+  per layer (and one for the first summary written alone), stops starting
+  pages once Kompl stops waiting, and a late draft can no longer undo the
+  pages a Retry already wrote.
+- **Cut-off pages are never saved:** a page or the wiki schema the model
+  stopped early (filtered, overloaded, or out of room twice) fails and is
+  retried instead of being saved half-written.
+- **AI calls finish inside Kompl's wait, and every paid attempt counts:**
+  retries and waits stop in time, a call waiting at the daily limit is
+  refused instead of let through, and attempts that timed out count toward
+  the daily limit.
+- **An empty DeepSeek account stops the compile** at once and says to top up
+  the account, instead of failing every page and suggesting a higher daily
+  limit.
+- **Redo is safer:** a redo started again keeps track of the compile's own
+  pages and of pages others changed, and a re-written update starts from the
+  page as it was before the compile.
+- **An update skipped because its page changed can be retried:** it shows as
+  failed with the reason, and Retry writes it again on the current page.
+- **Disagreements stay with their own section:** when a redraft drops or
+  reorders Disputed/Changed sections that cite the same sources, each finding
+  and your Confirm/Dismiss stay with the right topic.
+- **Source dates come only from bylines:** a date in a sentence ("released
+  on December 3, 2008") or a table row no longer dates a source. Dates read
+  from text are checked again once at startup.
+- **"Quoted from" means whole words:** a quote no longer counts as found
+  inside a longer word ("likely" in "unlikely"), and a quote with "…" needs
+  its parts close together.
+- **Claim-check findings survive redrafts:** a disagreement the page text
+  already recorded comes back as the check's finding if a redraft drops the
+  section.
+- **created_by keeps characters right:** "Mickey Mouse created_by The Walt
+  Disney Company" is no longer reversed.
+- **Faster whole-wiki check on large wikis:** finding claim pairs is several
+  times faster and runs once less per check.
+- **Research brief and map:** a "now:" line comes from the right section on
+  pages with code blocks, and a line whose "part of" may be outdated stays on
+  the map when a current "related to" names it.
+- **Deleting a source is safe to interrupt:** a delete stopped by a restart
+  is finished by deleting again; deletes run one at a time and are refused,
+  with the reason, while a compile, repair or page update runs; a page a
+  compile just updated is never overwritten; each page is rewritten once;
+  and a bulk delete no longer leaves one deleted source's text behind.
+- **Repair keeps your pages' old text:** after a repair, "Restore this
+  version" puts back each page's text from before it. A stopped repair says
+  what it left half done, and Repair wiki again finishes it. Only the newest
+  three backups made before a repair stay in `/data/backups`.
+- **Restores:** held and archived pages stay out of search, and a page held
+  after a failed rewrite keeps its title, so no duplicate page is created.
+- **Backups:** a backup with vectors is one consistent snapshot, and
+  `kompl backup` and the start-up backup never replace a good backup with a
+  broken or empty one (they write a `.partial` file and rename it), with ten
+  minutes to download.
+- **Migration** stops with the reason instead of rebuilding the aliases table
+  when the schema version can't be read.
+- **Settings save all or nothing:** a request with one bad value changes
+  nothing, and a malformed request gets 400 instead of 500. Keyword search
+  keeps `limit` between 1 and 100.
+
+### Security
+
+- **Other websites can't change Kompl:** a page you visit could stage
+  sources, start a paid compile, lift the daily spend cap or switch the
+  model, because only a few routes refused cross-site requests.
+  `app/src/proxy.ts` now refuses every write that comes from another site.
+- **DNS rebinding:** the app and the NLP service answer only to `localhost`,
+  IP addresses, their service names (`app`, `nlp-service`, `n8n`) and the
+  names in `KOMPL_ALLOWED_HOSTS`; any other host name gets `403
+  unknown_host`. **If you reach Kompl through a reverse proxy or as
+  `host.docker.internal`, add that name to `KOMPL_ALLOWED_HOSTS`.**
+- **Links can't redirect into your machine:** every redirect of a link Kompl
+  fetches is checked before it is followed. A redirect to a private or
+  internal address is refused and the link goes to Saved Links.
+- **No path from a request or a backup can delete a file:** a staged upload
+  must be a file in Kompl's uploads folder, and deleting a source removes
+  only the raw file Kompl derives from its id, never a path a backup stored.
+  Staging takes only http(s) links.
+- **Restores are bounded:** a backup that unpacks to more than 1 GB or
+  200,000 files is refused before anything is written.
+- **MCP fence:** a fence tag spelled with invisible, wide or look-alike
+  characters is broken like a plain one.
 
 ## [0.3.2.1] — 2026-09-01
 

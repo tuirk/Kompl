@@ -1,818 +1,287 @@
 'use client';
 
 /**
- * /wiki/graph — Force-directed knowledge graph. CLIENT component.
+ * /wiki/graph — the knowledge graph as a topic map. CLIENT component.
  *
- * Fetches /api/wiki/graph (nodes + links), renders with react-force-graph-2d.
- * Nodes colored by page_type, sized by source_count.
- * Click a node → opens slide-in preview panel (right side).
- * Hover → custom styled tooltip card.
+ * Loads /api/wiki/graph (useGraphData.ts: pages, one line per page pair with
+ * its typed relations, plain links, names with no page yet) and derives the
+ * views from it (useGraphView.ts). Pages are coloured and grouped into
+ * islands by category; lines are coloured by relation. Click a page for its
+ * connections, a line for the evidence behind it. ?focus=<page_id>&depth=1|2
+ * shows one page with its neighbours, each focus a history entry
+ * (scope-url.ts); "Connect two pages" finds the chain
+ * between two pages; the legend can add the missing pages; bridge pages carry
+ * a badge. The side panel lies over the canvas, so opening it never moves
+ * the map.
  */
 
-import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import type { ForceGraphMethods } from 'react-force-graph-2d';
-import { PAGE_TYPE_HEX } from '../../../lib/page-type-palette';
+import { closesPanelOnEscape, limitsLinePointer, type GraphFocus } from '../../../lib/graph-focus';
+import { pagesFitKey } from '../../../lib/graph-fit';
+import { canvasInsets, LEGEND_LEFT } from '../../../lib/graph-panels';
+import { placeMissing } from '../../../lib/graph-missing';
+import { DEFAULT_FILTERS, type GraphFilters } from '../../../lib/graph-model';
+import { CANVAS_BG } from '../../../lib/graph-palette';
+import { fillPath, pathKey, type PathQuery } from '../../../lib/graph-path';
+import { canvasLabel, FULL_MAP, missingFocusAction, revealFilters } from '../../../lib/graph-scope';
+import type { PageConnections } from '../../../lib/relations';
+import { CanvasHint } from './canvas-overlays';
+import EdgePanel from './EdgePanel';
+import GraphCanvas, { type GraphControls } from './GraphCanvas';
+import GraphHeader from './GraphHeader';
+import GraphLegend from './GraphLegend';
+import NodePanel from './NodePanel';
+import { PanelWidthContext } from './panel-parts';
+import { usePanelSizes } from './usePanelSizes';
+import PathPanel from './PathPanel';
+import { useScopeAddress } from './scope-url';
+import { useGraphData } from './useGraphData';
+import { useGraphView } from './useGraphView';
 
-// react-force-graph-2d is the 2D-only variant of the force-graph family.
-// Using it instead of the barrel package (react-force-graph) avoids pulling in
-// 3d-force-graph → aframe-forcegraph-component which calls AFRAME.registerComponent()
-// as a module-level side effect even when only ForceGraph2D is used.
-// Must be dynamic (no SSR) — uses canvas/WebGL APIs.
-const ForceGraph2D = dynamic(
-  () => import('react-force-graph-2d').then((m) => m.default),
-  {
-    ssr: false,
-    loading: () => (
-      <div style={{ color: 'var(--fg-muted)', padding: '2rem', textAlign: 'center' }}>
-        Loading graph…
-      </div>
-    ),
-  }
-);
-
-interface GraphNode {
-  id: string;
-  label: string;
-  group: string;
-  category: string;
-  source_count: number;
-  summary?: string | null;
-  last_updated?: string;
-  archived?: boolean;  // true when all backing sources are archived
-  // ForceGraph adds these at runtime
-  x?: number;
-  y?: number;
-}
-
-interface GraphLink {
-  source: string | GraphNode;
-  target: string | GraphNode;
-  type: string;
-}
-
-interface GraphData {
-  nodes: GraphNode[];
-  links: GraphLink[];
-}
-
-// Graph node + Schema Classification legend colors. Canvas can't read CSS vars,
-// so it consumes raw hex from the shared palette module. Widened to
-// Record<string,string> because graph nodes carry `group: string`.
-const NODE_COLORS: Record<string, string> = PAGE_TYPE_HEX;
-
-const NODE_COLOR_DEFAULT = '#8899a6';
-
-function timeAgo(iso: string | undefined): string {
-  if (!iso) return 'unknown';
-  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
-  if (d === 0) return 'today';
-  if (d === 1) return '1 day ago';
-  return `${d} days ago`;
-}
+const MESSAGE = { color: 'var(--fg-muted)', padding: '3rem', textAlign: 'center' } as const;
 
 export default function WikiGraphPage() {
-  const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [hovered, setHovered] = useState<GraphNode | null>(null);
-  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
-  const [showArchived, setShowArchived] = useState(false);
-  const zoomLevelRef = useRef(1);
-  const graphRef = useRef<HTMLDivElement>(null);
-  const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
-  const [dimensions, setDimensions] = useState({ width: 900, height: 620 });
-  const router = useRouter();
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const [filters, setFilters] = useState<GraphFilters>(DEFAULT_FILTERS);
+  const [selected, setSelected] = useState<GraphFocus | null>(null);
+  const { data, error, archivedOnly, loaded } = useGraphData(includeArchived, setSelected);
+  const { scope, changeScope, notice, setNotice } = useScopeAddress();
+  /** Non-null while "Connect two pages" is open. */
+  const [pathQuery, setPathQuery] = useState<PathQuery | null>(null);
+  const [showMissing, setShowMissing] = useState(false);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const boxRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<GraphControls | null>(null);
+  const pathOpen = useRef(false);
+  pathOpen.current = pathQuery !== null;
 
   useEffect(() => {
-    setLoading(true);
-    const url = showArchived ? '/api/wiki/graph?include_archived=true' : '/api/wiki/graph';
-    fetch(url)
-      .then((r) => {
-        if (!r.ok) throw new Error(`graph fetch failed: ${r.status}`);
-        return r.json() as Promise<GraphData>;
-      })
-      .then((data) => {
-        setGraphData(data);
-        setSelectedNode(null);
-        setLoading(false);
-      })
-      .catch((e) => {
-        setError(e instanceof Error ? e.message : 'failed to load graph');
-        setLoading(false);
-      });
-  }, [showArchived]);
-
-  useEffect(() => {
-    function measure() {
-      if (graphRef.current) {
-        setDimensions({
-          width: graphRef.current.offsetWidth,
-          height: Math.max(400, graphRef.current.offsetHeight),
-        });
-      }
-    }
+    const box = boxRef.current;
+    if (!box) return;
+    // The canvas is exactly its box: taller, a short screen would clip its zoom buttons and fitted map.
+    const measure = () => setSize({ width: box.offsetWidth, height: box.offsetHeight });
     measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
   }, []);
 
-  // Precompute edge count per node for relatedness %
-  const linkCountMap = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const l of graphData.links) {
-      const s = typeof l.source === 'string' ? l.source : (l.source as GraphNode).id;
-      const t = typeof l.target === 'string' ? l.target : (l.target as GraphNode).id;
-      map[s] = (map[s] ?? 0) + 1;
-      map[t] = (map[t] ?? 0) + 1;
-    }
-    return map;
-  }, [graphData.links]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!closesPanelOnEscape(e)) return;
+      setSelected(null);
+      setPathQuery(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
-  const maxLinks = useMemo(
-    () => Math.max(1, ...Object.values(linkCountMap)),
-    [linkCountMap]
+  const view = useGraphView(data, filters, scope, showMissing, pathQuery);
+  const { model, focusId, scoped, layer, visible, lookup, bridges, bridgeIds, path, pinned, marked } = view;
+  // A fresh cache per load, so panels never show connections from before a reload.
+  const connectionsCache = useMemo(() => new Map<string, PageConnections>(), [model]);
+
+  // Entering a focus: a page the filters hide is let through, and an archived one turns archived pages on
+  // (its article's "See in graph"); a page not on the map says so. A reload in flight is waited for.
+  const lookedFor = useRef<string | null>(null);
+  const archivedForLook = useRef(false);
+  useEffect(() => {
+    if (scope.focus === null) lookedFor.current = null;
+    if (scope.focus === null || !loaded) return;
+    const firstLook = lookedFor.current !== scope.focus;
+    lookedFor.current = scope.focus;
+    const node = model.byId.get(scope.focus);
+    if (node) {
+      archivedForLook.current = false;
+      setPathQuery(null);
+      setFilters((f) => revealFilters(f, node));
+      return;
+    }
+    const action = missingFocusAction(firstLook, includeArchived, archivedForLook.current);
+    archivedForLook.current = action === 'show-archived';
+    if (action !== 'leave') setIncludeArchived(action === 'show-archived');
+    if (action === 'show-archived') return;
+    changeScope(FULL_MAP, 'replace');
+    setNotice('That page is not on the map.');
+  }, [scope.focus, model, loaded, includeArchived, changeScope, setNotice]);
+
+  // A found path fits into view once: a filter change recomputes `path` but not its pages.
+  const fitPath = pathKey(path);
+  useEffect(() => {
+    if (fitPath) controlsRef.current?.fitNodes(fitPath.split('\u0000'));
+  }, [fitPath]);
+
+  const selectedNode =
+    selected?.kind === 'node' && visible.neighbours.has(selected.id) ? (model.byId.get(selected.id) ?? null) : null;
+  const selectedLink =
+    selected?.kind === 'link' && visible.linksOf.get(selected.link.a)?.includes(selected.link) ? selected.link : null;
+  const panelOpen = pathQuery !== null || selectedNode !== null || selectedLink !== null;
+  // The selection whose panel has taken keyboard focus: when a filter hides the selected page or line and
+  // shows it again, its panel comes back without pulling focus away from the legend.
+  const [focusedFor, setFocusedFor] = useState<GraphFocus | null>(null);
+  const panelFor = selectedNode !== null || selectedLink !== null ? selected : null;
+  useEffect(() => {
+    if (panelFor) setFocusedFor(panelFor);
+  }, [panelFor]);
+  // The legend and the details panel can be resized; the map keeps clear of their current sizes.
+  const panels = usePanelSizes(size.width, size.height);
+  const { legendOpen, setLegendOpen } = panels;
+  const { legend: legendSize, panel: panelWidth } = panels.sizes;
+  const insets = useMemo(
+    () => canvasInsets(legendOpen, legendSize.width, panelOpen, panelWidth),
+    [legendOpen, legendSize.width, panelOpen, panelWidth]
   );
 
-  // Neighbors of selected node
-  const neighborSet = useMemo(() => {
-    if (!selectedNode) return new Set<string>();
-    const set = new Set<string>();
-    for (const l of graphData.links) {
-      const s = typeof l.source === 'string' ? l.source : (l.source as GraphNode).id;
-      const t = typeof l.target === 'string' ? l.target : (l.target as GraphNode).id;
-      if (s === selectedNode.id) set.add(t);
-      if (t === selectedNode.id) set.add(s);
+  const close = useCallback(() => {
+    setSelected(null);
+    setPathQuery(null);
+  }, []);
+  const pick = useCallback((id: string) => {
+    if (!pathOpen.current) setSelected({ kind: 'node', id });
+    controlsRef.current?.focusNode(id);
+  }, []);
+  // While connecting two pages, a click on a page fills the pickers instead of opening its panel.
+  const select = useCallback((focus: GraphFocus | null) => {
+    if (!pathOpen.current) setSelected(focus);
+    else if (focus?.kind === 'node') setPathQuery((q) => (q ? fillPath(q, focus.id) : q));
+  }, []);
+  // Opening starts from the selected page and leaves any focus: a path runs over the whole map.
+  const togglePath = () => {
+    if (pathQuery !== null) {
+      setPathQuery(null);
+      return;
     }
-    return set;
-  }, [selectedNode, graphData.links]);
+    if (scope.focus !== null) changeScope(FULL_MAP);
+    setPathQuery({ from: selectedNode?.id ?? null, to: null });
+    setSelected(null);
+  };
+  // The panel's "Focus" button goes away once the map is focused on its page: keyboard focus moves to the
+  // header's focus controls (GraphHeader.tsx) instead of falling to the page body.
+  const [focusRequest, setFocusRequest] = useState(0);
+  const enterFocus = (id: string) => {
+    changeScope({ focus: id, depth: scope.depth });
+    setFocusRequest((n) => n + 1);
+  };
+  const toggleMissing = (next: boolean) => {
+    if (next) placeMissing(layer, model.byId);
+    setShowMissing(next);
+  };
+  const isShown = useCallback((id: string) => visible.neighbours.has(id), [visible]);
 
-  const visibleGraphData = useMemo(() => {
-    if (hiddenTypes.size === 0) return graphData;
-    const visibleIds = new Set(
-      graphData.nodes.filter((n) => !hiddenTypes.has(n.group)).map((n) => n.id)
-    );
-    return {
-      nodes: graphData.nodes.filter((n) => !hiddenTypes.has(n.group)),
-      links: graphData.links.filter((l) => {
-        const s = typeof l.source === 'string' ? l.source : (l.source as GraphNode).id;
-        const t = typeof l.target === 'string' ? l.target : (l.target as GraphNode).id;
-        return visibleIds.has(s) && visibleIds.has(t);
-      }),
-    };
-  }, [graphData, hiddenTypes]);
-
-  const toggleType = useCallback((type: string) => {
-    setHiddenTypes((prev) => {
-      const next = new Set(prev);
-      if (next.has(type)) next.delete(type); else next.add(type);
-      return next;
-    });
-  }, []);
-
-  const handleNodeClick = useCallback((node: GraphNode) => {
-    setSelectedNode(node);
-  }, []);
-
-  const handleNodeHover = useCallback((node: GraphNode | null) => {
-    setHovered(node);
-  }, []);
-
-  const panelWidth = selectedNode ? 320 : 0;
-  const canvasWidth = dimensions.width - panelWidth;
+  const hasPages = data !== null && data.nodes.length > 0;
+  const allLines = filters.showPlain && filters.showRelated;
 
   return (
     <>
-    {/*
-      The force-graph library maps mouse events using getBoundingClientRect(), which
-      returns visual (post-zoom) dimensions. With html { zoom: 0.9 } the canvas CSS
-      coordinate space (0..width) and the mouse position range (0..width*0.9) diverge
-      by 10%, causing hover/click to miss. Resetting html zoom to 1 for this page
-      only (React removes the <style> on unmount when navigating away).
-    */}
-    <style>{`html { zoom: 1; }`}</style>
-    <main
-      style={{ height: 'calc(100dvh - 97px)', display: 'flex', flexDirection: 'column', background: '#0D0E10', overflow: 'hidden' }}
-    >
-      {/* Floating header bar */}
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '1rem',
-          padding: '0.75rem 1.5rem',
-          borderBottom: '1px solid rgba(71,72,74,0.15)',
-          background: 'rgba(36,38,41,0.6)',
-          backdropFilter: 'blur(12px)',
-          position: 'sticky',
-          top: 0,
-          zIndex: 10,
-        }}
-      >
-        <Link
-          href="/wiki"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            fontFamily: 'var(--font-mono)', fontSize: 10,
-            textTransform: 'uppercase', letterSpacing: '1px',
-            color: 'var(--fg-dim)', textDecoration: 'none',
-          }}
-        >
-          ← Wiki
-        </Link>
-        <span style={{ width: 1, height: 16, background: 'rgba(71,72,74,0.3)', display: 'inline-block' }} />
-        <h1 style={{ margin: 0, fontSize: '0.875rem', fontWeight: 700, fontFamily: 'var(--font-heading)', color: 'var(--fg)', letterSpacing: '-0.35px' }}>
-          Knowledge Graph
-        </h1>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '1rem', fontSize: 10, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '-0.45px', fontFamily: 'var(--font-body)' }}>
-          <span>{graphData.nodes.length} pages</span>
-          <span>·</span>
-          <span>{graphData.links.length} links</span>
-        </div>
-      </header>
+      {/*
+        The force-graph library maps mouse events using getBoundingClientRect(), which
+        returns visual (post-zoom) dimensions. With html { zoom: 0.9 } the canvas CSS
+        coordinate space (0..width) and the mouse position range (0..width*0.9) diverge
+        by 10%, causing hover/click to miss. Resetting html zoom to 1 for this page
+        only (React removes the <style> on unmount when navigating away).
+      */}
+      <style>{`html { zoom: 1; }`}</style>
+      <main style={{ height: 'calc(100dvh - 65px)', display: 'flex', flexDirection: 'column', background: CANVAS_BG, overflow: 'hidden' }}>
+        <GraphHeader
+          pages={scoped.nodes.length}
+          lines={scoped.links.length}
+          focusTitle={scope.focus !== null ? (model.byId.get(scope.focus)?.label ?? null) : null}
+          depth={scope.depth}
+          onDepth={(depth) => changeScope({ ...scope, depth })}
+          onFullMap={() => changeScope(FULL_MAP)}
+          pathOpen={pathQuery !== null}
+          onPath={togglePath}
+          notice={notice ?? (scope.focus && !focusId && model.byId.has(scope.focus) ? 'The focused page is hidden by the legend’s filters.' : null)}
+          findPages={scoped.nodes}
+          onFind={pick}
+          focusRequest={focusRequest}
+        />
 
-      <div
-        ref={graphRef}
-        style={{ flex: 1, position: 'relative', background: '#0D0E10', overflow: 'hidden' }}
-        onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
-      >
-        {loading && (
-          <div style={{ color: 'var(--fg-muted)', padding: '3rem', textAlign: 'center' }}>
-            Loading graph…
-          </div>
-        )}
-        {error && (
-          <div style={{ color: 'var(--danger)', padding: '3rem', textAlign: 'center' }}>{error}</div>
-        )}
-        {!loading && !error && graphData.nodes.length === 0 && (
-          <div style={{ color: 'var(--fg-muted)', padding: '3rem', textAlign: 'center' }}>
-            No pages compiled yet. <Link href="/">Add a source</Link> to build the graph.
-          </div>
-        )}
-        {!loading && !error && graphData.nodes.length > 0 && (
-          <ForceGraph2D
-            ref={fgRef}
-            graphData={visibleGraphData as { nodes: object[]; links: object[] }}
-            width={canvasWidth}
-            height={dimensions.height}
-            backgroundColor="#0D0E10"
-            nodeLabel={() => ''}
-            nodeColor={(node) => {
-              const n = node as GraphNode;
-              return NODE_COLORS[n.group] ?? NODE_COLOR_DEFAULT;
-            }}
-            nodeVal={(node) => Math.max(1, (node as GraphNode).source_count ?? 1)}
-            onNodeClick={handleNodeClick as (node: object) => void}
-            onNodeHover={handleNodeHover as (node: object | null) => void}
-            onBackgroundClick={() => setSelectedNode(null)}
-            nodeCanvasObject={(node, ctx, globalScale) => {
-              const n = node as GraphNode;
-              const r = Math.sqrt(Math.max(1, n.source_count ?? 1)) * 4 + 2;
-              const isSelected = selectedNode?.id === n.id;
-              const isNeighbor = !isSelected && neighborSet.has(n.id);
-              const isDimmed = !!selectedNode && !isSelected && !isNeighbor;
-              const color = NODE_COLORS[n.group] ?? NODE_COLOR_DEFAULT;
-
-              // Archived nodes: render at reduced opacity
-              const prevAlpha = ctx.globalAlpha;
-              if (n.archived) ctx.globalAlpha = 0.35;
-
-              // Main circle
-              ctx.beginPath();
-              ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, 2 * Math.PI);
-              ctx.fillStyle = isDimmed ? color + '33' : color;
-              ctx.fill();
-
-              if (isSelected) {
-                // White outer ring (4px gap)
-                ctx.beginPath();
-                ctx.arc(n.x ?? 0, n.y ?? 0, r + 4, 0, 2 * Math.PI);
-                ctx.strokeStyle = '#FFFFFF';
-                ctx.lineWidth = 2;
-                ctx.stroke();
-                // Teal glow halo
-                ctx.beginPath();
-                ctx.arc(n.x ?? 0, n.y ?? 0, r + 12, 0, 2 * Math.PI);
-                ctx.strokeStyle = 'rgba(137, 240, 203, 0.3)';
-                ctx.lineWidth = 6;
-                ctx.stroke();
-              } else if (isNeighbor) {
-                // Teal connection ring
-                ctx.beginPath();
-                ctx.arc(n.x ?? 0, n.y ?? 0, r + 2, 0, 2 * Math.PI);
-                ctx.strokeStyle = 'rgba(137, 240, 203, 0.4)';
-                ctx.lineWidth = 2;
-                ctx.stroke();
-              }
-
-              // Labels: show on selected, hovered, or zoomed in
-              if (globalScale > 1.5 || isSelected || hovered?.id === n.id) {
-                ctx.font = `${Math.max(8, 11 / globalScale)}px sans-serif`;
-                ctx.fillStyle = isDimmed ? 'rgba(230,237,243,0.3)' : '#e6edf3';
-                ctx.textAlign = 'center';
-                ctx.fillText(n.label.slice(0, 32), n.x ?? 0, (n.y ?? 0) + r + 6);
-              }
-
-              // Restore globalAlpha for archived nodes
-              if (n.archived) ctx.globalAlpha = prevAlpha;
-            }}
-            linkColor={(link) => {
-              if (!selectedNode) return '#2a3947';
-              const l = link as GraphLink;
-              const s = typeof l.source === 'string' ? l.source : (l.source as GraphNode).id;
-              const t = typeof l.target === 'string' ? l.target : (l.target as GraphNode).id;
-              if (s === selectedNode.id || t === selectedNode.id) return 'rgba(137,240,203,0.6)';
-              return 'rgba(42,57,71,0.2)';
-            }}
-            linkWidth={(link) => {
-              if (!selectedNode) return 1;
-              const l = link as GraphLink;
-              const s = typeof l.source === 'string' ? l.source : (l.source as GraphNode).id;
-              const t = typeof l.target === 'string' ? l.target : (l.target as GraphNode).id;
-              return (s === selectedNode.id || t === selectedNode.id) ? 1.5 : 0.5;
-            }}
-            onZoom={({ k }) => { zoomLevelRef.current = k; }}
-            cooldownTicks={80}
-          />
-        )}
-
-        {/* Hover tooltip card — hidden when panel is open */}
-        {hovered && !selectedNode && (
-          <div
-            style={{
-              position: 'fixed',
-              left: mousePos.x - 96,
-              top: mousePos.y - 128,
-              width: 192,
-              background: 'rgba(30, 32, 34, 0.9)',
-              border: '1px solid rgba(71, 72, 74, 0.3)',
-              backdropFilter: 'blur(8px)',
-              padding: '12px',
-              pointerEvents: 'none',
-              zIndex: 50,
-            }}
-          >
-            <div
-              style={{
-                fontFamily: 'var(--font-heading)',
-                fontWeight: 700,
-                fontSize: 14,
-                lineHeight: '20px',
-                color: '#FDFBFE',
-              }}
-            >
-              {hovered.label}
+        {/* tabIndex -1: focus comes back here when a panel closes and its opener is gone. */}
+        <div ref={boxRef} tabIndex={-1} style={{ flex: 1, position: 'relative', background: CANVAS_BG, overflow: 'hidden', outline: 'none' }}>
+          {error && <div style={{ ...MESSAGE, color: 'var(--danger)' }}>{error}</div>}
+          {!error && data === null && <div style={MESSAGE}>Loading graph…</div>}
+          {!error && data !== null && !hasPages && !archivedOnly && !includeArchived && (
+            <div style={MESSAGE}>
+              No pages compiled yet. <Link href="/">Add a source</Link> to build the graph.
             </div>
-            <div
-              style={{
-                fontFamily: 'var(--font-body)',
-                fontSize: 9,
-                letterSpacing: '0.9px',
-                textTransform: 'uppercase',
-                color: '#89F0CB',
-                marginTop: 2,
-                paddingBottom: 4,
-              }}
-            >
-              {hovered.group} · {hovered.source_count} sources
-            </div>
-            <div
-              style={{
-                borderTop: '1px solid rgba(71,72,74,0.1)',
-                paddingTop: 8,
-                marginTop: 4,
-                fontFamily: 'var(--font-heading)',
-                fontSize: 9,
-                letterSpacing: '-0.45px',
-                textTransform: 'uppercase',
-                color: '#FDFBFE',
-                opacity: 0.5,
-              }}
-            >
-              Updated {timeAgo(hovered.last_updated)}
-            </div>
-          </div>
-        )}
-
-        {/* Floating Schema Classification legend — bottom left */}
-        <div
-          style={{
-            position: 'absolute',
-            left: 24,
-            bottom: 24,
-            background: 'rgba(18, 19, 22, 0.8)',
-            border: '1px solid rgba(71, 72, 74, 0.15)',
-            backdropFilter: 'blur(6px)',
-            padding: 16,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 12,
-          }}
-        >
-          <div
-            style={{
-              fontFamily: 'var(--font-body)',
-              fontWeight: 700,
-              fontSize: 10,
-              lineHeight: '15px',
-              letterSpacing: '1px',
-              textTransform: 'uppercase',
-              color: '#ABABAD',
-            }}
-          >
-            Schema Classification
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {Object.entries(NODE_COLORS).map(([type, color]) => {
-              const hidden = hiddenTypes.has(type);
-              return (
-                <label
-                  key={type}
-                  style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', userSelect: 'none' }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={!hidden}
-                    onChange={() => toggleType(type)}
-                    style={{ display: 'none' }}
-                  />
-                  <span
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: '50%',
-                      background: hidden ? 'transparent' : color,
-                      border: `1.5px solid ${color}`,
-                      flexShrink: 0,
-                      display: 'inline-block',
-                      transition: 'background 150ms',
-                    }}
-                  />
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-body)',
-                      fontSize: 11,
-                      lineHeight: '16px',
-                      letterSpacing: '0.55px',
-                      textTransform: 'uppercase',
-                      color: hidden ? '#52525b' : '#FDFBFE',
-                      transition: 'color 150ms',
-                    }}
-                  >
-                    {type === 'source-summary' ? 'Source Summary' : type.charAt(0).toUpperCase() + type.slice(1)}
-                  </span>
-                </label>
-              );
-            })}
-            {/* Show Archived toggle */}
-            <label
-              style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', userSelect: 'none', marginTop: 4, paddingTop: 8, borderTop: '1px solid rgba(71,72,74,0.15)' }}
-            >
-              <input
-                type="checkbox"
-                checked={showArchived}
-                onChange={() => setShowArchived((v) => !v)}
-                style={{ display: 'none' }}
+          )}
+          {!error && data !== null && (hasPages || archivedOnly || includeArchived) && size.width > 0 && (
+            <>
+              {/* Before the canvas in the page, so Tab reaches the filters (top left) before the zoom buttons
+                  (bottom right); the legend's z-index keeps it over the canvas. */}
+              <GraphLegend
+                model={model}
+                visible={scoped}
+                filters={filters}
+                onFilters={setFilters}
+                includeArchived={includeArchived}
+                onIncludeArchived={setIncludeArchived}
+                missingCount={layer.nodes.length}
+                showMissing={showMissing}
+                onShowMissing={toggleMissing}
+                pointerLimited={limitsLinePointer(visible.links.length)}
+                open={legendOpen}
+                onOpen={setLegendOpen}
+                size={legendSize}
+                onSize={panels.setLegend}
+                onSizeDone={panels.save}
               />
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  background: showArchived ? '#6b7280' : 'transparent',
-                  border: '1.5px solid #6b7280',
-                  flexShrink: 0,
-                  display: 'inline-block',
-                  transition: 'background 150ms',
-                  opacity: 0.5,
-                }}
-              />
-              <span
-                style={{
-                  fontFamily: 'var(--font-body)',
-                  fontSize: 11,
-                  lineHeight: '16px',
-                  letterSpacing: '0.55px',
-                  textTransform: 'uppercase',
-                  color: showArchived ? '#FDFBFE' : '#52525b',
-                  transition: 'color 150ms',
-                }}
-              >
-                Archived
-              </span>
-            </label>
-          </div>
-        </div>
-
-        {/* Floating zoom controls — bottom right */}
-        <div
-          style={{
-            position: 'absolute',
-            right: selectedNode ? 344 : 24,
-            bottom: 24,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-            transition: 'right 0.25s ease',
-          }}
-        >
-          {(
-            [
-              {
-                label: '+',
-                onClick: () => fgRef.current?.zoom(zoomLevelRef.current * 1.3, 300),
-              },
-              {
-                label: '−',
-                onClick: () => fgRef.current?.zoom(zoomLevelRef.current * 0.77, 300),
-              },
-              {
-                label: '⊙',
-                onClick: () => fgRef.current?.zoomToFit(400),
-              },
-            ] as { label: string; onClick: () => void }[]
-          ).map(({ label, onClick }) => (
-            <button
-              key={label}
-              onClick={onClick}
-              style={{
-                width: 40,
-                height: 40,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                background: 'rgba(36, 38, 41, 0.6)',
-                border: '1px solid rgba(71, 72, 74, 0.2)',
-                backdropFilter: 'blur(6px)',
-                color: '#FDFBFE',
-                fontSize: label === '⊙' ? 14 : 18,
-                cursor: 'pointer',
-                fontFamily: 'var(--font-mono)',
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Slide-in preview panel */}
-        {selectedNode && (() => {
-          const nodeLinks = linkCountMap[selectedNode.id] ?? 0;
-          const relatedness = Math.round((nodeLinks / maxLinks) * 100);
-          const nodeColor = NODE_COLORS[selectedNode.group] ?? NODE_COLOR_DEFAULT;
-
-          return (
-            <div
-              style={{
-                position: 'absolute',
-                right: 0,
-                top: 0,
-                bottom: 0,
-                width: 320,
-                background: 'rgba(24, 26, 28, 0.95)',
-                borderLeft: '1px solid rgba(71, 72, 74, 0.1)',
-                boxShadow: '-20px 0px 40px rgba(0, 0, 0, 0.5)',
-                backdropFilter: 'blur(20px)',
-                display: 'flex',
-                flexDirection: 'column',
-                overflow: 'hidden',
-              }}
-            >
-              {/* Header */}
-              <div style={{ padding: '24px 24px 0' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-body)',
-                        fontWeight: 900,
-                        fontSize: 9,
-                        lineHeight: '14px',
-                        letterSpacing: '1.8px',
-                        textTransform: 'uppercase',
-                        color: '#89F0CB',
-                      }}
-                    >
-                      Selected Node
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-heading)',
-                        fontWeight: 900,
-                        fontSize: 24,
-                        lineHeight: '32px',
-                        letterSpacing: '-1.2px',
-                        textTransform: 'uppercase',
-                        color: '#FDFBFE',
-                        maxWidth: 200,
-                      }}
-                    >
-                      {selectedNode.label}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setSelectedNode(null)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: '#ABABAD',
-                      cursor: 'pointer',
-                      fontSize: 16,
-                      padding: 0,
-                      lineHeight: 1,
-                      marginTop: 2,
-                    }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-
-              {/* Thumbnail strip with node color gradient */}
-              <div
-                style={{
-                  margin: '16px 24px 0',
-                  height: 152,
-                  position: 'relative',
-                  overflow: 'hidden',
-                  background: `linear-gradient(135deg, ${nodeColor}33 0%, ${nodeColor}11 100%)`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                {/* Node type icon */}
-                <div
-                  style={{
-                    width: 48,
-                    height: 48,
-                    borderRadius: '50%',
-                    background: nodeColor,
-                    boxShadow: `0 0 0 4px #FFFFFF33, 0 0 24px ${nodeColor}66`,
-                  }}
+              {hasPages && (
+                <GraphCanvas
+                  model={model}
+                  visible={visible}
+                  lookup={lookup}
+                  width={size.width}
+                  height={size.height}
+                  insets={insets}
+                  coveredLeft={legendOpen ? LEGEND_LEFT + legendSize.width : 0}
+                  coveredRight={panelOpen ? panelWidth : 0}
+                  controlsRight={panelOpen ? panelWidth + 16 : 16}
+                  selected={selected}
+                  onSelect={select}
+                  pinned={pinned}
+                  marked={marked}
+                  bridges={bridgeIds}
+                  focusId={focusId}
+                  fitKey={`${focusId ? `${focusId}\u0000${scope.depth}` : ''}\u0003${pagesFitKey(filters, showMissing)}`}
+                  controlsRef={controlsRef}
+                  label={canvasLabel(scoped.nodes.length, scoped.links.length, focusId ? (model.byId.get(focusId)?.label ?? null) : null)}
                 />
-                {/* Fade overlay */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    background: 'linear-gradient(0deg, rgba(24,26,28,0.95) 0%, rgba(24,26,28,0) 60%)',
-                  }}
-                />
-              </div>
-
-              {/* Summary + stats */}
-              <div
-                style={{
-                  flex: 1,
-                  padding: '0 24px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 16,
-                  overflowY: 'auto',
-                  marginTop: 16,
-                }}
-              >
-                {/* Category + type — always available */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-body)',
-                      fontSize: 9,
-                      letterSpacing: '0.9px',
-                      textTransform: 'uppercase',
-                      color: '#FDFBFE',
-                      opacity: 0.5,
-                    }}
-                  >
-                    Category
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-heading)',
-                      fontWeight: 600,
-                      fontSize: 13,
-                      color: '#E2E2E5',
-                    }}
-                  >
-                    {selectedNode.category}
-                  </div>
+              )}
+              {!hasPages && (
+                <div style={MESSAGE}>
+                  {includeArchived ? 'No pages to show.' : 'Every page is archived. Turn on “Show archived” in the legend to see them.'}
                 </div>
-
-                {/* Summary — shown only when present */}
-                {selectedNode.summary && (
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-heading)',
-                      fontWeight: 400,
-                      fontSize: 14,
-                      lineHeight: '23px',
-                      color: '#E2E2E5',
-                      opacity: 0.8,
-                    }}
-                  >
-                    {selectedNode.summary}
-                  </div>
-                )}
-
-                {/* Stats row */}
-                <div
-                  style={{
-                    borderTop: '1px solid rgba(71,72,74,0.1)',
-                    paddingTop: 17,
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 1fr',
-                  }}
-                >
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-body)',
-                        fontSize: 9,
-                        letterSpacing: '0.9px',
-                        textTransform: 'uppercase',
-                        color: '#FDFBFE',
-                        opacity: 0.5,
-                      }}
-                    >
-                      Relatedness
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-heading)',
-                        fontWeight: 700,
-                        fontSize: 16,
-                        lineHeight: '24px',
-                        color: '#89F0CB',
-                      }}
-                    >
-                      {relatedness}%
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-body)',
-                        fontSize: 9,
-                        letterSpacing: '0.9px',
-                        textTransform: 'uppercase',
-                        color: '#FDFBFE',
-                        opacity: 0.5,
-                      }}
-                    >
-                      Sources
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-heading)',
-                        fontWeight: 700,
-                        fontSize: 16,
-                        lineHeight: '24px',
-                        color: '#FDFBFE',
-                      }}
-                    >
-                      {selectedNode.source_count}
-                    </div>
-                  </div>
+              )}
+              {hasPages && scoped.nodes.length === 0 && (
+                <div style={{ ...MESSAGE, position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                  Nothing to show with these filters.
                 </div>
-              </div>
-
-              {/* Open Page button */}
-              <div style={{ padding: '0 24px 24px' }}>
-                <button
-                  onClick={() => router.push(`/wiki/${selectedNode.id}`)}
-                  style={{
-                    width: '100%',
-                    padding: '16px 0',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 8,
-                    border: '1px solid rgba(137, 240, 203, 0.3)',
-                    background: 'none',
-                    cursor: 'pointer',
-                    fontFamily: 'var(--font-heading)',
-                    fontWeight: 700,
-                    fontSize: 12,
-                    lineHeight: '16px',
-                    letterSpacing: '1.2px',
-                    textTransform: 'uppercase',
-                    color: '#89F0CB',
-                  }}
-                >
-                  Open Page
-                  <span style={{ fontSize: 10 }}>→</span>
-                </button>
-              </div>
-            </div>
-          );
-        })()}
-      </div>
-    </main>
+              )}
+              <CanvasHint model={model} full={view.full} scoped={scoped} focusId={focusId} filters={filters} onFilters={setFilters} />
+              <PanelWidthContext.Provider value={panels.panelContext}>
+              {pathQuery !== null && (
+                <PathPanel pages={view.pickable} model={model} query={pathQuery} onQuery={setPathQuery} path={path}
+                  onShowAllLines={allLines ? undefined : () => setFilters({ ...filters, showPlain: true, showRelated: true })}
+                  cache={connectionsCache} onClose={close} onPick={pick} returnFocusTo={boxRef} />
+              )}
+              {pathQuery === null && selectedNode && (
+                <NodePanel key={selectedNode.id} node={selectedNode} isShown={isShown} cache={connectionsCache}
+                  onClose={close} onPick={pick} returnFocusTo={boxRef} takeFocus={focusedFor !== selected} bridge={bridges.get(selectedNode.id) ?? null}
+                  onFocus={focusId === selectedNode.id ? undefined : enterFocus} />
+              )}
+              {pathQuery === null && selectedLink && (
+                <EdgePanel key={`${selectedLink.a}\u0000${selectedLink.b}`} link={selectedLink} model={model}
+                  cache={connectionsCache} onClose={close} onPick={pick} returnFocusTo={boxRef} takeFocus={focusedFor !== selected} />
+              )}
+              </PanelWidthContext.Provider>
+            </>
+          )}
+        </div>
+      </main>
     </>
   );
 }
+

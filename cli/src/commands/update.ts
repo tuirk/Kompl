@@ -4,6 +4,7 @@ import { dockerRunning, pull, upAllBuild } from '../compose.js'
 import { assertGitRepo, NotGitRepoError, pullFfOnly } from '../git.js'
 import { pollHealth } from '../health.js'
 import type { HealthResponse } from '../health.js'
+import { buildMcpServer, MCP_RETRY_HINT } from '../mcp-build.js'
 import { relinkCli } from '../relink-cli.js'
 
 export async function updateCommand(): Promise<void> {
@@ -50,6 +51,13 @@ export async function updateCommand(): Promise<void> {
     process.exit(1)
   }
 
+  console.log(pc.dim('Rebuilding MCP server...'))
+  const mcpBuilt = buildMcpServer(config.projectDir)
+  if (!mcpBuilt) {
+    console.log(pc.yellow('⚠ MCP server build failed — Kompl tools in your AI agent may not start until it builds.'))
+    console.log(pc.dim(`  ${MCP_RETRY_HINT}`))
+  }
+
   console.log(pc.dim('Pulling registry images...'))
   try {
     await pull(config.projectDir)
@@ -87,5 +95,8 @@ export async function updateCommand(): Promise<void> {
   console.log(pc.green(`✓ Kompl updated and running at ${pc.bold(`http://localhost:${config.port}`)}`))
   if (health.status === 'degraded') {
     console.log(pc.yellow('  Note: NLP still warming — compile may retry until models load.'))
+  }
+  if (mcpBuilt) {
+    console.log(pc.dim('  Restart your AI agent to load the updated Kompl MCP tools.'))
   }
 }

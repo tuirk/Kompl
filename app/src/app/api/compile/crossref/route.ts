@@ -25,10 +25,17 @@ import {
   getAliases,
   getAllPages,
   getPagePlansByStatus,
+  readPageMarkdown,
+  readRawMarkdown,
   updateCompileStep,
   updatePlanCrossref,
 } from '../../../../lib/db';
 import { injectWikilinks, type WikilinkTarget } from '../../../../lib/wikilink-injector';
+import { relatedLinkTargets, sourceOnlyTitles, tidyDraftLinks } from '../../../../lib/draft-cleanup';
+
+// Page types the LLM writes. Original-source pages hold the user's own text
+// and only get links injected, never tidied.
+const DRAFTED_TYPES = new Set(['source-summary', 'entity', 'concept', 'comparison', 'overview']);
 
 export async function POST(request: Request) {
   let rawBody: unknown;
@@ -60,9 +67,11 @@ export async function POST(request: Request) {
     const existingPages = getAllPages();
     const canonicalTitles = new Set<string>();
     const targetByTitle = new Map<string, WikilinkTarget>();
+    // Source pages are cited, never linked.
+    const sourceTitlesOnly = sourceOnlyTitles([...draftedPlans, ...existingPages]);
 
     const addTarget = (title: string | null | undefined) => {
-      if (!title) return;
+      if (!title || sourceTitlesOnly.has(title.toLowerCase())) return;
       canonicalTitles.add(title);
       if (!targetByTitle.has(title)) {
         targetByTitle.set(title, { title, aliases: [] });
@@ -83,6 +92,17 @@ export async function POST(request: Request) {
     }
 
     const targets = [...targetByTitle.values()];
+    const surfaces = new Map<string, string[]>();
+    for (const t of targets) surfaces.set(t.title.toLowerCase(), t.aliases ?? []);
+
+    const sourceTextCache = new Map<string, string>();
+    const sourceTextOf = (sourceIds: string[]): string =>
+      sourceIds
+        .map((sid) => {
+          if (!sourceTextCache.has(sid)) sourceTextCache.set(sid, readRawMarkdown(sid) ?? '');
+          return sourceTextCache.get(sid) ?? '';
+        })
+        .join('\n');
 
     let pagesUpdated = 0;
     let wikilinksAdded = 0;
@@ -107,10 +127,25 @@ export async function POST(request: Request) {
         .filter((t) => t.title !== plan.title)
         .map((t) => ({ title: t.title, aliases: t.aliases ?? [] }));
 
-      const { markdown, linksAdded } = injectWikilinks(plan.draft_content, pageTargets);
+      const injected = injectWikilinks(plan.draft_content, pageTargets);
+      let markdown = injected.markdown;
+      if (DRAFTED_TYPES.has(plan.page_type)) {
+        // Link hygiene on the final draft: no links to source pages or to the
+        // page itself, each page linked once, Related lists short and
+        // relevant. On updates the page's existing Related entries are kept.
+        const existing =
+          plan.action === 'update' && plan.existing_page_id ? readPageMarkdown(plan.existing_page_id) : null;
+        markdown = tidyDraftLinks(markdown, {
+          blocked: new Set([...sourceTitlesOnly, plan.title.toLowerCase()]),
+          sourceText: sourceTextOf(JSON.parse(plan.source_ids) as string[]),
+          surfaces,
+          keepRelated: existing ? relatedLinkTargets(existing) : undefined,
+          trimRelated: plan.page_type !== 'source-summary',
+        }).markdown;
+      }
       updatePlanCrossref(plan.plan_id, markdown);
       pagesUpdated += 1;
-      wikilinksAdded += linksAdded;
+      wikilinksAdded += injected.linksAdded;
     }
 
     return NextResponse.json(

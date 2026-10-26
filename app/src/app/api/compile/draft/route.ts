@@ -7,16 +7,24 @@
  * (excluding provenance-only). Calls /pipeline/draft-page on the nlp-service
  * for each page, in layer order:
  *
- *   1. Source summaries (parallel, ≤5 concurrent)
+ *   1. Source summaries (parallel; with no label to offer, one drafts alone first)
  *   2. Entity pages (parallel)
  *   3. Concept pages (parallel)
  *   4. Comparison pages (needs entity drafts for context)
  *   5. Overview pages (needs all above)
  *
- * After each page is drafted, updates page_plans.draft_status = 'drafted'.
+ * After each page is drafted, updates page_plans.draft_status = 'drafted'
+ * and records the sources its prompt carried (used_source_ids). The prompt
+ * budget can leave sources out or shorten them; those are reported in
+ * prompt_cuts and the step detail (lib/compile/draft-sources.ts).
+ *
+ * Once the orchestrator stops waiting (request.signal), or a draft finds the
+ * provider account out of credit (503 provider_out_of_credit, lib/out-of-
+ * credit.ts), no further draft starts. A draft that ends after another run
+ * took its plan is not written (updatePlanDraft).
  *
  * Request:  { session_id: string }
- * Response: { session_id, drafted, failed, by_type }
+ * Response: { session_id, drafted, failed, by_type, prompt_cuts }
  */
 
 import { NextResponse } from 'next/server';
@@ -24,7 +32,6 @@ import { NextResponse } from 'next/server';
 import {
   getAliases,
   getAllPages,
-  getCategoryGroups,
   getDossierMaxSources,
   getDossierMinScore,
   getEffectiveCompileModel,
@@ -33,12 +40,38 @@ import {
   readPageMarkdown,
   readRawMarkdown,
   updatePlanDraft,
-  updatePlanFailed,
+  updatePlanDraftFailed,
   updateCompileStep,
   getDb,
 } from '../../../../lib/db';
 import { yamlDoubleQuote } from '../../../../lib/yaml-escape';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
+import {
+  assignCitationLabels,
+  citationsToLabels,
+  labelsToStoredCitations,
+  relabelDossier,
+  rewordLabelSubjects,
+} from '../../../../lib/citations';
+import {
+  describePromptCuts,
+  orderDraftSources,
+  overviewPages,
+  type DraftSourceCut,
+  type PlanPromptCut,
+} from '../../../../lib/compile/draft-sources';
+import { getSourceTitleSet } from '../../../../lib/page-sources';
+import { normalizeFrontmatter, SOURCE_PAGE_TYPES, sourceOnlyTitles } from '../../../../lib/draft-cleanup';
+import { withSourceText } from '../../../../lib/source-page-text';
+import { CURRENT_DRAFT_RULES } from '../../../../lib/draft-rules';
+import { pageTextVersionToken } from '../../../../lib/page-rewrite';
+import { removeEmptyContradictionSections } from '../../../../lib/page-sections';
+import { COMPARISON_RELATIONS, normalizeRelationType } from '../../../../lib/relation-rows';
+import { sourceDates, withSourceDate } from '../../../../lib/source-dates';
+import { DraftLabels, wikiLabelCounts } from '../../../../lib/compile/draft-labels';
+import { pageTextBeforeCompile } from '../../../../lib/compile-redo/baseline';
+import { activeRedo } from '../../../../lib/compile-redo/state';
+import { OUT_OF_CREDIT, OUT_OF_CREDIT_MESSAGE, OutOfCreditError, isOutOfCredit } from '../../../../lib/out-of-credit';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 // 10 concurrent draft calls. Tier-1 RPM is 1000/min and we use <1% of it,
@@ -68,6 +101,27 @@ interface SourceContent {
   source_id: string;
   title: string;
   markdown: string;
+  /** "S1"-style label the page cites this source with (lib/citations.ts). */
+  citation_label?: string;
+  /** This session's source: the prompt takes it first and whole (lib/compile/draft-sources.ts). */
+  is_new?: boolean;
+  /** Publication date, else the day it was saved (lib/source-dates.ts). */
+  date?: string;
+  date_kind?: 'published' | 'saved';
+}
+
+interface DraftPageReply {
+  markdown: string;
+  /** null when the nlp-service did not report them: every plan source is credited. */
+  used_source_ids: string[] | null;
+  cut_sources: DraftSourceCut[];
+}
+
+interface EarlierSource {
+  citation_label: string;
+  title: string;
+  date?: string;
+  date_kind?: 'published' | 'saved';
 }
 
 interface RelatedPage {
@@ -87,7 +141,8 @@ async function callDraftPage(
   extractionDossier?: string,
   existingCategories?: string[],
   compileModel?: string,
-): Promise<string> {
+  earlierSources?: EarlierSource[],
+): Promise<DraftPageReply> {
   const res = await fetch(`${NLP_SERVICE_URL}/pipeline/draft-page`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -101,9 +156,12 @@ async function callDraftPage(
       existing_page_titles: existingPageTitles ?? [],
       extraction_dossier: extractionDossier ?? '',
       existing_categories: existingCategories ?? [],
+      earlier_sources: earlierSources ?? [],
       ...(compileModel ? { compile_model: compileModel } : {}),
     }),
     signal: AbortSignal.timeout(600_000), // 10 min — DeepSeek draft can match extract latency on dense sources. Gemini thinking adds margin on top. Same 600s budget as extract/resolve/schema for symmetry.
+    // nlp-service ends the call, its retries and waits included, 30 s before
+    // this (llm_client._CALL_DEADLINE_S): change both together.
     // LONG_HTTP_AGENT: undici default headersTimeout=300s would fire before
     // our 600s AbortSignal on dense source-summary drafts. Session 29be62eb
     // hit silent HeadersTimeoutError on 15/18 source-summaries (NLP server
@@ -115,12 +173,17 @@ async function callDraftPage(
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     if (res.status === 429) throw Object.assign(new Error('llm_rate_limited'), { status: 429 });
+    if (isOutOfCredit(res.status, detail)) throw new OutOfCreditError();
     if (res.status === 503) throw Object.assign(new Error('daily_cost_ceiling'), { status: 503 });
     throw new Error(`draft_page_failed: ${res.status} ${detail}`);
   }
 
-  const data = (await res.json()) as { markdown: string };
-  return data.markdown;
+  const data = (await res.json()) as { markdown: string; used_source_ids?: unknown; cut_sources?: unknown };
+  return {
+    markdown: data.markdown,
+    used_source_ids: Array.isArray(data.used_source_ids) ? (data.used_source_ids as string[]) : null,
+    cut_sources: Array.isArray(data.cut_sources) ? (data.cut_sources as DraftSourceCut[]) : [],
+  };
 }
 
 // ── TF-IDF relevance ranking for dossier cap (Flag 3A) ──────────────────────
@@ -253,15 +316,17 @@ async function capDossierByRelevance(
   return rebuilt;
 }
 
-// Run an array of async tasks with limited concurrency
+// Run an array of async tasks with limited concurrency. Once `stop` is
+// aborted no further task starts; those left out stay undefined.
 async function pLimit<T>(
   tasks: Array<() => Promise<T>>,
-  limit: number
-): Promise<Array<T | Error>> {
-  const results: Array<T | Error> = new Array(tasks.length);
+  limit: number,
+  stop?: AbortSignal,
+): Promise<Array<T | Error | undefined>> {
+  const results: Array<T | Error | undefined> = new Array(tasks.length);
   let idx = 0;
   async function worker() {
-    while (idx < tasks.length) {
+    while (idx < tasks.length && !stop?.aborted) {
       const i = idx++;
       try {
         results[i] = await tasks[i]();
@@ -322,21 +387,70 @@ export function buildDossier(
 
   const parts: string[] = [];
 
+  type Item = Record<string, unknown>;
+  const findNamed = (list: unknown): Item | undefined =>
+    ((list as Item[] | undefined) ?? []).find((x) => matchesName(x.name));
+  const entityLines = (e: Item): string[] => {
+    const out: string[] = [];
+    if (e.type) out.push(`  Type: ${e.type}`);
+    if (e.mentions) out.push(`  Mentions: ${e.mentions}`);
+    if (e.context) out.push(`  Context: ${e.context}`);
+    return out;
+  };
+  const conceptLines = (c: Item): string[] => {
+    const out: string[] = [];
+    // Pydantic ExtractionConcept emits { name, description }; `definition`
+    // is still read for older extraction rows.
+    const definition = c.description ?? c.definition;
+    if (definition) out.push(`  Definition: ${definition}`);
+    if (c.context) out.push(`  Context: ${c.context}`);
+    return out;
+  };
+  // What this source says the subject is. A page's kind follows most of its
+  // sources (lib/page-kind.ts), so a source may list the subject under the
+  // other kind; that list is read when the page's own kind has no match.
+  // null when the source lists the subject under neither.
+  const subjectLines = (ext: Item): string[] | null => {
+    const entity = findNamed(ext.entities);
+    const concept = findNamed(ext.concepts);
+    const asEntity = entity ? entityLines(entity) : null;
+    const asConcept = concept ? conceptLines(concept) : null;
+    return plan.page_type === 'entity' ? asEntity ?? asConcept : asConcept ?? asEntity;
+  };
+  // Every non-empty per-source block starts with `From source {sid}:` —
+  // capDossierByRelevance ranks and attributes blocks by that header.
+  const pushSourceBlock = (sid: string, subject: string[] | null, extra: string[]) => {
+    if (subject || extra.length > 0) parts.push([`From source ${sid}:`, ...(subject ?? []), ...extra].join('\n'));
+  };
+  // Pydantic ExtractionContradiction emits { claim, against }: what this
+  // source says, and the view it disputes ("" when the source doesn't name
+  // one). The drafter treats the dossier as its primary reference, so each
+  // line says which side is the source's own. Entity and concept pages both
+  // get them, so either can record the disagreement (plan 3.1).
+  const contradictionLines = (ext: Item): string[] => {
+    const out: string[] = [];
+    const contras = ((ext.contradictions as Item[] | undefined) ?? []).filter(
+      (c) => matchesSubstring(c.claim) || matchesSubstring(c.against)
+    );
+    for (const contra of contras) {
+      const claim = typeof contra.claim === 'string' ? contra.claim.trim() : '';
+      const against = typeof contra.against === 'string' ? contra.against.trim() : '';
+      if (!claim) continue;
+      out.push(
+        against
+          ? `  This source disputes "${against}" and says instead "${claim}"`
+          : `  This source contradicts other accounts by saying "${claim}"`
+      );
+    }
+    return out;
+  };
+
   if (plan.page_type === 'entity') {
     for (const sid of sourceIds) {
       const ext = extractionsBySource.get(sid);
       if (!ext) continue;
+      const subject = subjectLines(ext);
       const lines: string[] = [];
-
-      const entityData = ((ext.entities as Array<Record<string, unknown>>) ?? []).find(
-        (e) => matchesName(e.name)
-      );
-      if (entityData) {
-        lines.push(`From source ${sid}:`);
-        if (entityData.type) lines.push(`  Type: ${entityData.type}`);
-        if (entityData.mentions) lines.push(`  Mentions: ${entityData.mentions}`);
-        if (entityData.context) lines.push(`  Context: ${entityData.context}`);
-      }
 
       // Pydantic ExtractionRelationship emits { from_entity, to, type, description } —
       // the dossier must match those field names, not r.source/r.target which never exist.
@@ -353,15 +467,9 @@ export function buildDossier(
       for (const claim of claims) {
         lines.push(`  Claim: ${claim.claim}`);
       }
+      lines.push(...contradictionLines(ext));
 
-      const contras = ((ext.contradictions as Array<Record<string, unknown>>) ?? []).filter(
-        (c) => matchesSubstring(c.description)
-      );
-      for (const contra of contras) {
-        lines.push(`  ⚠️ Contradiction: ${contra.description}`);
-      }
-
-      if (lines.length > 0) parts.push(lines.join('\n'));
+      pushSourceBlock(sid, subject, lines);
     }
   }
 
@@ -369,16 +477,8 @@ export function buildDossier(
     for (const sid of sourceIds) {
       const ext = extractionsBySource.get(sid);
       if (!ext) continue;
+      const subject = subjectLines(ext);
       const lines: string[] = [];
-
-      const conceptData = ((ext.concepts as Array<Record<string, unknown>>) ?? []).find(
-        (c) => matchesName(c.name)
-      );
-      if (conceptData) {
-        lines.push(`From source ${sid}:`);
-        if (conceptData.definition) lines.push(`  Definition: ${conceptData.definition}`);
-        if (conceptData.context) lines.push(`  Context: ${conceptData.context}`);
-      }
 
       const claims = ((ext.claims as Array<Record<string, unknown>>) ?? []).filter(
         (c) => matchesSubstring(c.claim)
@@ -386,8 +486,9 @@ export function buildDossier(
       for (const claim of claims) {
         lines.push(`  Claim: ${claim.claim}`);
       }
+      lines.push(...contradictionLines(ext));
 
-      if (lines.length > 0) parts.push(lines.join('\n'));
+      pushSourceBlock(sid, subject, lines);
     }
   }
 
@@ -419,7 +520,8 @@ export function buildDossier(
       if (!ext) continue;
 
       const rels = ((ext.relationships as Array<Record<string, unknown>>) ?? []).filter((r) => {
-        if (r.type !== 'competes_with' && r.type !== 'contradicts') return false;
+        // The types Rule 4 counted for this page, however the LLM spelled them.
+        if (typeof r.type !== 'string' || !COMPARISON_RELATIONS.has(normalizeRelationType(r.type))) return false;
         if (!aliasSetA || !aliasSetB) return true;
         if (typeof r.from_entity !== 'string' || typeof r.to !== 'string') return false;
         const from = r.from_entity.toLowerCase();
@@ -441,6 +543,12 @@ export function buildDossier(
   }
 
   return parts.join('\n\n');
+}
+
+// A draft this run finished, or failed, after another run had already taken
+// its plan (drafted, linked or saved it): nothing was written.
+function logPlanTaken(sessionId: string, planId: string): void {
+  console.log(JSON.stringify({ event: 'draft_plan_taken', session_id: sessionId, plan_id: planId }));
 }
 
 // ── Route handler ─────────────────────────────────────────────────────────────
@@ -576,20 +684,19 @@ export async function POST(request: Request) {
     .sort((a, b) => (b.source_count ?? 0) - (a.source_count ?? 0))
     .map((p) => p.title)
     .filter((t) => !sessionTitleSet.has(t));
-  const allKnownTitles = [...sessionTitles, ...sortedExistingTitles].slice(0, 200);
+  // Source pages are cited, never linked: leave their titles out of the list
+  // the model may link to.
+  const sourceTitlesOnly = sourceOnlyTitles([...existingPages, ...plans]);
+  const allKnownTitles = [...sessionTitles, ...sortedExistingTitles]
+    .filter((t) => !sourceTitlesOnly.has(t.toLowerCase()))
+    .slice(0, 200);
 
-  // Existing wiki categories — passed to Gemini so it reuses them instead of inventing new ones.
-  // Exclude 'Uncategorized' (the null-category fallback) AND 'General' (a universal-matching sink
-  // that the LLM reuses trivially once offered, collapsing every page into one category).
-  // baseCategories = categories already committed to the DB from prior sessions.
-  const baseCategories = getCategoryGroups()
-    .map((g) => g.category)
-    .filter((c): c is string => c !== null && c !== 'Uncategorized' && c !== 'General');
-
-  // sessionCategories accumulates categories invented during this session's draft loop.
-  // Source-summary pages are drafted first; their invented categories are harvested
-  // before entity/concept pages run so later layers see a consistent category list.
-  const sessionCategorySet = new Set<string>(baseCategories);
+  // Category labels offered to each draft so it reuses one instead of
+  // inventing a near copy: the wiki's labels, plus each label a draft of this
+  // run chose, added as that draft finishes (lib/compile/draft-labels.ts).
+  const categoryLabels = new DraftLabels(wikiLabelCounts().keys());
+  // A redo of this compile (lib/compile-redo/) rewrites what it wrote.
+  const redo = activeRedo(session_id) !== null;
 
   // Layer order for drafting. 'original-source' runs alongside source-summary (raw passthrough, no LLM).
   const LAYER_ORDER = ['original-source', 'source-summary', 'entity', 'concept', 'comparison', 'overview'] as const;
@@ -597,8 +704,23 @@ export async function POST(request: Request) {
   let drafted = 0;
   let failed = 0;
   const byType: Record<string, number> = {};
+  // Sources the prompt budget left out or shortened, per plan.
+  const promptCuts: PlanPromptCut[] = [];
+  // Set when a draft finds the provider account empty: every further draft
+  // would fail the same way, so none starts and the step stops.
+  const outOfCredit = new AbortController();
+  // No draft starts once either fires.
+  const stop = new AbortController();
+  for (const signal of [request.signal, outOfCredit.signal]) {
+    if (signal.aborted) stop.abort();
+    else signal.addEventListener('abort', () => stop.abort(), { once: true });
+  }
 
   for (const layer of LAYER_ORDER) {
+    // The orchestrator stopped waiting (its timeout fired and it failed the
+    // session): start no more drafts. Plans not started keep their status,
+    // so the Retry drafts them once instead of this run paying for them too.
+    if (stop.signal.aborted) break;
     const layerPlans = plans.filter((p) => p.page_type === layer);
     if (layerPlans.length === 0) continue;
 
@@ -629,50 +751,90 @@ export async function POST(request: Request) {
     for (const p of plans) planTitleById.set(p.plan_id, p.title);
     for (const dp of draftedPlans) planTitleById.set(dp.plan_id, dp.title);
 
+    // Lets the citation scanner recognise legacy "(uuid, Source Title)" groups
+    // in existing page content.
+    const sourceTitles = getSourceTitleSet();
+
     const tasks = layerPlans.map((plan) => async () => {
       const sourceIds: string[] = JSON.parse(plan.source_ids);
-      const sourceContents: SourceContent[] = sourceIds
+      // An overview drafts from the pages it lists, not from every source
+      // behind them (plan 2.1); it still credits those sources (used NULL).
+      const isOverview = plan.page_type === 'overview';
+      // This session's sources are marked new: the nlp-service puts them
+      // first and whole and fits older ones into what the prompt budget
+      // leaves (nlp-service/services/draft_budget.py).
+      const loaded = (isOverview ? [] : sourceIds)
         .map((sid) => {
           const s = sourceMap.get(sid);
           // For sources from other sessions, try to read from DB
           if (!s) {
             const dbSrc = db
-              .prepare('SELECT source_id, title FROM sources WHERE source_id = ?')
-              .get(sid) as { source_id: string; title: string } | undefined;
+              .prepare('SELECT source_id, title, date_ingested FROM sources WHERE source_id = ?')
+              .get(sid) as { source_id: string; title: string; date_ingested: string | null } | undefined;
             if (!dbSrc) return null;
             const md = readRawMarkdown(sid);
-            return md ? { source_id: sid, title: dbSrc.title, markdown: md } : null;
+            return md
+              ? { source_id: sid, title: dbSrc.title, markdown: md, is_new: false, date_ingested: dbSrc.date_ingested }
+              : null;
           }
-          return s.markdown ? { source_id: sid, title: s.title, markdown: s.markdown } : null;
+          return s.markdown
+            ? { source_id: sid, title: s.title, markdown: s.markdown, is_new: true, date_ingested: null }
+            : null;
         })
-        .filter((sc): sc is SourceContent => sc !== null);
+        .filter((sc): sc is SourceContent & { is_new: boolean; date_ingested: string | null } => sc !== null);
+      const sourceContents: SourceContent[] = orderDraftSources(loaded).map(
+        ({ date_ingested: _date, ...sc }) => sc,
+      );
 
-      if (sourceContents.length === 0) {
+      if (sourceContents.length === 0 && !isOverview) {
         throw new Error(`no_readable_sources for plan ${plan.plan_id}`);
       }
+
+      // The version of the page this update reads. Approving the draft later
+      // (auto-approve off) refuses if the page changed since
+      // (lib/approve-plan.ts). Nothing below awaits before the page is read
+      // (readPageMarkdown), so the version and the text read agree.
+      // A create with an existing_page_id (a redo rewriting the page its
+      // compile made) records it too: commit skips the page if it changed.
+      const baseVersion =
+        (plan.action === 'update' || plan.action === 'create') && plan.existing_page_id
+          ? pageTextVersionToken(plan.existing_page_id)
+          : null;
 
       // Raw passthrough for 'original-source' pages — no LLM call.
       // Category + summary derived from existing NLP extraction (already ran at collect time).
       if (plan.page_type === 'original-source') {
         const src = sourceContents[0];
         const ext = extractionsBySource.get(src.source_id);
-        const entities = (ext?.entities as Array<{ type?: string; mentions?: number }> | undefined) ?? [];
-        const topEntity = entities.reduce<{ type?: string; mentions?: number } | null>(
-          (best, e) => (e.mentions ?? 0) > (best?.mentions ?? 0) ? e : best,
+        // Extraction stores mentions as the list of text spans naming the
+        // entity (ExtractionEntity.mentions), so the most mentioned entity is
+        // the one with the longest list.
+        const entities = (ext?.entities as Array<{ type?: string; mentions?: unknown }> | undefined) ?? [];
+        const mentionCount = (e: { mentions?: unknown } | null): number =>
+          Array.isArray(e?.mentions) ? e.mentions.length : 0;
+        const topEntity = entities.reduce<{ type?: string; mentions?: unknown } | null>(
+          (best, e) => (mentionCount(e) > mentionCount(best) ? e : best),
           null
         );
         const category = topEntity?.type ? entityTypeToCategory(topEntity.type) : 'Uncategorized';
         const firstClaim = (ext?.claims as Array<{ claim?: string }> | undefined)?.[0]?.claim;
-        const firstConcept = (ext?.concepts as Array<{ definition?: string }> | undefined)?.[0]?.definition;
+        // Concepts carry `description` (`definition` in older extraction rows).
+        const concept = (ext?.concepts as Array<{ description?: string; definition?: string }> | undefined)?.[0];
+        const firstConcept = concept?.description ?? concept?.definition;
         const summaryText = (firstClaim ?? firstConcept ?? src.markdown.slice(0, 120).replace(/\n/g, ' ')).trim();
         const rawDraft = `---\ntitle: ${yamlDoubleQuote(plan.title)}\ncategory: ${category}\nsummary: ${yamlDoubleQuote(summaryText)}\n---\n\n${src.markdown}`;
-        updatePlanDraft(plan.plan_id, rawDraft);
-        return { pageType: plan.page_type, markdown: rawDraft };
+        // The user's own text: no writing rules apply (lib/draft-rules.ts).
+        const saved = updatePlanDraft(plan.plan_id, rawDraft, null, baseVersion);
+        return { pageType: plan.page_type, markdown: rawDraft, saved };
       }
 
-      // Related pages: for overview/comparison, use already-drafted pages
+      // Related pages: already-drafted pages. An overview's are its material:
+      // its related plans' pages, whatever step they reached (a retry may
+      // find them committed already).
       const relatedPlanIds: string[] = plan.related_plan_ids ? JSON.parse(plan.related_plan_ids) : [];
-      const relatedPages: RelatedPage[] = draftedContext.filter((dp) => {
+      const relatedPages: RelatedPage[] = isOverview ? overviewPages(db, relatedPlanIds) : draftedContext.filter((dp) => {
+        // Source pages are cited through labels, not offered as related pages.
+        if (SOURCE_PAGE_TYPES.has(dp.type)) return false;
         // Include if it's a related plan or just generally relevant drafted content
         return relatedPlanIds.length === 0
           ? draftedContext.length <= 10  // include all if few
@@ -681,6 +843,9 @@ export async function POST(request: Request) {
               return rPlan?.title === dp.title;
             });
       });
+      if (isOverview && relatedPages.length === 0) {
+        throw new Error(`no_pages_to_list for overview plan ${plan.plan_id}`);
+      }
 
       const rawDossier = buildDossier(plan, extractionsBySource, planTitleById, aliasesByCanonical);
 
@@ -691,9 +856,14 @@ export async function POST(request: Request) {
       // updatePlanDraft AFTER this call returns (always NULL on first pass), and
       // it has downstream commit semantics via approve-plan.ts, so overloading
       // it would corrupt the OFF-mode commit flow on draft failure.
+      // A redo writes an update again from the page as it was before this
+      // compile: the page now holds the update being redone
+      // (lib/compile-redo/baseline.ts). Without that version, the page as it is.
       const existingContent =
         plan.action === 'update' && plan.existing_page_id
-          ? readPageMarkdown(plan.existing_page_id) ?? undefined
+          ? (redo ? pageTextBeforeCompile(db, session_id, plan.existing_page_id) : null) ??
+            readPageMarkdown(plan.existing_page_id) ??
+            undefined
           : undefined;
 
       // Flag 3A — cap the dossier by TF-IDF relevance. Query is plan.title
@@ -710,61 +880,159 @@ export async function POST(request: Request) {
         extractionsBySource,
       );
 
-      const markdown = await callDraftPage(
+      // Citations: the model cites short [S1]-style labels (named next to each
+      // source and dossier block); labelsToStoredCitations turns them into
+      // stored [^source_id] references, so pages never hold raw ids and a
+      // citation keeps its source across later updates. Existing content goes
+      // to the model with its citations converted to the same labels.
+      const labels = assignCitationLabels(sourceContents.map((sc) => sc.source_id));
+      const titleById = new Map(sourceContents.map((sc) => [sc.source_id.toLowerCase(), sc.title]));
+      const titleOf = (id: string): string => {
+        const known = titleById.get(id);
+        if (known) return known;
+        const row = db
+          .prepare('SELECT title FROM sources WHERE lower(source_id) = ?')
+          .get(id) as { title: string | null } | undefined;
+        return row?.title ?? 'Untitled source';
+      };
+      const labelledDossier = dossier ? relabelDossier(dossier, labels, titleOf) : '';
+      // Old frontmatter can carry invented keys (sources: S1…, last_updated)
+      // that would clash with this draft's labels; the model never sees them.
+      const labelledExisting = existingContent
+        ? citationsToLabels(normalizeFrontmatter(existingContent), labels, (t) => sourceTitles.has(t.toLowerCase()))
+        : null;
+      // Each source's date, so the draft can tell a claim that changed over
+      // time from a live disagreement (plan 3.1, lib/source-dates.ts).
+      const earlierIds = labelledExisting?.added ?? [];
+      const dates = sourceDates(db, [...sourceContents.map((sc) => sc.source_id), ...earlierIds]);
+      const earlierSources: EarlierSource[] = earlierIds.map((id) => ({
+        citation_label: labels.get(id) ?? '',
+        title: titleOf(id),
+        ...dates.get(id.toLowerCase()),
+      }));
+
+      const reply = await callDraftPage(
         plan.page_type,
         plan.title,
-        sourceContents,
+        sourceContents.map((sc) => withSourceDate({ ...sc, citation_label: labels.get(sc.source_id.toLowerCase()) }, dates)),
         relatedPages.length > 0 ? relatedPages : undefined,
-        existingContent,
+        labelledExisting?.markdown,
         schema,
         allKnownTitles,
-        dossier || undefined,
-        Array.from(sessionCategorySet),
+        labelledDossier || undefined,
+        categoryLabels.list(),
         getEffectiveCompileModel(session_id),
+        earlierSources,
       );
+      if (reply.cut_sources.length > 0) {
+        const cut: PlanPromptCut = {
+          plan_id: plan.plan_id,
+          title: plan.title,
+          sources: reply.cut_sources.map((c) => ({ ...c, source_title: titleOf(c.source_id.toLowerCase()) })),
+        };
+        promptCuts.push(cut);
+        console.log(JSON.stringify({ event: 'draft_prompt_cut', session_id, ...cut }));
+      }
+      // Safety nets for what the prompt asks but models don't always do:
+      // labels used as words, invented frontmatter, empty Contradictions.
+      const reworded = rewordLabelSubjects(reply.markdown);
+      if (reworded.count > 0) {
+        console.log(JSON.stringify({ event: 'draft_label_subjects_reworded', plan_id: plan.plan_id, count: reworded.count }));
+      }
+      let markdown = normalizeFrontmatter(labelsToStoredCitations(reworded.markdown, labels));
+      if (plan.page_type !== 'source-summary') {
+        markdown = removeEmptyContradictionSections(markdown).markdown;
+      } else {
+        // The source text from the stored source, the model's sections after it.
+        markdown = withSourceText(markdown, sourceContents[0].markdown);
+      }
 
-      updatePlanDraft(plan.plan_id, markdown);
-      return { pageType: plan.page_type, markdown };
+      // Drafted by this version's prompt and cleanup. The commit copies the
+      // marker to the page only when the plan drafted from scratch, and
+      // credits the sources the prompt carried (an overview: every plan source).
+      const saved = updatePlanDraft(
+        plan.plan_id,
+        markdown,
+        CURRENT_DRAFT_RULES,
+        baseVersion,
+        isOverview ? null : reply.used_source_ids,
+      );
+      return { pageType: plan.page_type, markdown, saved };
     });
 
-    const results = await pLimit(tasks, DRAFT_CONCURRENCY);
+    // Each finished draft adds its label at once, so drafts that start later,
+    // in this layer or the next, are offered it.
+    const labelled = tasks.map((task) => async () => {
+      try {
+        const r = await task();
+        if (r.saved) categoryLabels.addFromDraft(r.markdown);
+        return r;
+      } catch (err) {
+        if (err instanceof OutOfCreditError) outOfCredit.abort();
+        throw err;
+      }
+    });
+    // A wiki's first compile has no label to offer: one summary drafts alone
+    // first, so the rest start with its label instead of each inventing a
+    // near copy (owner decision 2026-10-25). Same calls, one draft's wait.
+    const firstAlone = layer === 'source-summary' && categoryLabels.list().length === 0 && labelled.length > 1;
+    const results = firstAlone
+      ? [
+          ...(await pLimit(labelled.slice(0, 1), 1, stop.signal)),
+          ...(await pLimit(labelled.slice(1), DRAFT_CONCURRENCY, stop.signal)),
+        ]
+      : await pLimit(labelled, DRAFT_CONCURRENCY, stop.signal);
 
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
+      // Never started: the step stopped first.
+      if (r === undefined) continue;
       if (r instanceof Error) {
-        failed++;
         // Capture the actual error message in the page_plans row + log to
         // app stdout. Before this, every per-task failure was swallowed —
         // operators had no clue why a draft died. Session 29be62eb (15
         // source-summary HeadersTimeoutErrors) wasted 30+ min of debugging.
         console.error('[draft] plan_id=%s title=%s err=%s', layerPlans[i].plan_id, layerPlans[i].title, r.message);
-        updatePlanFailed(layerPlans[i].plan_id, r.message);
+        if (updatePlanDraftFailed(layerPlans[i].plan_id, r.message)) failed++;
+        else logPlanTaken(session_id, layerPlans[i].plan_id);
+      } else if (!r.saved) {
+        logPlanTaken(session_id, layerPlans[i].plan_id);
       } else {
         drafted++;
         byType[r.pageType] = (byType[r.pageType] ?? 0) + 1;
-        // Harvest any new categories this layer invented so later layers can reuse them.
-        const catMatch = r.markdown.match(/^category:\s*["']?(.+?)["']?\s*$/m);
-        if (catMatch?.[1]) {
-          const newCat = catMatch[1].trim();
-          if (newCat && newCat !== 'Uncategorized' && newCat !== 'General') sessionCategorySet.add(newCat);
-        }
       }
+      // This run no longer owns the step's progress once the orchestrator
+      // stopped waiting for it.
+      if (request.signal.aborted) continue;
       // Live progress detail for the UI's "Writing pages" tracker. Without
       // this, the draft step shows just "PROCESSING" with no count while
       // earlier steps show "8/8 sources extracted" etc. Mirrors the per-
       // completion update pattern used by the extract worker pool.
-      updateCompileStep(
-        session_id,
-        'draft',
-        'running',
+      const count =
         failed > 0
           ? `${drafted}/${plans.length} pages drafted, ${failed} failed`
-          : `${drafted}/${plans.length} pages drafted`,
-      );
+          : `${drafted}/${plans.length} pages drafted`;
+      const cutLine = describePromptCuts(promptCuts);
+      updateCompileStep(session_id, 'draft', 'running', cutLine ? `${count}; ${cutLine}` : count);
     }
   }
 
-  return NextResponse.json({ session_id, drafted, failed, by_type: byType }, { status: 200 });
+  if (request.signal.aborted) {
+    console.log(JSON.stringify({ event: 'draft_stopped', reason: 'caller_gone', session_id, drafted, failed }));
+  }
+  if (outOfCredit.signal.aborted) {
+    // The orchestrator fails the session with this message; Retry drafts
+    // the plans left once the account is topped up.
+    console.log(JSON.stringify({ event: 'draft_stopped', reason: OUT_OF_CREDIT, session_id, drafted, failed }));
+    return NextResponse.json(
+      { error: OUT_OF_CREDIT, message: OUT_OF_CREDIT_MESSAGE, session_id, drafted, failed },
+      { status: 503 },
+    );
+  }
+  return NextResponse.json(
+    { session_id, drafted, failed, by_type: byType, prompt_cuts: promptCuts },
+    { status: 200 },
+  );
   } catch (err) {
     const e = err as Error & { status?: number };
     if (e.status === 429) {

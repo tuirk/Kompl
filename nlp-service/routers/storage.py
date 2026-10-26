@@ -6,7 +6,7 @@ compile commit route (before the synchronous db.transaction()).
 
 Endpoint:
   POST /storage/write-page
-    Request:  {page_id: str, markdown: str}
+    Request:  {page_id: str, markdown: str, archive?: bool (default true)}
     Response: {current_path: str, previous_path: str | null}
 
 This is an internal-network-only endpoint (nlp-service never exposed to
@@ -44,6 +44,8 @@ class WritePageRequest(BaseModel):
 
     page_id: str
     markdown: str
+    # False: replace the current file unarchived (file_store.write_page).
+    archive: bool = True
 
     @field_validator("page_id")
     @classmethod
@@ -68,7 +70,7 @@ def storage_write_page(req: WritePageRequest) -> WritePageResponse:
     can store previous_content_path in the pages table.
     """
     try:
-        current_path, previous_path = write_page(req.page_id, req.markdown)
+        current_path, previous_path = write_page(req.page_id, req.markdown, archive=req.archive)
     except OSError as e:
         raise HTTPException(
             status_code=500,

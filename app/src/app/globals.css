@@ -14,7 +14,11 @@
      --fg           High-contrast primary text                (#ececf0)
      --fg-secondary Primary body text (slightly softer)       (#d4d4d8)
      --fg-muted     Labels, metadata, secondary icons         (#a1a1aa)
-     --fg-dim       Timestamps, breadcrumbs, inactive nav     (#52525b)
+     --fg-dim       Timestamps, breadcrumbs, inactive nav     (#8c8c95)
+     Every text token clears WCAG AA (4.5:1) on --bg, --bg-card, --bg-card-hover
+     and --bg-track; --fg-dim was #52525b (2.5:1) until the wiki readability
+     pass and #83838c (4.35:1 on --bg-card-hover) until the accessibility pass.
+     Dim text with a token, never with opacity: opacity drops it below 4.5:1.
      Note: --fg deliberately *not* pure white — pure #fff on dark bg
      causes glare / visual distortion for dyslexic readers (BDA + W3C).
 
@@ -34,7 +38,7 @@
 
    Page-type taxonomy (wiki schema classification):
      --page-concept    Concept pages                          (#5b8def)
-     --page-entity     Entity pages                           (#8b5cf6)
+     --page-entity     Entity pages                           (#9b74f7)
      --page-comparison Comparison pages                       (#d97757)
      --page-overview   Overview pages                         (#5eaaa8)
      source-summary reuses --fg-muted intentionally (low-signal).
@@ -66,7 +70,7 @@
   --fg:            #ececf0;
   --fg-secondary:  #d4d4d8;
   --fg-muted:      #a1a1aa;
-  --fg-dim:        #52525b;
+  --fg-dim:        #8c8c95;
 
   /* --- Borders --- */
   --border:        #1e2022;
@@ -80,7 +84,7 @@
   --accent-text:   #00291D;   /* dark text for use ON the accent background */
 
   /* --- Foreground (extended) --- */
-  --fg-subtle:      #757578;   /* mid-gray metadata — between --fg-dim and --fg-muted */
+  --fg-subtle:      #94949c;   /* mid-gray metadata — between --fg-dim and --fg-muted */
   --fg-muted-rgb:   161, 161, 170; /* RGB of --fg-muted for rgba() usage */
 
   /* --- Borders / separators --- */
@@ -108,7 +112,7 @@
      app/src/lib/page-type-palette.ts — do not reference elsewhere.
      source-summary reuses --fg-muted (low-signal semantic), not its own var. */
   --page-concept:    #5b8def;
-  --page-entity:     #8b5cf6;
+  --page-entity:     #9b74f7;
   --page-comparison: #d97757;
   --page-overview:   #5eaaa8;
 
@@ -367,7 +371,7 @@ article h2 {
   margin: 2em 0 0.6em;
   padding-bottom: 0.3em;
   border-bottom: 1px solid var(--border);
-  color: var(--fg-secondary);
+  color: var(--fg);
   scroll-margin-top: 80px;
 }
 article h3 {
@@ -375,7 +379,7 @@ article h3 {
   font-weight: 600;
   line-height: 1.3;
   margin: 1.6em 0 0.4em;
-  color: var(--fg-secondary);
+  color: var(--fg);
   scroll-margin-top: 80px;
 }
 article h4 {
@@ -383,18 +387,51 @@ article h4 {
   font-weight: 600;
   line-height: 1.35;
   margin: 1.4em 0 0.3em;
-  color: var(--fg-secondary);
+  color: var(--fg);
   scroll-margin-top: 80px;
 }
+/* ~70 characters per line: long enough to read fast, short enough to keep
+   your place (Butterick 45–90, WCAG AAA ≤ 80). Was 91ch. */
 article p {
-  line-height: 1.8;
-  max-width: 91ch;
+  line-height: 1.7;
+  max-width: 70ch;
   margin-top: 0;
   margin-bottom: 1.1em;
 }
 article li {
-  line-height: 1.8;
-  max-width: 91ch;
+  line-height: 1.7;
+  max-width: 70ch;
+}
+/* Links in running text need more than colour to stand out from it (WCAG
+   1.4.1): a quiet, always-on underline that firms up on hover. */
+article a {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+  text-decoration-color: rgba(var(--accent-rgb), 0.45);
+}
+article a:hover {
+  text-decoration-color: currentColor;
+}
+/* Numbered source citations (lib/citations.ts). */
+article sup.cite {
+  font-size: 0.7em;
+  line-height: 0;
+  margin-left: 0.1em;
+  white-space: nowrap;
+}
+article sup.cite a {
+  font-family: var(--font-mono, monospace);
+  text-decoration: none;
+  padding: 0 0.12em;
+}
+article sup.cite a:hover {
+  text-decoration: underline;
+}
+/* The source row a citation points at, after a click. */
+.source-row:target {
+  background: rgba(var(--accent-rgb), 0.08);
+  border-radius: 4px;
 }
 article code {
   font-family: var(--font-mono, ui-monospace, Consolas, monospace);
@@ -446,4 +483,213 @@ article img {
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 1.2px;
+}
+
+/* =============================================================================
+   Wiki sidebar (components/WikiSidebar.tsx)
+   Styles are inline in the component. These rules hold what inline styles
+   can't: width and visibility read from [data-collapsed], which a boot script
+   sets before the first paint (so a collapsed sidebar never flashes open),
+   plus hover, keyboard focus and reduced motion.
+   ============================================================================= */
+
+.wiki-sb {
+  --wiki-sb-width: 320px;
+  --wiki-sb-rail: 52px;
+  width: var(--wiki-sb-width);
+  transition: width var(--transition-slow);
+}
+.wiki-sb[data-collapsed='true'] {
+  width: var(--wiki-sb-rail);
+}
+/* .wiki-sb-full shows only expanded, .wiki-sb-rail only collapsed.
+   !important: some of these elements set display inline. */
+.wiki-sb[data-collapsed='true'] .wiki-sb-full,
+.wiki-sb:not([data-collapsed='true']) .wiki-sb-rail {
+  display: none !important;
+}
+.wiki-sb[data-collapsed='true'] .wiki-sb-quick {
+  width: 32px;
+}
+.wiki-sb-item,
+.wiki-sb-btn {
+  color: var(--fg-muted);
+  background: transparent;
+}
+.wiki-sb-item:hover,
+.wiki-sb-btn:hover {
+  color: var(--fg);
+  background: var(--bg-card-hover);
+}
+.wiki-sb :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wiki-sb {
+    transition: none;
+  }
+}
+
+/* =============================================================================
+   Wiki header actions (components/WikiViewToggle.tsx, WikiPageHeaderActions.tsx)
+   Layout is inline in the components. Colours live here so hover and keyboard
+   focus can change them; the current view is marked with aria-current.
+   ============================================================================= */
+
+.wiki-view-toggle a {
+  color: var(--fg-dim);
+  background: transparent;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.wiki-view-toggle a:hover {
+  color: var(--fg-secondary);
+  background: rgba(var(--accent-rgb), 0.06);
+  text-decoration: none;
+}
+.wiki-view-toggle a[aria-current='page'] {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+.wiki-add-sources {
+  color: var(--accent-text);
+  background: var(--accent);
+  transition: background var(--transition-fast), transform var(--transition-fast);
+}
+.wiki-add-sources:hover {
+  color: var(--accent-text);
+  background: var(--accent-dim);
+}
+.wiki-add-sources:active {
+  transform: scale(0.95);
+}
+.wiki-view-toggle a:focus-visible,
+.wiki-add-sources:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wiki-view-toggle a,
+  .wiki-add-sources {
+    transition: none;
+  }
+}
+
+/* =============================================================================
+   Wiki article right panel (components/WikiToc.tsx, app/wiki/[page_id]/RightPanel.tsx)
+   Layout is inline in the components. Colours, hover and keyboard focus live
+   here so the rows behave like the left sidebar's.
+   ============================================================================= */
+
+.wiki-rp-item,
+.wiki-rp-toc a {
+  color: var(--fg-muted);
+  background: transparent;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.wiki-rp-item:hover,
+.wiki-rp-toc a:hover {
+  color: var(--fg);
+  background: var(--bg-card-hover);
+  text-decoration: none;
+}
+.wiki-rp-toc a[aria-current='location'] {
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.08);
+  font-weight: 500;
+}
+.wiki-rp-item:focus-visible,
+.wiki-rp-toc a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.wiki-rp-more > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.wiki-rp-more > summary::-webkit-details-marker {
+  display: none;
+}
+/* Opened, "Show all" gives way to "Show fewer" after the last row (MoreRows.tsx). */
+.wiki-rp-more[open] > summary {
+  display: none;
+}
+/* A connection's evidence toggle (ConnectionsPanel.tsx): a chevron beside the row. */
+.wiki-rp-why > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.wiki-rp-why > summary::-webkit-details-marker {
+  display: none;
+}
+.wiki-rp-why > summary svg {
+  transition: transform var(--transition-fast);
+}
+.wiki-rp-why[open] > summary svg {
+  transform: rotate(180deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .wiki-rp-item,
+  .wiki-rp-toc a,
+  .wiki-rp-why > summary svg {
+    transition: none;
+  }
+}
+
+/* =============================================================================
+   Knowledge graph legend (app/wiki/graph/GraphLegend.tsx)
+   Each toggle is a visually hidden checkbox inside its row, so the row shows
+   the keyboard focus.
+   ============================================================================= */
+
+.graph-legend-row:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The collapsed legend's "Filters" button (legend-parts.tsx FiltersButton), styled like the header's buttons. */
+.graph-filters-btn {
+  color: var(--fg-secondary);
+  background: rgba(18, 19, 22, 0.9);
+  border: 1px solid rgba(var(--accent-rgb), 0.2);
+}
+.graph-filters-btn:hover {
+  color: var(--fg);
+  background: var(--bg-card-hover);
+  border-color: rgba(var(--accent-rgb), 0.45);
+}
+.graph-filters-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The legend's icon buttons: the key's ⓘ (accent while its popover is open) and "Collapse filters". */
+.graph-icon-btn {
+  color: var(--fg-muted);
+  background: transparent;
+}
+.graph-icon-btn:hover {
+  color: var(--fg);
+  background: var(--bg-card-hover);
+}
+.graph-icon-btn[aria-expanded="true"] {
+  color: var(--accent);
+}
+.graph-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+/* Filter rows look clickable; the key's rows (LegendKey.tsx) have no hover on purpose. */
+.graph-legend-filter:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+/* The graph header's and path panel's buttons (GraphHeader.tsx, PathPanel.tsx). */
+.graph-header-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Onboarding source cards (app/onboarding/OnboardingClient.tsx) are
+   checkbox buttons; the keyboard focus ring sits outside the card. */
+.onboarding-source-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

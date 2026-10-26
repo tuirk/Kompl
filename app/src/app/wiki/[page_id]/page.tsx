@@ -7,38 +7,51 @@ export const dynamic = 'force-dynamic';
  * Three-column layout:
  *   Left  — WikiSidebar (category tree, graph link, search)
  *   Center — Compiled markdown body
- *   Right  — TOC (from ## headings) + Backlinks panel
+ *   Right  — On this page (## and ### headings), Disagreements, Connections,
+ *            You might also read (./RightPanel.tsx, ./ConnectionsPanel.tsx)
  *
  * YAML frontmatter in the markdown file is stripped before rendering.
  */
 
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import WikiPageHeader from '../../../components/WikiPageHeader';
 import { LocalDate } from '../../../components/LocalDate';
 import {
-  getDb,
   getCategoryGroups,
-  getBacklinks,
   getPage,
   getPageTitleMap,
+  getRunningCompileSession,
   getUnresolvedLinks,
   readPageMarkdown,
   type PageRow,
 } from '../../../lib/db';
-import {
-  renderMarkdown,
-  stripFrontmatter,
-  stripWrappingFence,
-  stripSourcesSection,
-  stripLeadingContentHeading,
-} from '../../../lib/markdown';
+import PageActionButton from './PageActionButton';
+import { headingAnchor, renderMarkdown } from '../../../lib/markdown';
+import { findPageDisputes } from '../../../lib/page-disputes';
+import { listPageDisagreements } from '../../../lib/disagreements';
+import { panelDisagreements } from '../../../lib/disagreement-view';
+import { DisagreementsPanel, RelatedPages, ViewOriginal } from './RightPanel';
+import ConnectionsPanel from './ConnectionsPanel';
+import { getPageConnections } from '../../../lib/relations';
+import { expandWikilinksForDisplay } from '../../../lib/wiki-display';
+import { displayPageBody } from '../../../lib/page-sections';
 import WikiSidebar from '../../../components/WikiSidebar';
 import SavedLinksInteractive from './SavedLinksInteractive';
 import { PAGE_TYPE_VAR, PAGE_TYPE_LABELS, type PageType } from '../../../lib/page-type-palette';
-import { renderInlineWikilinks } from '../../../lib/wikilink-render';
+import { renderInlineWikilinks, stripWikilinkBrackets } from '../../../lib/wikilink-render';
+import { stripWikilinks } from '../../../lib/wikilink-syntax';
+import {
+  renderCitationMarkers,
+  scanCitations,
+  stripCitationPlaceholders,
+} from '../../../lib/citations';
 import { safeExternalUrl } from '../../../lib/safe-url';
+import WikiToc, { type TocHeading } from '../../../components/WikiToc';
+import { getNumberedSources, getSourceTitleSet } from '../../../lib/page-sources';
+import { getPageHold } from '../../../lib/page-hold';
 
 const SAVED_LINKS_PAGE_ID = 'saved-links';
 
@@ -52,28 +65,36 @@ function pageTypeBadge(t: string): { label: string; color: string } | undefined 
   return { label: PAGE_TYPE_LABELS[key], color: PAGE_TYPE_VAR[key] };
 }
 
-/**
- * Expand [[Page Title]] wikilinks to markdown links.
- * Unknown titles render as plain text (no broken link).
- */
-function expandWikilinks(md: string, titleMap: Map<string, string>): string {
-  return md.replace(/\[\[([^\]]+)\]\]/g, (_match, title: string) => {
-    const pageId = titleMap.get(title.toLowerCase());
-    if (pageId) return `[${title}](/wiki/${pageId})`;
-    return title;
-  });
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { page_id } = await params;
+  const page = getPage(page_id);
+  if (!page) return { title: 'Page not found' };
+  return { title: page.title, description: page.summary ? stripWikilinkBrackets(page.summary) : undefined };
 }
 
-/** Extract headings for TOC: returns [{level, text, anchor}] */
-function extractHeadings(md: string): { level: number; text: string; anchor: string }[] {
-  const headings: { level: number; text: string; anchor: string }[] = [];
+/**
+ * Extract ## and ### headings for the TOC. Skips fenced code blocks (a "# "
+ * line in code is not a heading) and strips link syntax, emphasis and
+ * citation markers from the displayed text. The anchor is slugged from the
+ * raw heading source, exactly like the renderer, so the links land.
+ */
+function extractHeadings(md: string): TocHeading[] {
+  const headings: TocHeading[] = [];
+  let inFence = false;
   for (const line of md.split('\n')) {
-    const m = line.match(/^(#{2,3})\s+(.+)$/);
-    if (m) {
-      const text = m[2].trim();
-      const anchor = text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
-      headings.push({ level: m[1].length, text, anchor });
+    if (line.trimStart().startsWith('```')) {
+      inFence = !inFence;
+      continue;
     }
+    if (inFence) continue;
+    const m = line.match(/^(#{2,3})\s+(.+?)(?:\s+#+)?\s*$/);
+    if (!m) continue;
+    const raw = m[2];
+    const text = stripCitationPlaceholders(raw)
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/[*_`]/g, '')
+      .trim();
+    if (text) headings.push({ level: m[1].length, text, anchor: headingAnchor(raw) });
   }
   return headings;
 }
@@ -92,8 +113,25 @@ function parseFrontmatterEntities(md: string): string[] {
     .filter(Boolean);
 }
 
-/** Collapsible panel that loads and renders the previous version of a page. */
-async function PreviousVersionPanel({ pageId, lastUpdated }: { pageId: string; lastUpdated: string }) {
+/**
+ * Collapsible panel that loads and renders the previous version of a page.
+ * "Restore this version" shows only when that version can be read: a page
+ * restored from a backup keeps the pointer, but backups don't carry the
+ * archived file.
+ */
+async function PreviousVersionPanel({
+  pageId,
+  pageType,
+  lastUpdated,
+  restorable,
+  restoreDisabledReason,
+}: {
+  pageId: string;
+  pageType: string;
+  lastUpdated: string;
+  restorable: boolean;
+  restoreDisabledReason: string | null;
+}) {
   const res = await fetch(
     `${process.env.APP_URL ?? 'http://app:3000'}/api/wiki/${pageId}/previous`,
     { cache: 'no-store' }
@@ -104,144 +142,44 @@ async function PreviousVersionPanel({ pageId, lastUpdated }: { pageId: string; l
   }
 
   const data = (await res.json()) as { content: string };
-  const prevHtml = renderMarkdown(stripFrontmatter(data.content));
-
-  return (
-    <div
-      style={{
-        marginTop: '0.75rem',
-        padding: '1rem 1.25rem',
-        borderRadius: 6,
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border)',
-        opacity: 0.75,
-      }}
-    >
-      <div className="meta" style={{ marginBottom: '0.5rem' }}>
-        Previous version · before <LocalDate iso={lastUpdated} />
-      </div>
-      <article dangerouslySetInnerHTML={{ __html: prevHtml }} style={{ fontSize: 13 }} />
-    </div>
+  // Citation numbers belong to the current version's source list, so the old
+  // version shows its text without them; wikilinks become plain labels.
+  const sourceTitles = getSourceTitleSet();
+  const prevMarkdown = stripCitationPlaceholders(
+    scanCitations(displayPageBody(data.content, pageType), (t) => sourceTitles.has(t.toLowerCase())).markdown,
   );
-}
-
-/**
- * Contradicting sources panel — rendered next to the Linked resources block
- * on the right sidebar. Reads activity_log rows (via /api/wiki/[page_id]/contradictions)
- * where the match-step LLM triage flagged a source as contradicting this page.
- * Read-only for now; resolve/dismiss verbs and an inbox view are deferred
- * until real usage tells us the right UI shape.
- */
-interface ContradictionItem {
-  source_id: string | null;
-  source_title: string | null;
-  source_url: string | null;
-  source_type: string | null;
-  date_ingested: string | null;
-  reason: string | null;
-  session_id: string | null;
-  detected_at: string | null;
-}
-
-async function ContradictingSourcesPanel({ pageId }: { pageId: string }) {
-  const res = await fetch(
-    `${process.env.APP_URL ?? 'http://app:3000'}/api/wiki/${pageId}/contradictions`,
-    { cache: 'no-store' }
-  ).catch(() => null);
-
-  if (!res || !res.ok) return null;
-
-  const data = (await res.json()) as { items: ContradictionItem[]; count: number };
-  if (data.count === 0) return null;
+  const prevHtml = renderMarkdown(stripWikilinks(prevMarkdown));
 
   return (
-    <section style={{ marginTop: '2rem' }}>
-      <div className="meta" style={{ marginBottom: '0.5rem' }}>
-        Contradicting sources
+    <>
+      <div
+        style={{
+          marginTop: '0.75rem',
+          padding: '1rem 1.25rem',
+          borderRadius: 6,
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border)',
+          opacity: 0.75,
+        }}
+      >
+        <div className="meta" style={{ marginBottom: '0.5rem' }}>
+          Previous version · before <LocalDate iso={lastUpdated} />
+        </div>
+        <article dangerouslySetInnerHTML={{ __html: prevHtml }} style={{ fontSize: 13 }} />
       </div>
-      {data.items.map((item, idx) => {
-        const key = `${item.source_id ?? 'unknown'}-${item.detected_at ?? idx}`;
-        const label = item.source_title ?? item.source_url ?? 'Untitled source';
-        const href = item.source_id ? `/source/${item.source_id}` : null;
-        return (
-          <div
-            key={key}
-            style={{
-              fontSize: 12,
-              padding: '0.3em 0',
-              lineHeight: 1.4,
-              borderBottom: '1px solid var(--border)',
-            }}
-          >
-            {href ? (
-              <Link
-                href={href}
-                style={{
-                  display: 'block',
-                  color: 'var(--danger)',
-                  fontWeight: 500,
-                }}
-              >
-                {label}
-              </Link>
-            ) : (
-              <span style={{ color: 'var(--danger)', fontWeight: 500 }}>{label}</span>
-            )}
-            {item.reason && (
-              <div style={{ color: 'var(--fg-dim)', marginTop: '0.2em' }}>{item.reason}</div>
-            )}
-            {(item.source_type || item.date_ingested) && (
-              <div style={{ color: 'var(--fg-muted)', marginTop: '0.2em', fontSize: 11 }}>
-                {item.source_type ? item.source_type : ''}
-                {item.source_type && item.date_ingested ? ' · ' : ''}
-                {item.date_ingested ? <LocalDate iso={item.date_ingested} /> : ''}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </section>
-  );
-}
-
-/** Related pages panel — embedding similarity, zero LLM cost. */
-async function RelatedPagesPanel({ pageId }: { pageId: string }) {
-  const res = await fetch(
-    `${process.env.APP_URL ?? 'http://app:3000'}/api/wiki/${pageId}/related`,
-    { cache: 'no-store' }
-  ).catch(() => null);
-
-  if (!res || !res.ok) return null;
-
-  const data = (await res.json()) as {
-    items: Array<{ page_id: string; title: string; page_type: string }>;
-    count: number;
-    enabled: boolean;
-  };
-
-  if (!data.enabled || data.count === 0) return null;
-
-  return (
-    <section style={{ marginTop: '2rem' }}>
-      <div className="meta" style={{ marginBottom: '0.5rem' }}>
-        You might also read
-      </div>
-      {data.items.map((p) => (
-        <Link
-          key={p.page_id}
-          href={`/wiki/${p.page_id}`}
-          style={{
-            display: 'block',
-            fontSize: 12,
-            color: 'var(--fg-muted)',
-            padding: '0.2em 0',
-            lineHeight: 1.4,
-          }}
-        >
-          {p.title}
-        </Link>
-      ))}
-    </section>
+      {restorable && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.75rem' }}>
+          <PageActionButton
+            endpoint={`/api/wiki/${pageId}/restore-previous`}
+            label="Restore this version"
+            busyLabel="Restoring…"
+            confirmLabel="Restore"
+            confirmText="Put this previous version back? The current version becomes the previous one, so you can switch back."
+            disabledReason={restoreDisabledReason}
+          />
+        </div>
+      )}
+    </>
   );
 }
 
@@ -251,40 +189,50 @@ export default async function WikiPageDetail({ params }: PageProps) {
   if (!page) notFound();
 
   const rawMarkdown = readPageMarkdown(page_id);
+  // Archived after a failed rewrite (lib/page-hold.ts): says why, and reads as its own type.
+  const hold = page.page_type === 'archived' ? getPageHold(page_id) : null;
   const entities = rawMarkdown ? parseFrontmatterEntities(rawMarkdown) : [];
-  const strippedMarkdown = rawMarkdown ? stripFrontmatter(rawMarkdown) : null;
   const titleMap = getPageTitleMap();
-  // Heal legacy drafts: unwrap body-only code fences, drop duplicate `## Sources`
-  // section (provenance footer below owns it), then expand wikilinks.
-  const cleanMarkdown = strippedMarkdown
-    ? expandWikilinks(
-        stripLeadingContentHeading(
-          stripSourcesSection(stripWrappingFence(strippedMarkdown)),
-        ),
-        titleMap,
-      )
+  const sourceTitles = getSourceTitleSet();
+
+  // Heal legacy drafts (body-only code fences, duplicate `## Sources` — the
+  // numbered source list below owns it), turn citations into numbered
+  // placeholders, then expand wikilinks, linking each page once. Citations go
+  // first: legacy citation groups can contain [[wikilinks]].
+  const shown = rawMarkdown ? displayPageBody(rawMarkdown, hold?.restore_page_type ?? page.page_type) : null;
+  const scan = shown ? scanCitations(shown, (t) => sourceTitles.has(t.toLowerCase())) : null;
+  const cleanMarkdown = scan
+    ? expandWikilinksForDisplay(scan.markdown, (t) => titleMap.get(t.toLowerCase()), page_id)
     : null;
   const headings = cleanMarkdown ? extractHeadings(cleanMarkdown) : [];
-  const html = cleanMarkdown ? renderMarkdown(cleanMarkdown) : null;
+
+  // Disputes the page records in its own text, read before citations become
+  // numbered placeholders. Links use the table of contents' anchors, which
+  // are slugged after display rewrites (lib/page-disputes.ts).
+  const disputes = shown
+    ? findPageDisputes(shown).map((d) => ({
+        ...d,
+        anchor: headings.some((h) => h.anchor === d.anchor)
+          ? d.anchor
+          : headings[d.headingIndex]?.anchor ?? d.anchor,
+      }))
+    : [];
+  // Each with its finding in the disagreements record (status, verdict),
+  // then the checks' findings, e.g. sources flagged as contradicting it.
+  const disagreements =
+    page_id !== SAVED_LINKS_PAGE_ID ? panelDisagreements(disputes, listPageDisagreements(page_id)) : [];
 
   const groups = getCategoryGroups();
-  const backlinks = getBacklinks(page_id);
+  const connections = page_id !== SAVED_LINKS_PAGE_ID ? getPageConnections(page_id) : null;
 
-  const db = getDb();
-  const provRows = db
-    .prepare(
-      `SELECT p.source_id, s.title AS source_title, s.source_url, p.date_compiled
-         FROM provenance p
-         JOIN sources s ON s.source_id = p.source_id
-         WHERE p.page_id = ?
-         ORDER BY p.date_compiled DESC`
-    )
-    .all(page_id) as Array<{
-    source_id: string;
-    source_title: string;
-    source_url: string | null;
-    date_compiled: string;
-  }>;
+  // Cited sources first (numbers match the markers), then the other sources.
+  const sourceList = getNumberedSources(page_id, scan?.order ?? []);
+  const html = cleanMarkdown
+    ? renderCitationMarkers(
+        renderMarkdown(cleanMarkdown),
+        (n) => sourceList[n - 1]?.title ?? 'Source no longer in the wiki',
+      )
+    : null;
 
   const badge = pageTypeBadge(page.page_type);
 
@@ -320,6 +268,30 @@ export default async function WikiPageDetail({ params }: PageProps) {
           </div>
         </div>
 
+        {hold && (
+          <div
+            role="note"
+            style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-hover)',
+              borderRadius: 6,
+              padding: '0.9em 1.1em',
+              marginBottom: '1.75rem',
+              color: 'var(--fg-secondary)',
+              lineHeight: 1.6,
+              maxWidth: '70ch',
+            }}
+          >
+            <strong style={{ color: 'var(--fg)' }}>Archived until it is rewritten.</strong>{' '}
+            {hold.reason ?? 'Kompl could not rewrite this page after one of its sources was deleted.'} It is left out
+            of the wiki, search and the graph until it is rebuilt from its remaining sources, which{' '}
+            <Link href="/settings#page-upgrade" style={{ color: 'var(--accent)' }}>
+              Update pages
+            </Link>{' '}
+            in Settings does.
+          </div>
+        )}
+
         {(page.summary || entities.length > 0) && (
           <section style={{ marginBottom: '2rem' }}>
             <div style={{ marginBottom: '0.75rem', paddingBottom: '0.4rem', borderBottom: '1px solid var(--border)' }}>
@@ -328,7 +300,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
               </span>
             </div>
             {page.summary && (
-              <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-muted)', lineHeight: 1.7, fontSize: 16, maxWidth: '91ch' }}>
+              <p style={{ margin: '0 0 0.75rem', color: 'var(--fg-secondary)', lineHeight: 1.7, fontSize: 18, maxWidth: '70ch' }}>
                 {renderInlineWikilinks(page.summary, titleMap)}
               </p>
             )}
@@ -356,7 +328,7 @@ export default async function WikiPageDetail({ params }: PageProps) {
                 CONTENT
               </span>
             </div>
-            <article dangerouslySetInnerHTML={{ __html: html }} style={{ fontSize: 16 }} />
+            <article dangerouslySetInnerHTML={{ __html: html }} style={{ fontSize: 18 }} />
           </section>
         ) : (
           <div
@@ -373,37 +345,66 @@ export default async function WikiPageDetail({ params }: PageProps) {
           </div>
         )}
 
-        {/* Provenance footer */}
-        {provRows.length > 0 && (
+        {/* Numbered sources — citation markers in the text link here (#src-N). */}
+        {(sourceList.length > 0 || page.previous_content_path) && (
           <footer
             style={{
               marginTop: '3rem',
               paddingTop: '1.5rem',
               borderTop: '1px solid var(--border)',
               color: 'var(--fg-muted)',
-              fontSize: 12,
+              fontSize: 14,
             }}
           >
-            <div className="meta" style={{ fontWeight: 600, marginBottom: '0.4rem' }}>
-              BUILT FROM {provRows.length} SOURCE{provRows.length !== 1 ? 'S' : ''}
-            </div>
-            {provRows.map((r) => (
-              <div key={r.source_id} style={{ marginBottom: '0.25rem' }}>
-                <Link href={`/source/${r.source_id}`}>{r.source_title}</Link>
-                {safeExternalUrl(r.source_url) && (
-                  <>
-                    {' '}
-                    &mdash;{' '}
-                    <a href={safeExternalUrl(r.source_url)!} target="_blank" rel="noopener noreferrer">
-                      original
-                    </a>
-                  </>
-                )}
-                <span className="meta" style={{ marginLeft: '0.5rem' }}>
-                  <LocalDate iso={r.date_compiled} />
-                </span>
-              </div>
-            ))}
+            {sourceList.length > 0 && (
+              <>
+                <h2 className="meta" style={{ fontWeight: 600, marginBottom: '0.6rem' }}>
+                  Sources ({sourceList.length})
+                </h2>
+                <ol style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                  {sourceList.map((r) => (
+                    <li
+                      key={r.source_id}
+                      id={`src-${r.n}`}
+                      className="source-row"
+                      style={{ display: 'flex', gap: '0.6rem', padding: '0.3rem 0.4rem', scrollMarginTop: 80 }}
+                    >
+                      <span
+                        className="mono"
+                        style={{
+                          minWidth: '1.6em',
+                          textAlign: 'right',
+                          color: r.cited ? 'var(--accent)' : 'var(--fg-dim)',
+                        }}
+                      >
+                        {r.n}
+                      </span>
+                      <span>
+                        {r.title ? (
+                          <Link href={`/source/${r.source_id}`}>{r.title}</Link>
+                        ) : (
+                          <span style={{ color: 'var(--fg-dim)' }}>Source no longer in the wiki</span>
+                        )}
+                        {safeExternalUrl(r.source_url) && (
+                          <>
+                            {' '}
+                            &mdash;{' '}
+                            <a href={safeExternalUrl(r.source_url)!} target="_blank" rel="noopener noreferrer">
+                              original
+                            </a>
+                          </>
+                        )}
+                        {r.date && (
+                          <span className="meta" style={{ marginLeft: '0.5rem' }}>
+                            <LocalDate iso={r.date} />
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </>
+            )}
             {page.previous_content_path && (
               <details style={{ marginTop: '1rem' }}>
                 <summary
@@ -411,101 +412,48 @@ export default async function WikiPageDetail({ params }: PageProps) {
                 >
                   View previous version
                 </summary>
-                <PreviousVersionPanel pageId={page_id} lastUpdated={page.last_updated} />
+                <PreviousVersionPanel
+                  pageId={page_id}
+                  pageType={page.page_type}
+                  lastUpdated={page.last_updated}
+                  restorable={page_id !== 'saved-links'}
+                  restoreDisabledReason={
+                    getRunningCompileSession() ? 'A compile is running. Restore when it has finished.' : null
+                  }
+                />
               </details>
             )}
           </footer>
         )}
       </main>
 
-      {/* Right: TOC + Backlinks */}
+      {/* Right: On this page, Disagreements, Connections, You might also read */}
       <aside
+        aria-label="About this page"
         style={{
           width: 293,
           flexShrink: 0,
-          padding: '2rem 1rem',
+          padding: '2rem 0.75rem',
           borderLeft: '1px solid var(--border)',
-          fontSize: 13,
           position: 'sticky',
-          top: 0,
-          maxHeight: 'calc(100dvh / 0.9)',
+          // Below the fixed 65px TopNav (same zoomed coordinate space).
+          top: 65,
+          maxHeight: 'calc(100dvh / 0.9 - 65px)',
           overflowY: 'auto',
           alignSelf: 'flex-start',
         }}
       >
-        {headings.length > 0 && (
-          <section style={{ marginBottom: '2rem' }}>
-            <div className="meta" style={{ marginBottom: '0.5rem' }}>
-              Contents
-            </div>
-            {headings.map((h) => (
-              <a
-                key={h.anchor}
-                href={`#${h.anchor}`}
-                style={{
-                  display: 'block',
-                  paddingLeft: h.level === 3 ? '1em' : 0,
-                  color: 'var(--fg-muted)',
-                  fontSize: 12,
-                  padding: `0.2em 0 0.2em ${h.level === 3 ? '0.8em' : '0'}`,
-                  lineHeight: 1.4,
-                }}
-              >
-                {h.text}
-              </a>
-            ))}
-          </section>
+        <WikiToc headings={headings} />
+
+        {page.page_type === 'source-summary' && sourceList[0] && (
+          <ViewOriginal sourceId={sourceList[0].source_id} />
         )}
 
-        <section>
-          <div className="meta" style={{ marginBottom: '0.5rem' }}>
-            Linked from ({backlinks.length})
-          </div>
-          {backlinks.length === 0 ? (
-            <p style={{ color: 'var(--fg-dim)', fontSize: 12, margin: 0 }}>No inbound links yet.</p>
-          ) : (
-            backlinks.map((b) => (
-              <Link
-                key={b.page_id}
-                href={`/wiki/${b.page_id}`}
-                style={{
-                  display: 'block',
-                  fontSize: 12,
-                  color: 'var(--fg-muted)',
-                  padding: '0.2em 0',
-                  lineHeight: 1.4,
-                }}
-              >
-                {b.title}
-              </Link>
-            ))
-          )}
-        </section>
+        <DisagreementsPanel rows={disagreements} sources={sourceList} />
 
-        {page.page_type === 'source-summary' && provRows[0] && (
-          <section style={{ marginTop: '2rem' }}>
-            <Link
-              href={`/source/${provRows[0].source_id}`}
-              style={{
-                display: 'block',
-                fontSize: 17,
-                fontWeight: 500,
-                color: 'var(--accent)',
-                padding: '0.25em 0',
-                lineHeight: 1.4,
-              }}
-            >
-              View original →
-            </Link>
-          </section>
-        )}
+        {connections && <ConnectionsPanel pageId={page_id} connections={connections} />}
 
-        {page_id !== SAVED_LINKS_PAGE_ID && (
-          <>
-            <ContradictingSourcesPanel pageId={page_id} />
-            <RelatedPagesPanel pageId={page_id} />
-          </>
-        )}
+        {page_id !== SAVED_LINKS_PAGE_ID && <RelatedPages pageId={page_id} />}
       </aside>
     </div>
   );

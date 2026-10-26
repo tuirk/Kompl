@@ -8,8 +8,9 @@
  *   1. Source summaries — one per session source, always 'create'
  *   2. Entity pages — from canonical entity list
  *   3. Concept pages — from canonical_concepts (resolved cross-session)
- *   4. Comparison pages — relationships of type competes_with / contradicts
- *   5. Overview pages — when a category has 3+ entity/concept pages
+ *   4. Comparison pages — pairs of subjects (entity or concept) that sources
+ *      say compete with or contradict each other
+ *   5. Overview pages — when an entity type with a category has 3+ entity pages
  *
  * All planned pages are inserted into the page_plans table for the draft
  * and commit steps to consume.
@@ -23,19 +24,24 @@ import { NextResponse } from 'next/server';
 
 import {
   clearStagedPagePlans,
-  countSourcesForRelationship,
   countSourcesMentioning,
+  getComparisonSourceIds,
   getDb,
   getEntityPromotionThreshold,
-  getExtractionsBySession,
+  getMentionKinds,
   getMinSourceChars,
-  getPageByTitle,
-  getSourceIdsForRelationship,
+  getPage,
+  getSessionComparisonPairs,
   getSourceIdsMentioning,
+  getSourcePage,
+  getTopicPageByTitle,
+  hasPendingCreate,
   insertPagePlan,
-  logActivity,
   readRawMarkdown,
+  type PageRow,
 } from '../../../../lib/db';
+import { recordTriageContradiction } from '../../../../lib/compile/triage-disagreement';
+import { countKinds, decidePageKind, isPageKind, sourceKinds, type PageKind } from '../../../../lib/page-kind';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -64,16 +70,20 @@ export interface PlannedPage {
 
 // ── Comparison page threshold ────────────────────────────────────────────────
 // A comparison page is only created when a specific rivalry appears in this
-// many distinct sources. One article saying "X competes with Y" is just that
-// article's opinion — three sources noting the same rivalry is a pattern
-// worth synthesising into its own page.
+// many distinct sources (competes_with and contradicts together). One
+// article saying "X competes with Y" is just that article's opinion — three
+// sources noting the same rivalry is a pattern worth synthesising into its
+// own page.
 // Deliberately NOT user-tunable — this is the load-bearing evidence signal,
 // not a noise knob.
 export const COMPARISON_SOURCE_THRESHOLD = 3;
 
-// ── Entity type → category heuristic ─────────────────────────────────────────
+// ── Entity type → overview category ──────────────────────────────────────────
+// Null for a type with no category (WORK_OF_ART, OTHER, ...): Rule 5 makes
+// no overview for it. A catch-all "General Overview" next to the
+// fine-grained ones defeats the grouping.
 
-export function entityTypeToCategory(entityType: string): string {
+export function entityTypeToCategory(entityType: string): string | null {
   const t = entityType.toUpperCase();
   if (t === 'PERSON') return 'People';
   if (t === 'ORG') return 'Organizations';
@@ -81,7 +91,37 @@ export function entityTypeToCategory(entityType: string): string {
   if (t === 'LOCATION') return 'Locations';
   if (t === 'EVENT') return 'Events';
   if (t === 'CONCEPT') return 'Concepts';
-  return 'General';
+  return null;
+}
+
+// ── Triage updates keep the page's own type ──────────────────────────────────
+// Commit writes the plan's page_type onto the page. A Rule 6 triage update
+// carries no kind of its own, so it keeps the page's type; typing it 'entity'
+// turned "WCAG 2.1" from a concept into an entity (2026-10-17, session
+// e55c740b). Rules 2 and 3 decide entity vs concept by majority
+// (lib/page-kind.ts). Summary pages keep Rule 1's own type logic.
+const SELF_TYPED_PAGES = new Set<string>(['entity', 'concept', 'comparison', 'overview']);
+
+// The pages Rules 2-5 update by title (db.ts getTopicPageByTitle).
+const TOPIC_PAGE_TYPES = ['entity', 'concept', 'comparison', 'overview'] as const;
+
+/**
+ * A page held after a failed rewrite (lib/page-hold.ts) may still hold a
+ * deleted source's material, and an update keeps a page's text. It keeps its
+ * title and is left alone (neither updated nor made again) until a rewrite
+ * from its sources brings it back (Settings > Wiki health).
+ */
+function isHeld(page: PageRow | null): boolean {
+  return page?.page_type === 'archived';
+}
+
+function updatePageType(
+  existing: { page_type: string } | null,
+  planned: PlannedPage['page_type'],
+): PlannedPage['page_type'] {
+  return existing && SELF_TYPED_PAGES.has(existing.page_type)
+    ? (existing.page_type as PlannedPage['page_type'])
+    : planned;
 }
 
 // ── Route handler ─────────────────────────────────────────────────────────────
@@ -157,27 +197,11 @@ export async function POST(request: Request) {
   // the current run.
   clearStagedPagePlans(session_id);
 
-  // Get extractions for relationships (Rule 4 comparison pages). Concepts
-  // are no longer read here — they go through the resolver and arrive as
-  // canonical_concepts in the request body, matching how canonical_entities
-  // flows in. Same 3-layer cross-session pipeline for both, so "Transformer
-  // Architecture" and "Transformer Networks" from different sessions
-  // converge instead of forming duplicate concept pages.
-  const extractions = getExtractionsBySession(session_id);
-  const extractionMap = new Map<string, { relationships: Array<{ from_entity: string; to: string; type: string }> }>();
-  for (const ext of extractions) {
-    try {
-      const llm = JSON.parse(ext.llm_output) as {
-        relationships?: Array<{ from_entity: string; to: string; type: string }>;
-      };
-      extractionMap.set(ext.source_id, {
-        relationships: llm.relationships ?? [],
-      });
-    } catch {
-      extractionMap.set(ext.source_id, { relationships: [] });
-    }
-  }
-
+  // Concepts are not read from the extractions here: they go through the
+  // resolver and arrive as canonical_concepts in the request body, matching
+  // how canonical_entities flows in. Same 3-layer cross-session pipeline for
+  // both, so "Transformer Architecture" and "Transformer Networks" from
+  // different sessions converge instead of forming duplicate concept pages.
   const plans: PlannedPage[] = [];
 
   // Wiki-wide promotion threshold (schema v17). An entity/concept gets its own
@@ -188,17 +212,34 @@ export async function POST(request: Request) {
   // source #12 is the tipping point that promotes it, even when ingested alone.
   const entityThreshold = getEntityPromotionThreshold();
 
+  // A new entity, concept, comparison or overview page that a draft waiting
+  // for approval will create (auto-approve off) counts as planned: Rules 2-5
+  // plan no second "create" of it, or approving both drafts made two pages
+  // (plan 1.8). This session's sources wait for that draft; once it is
+  // approved, a compile naming the subject updates the page from every
+  // source that mentions it.
+  let pendingCreatesSkipped = 0;
+  const waitsForApproval = (title: string, pageTypes: readonly string[]): boolean => {
+    if (!hasPendingCreate(title, pageTypes)) return false;
+    pendingCreatesSkipped++;
+    return true;
+  };
+
   // ── Rule 1: Source summaries ─────────────────────────────────────────────────
   // All sources get a page. Short sources (<min_source_chars) become 'original-source'
   // pages that display raw content without LLM drafting. Long sources are 'source-summary'.
   // On retry, a source may already have a committed page from an earlier run —
-  // getPageByTitle flips the action to 'update' so commit reuses the existing
-  // page_id instead of minting a duplicate.
+  // getSourcePage finds it through provenance and flips the action to 'update'
+  // so commit reuses the existing page_id instead of minting a duplicate.
   const minSourceChars = getMinSourceChars();
   for (const src of sessionSources) {
     const isShort = minSourceChars > 0 &&
       (readRawMarkdown(src.source_id)?.length ?? 0) < minSourceChars;
-    const existing = getPageByTitle(src.title);
+    // A source's page draft waiting for approval does not hold this one
+    // back: every session source needs a plan (commit activates the sources
+    // its plans name), and approval refuses whichever of the two drafts
+    // comes second (lib/approve-plan.ts).
+    const existing = getSourcePage(src.source_id, src.title);
     plans.push({
       plan_id: randomUUID(),
       title: src.title,
@@ -210,180 +251,129 @@ export async function POST(request: Request) {
     });
   }
 
-  // ── Rule 2: Entity pages ─────────────────────────────────────────────────────
+  // ── Rules 2 + 3: Entity and concept pages ────────────────────────────────────
+  // Concepts arrive pre-resolved from /api/compile/resolve like entities, in
+  // their own bucket. A subject gets ONE plan whichever buckets name it: a
+  // name some sources tag PRODUCT/ORG and others CONCEPT is one page ("S&P
+  // 500" was planned twice on session 29be62eb). Its kind follows most of its
+  // sources, and an existing page flips only on a clear majority (D6,
+  // lib/page-kind.ts). A comparison or overview page with the title keeps its
+  // own type.
+  //
   // Gate is wiki-wide: countSourcesMentioning reads entity_mentions across the
   // full corpus. When threshold is crossed for the first time, source_ids on
   // the plan is seeded from the full historical mention set so the new page
   // is created with provenance for every source that ever named it — not just
   // the session sources that happened to trigger the promotion.
-  const entityPlanIds: string[] = [];
-  const entityPlansByCanonical = new Map<string, string>(); // canonical → plan_id
-
-  for (const entity of canonicalEntities) {
-    if (!entity.canonical) continue;
-    if (countSourcesMentioning(entity.canonical) < entityThreshold) continue;
-
-    const canonicalKey = entity.canonical.toLowerCase();
-
-    // Within-session dedup: same canonical name seen again → skip; source_ids
-    // were already seeded from the full mention history on first insert.
-    if (entityPlansByCanonical.has(canonicalKey)) continue;
-
-    const existing = getPageByTitle(entity.canonical);
-    const plan_id = randomUUID();
-    entityPlansByCanonical.set(canonicalKey, plan_id);
-
-    plans.push({
-      plan_id,
-      title: entity.canonical,
-      page_type: 'entity',
-      action: existing ? 'update' : 'create',
-      source_ids: getSourceIdsMentioning(entity.canonical),
-      existing_page_id: existing?.page_id,
-      related_plan_ids: [],
-    });
-    entityPlanIds.push(plan_id);
-  }
-
-  // ── Rule 3: Concept pages ────────────────────────────────────────────────────
-  // Concepts now arrive pre-resolved from /api/compile/resolve — fuzzy +
-  // embedding + LLM triage against existing concept page titles — mirroring
-  // the entity path. No in-route fuzzy grouping. Within-session dedup is
-  // already handled upstream; this pass applies the wiki-wide mention
-  // threshold and emits plan rows.
-  const conceptPlanIds: string[] = [];
-  const conceptPlansByCanonical = new Map<string, string>(); // canonical → plan_id
-
-  for (const concept of canonicalConcepts) {
-    if (!concept.canonical) continue;
-    if (countSourcesMentioning(concept.canonical) < entityThreshold) continue;
-
-    const canonicalKey = concept.canonical.toLowerCase();
-    // Within-session dedup: same canonical name seen again → skip.
-    if (conceptPlansByCanonical.has(canonicalKey)) continue;
-    // Cross-bucket dedup: if Rule 2 already emitted an entity plan for this
-    // canonical name (because some sources tagged it as PRODUCT/ORG/etc.),
-    // don't ALSO emit a concept plan for it. Without this, "S&P 500" landed
-    // in page_plans twice on session 29be62eb (once entity, once concept,
-    // identical source_ids) — see resolve/route.ts partition logic. Entity
-    // is the more specific bucket, so it wins.
-    if (entityPlansByCanonical.has(canonicalKey)) continue;
-
-    const existing = getPageByTitle(concept.canonical);
-    const plan_id = randomUUID();
-    conceptPlansByCanonical.set(canonicalKey, plan_id);
-
-    plans.push({
-      plan_id,
-      title: concept.canonical,
-      page_type: 'concept',
-      action: existing ? 'update' : 'create',
-      source_ids: getSourceIdsMentioning(concept.canonical),
-      existing_page_id: existing?.page_id,
-      related_plan_ids: [],
-    });
-    conceptPlanIds.push(plan_id);
-  }
-
-  // ── Rule 4: Comparison pages ─────────────────────────────────────────────────
-  // Wiki-wide counting: relationship_mentions was written at extract time with
-  // direction-agnostic types (competes_with, contradicts) already normalized
-  // to from/to lowercase-sorted order. We still enumerate THIS session's
-  // relationships to seed the candidate list (a pair nobody mentioned in the
-  // current session isn't worth re-evaluating), but the gate reads the full
-  // corpus so a pair that hit threshold across historical sources finally
-  // earns its page when the current session corroborates it.
-  const entityNameSet = new Set(canonicalEntities.map((e) => e.canonical.toLowerCase()));
-
-  // Raw-spelling → canonical map, built in-memory per request from the
-  // resolver's canonicalEntities output. Lets Rule 4 normalise relationship
-  // endpoints that still carry the LLM's raw spelling (e.g. "GPT 4") before
-  // the entityNameSet filter, the candidatePairs key, the entityPlansByCanonical
-  // lookup, and the comparison title. Without this, a relationship like
-  // "GPT 4 competes_with Claude" was silently dropped even though the
-  // resolver had already canonicalised both endpoints — undercounting the
-  // threshold and losing legitimate comparison pages.
-  //
-  // Persisted relationship_mentions rows are already consistent with the
-  // resolver's canonicals thanks to normalizeSessionMentionsToCanonical
-  // (db.ts). This in-memory map fixes the OTHER surface: the raw
-  // llm.relationships Rule 4 reads from extractionMap.
-  const rawToCanonical = new Map<string, string>();
-  for (const g of canonicalEntities) {
-    rawToCanonical.set(g.canonical.toLowerCase(), g.canonical);
-    for (const a of g.aliases) rawToCanonical.set(a.toLowerCase(), g.canonical);
-  }
-  const canonicalize = (raw: string): string =>
-    rawToCanonical.get(raw.toLowerCase()) ?? raw;
-
-  const candidatePairs = new Map<string, { from: string; to: string; type: string }>();
-  for (const ext of extractionMap.values()) {
-    for (const rel of ext.relationships) {
-      if (rel.type !== 'competes_with' && rel.type !== 'contradicts') continue;
-
-      // Canonicalise FIRST so all downstream filters/keys/titles use the
-      // same identity. entityNameSet holds canonical names in lowercase,
-      // so a raw variant must be folded to its canonical before checking.
-      const fromCanonical = canonicalize(rel.from_entity);
-      const toCanonical = canonicalize(rel.to);
-
-      if (!entityNameSet.has(fromCanonical.toLowerCase())) continue;
-      if (!entityNameSet.has(toCanonical.toLowerCase())) continue;
-
-      // Normalize to match the sort rule used by extract when writing
-      // relationship_mentions, so the lookup key lines up.
-      const [nameA, nameB] = fromCanonical.toLowerCase() <= toCanonical.toLowerCase()
-        ? [fromCanonical, toCanonical]
-        : [toCanonical, fromCanonical];
-      const key = `${nameA.toLowerCase()}|||${nameB.toLowerCase()}|||${rel.type}`;
-      if (!candidatePairs.has(key)) {
-        candidatePairs.set(key, { from: nameA, to: nameB, type: rel.type });
+  const subjects = new Map<string, { canonical: string; sessionKinds: Map<string, PageKind> }>();
+  const buckets: Array<[ResolvedGroup[], PageKind]> = [[canonicalEntities, 'entity'], [canonicalConcepts, 'concept']];
+  for (const [groups, kind] of buckets) {
+    for (const g of groups) {
+      if (!g.canonical) continue;
+      const key = g.canonical.toLowerCase();
+      let subject = subjects.get(key);
+      if (!subject) {
+        subject = { canonical: g.canonical, sessionKinds: new Map() };
+        subjects.set(key, subject);
       }
+      // A source in both buckets counts once, as an entity, as extract does.
+      for (const sid of g.source_ids ?? []) if (!subject.sessionKinds.has(sid)) subject.sessionKinds.set(sid, kind);
     }
   }
 
+  const planIdByCanonical = new Map<string, string>(); // canonical (lower case) → plan_id
+  for (const [key, subject] of subjects) {
+    if (countSourcesMentioning(subject.canonical) < entityThreshold) continue;
+
+    const existing = getTopicPageByTitle(subject.canonical);
+    if (isHeld(existing)) continue;
+    if (!existing && waitsForApproval(subject.canonical, TOPIC_PAGE_TYPES)) continue;
+    let page_type: PlannedPage['page_type'];
+    if (existing && !isPageKind(existing.page_type)) {
+      page_type = existing.page_type as PlannedPage['page_type'];
+    } else {
+      const kinds = sourceKinds(getMentionKinds(subject.canonical), subject.sessionKinds);
+      page_type = decidePageKind(existing ? (existing.page_type as PageKind) : null, countKinds(kinds.values()));
+    }
+
+    const plan_id = randomUUID();
+    planIdByCanonical.set(key, plan_id);
+    plans.push({
+      plan_id,
+      title: subject.canonical,
+      page_type,
+      action: existing ? 'update' : 'create',
+      source_ids: getSourceIdsMentioning(subject.canonical),
+      existing_page_id: existing?.page_id,
+      related_plan_ids: [],
+    });
+  }
+
+  // ── Rule 4: Comparison pages ─────────────────────────────────────────────────
+  // A pair of subjects earns a comparison page ("A vs B") once
+  // COMPARISON_SOURCE_THRESHOLD distinct sources across the wiki say they
+  // compete or contradict each other: competes_with and contradicts count
+  // together, one page per pair (plan 3.5). Candidates are this session's
+  // relation rows (a pair nobody mentioned now isn't re-evaluated), which
+  // resolve rebuilt on the resolver's canonical names (rebuildSessionMentions,
+  // db.ts). Both ends must be subjects of this session, entity or concept,
+  // with a plan from Rules 2-3, so the page can link both.
+  const candidatePairs = new Map<string, { from: string; to: string }>();
+  for (const row of getSessionComparisonPairs(session_id)) {
+    const a = subjects.get(row.from_canonical.toLowerCase());
+    const b = subjects.get(row.to_canonical.toLowerCase());
+    if (!a || !b || a === b) continue;
+    // Sorted like the stored rows, so the title is the same whichever way
+    // round a source put it.
+    const [from, to] = a.canonical.toLowerCase() <= b.canonical.toLowerCase()
+      ? [a.canonical, b.canonical]
+      : [b.canonical, a.canonical];
+    const key = `${from.toLowerCase()}|||${to.toLowerCase()}`;
+    if (!candidatePairs.has(key)) candidatePairs.set(key, { from, to });
+  }
+
   let relationshipsBelowThreshold = 0;
-  for (const { from, to, type } of candidatePairs.values()) {
-    const count = countSourcesForRelationship(from, to, type);
-    if (count < COMPARISON_SOURCE_THRESHOLD) {
+  for (const { from, to } of candidatePairs.values()) {
+    const comparisonSourceIds = getComparisonSourceIds(from, to);
+    if (comparisonSourceIds.length < COMPARISON_SOURCE_THRESHOLD) {
       relationshipsBelowThreshold++;
       continue;
     }
 
-    const planIdA = entityPlansByCanonical.get(from.toLowerCase());
-    const planIdB = entityPlansByCanonical.get(to.toLowerCase());
+    const planIdA = planIdByCanonical.get(from.toLowerCase());
+    const planIdB = planIdByCanonical.get(to.toLowerCase());
     if (!planIdA || !planIdB) continue;
     const related: string[] = [planIdA, planIdB];
 
     const compTitle = `${from} vs ${to}`;
-    const existingComp = getPageByTitle(compTitle);
+    // Like Rules 2 and 3: a source page with this title is not the comparison.
+    const existingComp = getTopicPageByTitle(compTitle);
+    if (isHeld(existingComp)) continue;
+    if (!existingComp && waitsForApproval(compTitle, ['comparison'])) continue;
     plans.push({
       plan_id: randomUUID(),
       title: compTitle,
       page_type: 'comparison',
       action: existingComp ? 'update' : 'create',
-      source_ids: getSourceIdsForRelationship(from, to, type),
+      source_ids: comparisonSourceIds,
       related_plan_ids: related,
       existing_page_id: existingComp?.page_id,
     });
   }
 
   // ── Rule 5: Overview pages ───────────────────────────────────────────────────
-  // Group entity + concept pages by category, create overview when 3+.
+  // Group this session's entity plans by entity type, create overview when 3+.
   // Use Set — within-session canonical dedup (Rule 2) can yield multiple
   // canonicalEntities entries sharing one plan_id; a list would double-count
   // them and trigger an overview from fewer than 3 unique pages.
   const categoryMap = new Map<string, Set<string>>(); // category → plan_ids
 
   for (const entity of canonicalEntities) {
-    const planId = entityPlansByCanonical.get(entity.canonical.toLowerCase());
+    const planId = planIdByCanonical.get(entity.canonical.toLowerCase());
     if (!planId) continue;
-    const t = entity.type?.toUpperCase();
-    // Skip unmapped/OTHER types — they would flow through entityTypeToCategory's
-    // 'General' fallback and produce a catch-all overview page alongside the
-    // fine-grained ones, defeating the whole point of the category grouping.
-    if (!t || t === 'OTHER') continue;
-    const cat = entityTypeToCategory(entity.type);
+    // No type, or one with no category (OTHER, WORK_OF_ART, ...): no overview.
+    const cat = entity.type ? entityTypeToCategory(entity.type) : null;
+    if (!cat) continue;
     if (!categoryMap.has(cat)) categoryMap.set(cat, new Set());
     categoryMap.get(cat)!.add(planId);
   }
@@ -400,7 +390,9 @@ export async function POST(request: Request) {
     }
 
     const overviewTitle = `${category} Overview`;
-    const existingOverview = getPageByTitle(overviewTitle);
+    const existingOverview = getTopicPageByTitle(overviewTitle);
+    if (isHeld(existingOverview)) continue;
+    if (!existingOverview && waitsForApproval(overviewTitle, ['overview'])) continue;
     plans.push({
       plan_id: randomUUID(),
       title: overviewTitle,
@@ -414,16 +406,27 @@ export async function POST(request: Request) {
 
   // ── Rule 6: Match-triage outputs (skip / update / contradiction) ────────────
   // The match step (/api/compile/match) runs TF-IDF + LLM triage for each
-  // session source against non-summary pages. All three decisions now have
-  // a concrete downstream action:
+  // session source against non-summary pages, and may re-check pairs whose
+  // triage failed in an earlier compile (their sources are from earlier
+  // sessions; lib/compile/triage-recheck.ts). The three verdicts each have
+  // a concrete downstream action; a failed triage has none:
   //   skip          → provenance-only plan (record the link, no re-draft)
   //   update        → update plan (re-draft the existing page with this source)
-  //   contradiction → NO plan (out of compile's hot path) + rich activity row
-  //                   powering the wiki page sidebar.
+  //   contradiction → the same update plan, so the draft writes the
+  //                   disagreement into the page, + a possible-disagreement
+  //                   record (lib/compile/triage-disagreement.ts) powering
+  //                   the wiki page sidebar.
+  //   triage_failed → NO plan: triage gave no verdict (rate limit, cost
+  //                   ceiling, error), so nothing may record the source on
+  //                   the page. match/route.ts already logged it.
   // Pre-built source metadata lookup so Rule 6 doesn't re-query `sources`
   // on every match.
   const sessionSourceMetaById = new Map<string, typeof sessionSources[number]>();
   for (const s of sessionSources) sessionSourceMetaById.set(s.source_id, s);
+  const earlierSourceMeta = (source_id: string) =>
+    db
+      .prepare(`SELECT source_id, title, source_url, source_type, date_ingested FROM sources WHERE source_id = ?`)
+      .get(source_id) as typeof sessionSources[number] | undefined;
 
   for (const match of matches) {
     if (match.decision === 'skip') {
@@ -440,51 +443,51 @@ export async function POST(request: Request) {
         existing_page_id: match.page_id,
         related_plan_ids: [],
       });
-    } else if (match.decision === 'update') {
-      // Re-draft the existing page with this source appended as a contributor.
-      // Reuse action='update' (commit/route.ts already handles that path); the
-      // existing_page_id here is what makes the update route specific to this
-      // page. Dedup against plans already emitted by Rules 1-5 so one source
-      // doesn't write the same page twice.
-      const alreadyPlanned = plans.some(
-        (p) => p.existing_page_id === match.page_id && p.source_ids.includes(match.source_id)
-      );
-      if (alreadyPlanned) continue;
-      plans.push({
-        plan_id: randomUUID(),
-        title: match.page_title,
-        page_type: 'entity',   // match targets non-summary pages; all are entity or concept
-        action: 'update',
-        source_ids: [match.source_id],
-        existing_page_id: match.page_id,
-        related_plan_ids: [],
-      });
-    } else if (match.decision === 'contradiction') {
-      // Log a detailed activity row. The getPageContradictions(pageId) helper
-      // in db.ts json_extracts from here — keep the field names stable.
-      const srcMeta = sessionSourceMetaById.get(match.source_id);
-      logActivity('page_contradiction_detected', {
-        source_id: match.source_id,
-        session_id,
-        step_key: 'match',
-        details: {
+    } else if (match.decision === 'update' || match.decision === 'contradiction') {
+      // Re-draft the existing page with this source as a contributor
+      // (commit/route.ts handles action='update'). One update plan per page:
+      // a plan Rules 1-5 or an earlier verdict made for it takes the source,
+      // since two drafts of one page from the same base lose one of the
+      // updates (auto-approve) or have the second approval refused.
+      const pagePlan = plans.find((p) => p.existing_page_id === match.page_id && p.action === 'update');
+      if (pagePlan) {
+        if (!pagePlan.source_ids.includes(match.source_id)) pagePlan.source_ids.push(match.source_id);
+      } else {
+        plans.push({
+          plan_id: randomUUID(),
+          title: match.page_title,
+          // Match targets entity, concept, comparison and overview pages.
+          page_type: updatePageType(getPage(match.page_id), 'entity'),
+          action: 'update',
+          source_ids: [match.source_id],
+          existing_page_id: match.page_id,
+          related_plan_ids: [],
+        });
+      }
+      // A contradiction is also recorded as a possible disagreement; the
+      // draft writes it into the page. A re-checked pair's source is from
+      // an earlier session.
+      if (match.decision === 'contradiction') {
+        recordTriageContradiction({
+          session_id,
+          source_id: match.source_id,
           page_id: match.page_id,
           page_title: match.page_title,
-          source_title: srcMeta?.title ?? null,
-          source_url: srcMeta?.source_url ?? null,
-          source_type: srcMeta?.source_type ?? null,
-          date_ingested: srcMeta?.date_ingested ?? null,
           reason: match.reason,
-          session_id,
-          detected_at: new Date().toISOString(),
-        },
-      });
+          source: sessionSourceMetaById.get(match.source_id) ?? earlierSourceMeta(match.source_id),
+        });
+      }
     }
-    // Any other decision value: drop silently. Triage is enum-typed at the
-    // match layer; unknown values are a contract violation we don't rescue.
+    // 'triage_failed' and any other decision value: no plan. Triage is
+    // enum-typed at the match layer; unknown values are a contract
+    // violation we don't rescue.
   }
 
   // ── Persist all plans ────────────────────────────────────────────────────────
+  // A provenance-only plan has nothing to draft or link up, so it is stored
+  // ready for commit. Ones earlier versions stored 'planned' never reach
+  // commit (draft and crossref pass them by): some came from triage
+  // outages, which gave no verdict, so linking them would be wrong.
   for (const plan of plans) {
     insertPagePlan({
       plan_id: plan.plan_id,
@@ -495,6 +498,7 @@ export async function POST(request: Request) {
       source_ids: plan.source_ids,
       existing_page_id: plan.existing_page_id ?? null,
       related_plan_ids: plan.related_plan_ids,
+      draft_status: plan.action === 'provenance-only' ? 'crossreffed' : 'planned',
     });
   }
 
@@ -510,6 +514,7 @@ export async function POST(request: Request) {
     comparison_threshold: COMPARISON_SOURCE_THRESHOLD,
     relationships_found: candidatePairs.size,
     relationships_below_threshold: relationshipsBelowThreshold,
+    pending_creates_skipped: pendingCreatesSkipped,
   };
 
   return NextResponse.json({ session_id, pages: plans, stats }, { status: 200 });

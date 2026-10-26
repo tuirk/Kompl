@@ -1,15 +1,43 @@
 'use client';
 
 /**
- * WikiSidebar — shared left panel for all /wiki/* pages.
- * Client component: manages "Show archived" toggle with client-side state.
- * Receives initialGroups from the parent server component.
+ * WikiSidebar — shared left panel for /wiki and every article page.
+ *
+ * Collapses to a 52px icon rail: the button at its top-left or Ctrl+.
+ * toggles it, the choice is kept in localStorage, and with no choice yet,
+ * windows under 1200px start collapsed.
+ * Expanded, it lists recent pages, the categories (open ones remembered) and
+ * comparisons, with the current page highlighted and scrolled into view.
+ *
+ * No flash and no hydration mismatch: the server always renders the expanded
+ * state, and SIDEBAR_BOOT_SCRIPT, the first child, sets data-collapsed from
+ * localStorage before the first paint; globals.css derives width and
+ * visibility from that attribute. Hydration renders the server state again
+ * (useSyncExternalStore's server snapshot), so only that one attribute can
+ * differ, hence suppressHydrationWarning on this element. React then adopts
+ * the stored state and drops the script. Mounted by a client-side
+ * navigation, it reads localStorage directly and renders no script.
  */
 
-import { useState, useEffect } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { CSSProperties } from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { BookOpen, ChevronRight, History, Network, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import type { CategoryGroup, PageRow } from '../lib/db';
 import { PAGE_TYPE_VAR, ARCHIVED_COLOR } from '../lib/page-type-palette';
+import {
+  NARROW_QUERY,
+  SIDEBAR_BOOT_SCRIPT,
+  SIDEBAR_COLLAPSED_KEY,
+  SIDEBAR_OPEN_KEY,
+  createLocalPref,
+  isToggleShortcut,
+  parseOpenCategories,
+  resolveCollapsed,
+  serializeOpenCategories,
+} from '../lib/wiki-sidebar-prefs';
+import { archivedNote, archivedPageIds, groupPagesByCategory } from '../lib/sidebar-archived';
 
 interface WikiSidebarProps {
   initialGroups: CategoryGroup[];
@@ -17,60 +45,129 @@ interface WikiSidebarProps {
   activeCategory?: string;
 }
 
-/** Client-side equivalent of getCategoryGroups() — groups PageRow[] by category. */
-function buildCategoryGroups(pages: PageRow[]): CategoryGroup[] {
-  const map = new Map<string, PageRow[]>();
-  for (const p of pages) {
-    const cat = p.category ?? 'Uncategorized';
-    if (!map.has(cat)) map.set(cat, []);
-    map.get(cat)!.push(p);
-  }
-  return Array.from(map.entries())
-    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-    .map(([category, pages]) => ({ category, pages }));
-}
+const collapsedPref = createLocalPref(SIDEBAR_COLLAPSED_KEY);
+const openPref = createLocalPref(SIDEBAR_OPEN_KEY);
 
-const SIDEBAR_OPEN_KEY = 'kompl_wiki_sidebar_open';
-
-function readOpenCategories(fallback: string[]): Set<string> {
+function isNarrowWindow(): boolean {
   try {
-    const raw = localStorage.getItem(SIDEBAR_OPEN_KEY);
-    if (raw === null) return new Set(fallback);
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return new Set(fallback);
-    return new Set(parsed.filter((x): x is string => typeof x === 'string'));
+    return window.matchMedia(NARROW_QUERY).matches;
   } catch {
-    return new Set(fallback);
+    return false;
   }
 }
 
-function writeOpenCategories(open: Set<string>) {
+/** Stored choice, plus the window width while there is none. */
+function subscribeCollapsed(onChange: () => void): () => void {
+  const unsubscribe = collapsedPref.subscribe(onChange);
+  let query: MediaQueryList | null = null;
   try {
-    localStorage.setItem(SIDEBAR_OPEN_KEY, JSON.stringify([...open]));
+    query = window.matchMedia(NARROW_QUERY);
+    query.addEventListener('change', onChange);
   } catch {
-    // Non-fatal: private mode / quota — in-memory state still works this session.
+    query = null;
   }
+  return () => {
+    unsubscribe();
+    query?.removeEventListener('change', onChange);
+  };
+}
+
+const readCollapsed = () => resolveCollapsed(collapsedPref.read(), isNarrowWindow());
+// The server can't see localStorage: it renders expanded, every category open.
+const serverCollapsed = () => false;
+const serverOpenRaw = () => null;
+const neverChanges = () => () => {};
+const onClient = () => true;
+const onServer = () => false;
+
+const QUICK_LINKS = [
+  { href: '/wiki', label: 'All pages', Icon: BookOpen },
+  { href: '/wiki/graph', label: 'Graph', Icon: Network },
+  { href: '/feed', label: 'Activity', Icon: History },
+] as const;
+
+const LIST: CSSProperties = { listStyle: 'none', margin: 0, padding: 0 };
+const SECTION_LABEL: CSSProperties = { margin: '0 0 6px', padding: '0 4px' };
+const TRUNCATE: CSSProperties = {
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+const CURRENT_TINT = 'rgba(var(--accent-rgb), 0.08)';
+
+function PageLink({
+  page,
+  active,
+  nested = false,
+  reveal = false,
+  archived: archivedPage = false,
+}: {
+  page: PageRow;
+  active: boolean;
+  /** Shown only by "Show archived": all its sources are archived. */
+  archived?: boolean;
+  /** Inside a category: draws the category's guide line. */
+  nested?: boolean;
+  /** The row to scroll into view for the current page. */
+  reveal?: boolean;
+}) {
+  const archived = archivedPage || page.page_type === 'archived';
+  const dot = archived
+    ? ARCHIVED_COLOR
+    : PAGE_TYPE_VAR[page.page_type as keyof typeof PAGE_TYPE_VAR] ?? ARCHIVED_COLOR;
+  return (
+    <Link
+      href={`/wiki/${page.page_id}`}
+      className="wiki-sb-item"
+      aria-current={active ? 'page' : undefined}
+      data-sidebar-reveal={reveal ? '' : undefined}
+      title={archived ? `${page.title} (archived)` : page.title}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: `4px 8px 4px ${nested ? 12 : 8}px`,
+        borderRadius: nested ? '0 6px 6px 0' : 6,
+        fontSize: 14,
+        lineHeight: '20px',
+        textDecoration: 'none',
+        // The current page turns the guide line into an accent bar.
+        boxShadow: nested
+          ? `inset ${active ? '2px 0 0 var(--accent)' : '1px 0 0 var(--border-hover)'}`
+          : undefined,
+        ...(active
+          ? { color: 'var(--fg)', background: CURRENT_TINT, fontWeight: 500 }
+          : archived
+            ? { color: 'var(--fg-dim)', fontStyle: 'italic' }
+            : null),
+      }}
+    >
+      <span
+        aria-hidden
+        style={{ width: 6, height: 6, borderRadius: '50%', background: dot, flexShrink: 0 }}
+      />
+      <span style={TRUNCATE}>{page.title}</span>
+    </Link>
+  );
 }
 
 export default function WikiSidebar({ initialGroups, activePageId, activeCategory }: WikiSidebarProps) {
+  const pathname = usePathname();
+  const ids = useId();
+  const panelId = `${ids}-panel`;
+  // False on the server and while hydrating; true afterwards and on client-side mounts.
+  const hydrated = useSyncExternalStore(neverChanges, onClient, onServer);
+  const collapsed = useSyncExternalStore(subscribeCollapsed, readCollapsed, serverCollapsed);
+  const openRaw = useSyncExternalStore(openPref.subscribe, openPref.read, serverOpenRaw);
   const [showArchived, setShowArchived] = useState(false);
+  // What "Show archived" found (lib/sidebar-archived.ts), said under the toggle.
+  const [archivedIds, setArchivedIds] = useState<ReadonlySet<string>>(new Set());
+  const [archivedStatus, setArchivedStatus] = useState<string | null>(null);
   const [groups, setGroups] = useState(initialGroups);
-  // SSR / first paint: open all non-comparison categories. After mount, restore
-  // last toggled set from localStorage (or keep all-open if key is absent).
-  const allCategoryNames = () =>
-    initialGroups
-      .filter((g) => g.pages.some((p) => p.page_type !== 'comparison'))
-      .map((g) => g.category);
-  const [openCategories, setOpenCategories] = useState<Set<string>>(
-    () => new Set(allCategoryNames()),
-  );
-  const [sidebarHydrated, setSidebarHydrated] = useState(false);
-
-  useEffect(() => {
-    setOpenCategories(readOpenCategories(allCategoryNames()));
-    setSidebarHydrated(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- seed once from initialGroups on mount
-  }, []);
+  const [dismissedCategory, setDismissedCategory] = useState<string | null>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   // Sync groups when server re-renders a new page (initialGroups changes via App Router).
   // Without this, useState persists stale groups across soft navigations in the shared layout.
@@ -78,32 +175,86 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
     if (!showArchived) setGroups(initialGroups);
   }, [initialGroups, showArchived]);
 
-  function toggleCategory(category: string) {
-    setOpenCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(category)) next.delete(category);
-      else next.add(category);
-      if (sidebarHydrated) writeOpenCategories(next);
-      return next;
-    });
+  function setCollapsed(next: boolean) {
+    // Collapsing hides the page lists and the archive toggle. Focus in there
+    // would be lost, so it moves to the collapse button, which stays.
+    const focused = document.activeElement;
+    if (next && focused instanceof Element && focused.closest('.wiki-sb-full')) {
+      toggleRef.current?.focus();
+    }
+    collapsedPref.write(next ? '1' : '0');
   }
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented || !isToggleShortcut(e)) return;
+      e.preventDefault();
+      setCollapsed(!readCollapsed());
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setCollapsed only uses refs and module state
+  }, []);
+
+  // Bring the current page's row into view: on load (once the stored open
+  // categories apply), on navigation, and when the panel reopens.
+  useEffect(() => {
+    if (!hydrated || collapsed) return;
+    const box = scrollRef.current;
+    const row = box?.querySelector<HTMLElement>('[data-sidebar-reveal]');
+    if (!box || !row || row.offsetParent !== box) return;
+    const top = row.offsetTop;
+    if (top >= box.scrollTop && top + row.offsetHeight <= box.scrollTop + box.clientHeight) return;
+    box.scrollTop = top - (box.clientHeight - row.offsetHeight) / 2;
+  }, [hydrated, collapsed, activePageId]);
 
   async function handleToggle() {
     const next = !showArchived;
     setShowArchived(next);
-    if (next) {
-      try {
-        const res = await fetch('/api/wiki/index?include_archived=true');
-        if (res.ok) {
-          const data = (await res.json()) as { pages: PageRow[] };
-          setGroups(buildCategoryGroups(data.pages));
-        }
-      } catch {
-        // Non-fatal: toggle still flips, just may not show archived pages
-      }
-    } else {
+    setArchivedIds(new Set());
+    if (!next) {
       setGroups(initialGroups);
+      setArchivedStatus(null);
+      return;
     }
+    setArchivedStatus('Loading archived pages…');
+    try {
+      const res = await fetch('/api/wiki/index?include_archived=true');
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = (await res.json()) as { pages: PageRow[] };
+      const archived = archivedPageIds(data.pages, initialGroups);
+      setGroups(groupPagesByCategory(data.pages));
+      setArchivedIds(archived);
+      setArchivedStatus(archivedNote(archived.size));
+    } catch {
+      setShowArchived(false);
+      setArchivedStatus('Couldn’t load archived pages. Try again.');
+    }
+  }
+
+  // With nothing stored, every category with a non-comparison page is open.
+  const defaultOpen = useMemo(
+    () =>
+      initialGroups
+        .filter((g) => g.pages.some((p) => p.page_type !== 'comparison'))
+        .map((g) => g.category),
+    [initialGroups],
+  );
+  const openCategories = useMemo(() => parseOpenCategories(openRaw, defaultOpen), [openRaw, defaultOpen]);
+  // The current page's category opens by itself, without being saved, unless
+  // the reader closes it.
+  const autoOpen = activeCategory && activeCategory !== dismissedCategory ? activeCategory : null;
+  const isOpen = (category: string) => openCategories.has(category) || category === autoOpen;
+
+  function toggleCategory(category: string) {
+    const next = new Set(openCategories);
+    if (isOpen(category)) {
+      next.delete(category);
+      if (category === autoOpen) setDismissedCategory(category);
+    } else {
+      next.add(category);
+    }
+    openPref.write(serializeOpenCategories(next));
   }
 
   // Pull comparison pages out of the category tree — they get their own section.
@@ -119,277 +270,287 @@ export default function WikiSidebar({ initialGroups, activePageId, activeCategor
 
   return (
     <aside
+      className="wiki-sb"
+      data-collapsed={collapsed ? 'true' : 'false'}
+      aria-label="Wiki sidebar"
+      suppressHydrationWarning
       style={{
-        width: 349,
         flexShrink: 0,
-        borderRight: '1px solid var(--border)',
-        padding: '1.5rem 1rem',
-        overflowY: 'auto',
-        maxHeight: 'calc(100dvh / 0.9 - 65px)',
         position: 'sticky',
+        // Below the fixed 65px TopNav; the height compensates for html { zoom: 0.9 }.
         top: 65,
         alignSelf: 'flex-start',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 24,
+        height: 'calc(100dvh / 0.9 - 65px)',
+        borderRight: '1px solid var(--border)',
+        // Clips the full-width content while collapsed and during the width
+        // animation. clip, not hidden: no scroll container, sticky still works.
+        overflow: 'clip',
       }}
     >
-      {/* Index link + archive toggle row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Link
-          href="/wiki"
-          style={{
-            fontFamily: 'var(--font-body)',
-            fontSize: 12,
-            color: 'var(--fg-muted)',
-            textDecoration: 'none',
-            padding: '0.3em 0.5em',
-          }}
-        >
-          Index
-        </Link>
-        <button
-          onClick={handleToggle}
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: 9,
-            letterSpacing: 0.5,
-            textTransform: 'uppercase',
-            color: showArchived ? 'var(--accent)' : 'var(--fg-dim)',
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '0.3em 0.5em',
-          }}
-        >
-          {showArchived ? 'Hide Archived' : 'Show Archived'}
-        </button>
-      </div>
-
-      {/* Recently Compiled */}
-      {recentPages.length > 0 && (
-        <section
-          style={{
-            padding: 16,
-            background: 'rgba(30, 32, 34, 0.5)',
-            border: '1px solid rgba(var(--separator-rgb), 0.1)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 12,
-          }}
-        >
-          {/* Header: label + All Activity link */}
-          <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span
-              style={{
-                fontFamily: 'var(--font-body)',
-                fontWeight: 400,
-                fontSize: 10,
-                lineHeight: '15px',
-                letterSpacing: 2,
-                textTransform: 'uppercase',
-                color: 'var(--accent)',
-              }}
-            >
-              Recently Compiled
-            </span>
-            <Link
-              href="/feed"
-              style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: 9,
-                letterSpacing: 0.5,
-                textTransform: 'uppercase',
-                color: 'var(--fg-dim)',
-                textDecoration: 'none',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              All Activity →
-            </Link>
-          </div>
-
-          {/* Item list */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {recentPages.map((p) => (
-              <Link
-                key={p.page_id}
-                href={`/wiki/${p.page_id}`}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'row',
-                  alignItems: 'flex-start',
-                  gap: 8,
-                  textDecoration: 'none',
-                }}
-              >
-                {/* Accent tick */}
-                <div style={{ paddingTop: 2, flexShrink: 0 }}>
-                  <div style={{ width: 2, height: 12, background: 'var(--accent)' }} />
-                </div>
-                {/* Title */}
-                <span
-                  style={{
-                    fontFamily: 'var(--font-heading)',
-                    fontWeight: 400,
-                    fontSize: 11,
-                    lineHeight: '16px',
-                    color: 'var(--fg)',
-                    opacity: activePageId === p.page_id ? 1 : 0.7,
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {p.title}
-                </span>
-              </Link>
-            ))}
-          </div>
-        </section>
+      {!hydrated && (
+        <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: SIDEBAR_BOOT_SCRIPT }} />
       )}
 
-      {/* Categories */}
-      <section>
+      {/* Fixed width, so text doesn't rewrap while the sidebar animates. */}
+      <div
+        style={{
+          width: 'calc(var(--wiki-sb-width) - 1px)',
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
         <div
           style={{
-            fontFamily: 'var(--font-body)',
-            fontSize: 10,
-            letterSpacing: 2,
-            textTransform: 'uppercase',
-            color: 'var(--accent)',
-            marginBottom: '0.5rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            padding: '12px 10px 6px',
           }}
         >
-          Categories
-        </div>
-        {categoryGroups.map((group) => {
-          const isActive = activeCategory === group.category;
-          const open = openCategories.has(group.category);
-          return (
-            <div key={group.category} style={{ marginBottom: '0.75rem' }}>
-              <button
-                type="button"
-                onClick={() => toggleCategory(group.category)}
-                aria-expanded={open}
-                style={{
-                  width: '100%',
-                  fontFamily: 'inherit',
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: isActive ? 'var(--fg)' : 'var(--fg-muted)',
-                  padding: '0.2em 0.4em',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  textAlign: 'left',
-                }}
-              >
-                <span
-                  aria-hidden
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 9,
-                    color: 'var(--fg-dim)',
-                    width: 8,
-                    flexShrink: 0,
-                  }}
-                >
-                  {open ? '▾' : '▸'}
-                </span>
-                <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {group.category}
-                </span>
-                <span style={{ color: 'var(--fg-dim)', flexShrink: 0 }}>{group.pages.length}</span>
-              </button>
-              {open && group.pages.map((p) => (
-                <Link
-                  key={p.page_id}
-                  href={`/wiki/${p.page_id}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.4rem',
-                    fontSize: 12,
-                    padding: '0.2em 0.4em 0.2em 1em',
-                    borderRadius: 4,
-                    color: activePageId === p.page_id ? 'var(--fg)' : 'var(--fg-muted)',
-                    background: activePageId === p.page_id ? 'var(--bg-card-hover)' : 'transparent',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    textDecoration: 'none',
-                    opacity: p.page_type === 'archived' ? 0.45 : 1,
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      background: p.page_type === 'archived' ? ARCHIVED_COLOR : (PAGE_TYPE_VAR[p.page_type as keyof typeof PAGE_TYPE_VAR] ?? ARCHIVED_COLOR),
-                      flexShrink: 0,
-                    }}
-                  />
-                  {p.title}
-                </Link>
-              ))}
-            </div>
-          );
-        })}
-      </section>
-
-      {/* Comparisons */}
-      {comparisonPages.length > 0 && (
-        <section>
-          <div
+          <button
+            ref={toggleRef}
+            type="button"
+            className="wiki-sb-btn"
+            onClick={() => setCollapsed(!collapsed)}
+            aria-expanded={!collapsed}
+            aria-controls={panelId}
+            aria-keyshortcuts="Control+."
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={collapsed ? 'Expand sidebar (Ctrl+.)' : 'Collapse sidebar (Ctrl+.)'}
             style={{
-              fontFamily: 'var(--font-body)',
-              fontSize: 10,
-              letterSpacing: 2,
-              textTransform: 'uppercase',
-              color: 'var(--fg-dim)',
-              marginBottom: '0.5rem',
+              width: 32,
+              height: 32,
+              flexShrink: 0,
+              padding: 0,
+              border: 'none',
+              borderRadius: 6,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
           >
-            Comparisons
-          </div>
-          {comparisonPages.map((p) => (
-            <Link
-              key={p.page_id}
-              href={`/wiki/${p.page_id}`}
+            {/* Both icons render; CSS shows the one for the current state. */}
+            <PanelLeftClose size={18} aria-hidden className="wiki-sb-full" />
+            <PanelLeftOpen size={18} aria-hidden className="wiki-sb-rail" />
+          </button>
+          <button
+            type="button"
+            className="wiki-sb-btn wiki-sb-full"
+            onClick={handleToggle}
+            aria-pressed={showArchived}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              height: 28,
+              padding: '0 8px',
+              border: 'none',
+              borderRadius: 6,
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              fontWeight: 400,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              ...(showArchived ? { color: 'var(--accent)' } : null),
+            }}
+          >
+            {/* Checkbox mark: the state shows by more than colour. */}
+            <span
+              aria-hidden
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                fontSize: 12,
-                padding: '0.2em 0.4em 0.2em 1em',
-                borderRadius: 4,
-                color: activePageId === p.page_id ? 'var(--fg)' : 'var(--fg-muted)',
-                background: activePageId === p.page_id ? 'var(--bg-card-hover)' : 'transparent',
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                textDecoration: 'none',
+                width: 8,
+                height: 8,
+                borderRadius: 2,
+                border: '1px solid currentColor',
+                background: showArchived ? 'currentColor' : 'transparent',
               }}
-            >
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: PAGE_TYPE_VAR.comparison,
-                  flexShrink: 0,
-                }}
-              />
-              {p.title}
-            </Link>
-          ))}
-        </section>
-      )}
+            />
+            Show archived
+          </button>
+        </div>
+        {/* Always rendered, so screen readers announce what the toggle found. */}
+        <p
+          role="status"
+          className="wiki-sb-full"
+          style={{
+            margin: archivedStatus ? '0 0 8px' : 0,
+            padding: '0 18px',
+            fontSize: 12,
+            lineHeight: '16px',
+            color: 'var(--fg-dim)',
+            textAlign: 'right',
+          }}
+        >
+          {archivedStatus}
+        </p>
+
+        <nav aria-label="Wiki" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          {/* Entry points: icon + label expanded, the icons alone form the rail. */}
+          <ul style={{ ...LIST, display: 'flex', flexDirection: 'column', gap: 2, padding: '0 10px 10px' }}>
+            {QUICK_LINKS.map(({ href, label, Icon }) => {
+              const current = pathname === href;
+              return (
+                <li key={href}>
+                  <Link
+                    href={href}
+                    className="wiki-sb-item wiki-sb-quick"
+                    aria-label={label}
+                    aria-current={current ? 'page' : undefined}
+                    title={collapsed ? label : undefined}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      height: 32,
+                      padding: '0 7px',
+                      borderRadius: 6,
+                      fontSize: 14,
+                      textDecoration: 'none',
+                      whiteSpace: 'nowrap',
+                      ...(current ? { color: 'var(--fg)', background: CURRENT_TINT } : null),
+                    }}
+                  >
+                    <Icon size={18} aria-hidden style={{ flexShrink: 0 }} />
+                    <span className="wiki-sb-full">{label}</span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+
+          <div
+            id={panelId}
+            ref={scrollRef}
+            className="wiki-sb-full"
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              overscrollBehavior: 'contain',
+              scrollbarWidth: 'thin',
+              scrollbarGutter: 'stable',
+              position: 'relative', // offsetTop of the rows is measured from here
+              padding: '14px 6px 24px 10px',
+              borderTop: '1px solid var(--border)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 22,
+            }}
+          >
+            {recentPages.length > 0 && (
+              <div>
+                <div id={`${ids}-recent`} className="meta" style={SECTION_LABEL}>
+                  Recently compiled
+                </div>
+                <ul aria-labelledby={`${ids}-recent`} style={LIST}>
+                  {recentPages.map((p) => (
+                    <li key={p.page_id}>
+                      <PageLink page={p} active={p.page_id === activePageId} archived={archivedIds.has(p.page_id)} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div>
+              <div id={`${ids}-categories`} className="meta" style={SECTION_LABEL}>
+                Categories
+              </div>
+              {categoryGroups.length === 0 ? (
+                <p style={{ margin: 0, padding: '0 4px', fontSize: 13, color: 'var(--fg-dim)' }}>
+                  No pages yet.
+                </p>
+              ) : (
+                <ul aria-labelledby={`${ids}-categories`} style={LIST}>
+                  {categoryGroups.map((group, i) => {
+                    const open = isOpen(group.category);
+                    const listId = `${ids}-category-${i}`;
+                    return (
+                      <li key={group.category}>
+                        <button
+                          type="button"
+                          className="wiki-sb-btn"
+                          onClick={() => toggleCategory(group.category)}
+                          aria-expanded={open}
+                          aria-controls={listId}
+                          title={group.category}
+                          style={{
+                            width: '100%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            height: 30,
+                            padding: '0 8px 0 4px',
+                            border: 'none',
+                            borderRadius: 6,
+                            fontFamily: 'inherit',
+                            fontSize: 14,
+                            fontWeight: 600,
+                            textAlign: 'left',
+                            color: group.category === activeCategory ? 'var(--fg)' : 'var(--fg-secondary)',
+                          }}
+                        >
+                          <ChevronRight
+                            size={14}
+                            aria-hidden
+                            style={{
+                              flexShrink: 0,
+                              color: 'var(--fg-dim)',
+                              transform: open ? 'rotate(90deg)' : undefined,
+                            }}
+                          />
+                          <span style={{ ...TRUNCATE, flex: 1 }}>{group.category}</span>
+                          <span
+                            style={{
+                              flexShrink: 0,
+                              fontSize: 12,
+                              fontWeight: 400,
+                              color: 'var(--fg-dim)',
+                              fontVariantNumeric: 'tabular-nums',
+                            }}
+                          >
+                            {group.pages.length}
+                          </span>
+                        </button>
+                        <ul id={listId} hidden={!open} style={{ ...LIST, margin: '2px 0 8px 11px' }}>
+                          {group.pages.map((p) => {
+                            const active = p.page_id === activePageId;
+                            return (
+                              <li key={p.page_id}>
+                                <PageLink page={p} active={active} nested reveal={active} archived={archivedIds.has(p.page_id)} />
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            {comparisonPages.length > 0 && (
+              <div>
+                <div id={`${ids}-comparisons`} className="meta" style={SECTION_LABEL}>
+                  Comparisons
+                </div>
+                <ul aria-labelledby={`${ids}-comparisons`} style={LIST}>
+                  {comparisonPages.map((p) => {
+                    const active = p.page_id === activePageId;
+                    return (
+                      <li key={p.page_id}>
+                        <PageLink page={p} active={active} reveal={active} archived={archivedIds.has(p.page_id)} />
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+          </div>
+        </nav>
+      </div>
     </aside>
   );
 }

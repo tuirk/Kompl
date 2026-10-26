@@ -18,6 +18,12 @@ import {
 } from 'lucide-react';
 import { useToast } from '../../components/Toast';
 import { SUPPORTED_FORMATS_SHORT } from '../../lib/supported-formats';
+import { isLlmModel, LLM_MODEL_INFO } from '../../lib/llm-models';
+
+/** The model's name as Settings shows it, never its raw id. */
+function modelLabel(id: string): string {
+  return isLlmModel(id) ? LLM_MODEL_INFO[id].label : id;
+}
 
 type ConnectorStatus = 'active' | 'coming-soon';
 
@@ -41,7 +47,7 @@ const CONNECTORS: ConnectorDef[] = [
 
 const ACTIVE_IDS = new Set(CONNECTORS.filter(c => c.status === 'active').map(c => c.id));
 
-function OnboardingPageInner() {
+function OnboardingPageInner({ wikiEmpty }: { wikiEmpty: boolean }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast, showToast } = useToast();
@@ -150,7 +156,7 @@ function OnboardingPageInner() {
               opacity: 0.85,
               marginTop: 4,
             }}>
-              compile model · {compileModel}
+              compile model · {modelLabel(compileModel)}
               {' · '}
               <Link
                 href="/settings#compile-model"
@@ -166,16 +172,17 @@ function OnboardingPageInner() {
           )}
         </section>
 
-        <div style={{ textAlign: 'center', marginBottom: '0.75rem' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>
-            Have a Kompl export?{' '}
-            <Link href="/settings#import" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
-              Import it here →
-            </Link>
-            {' '}
-            <span style={{ color: 'var(--fg-dim)', fontSize: '0.75rem' }}>(empty wiki only)</span>
-          </span>
-        </div>
+        {/* Restoring needs a wiki with no pages, so offer it only then. */}
+        {wikiEmpty && (
+          <div style={{ textAlign: 'center', marginBottom: '0.75rem' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>
+              Have a Kompl backup?{' '}
+              <Link href="/settings#import" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                Restore it instead →
+              </Link>
+            </span>
+          </div>
+        )}
 
         {/* Connector grid — 4 cols × 2 rows */}
         <div style={{
@@ -188,27 +195,39 @@ function OnboardingPageInner() {
             const checked = selected.has(c.id);
 
             if (c.status === 'active') {
+              // A checkbox button: Tab reaches it, Space or Enter toggles it,
+              // and its name is the card's text.
               return (
-                <div
+                <button
                   key={c.id}
+                  type="button"
+                  role="checkbox"
+                  aria-checked={checked}
+                  className="onboarding-source-card"
                   onClick={() => toggleConnector(c.id)}
                   style={{
                     background: 'var(--bg-card)',
+                    color: 'inherit',
+                    font: 'inherit',
+                    fontWeight: 'normal',
+                    textAlign: 'left',
+                    border: 'none',
+                    borderRadius: 0,
                     padding: 24,
                     display: 'flex',
                     flexDirection: 'column',
                     gap: 32,
                     cursor: 'pointer',
                     boxSizing: 'border-box',
-                    outline: checked ? '1px solid rgba(var(--accent-rgb),0.25)' : '1px solid transparent',
-                    transition: 'outline 0.1s',
+                    boxShadow: checked ? '0 0 0 1px rgba(var(--accent-rgb),0.25)' : 'none',
+                    transition: 'box-shadow 0.1s',
                   }}
                 >
                   {/* Top row: connector icon + selection indicator */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <c.Icon size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
                     {/* Square radio indicator */}
-                    <div style={{
+                    <span style={{
                       width: 16,
                       height: 16,
                       border: '1px solid var(--accent)',
@@ -217,18 +236,19 @@ function OnboardingPageInner() {
                       justifyContent: 'center',
                       flexShrink: 0,
                     }}>
-                      <div style={{
+                      <span style={{
+                        display: 'block',
                         width: 9,
                         height: 9,
                         background: 'var(--accent)',
                         opacity: checked ? 1 : 0,
                         transition: 'opacity 0.1s',
                       }} />
-                    </div>
-                  </div>
+                    </span>
+                  </span>
 
                   {/* Title + subtitle */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <span style={{
                       fontFamily: 'var(--font-heading)',
                       fontWeight: 700,
@@ -248,8 +268,8 @@ function OnboardingPageInner() {
                     }}>
                       {c.subtitle}
                     </span>
-                  </div>
-                </div>
+                  </span>
+                </button>
               );
             }
 
@@ -318,7 +338,7 @@ function OnboardingPageInner() {
         {/* Inline footer nav */}
         <div style={{
           position: 'fixed',
-          bottom: 32, left: 0, right: 0,
+          bottom: 0, left: 0, right: 0,
           zIndex: 50,
           background: 'var(--bg)',
           borderTop: '1px solid rgba(var(--separator-rgb),0.12)',
@@ -379,6 +399,6 @@ function OnboardingPageInner() {
   );
 }
 
-export default function OnboardingClient() {
-  return <Suspense><OnboardingPageInner /></Suspense>;
+export default function OnboardingClient({ wikiEmpty }: { wikiEmpty: boolean }) {
+  return <Suspense><OnboardingPageInner wikiEmpty={wikiEmpty} /></Suspense>;
 }

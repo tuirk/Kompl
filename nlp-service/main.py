@@ -19,25 +19,28 @@ Part 2b additions (entity resolution):
   - POST /resolve/fuzzy         — Levenshtein/Jaro-Winkler/substring/acronym/alias grouping
   - POST /resolve/embedding     — sentence-transformers cosine similarity (>0.9/0.7-0.9/<0.7)
   - POST /resolve/disambiguate  — Gemini LLM disambiguation for 0.7–0.9 ambiguous band
+  - POST /resolve/name-similarity — name-only cosine for the app's alias screen
 
-Commit 7 additions (vector store + chat agent):
+Commit 7 additions (vector store):
   - POST /vectors/upsert        — embed a wiki page and store in Chroma
   - POST /vectors/search        — semantic search over page embeddings
   - POST /vectors/backfill      — upsert all pages not yet in Chroma (idempotent)
   - POST /storage/read-page     — read a compiled wiki page by page_id
-  - POST /chat/select-pages     — index-first LLM page selection
-  - POST /chat/synthesize       — wiki-grounded answer synthesis
 
-  GET /llm/usage               — today's Gemini spend vs daily cap (from /data/llm-cap.json)
+  GET /llm/usage               — today's LLM spend vs daily cap (from /data/llm-cap.json)
+  POST /pipeline/judge-claims  — claim check: do two sources' claims disagree?
+  GET /llm/pricing             — a model's per-1M-token prices + draft_page limits
+                                 (page-update estimate in Settings > Wiki health)
 
 Future commits will add routers for:
   - pipeline    (commit 10 — /pipeline/draft, /pipeline/plan)
   - wiki        (commit 12 — wiki rebuild orchestration)
 
-Intentionally minimal: no middleware, no CORS, no logging config. This
-service runs on the internal Docker network only (n8n-sidecar pattern per
-CLAUDE.md rule #3) so there is no browser-origin concern and no need for
-request logging beyond what uvicorn emits by default.
+Intentionally minimal: no CORS, no logging config. This service runs on
+the internal Docker network (n8n-sidecar pattern per CLAUDE.md rule #3)
+and needs no request logging beyond what uvicorn emits by default. Its one
+middleware refuses Host names Kompl doesn't use (services/known_host.py):
+the port published on 127.0.0.1 is reachable by DNS rebinding.
 
 This service NEVER opens the SQLite database. rule #1 in CLAUDE.md: the
 only process that holds a kompl.db file descriptor is Next.js (plus the
@@ -46,19 +49,24 @@ migration script, briefly, at boot).
 
 import logging
 import os
+import threading
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
-from routers.chat import router as chat_router
+from routers.claims import router as claims_router
 from routers.conversion import router as conversion_router
 from routers.extraction import router as extraction_router
+from routers.labels import router as labels_router
 from routers.llm import router as llm_router
 from routers.metadata_peek import router as metadata_peek_router
+from routers.name_similarity import router as name_similarity_router
 from routers.pipeline import router as pipeline_router
 from routers.resolution import router as resolution_router
 from routers.storage import router as storage_router
 from routers.vectors import router as vectors_router
+from services.known_host import KnownHostMiddleware
+from services.vector_store import warm_up
 
 logger = logging.getLogger(__name__)
 
@@ -80,16 +88,19 @@ class HealthResponse(BaseModel):
 
 
 app = FastAPI(title="kompl-nlp-service", version="0.7.0")
+app.add_middleware(KnownHostMiddleware)
 
+app.include_router(claims_router)
 app.include_router(conversion_router)
 app.include_router(extraction_router)
+app.include_router(labels_router)
 app.include_router(llm_router)
 app.include_router(metadata_peek_router)
+app.include_router(name_similarity_router)
 app.include_router(pipeline_router)
 app.include_router(resolution_router)
 app.include_router(storage_router)
 app.include_router(vectors_router)
-app.include_router(chat_router)
 
 
 @app.on_event("startup")
@@ -107,10 +118,17 @@ def startup_check() -> None:
         logger.warning(
             "Neither GEMINI_API_KEY nor DEEPSEEK_API_KEY is set. "
             "LLM endpoints (/pipeline/extract-llm, /pipeline/draft, "
-            "/pipeline/lint-scan, /resolve/disambiguate, /chat/synthesize) "
+            "/pipeline/lint-scan, /resolve/disambiguate) "
             "will fail with 500 for any session. "
             "Set at least one in docker-compose.yml / .env."
         )
+
+
+@app.on_event("startup")
+def warm_embeddings() -> None:
+    """Load the embedding model in the background so the service answers
+    /health at once and the first search after a restart is not keyword-only."""
+    threading.Thread(target=warm_up, name="embedding-warm-up", daemon=True).start()
 
 
 @app.get("/health", response_model=HealthResponse)

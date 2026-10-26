@@ -9,7 +9,8 @@ those are provider-agnostic.
 This module MUST NOT import services.llm_client at module level — gemini.py
 is loaded lazily by ``providers.get_provider()`` AFTER llm_client.py has
 finished its own module-load. Functions that need llm_client.* (the
-``LLMRateLimitedError`` type, the ``_check_and_record_cost`` callback) use
+``LLMRateLimitedError`` type, the ``_spend_reservation`` daily-cap gate, the
+``_check_and_record_cost`` callback) use
 lazy ``from services import llm_client`` inside the function body. That
 also keeps the test fixture's
 ``monkeypatch.setattr(llm_client, "_check_and_record_cost", mock)`` effective
@@ -21,6 +22,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import date, datetime, timezone
 from typing import Any, Callable, TypeVar
 
 import httpx
@@ -54,7 +56,7 @@ _GEMINI_RPM = int(os.environ.get("GEMINI_RPM", "800"))
 
 
 # ---------------------------------------------------------------------------
-# Pricing (Gemini 2.5-family, $/M tokens, 2026-04 public rates)
+# Pricing ($/M tokens; 2.5 rates read 2026-04, 3.x rates read 2026-10-09)
 # ---------------------------------------------------------------------------
 #
 # cost = (prompt_tokens - cached_tokens) * input_rate
@@ -74,13 +76,65 @@ _MODEL_PRICES: dict[str, dict[str, float]] = {
     # $2.50 / $15 / $0.25; we don't auto-detect that boundary here. If Pro is
     # routinely exercised with >200k prompts, override via env vars below.
     "gemini-2.5-pro":        {"input": 1.25, "output": 10.00, "cache": 0.125},
+    # 3.8 Flash is on an introductory rate through 2026-12-31;
+    # _SCHEDULED_PRICES moves it to the standard rate on 2027-01-01.
+    "gemini-3.8-flash":       {"input": 0.75, "output": 3.75, "cache": 0.075},
+    # No context-caching rate is listed for 3.5 Flash-Lite: bill cached
+    # tokens at the input rate, which never under-counts.
+    "gemini-3.5-flash-lite":  {"input": 0.30, "output": 2.50, "cache": 0.30},
+    # Preview; <=200k-token prompts (>200k: $4.00 / $18.00 / $0.40).
+    "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00, "cache": 0.20},
 }
+
+# Announced list-price changes, applied from their effective UTC date so the
+# daily cap never under-counts after a known increase.
+_SCHEDULED_PRICES: list[tuple[str, date, dict[str, float]]] = [
+    ("gemini-3.8-flash", date(2027, 1, 1), {"input": 1.50, "output": 7.50, "cache": 0.15}),
+]
 
 # Env overrides — last-resort escape hatch when Gemini changes pricing and
 # the code hasn't been updated yet. Apply to all models.
 _INPUT_PRICE_OVERRIDE  = os.environ.get("GEMINI_INPUT_PRICE_PER_M")
 _OUTPUT_PRICE_OVERRIDE = os.environ.get("GEMINI_OUTPUT_PRICE_PER_M")
 _CACHE_PRICE_OVERRIDE  = os.environ.get("GEMINI_CACHE_PRICE_PER_M")
+
+
+def _utc_today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+# Gemini 3.x replaces thinking_budget with thinking_level and rejects a
+# request that sends both. Supported levels differ per model
+# (ai.google.dev/gemini-api/docs/thinking, read 2026-10-09). Google also
+# advises keeping temperature at its 1.0 default on 3.x (lower values can
+# loop or degrade output), so 3.x requests omit it.
+_GEMINI3_THINKING_LEVELS: dict[str, tuple[str, ...]] = {
+    "gemini-3.8-flash":       ("low", "medium", "high"),
+    "gemini-3.5-flash-lite":  ("minimal", "low", "medium", "high"),
+    "gemini-3.1-pro-preview": ("low", "medium", "high"),
+}
+
+
+def _is_gemini3(model: str) -> bool:
+    return model.startswith("gemini-3")
+
+
+def _thinking_level_for(model: str, budget: int) -> str | None:
+    """Map Kompl's per-step thinking budget onto a Gemini 3 thinking_level.
+
+    0 -> the model's lowest level ('minimal' where offered, else 'low');
+    up to 1024 -> 'low'; up to 8192 -> 'medium'; above -> 'high'. A
+    negative ("dynamic") budget returns None: keep the model's default.
+    """
+    if budget < 0:
+        return None
+    if budget == 0:
+        return _GEMINI3_THINKING_LEVELS[model][0]
+    if budget <= 1024:
+        return "low"
+    if budget <= 8192:
+        return "medium"
+    return "high"
 
 
 def _get_model_prices(model: str) -> dict[str, float]:
@@ -90,6 +144,10 @@ def _get_model_prices(model: str) -> dict[str, float]:
     bump to a new model name doesn't silently crash pricing.
     """
     base = _MODEL_PRICES.get(model, _MODEL_PRICES["gemini-2.5-flash-lite"])
+    today = _utc_today()
+    for scheduled_model, effective, scheduled in _SCHEDULED_PRICES:
+        if scheduled_model == model and today >= effective:
+            base = scheduled
     return {
         "input":  float(_INPUT_PRICE_OVERRIDE)  if _INPUT_PRICE_OVERRIDE  else base["input"],
         "output": float(_OUTPUT_PRICE_OVERRIDE) if _OUTPUT_PRICE_OVERRIDE else base["output"],
@@ -144,32 +202,55 @@ def get_client() -> genai.Client:
 
 _RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 
+# Errors after the request went out, before an answer came back: Gemini may
+# have answered and billed it (llm_client._record_unanswered).
+_SENT_ERRORS = (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError)
+# Errors before the request reached Gemini: nothing to bill.
+_UNSENT_ERRORS = (httpx.ConnectError, httpx.PoolTimeout, httpx.WriteTimeout, httpx.WriteError)
+
+
+def _send(fn: Callable[[], T], req: LLMRequest) -> T:
+    """One attempt; an attempt sent without an answer counts its worst case."""
+    from services import llm_client  # lazy
+
+    try:
+        return fn()
+    except _SENT_ERRORS:
+        llm_client._record_unanswered(req)
+        raise
+
+
+def _no_time_left(req: LLMRequest) -> bool:
+    """A call with a deadline sends no attempt that cannot end before the
+    app stops waiting (llm_client._CALL_DEADLINE_S)."""
+    from services import llm_client  # lazy
+
+    left = llm_client._time_left(req)
+    return left is not None and left < llm_client._MIN_ATTEMPT_S
+
 
 def _with_retry(
-    fn: Callable[[], T], step: str, *, max_attempts: int = 3, base_delay: float = 0.5,
+    fn: Callable[[], T], req: LLMRequest, *, max_attempts: int = 3, base_delay: float = 0.5,
 ) -> T:
     # Lazy import: keeps the public LLMRateLimitedError type at the dispatcher
     # layer, avoids circular import at module load time.
     from services.llm_client import LLMRateLimitedError
 
+    step = req.step
     limiter = _get_limiter()
     last_exc: Exception | None = None
 
     for i in range(max_attempts):
+        if _no_time_left(req):
+            if last_exc is None:
+                raise TimeoutError(f"no time left for {step} before the app stops waiting")
+            break
         if not limiter.try_acquire("gemini"):
             raise LLMRateLimitedError(f"llm_rate_limited: bucket exhausted on {step}")
 
         try:
-            return fn()
-        except (
-            httpx.ConnectError,
-            httpx.PoolTimeout,
-            httpx.ReadTimeout,
-            httpx.WriteTimeout,
-            httpx.RemoteProtocolError,
-            httpx.WriteError,
-            httpx.ReadError,
-        ) as e:
+            return _send(fn, req)
+        except (*_SENT_ERRORS, *_UNSENT_ERRORS) as e:
             last_exc = e
             err_class = type(e).__name__
         except _APIError as e:
@@ -266,12 +347,19 @@ class GeminiProvider:
         # Build genai config from the canonical LLMRequest fields. Today's
         # call sites always set thinking_config (even when budget=0) — match
         # that contract verbatim so behaviour is byte-for-byte preserved.
-        config_kwargs: dict[str, Any] = {
-            "max_output_tokens": req.max_output_tokens,
-            "thinking_config": types.ThinkingConfig(thinking_budget=req.thinking_budget),
-        }
-        if req.temperature is not None:
-            config_kwargs["temperature"] = req.temperature
+        config_kwargs: dict[str, Any] = {"max_output_tokens": req.max_output_tokens}
+        if _is_gemini3(req.model):
+            level = _thinking_level_for(req.model, req.thinking_budget)
+            if level is not None:
+                config_kwargs["thinking_config"] = types.ThinkingConfig(
+                    thinking_level=types.ThinkingLevel[level.upper()]
+                )
+        else:
+            # Gemini 2.5: unchanged — always a thinking_budget (even 0) and
+            # the call site's temperature.
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=req.thinking_budget)
+            if req.temperature is not None:
+                config_kwargs["temperature"] = req.temperature
         if req.response_model is not None:
             config_kwargs["response_mime_type"] = "application/json"
             config_kwargs["response_schema"] = req.response_model
@@ -293,33 +381,45 @@ class GeminiProvider:
         client = get_client()
 
         def _call() -> Any:
-            return client.models.generate_content(model=req.model, contents=contents, config=config)
-
-        if req.extra.get("retry", True):
-            response = _with_retry(_call, step=req.step)
-        else:
-            # Free-form / state-committing paths (draft_page, synthesize, digest):
-            # acquire the limiter manually and skip retry — semantically
-            # identical to the existing inline rate-limit checks.
-            from services.llm_client import LLMRateLimitedError  # lazy
-            limiter = _get_limiter()
-            if not limiter.try_acquire("gemini"):
-                raise LLMRateLimitedError("llm_rate_limited: bucket exhausted")
-            response = _call()
-
-        # Log + record cost. Lazy import respects test-fixture monkeypatching
-        # of llm_client._check_and_record_cost.
-        _log_usage(req.step, response)
-        usage_dict = _read_usage_dict(response)
-        if usage_dict:
+            # With a deadline, an attempt waits only for what is left of it.
             from services import llm_client  # lazy
-            llm_client._check_and_record_cost(
-                req.model,
-                usage_dict["prompt_token_count"],
-                usage_dict["cached_content_token_count"],
-                usage_dict["candidates_token_count"],
-                usage_dict["thoughts_token_count"],
-            )
+            left = llm_client._time_left(req)
+            call_config = config
+            if left is not None:
+                call_config = config.model_copy(
+                    update={"http_options": types.HttpOptions(timeout=max(1, int(left * 1000)))}
+                )
+            return client.models.generate_content(model=req.model, contents=contents, config=call_config)
+
+        # Daily cap: refused here, before anything is sent, once today's
+        # recorded spend has reached it; the place is held until the cost is
+        # recorded. Lazy import respects test-fixture monkeypatching of
+        # llm_client._check_and_record_cost.
+        from services import llm_client  # lazy
+        with llm_client._spend_reservation(req):
+            if req.extra.get("retry", True):
+                response = _with_retry(_call, req)
+            else:
+                # Free-form / state-committing paths (draft_page, synthesize, digest):
+                # acquire the limiter manually and skip retry — semantically
+                # identical to the existing inline rate-limit checks.
+                if _no_time_left(req):
+                    raise TimeoutError(f"no time left for {req.step} before the app stops waiting")
+                limiter = _get_limiter()
+                if not limiter.try_acquire("gemini"):
+                    raise llm_client.LLMRateLimitedError("llm_rate_limited: bucket exhausted")
+                response = _send(_call, req)
+
+            _log_usage(req.step, response)
+            usage_dict = _read_usage_dict(response)
+            if usage_dict:
+                llm_client._check_and_record_cost(
+                    req.model,
+                    usage_dict["prompt_token_count"],
+                    usage_dict["cached_content_token_count"],
+                    usage_dict["candidates_token_count"],
+                    usage_dict["thoughts_token_count"],
+                )
 
         # Pack result. Parse on demand if a Pydantic schema was requested;
         # the dispatcher's salvage path (extract_source) checks ``parsed is None``

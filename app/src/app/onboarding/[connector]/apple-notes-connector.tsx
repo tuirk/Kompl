@@ -245,7 +245,7 @@ export default function AppleNotesConnector({
                   href="https://github.com/kzaremski/apple-notes-exporter"
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={{ color: 'var(--accent)' }}
+                  style={{ color: 'var(--accent)', textDecoration: 'underline' }}
                 >
                   Apple Notes Exporter
                 </a>{' '}

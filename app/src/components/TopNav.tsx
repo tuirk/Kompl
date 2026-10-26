@@ -6,10 +6,11 @@
  * Layout (Obsidian Kinetic, matches Stitch spec):
  *   Left  — KOMPL logo (links to /)
  *   Center — primary nav: Home · Wiki · Sources
- *   Right  — search archive input · Chat (accent CTA) · settings icon
+ *   Right  — search archive input · settings icon
  *
  * Search behaviour:
- *   - Typing ≥ 2 chars fetches /api/pages/search?q=...&limit=3 (250ms debounce)
+ *   - Typing ≥ 2 chars runs hybrid search, keywords + meaning (lib/search-client),
+ *     after a 250ms pause; a newer query cancels the one in flight
  *   - Dropdown shows top 3 results + "See all →" as 4th row
  *   - Arrow ↑↓ navigates rows; Enter opens selected (or goes to search page)
  *   - Enter with no selection → /wiki/search?q=...
@@ -22,51 +23,34 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { Search, Settings, MessageSquare } from 'lucide-react';
+import { Search, Settings } from 'lucide-react';
 import {
-  useCallback,
   useEffect,
   useRef,
   useState,
   type KeyboardEvent,
 } from 'react';
 import { PAGE_TYPE_VAR } from '../lib/page-type-palette';
-import { useChatDrawer } from './ChatDrawer';
+import { createSearch, debounce, type SearchHit } from '../lib/search-client';
 
 const NAV_ITEMS = [
   { href: '/',     label: 'Home', isActive: (p: string) => p === '/' },
   { href: '/wiki', label: 'Wiki', isActive: (p: string) => p.startsWith('/wiki') },
 ] as const;
 
-interface SearchResult {
-  page_id: string;
-  title: string;
-  page_type: string;
-  category: string | null;
-  summary: string | null;
-}
-
-function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number): T {
-  let timer: ReturnType<typeof setTimeout>;
-  return ((...args: Parameters<T>) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  }) as T;
-}
-
 export default function TopNav() {
   const pathname     = usePathname();
   const router       = useRouter();
   const searchParams = useSearchParams();
   const isAddMode    = searchParams.get('mode') === 'add';
-  const { open: chatOpen, toggle: toggleChat } = useChatDrawer();
 
   const [query,     setQuery]     = useState('');
-  const [results,   setResults]   = useState<SearchResult[]>([]);
+  const [results,   setResults]   = useState<SearchHit[]>([]);
   const [open,      setOpen]      = useState(false);
   const [selIndex,  setSelIndex]  = useState(-1); // -1 = nothing, 0-2 = result, 3 = "see all"
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef     = useRef<HTMLInputElement>(null);
 
   // ── Close on outside click ──────────────────────────────────────────────────
   useEffect(() => {
@@ -80,28 +64,36 @@ export default function TopNav() {
     return () => document.removeEventListener('mousedown', onMouseDown);
   }, []);
 
-  // ── Live search (debounced 250ms) ───────────────────────────────────────────
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const fetchResults = useCallback(
+  // ── Live search (debounced 250ms; keywords + meaning, lib/search-client) ───
+  // One runner for this box: a newer query cancels the one still in flight.
+  // Lazy state keeps the runner and its debouncer for the component's life.
+  const [runSearch] = useState(() => createSearch());
+  const [fetchResults] = useState(() =>
     debounce(async (q: string) => {
-      if (q.trim().length < 2) { setResults([]); setOpen(false); return; }
       try {
-        const res  = await fetch(`/api/pages/search?q=${encodeURIComponent(q.trim())}&limit=3`);
-        const data = (await res.json()) as { items: SearchResult[] };
-        setResults(data.items);
-        setOpen(true);
+        const items = await runSearch(q, 3);
+        if (items === null) return; // a newer search replaced this one
+        setResults(items);
+        // A late answer must not reopen the dropdown after a click elsewhere.
+        if (document.activeElement === inputRef.current) setOpen(true);
         setSelIndex(-1);
       } catch {
         setResults([]);
       }
     }, 250),
-    [],
   );
+
+  // Drop the search waiting on the pause and the one in flight, so neither
+  // fills the dropdown after the box was cleared or left.
+  function stopSearch() {
+    fetchResults.cancel();
+    runSearch.cancel();
+  }
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const q = e.target.value;
     setQuery(q);
-    if (q.trim().length < 2) { setResults([]); setOpen(false); setSelIndex(-1); }
+    if (q.trim().length < 2) { stopSearch(); setResults([]); setOpen(false); setSelIndex(-1); }
     else fetchResults(q);
   }
 
@@ -111,6 +103,7 @@ export default function TopNav() {
     const total = results.length + 1; // results + "see all" row
 
     if (e.key === 'Escape') {
+      stopSearch();
       setQuery(''); setResults([]); setOpen(false); setSelIndex(-1);
       return;
     }
@@ -129,6 +122,7 @@ export default function TopNav() {
 
     if (e.key === 'Enter' && query.trim()) {
       e.preventDefault();
+      stopSearch();
       if (open && selIndex >= 0 && selIndex < results.length) {
         // Navigate to selected wiki page
         router.push(`/wiki/${results[selIndex].page_id}`);
@@ -142,11 +136,13 @@ export default function TopNav() {
   }
 
   function goToResult(pageId: string) {
+    stopSearch();
     setOpen(false); setQuery(''); setResults([]); setSelIndex(-1);
     router.push(`/wiki/${pageId}`);
   }
 
   function goToSearch() {
+    stopSearch();
     setOpen(false); setSelIndex(-1);
     router.push(`/wiki/search?q=${encodeURIComponent(query.trim())}`);
   }
@@ -217,8 +213,10 @@ export default function TopNav() {
         {/* Search with live dropdown */}
         <div ref={containerRef} style={{ position: 'relative' }}>
           <input
+            ref={inputRef}
             type="text"
             className="topnav-search"
+            aria-label="Search wiki"
             placeholder="Search wiki"
             value={query}
             onChange={handleChange}
@@ -367,41 +365,12 @@ export default function TopNav() {
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={toggleChat}
-          aria-label="Open chat"
-          aria-pressed={chatOpen}
-          title="Chat"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 8,
-            height: 36,
-            padding: '0 14px',
-            background: chatOpen ? 'var(--accent)' : 'rgba(var(--accent-rgb),0.18)',
-            border: '1px solid var(--accent)',
-            borderRadius: 6,
-            cursor: 'pointer',
-            color: chatOpen ? 'var(--accent-text)' : 'var(--accent)',
-            fontFamily: 'var(--font-heading)',
-            fontSize: 13,
-            fontWeight: 700,
-            letterSpacing: '0.06em',
-            textTransform: 'uppercase',
-            boxShadow: chatOpen
-              ? 'none'
-              : '0 0 0 1px rgba(var(--accent-rgb),0.25), 0 0 18px rgba(var(--accent-rgb),0.2)',
-            transition: 'background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast)',
-          }}
-        >
-          <MessageSquare size={15} strokeWidth={2.25} />
-          Chat
-        </button>
-
-        {/* Settings */}
+        {/* Settings: an icon link, so it carries its name for screen readers */}
         <Link
           href="/settings"
+          aria-label="Settings"
+          title="Settings"
+          aria-current={pathname.startsWith('/settings') ? 'page' : undefined}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -409,7 +378,7 @@ export default function TopNav() {
             transition: 'color var(--transition-fast)',
           }}
         >
-          <Settings size={16} />
+          <Settings size={16} aria-hidden="true" />
         </Link>
       </div>
     </header>

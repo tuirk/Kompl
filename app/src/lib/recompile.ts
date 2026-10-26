@@ -6,14 +6,27 @@
  * source_count (which leaves stale content), we re-draft the page using only
  * the remaining sources and commit the result.
  *
- * Flow:
- *   Phase 1 (async) — read remaining sources, call /pipeline/draft-page,
- *                      call /storage/write-page
- *   Phase 2 (sync)  — db.transaction: update pages + FTS5
- *   Phase 3 (f&f)   — vector upsert
+ * Flow (outbox, CLAUDE.md rule 5), under the page lock (lib/redraft.ts):
+ *   Phase 1 (async)  — read remaining sources, call /pipeline/draft-page
+ *   Phase 2 (sync)   — db.transaction: version check (lib/page-rewrite.ts),
+ *                      update pages + pending_content + draft_rules marker +
+ *                      FTS5 + disagreements record, and the deleted source's
+ *                      provenance rows on the page
+ *   Phase 3a (await) — /storage/write-page, then clear the outbox if it
+ *                      still holds this text
+ *   Phase 3c         — page_links resync
+ *   Phase 3b (f&f)   — vector refresh, retried like a compile's
  *
- * Throws on draft or write failure — caller catches and falls back to
- * decrementPageSourceCount so the source deletion still completes.
+ * Throws when the page can't be redrafted (draft failure, no readable
+ * sources, another action on the page, or 'page_changed': a compile, page
+ * update or restore changed it during the draft) — the caller retries a
+ * temporary failure once, then archives the page until a rewrite succeeds
+ * (lib/page-hold.ts). Once Phase 2 has
+ * committed, the new text is the page: a failed file write is left to the
+ * boot reconciler, as for every commit path, and does not throw.
+ *
+ * A page archived that way returns as its own type in the same Phase 2
+ * transaction as its new text.
  */
 
 import {
@@ -25,13 +38,28 @@ import {
   archivePage,
   updatePageContent,
   setPendingContent,
-  clearPendingContent,
+  clearPendingContentIfUnchanged,
+  removeSourceFromPage,
   getCategoryGroups,
   getCompileModel,
   getPageTitleMap,
+  getAllPages,
+  readPageMarkdown,
 } from './db';
 import { syncPageWikilinks } from './wikilinks';
 import { LONG_HTTP_AGENT } from './long-http-agent';
+import { OutOfCreditError, isOutOfCredit } from './out-of-credit';
+import { assignCitationLabels, labelsToStoredCitations, rewordLabelSubjects } from './citations';
+import { normalizeFrontmatter, relatedLinkTargets, sourceOnlyTitles, tidyDraftLinks } from './draft-cleanup';
+import { withSourceText } from './source-page-text';
+import { CURRENT_DRAFT_RULES, isDraftedPage, setPageDraftRules } from './draft-rules';
+import { removeEmptyContradictionSections } from './page-sections';
+import { recordPageDisagreements } from './disagreements';
+import { sourceDates, withSourceDate } from './source-dates';
+import { upsertVectorWithRetry } from './vector-upsert';
+import { draftPageType, releaseHeldPage } from './page-hold';
+import { pageVersionToken } from './page-rewrite';
+import { withPageLock } from './redraft';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 
@@ -39,6 +67,11 @@ interface SourceContent {
   source_id: string;
   title: string;
   markdown: string;
+  /** "S1"-style label the page cites this source with (lib/citations.ts). */
+  citation_label?: string;
+  /** Publication date, else the day it was saved (lib/source-dates.ts). */
+  date?: string;
+  date_kind?: 'published' | 'saved';
 }
 
 interface WritePageResult {
@@ -67,6 +100,7 @@ async function callDraftPage(
       compile_model: compileModel,
     }),
     signal: AbortSignal.timeout(600_000), // 10 min — recompile-on-source-delete runs an extract LLM call. DeepSeek can take 200-400s on dense sources. 180s (prior) was Gemini-only sizing.
+    // nlp-service ends the call 30 s before this (llm_client._CALL_DEADLINE_S).
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
     dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
   });
@@ -74,6 +108,7 @@ async function callDraftPage(
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     if (res.status === 429) throw Object.assign(new Error('llm_rate_limited'), { status: 429 });
+    if (isOutOfCredit(res.status, detail)) throw new OutOfCreditError();
     if (res.status === 503) throw Object.assign(new Error('daily_cost_ceiling'), { status: 503 });
     throw new Error(`draft_page_failed: ${res.status} ${detail}`);
   }
@@ -101,21 +136,36 @@ async function callWritePage(pageId: string, markdown: string): Promise<WritePag
 /**
  * Re-draft a page using only its remaining sources (post-deletion).
  *
- * Precondition: removeProvenanceForSource(removedSourceId) has already been
- * called, so getProvenanceForPage(pageId) returns only remaining sources.
+ * The deleted source still has its provenance rows on the page until the
+ * new text commits; they go in the same transaction.
  *
  * @param pageId         The page to recompile.
- * @param removedSourceId The source that was just deleted (for logging only —
- *                        its provenance rows are already gone).
+ * @param removedSourceId The source being deleted: left out of the draft,
+ *                        and its rows on this page removed on commit.
+ * @param batchSiblingIds Other sources deleted in the same bulk delete. The
+ *                        page is drafted without them too: their turn finds
+ *                        the page already handled and skips it, so text
+ *                        drafted from them would stay with no credit.
  * @returns              `{ outcome: 'rewritten' }` on normal redraft, or
  *                       `{ outcome: 'archived' }` when the page was archived
  *                       because no sources remained. Caller uses this to log
  *                       the correct activity event and increment the right counter.
- * @throws               On draft or write failure. Caller must catch and fall back.
+ * @throws               When the page can't be redrafted. Caller must catch.
  */
 export async function recompilePage(
   pageId: string,
-  removedSourceId: string
+  removedSourceId: string,
+  batchSiblingIds: ReadonlySet<string> = new Set(),
+): Promise<{ outcome: 'rewritten' | 'archived' }> {
+  // One action per page at a time: a page update or restore of this page
+  // holds it off, and the caller tries again once (lib/page-hold.ts).
+  return withPageLock(pageId, () => rewriteFromRemaining(pageId, removedSourceId, batchSiblingIds));
+}
+
+async function rewriteFromRemaining(
+  pageId: string,
+  removedSourceId: string,
+  batchSiblingIds: ReadonlySet<string>,
 ): Promise<{ outcome: 'rewritten' | 'archived' }> {
   // ── Fetch page metadata ───────────────────────────────────────────────────
   const page = getPage(pageId);
@@ -124,9 +174,14 @@ export async function recompilePage(
     // Treat as archived-equivalent: nothing to rewrite, nothing to count.
     return { outcome: 'archived' };
   }
+  // Taken before the draft call and checked in Phase 2, so a compile that
+  // touched the page meanwhile is never overwritten (lib/page-rewrite.ts).
+  const expectedToken = pageVersionToken(pageId);
 
-  // ── Get remaining sources (provenance already pruned by caller) ───────────
-  const remainingProvenance = getProvenanceForPage(pageId);
+  // ── Get remaining sources: all but the deleted one and its batch siblings ─
+  const remainingProvenance = getProvenanceForPage(pageId).filter(
+    (p) => p.source_id !== removedSourceId && !batchSiblingIds.has(p.source_id),
+  );
 
   if (remainingProvenance.length === 0) {
     // Edge case: all provenance removed between check and now.
@@ -134,10 +189,16 @@ export async function recompilePage(
     return { outcome: 'archived' };
   }
 
+  // A page held after an earlier failed rewrite is drafted as its own type.
+  const pageType = draftPageType(page);
+
   // ── Build source contents for re-drafting ─────────────────────────────────
+  // Provenance gains a row on every compile; send each source once.
   const sourceContents: SourceContent[] = [];
+  const seenSources = new Set<string>();
   for (const prov of remainingProvenance) {
-    if (prov.source_id === removedSourceId) continue; // belt-and-suspenders
+    if (seenSources.has(prov.source_id)) continue;
+    seenSources.add(prov.source_id);
     const src = getSource(prov.source_id);
     if (!src) continue;
     const markdown = readRawMarkdown(prov.source_id);
@@ -154,7 +215,31 @@ export async function recompilePage(
   const existingCategories = getCategoryGroups()
     .map((g) => g.category)
     .filter((c): c is string => c !== null && c !== 'Uncategorized' && c !== 'General');
-  const newMarkdown = await callDraftPage(page.page_type, page.title, sourceContents, existingCategories, getCompileModel());
+  // The model cites [S1]-style labels; they become stored [^source_id]
+  // references (lib/citations.ts), as in the compile draft route.
+  const labels = assignCitationLabels(sourceContents.map((sc) => sc.source_id));
+  // Dates tell a claim that changed over time from a disagreement (plan 3.1).
+  const dates = sourceDates(getDb(), sourceContents.map((sc) => sc.source_id));
+  const drafted = await callDraftPage(
+    pageType,
+    page.title,
+    sourceContents.map((sc) => withSourceDate({ ...sc, citation_label: labels.get(sc.source_id.toLowerCase()) }, dates)),
+    existingCategories,
+    getCompileModel(),
+  );
+  // Same safety nets as the compile draft and crossref steps.
+  let newMarkdown = normalizeFrontmatter(labelsToStoredCitations(rewordLabelSubjects(drafted).markdown, labels));
+  if (pageType !== 'source-summary') {
+    newMarkdown = removeEmptyContradictionSections(newMarkdown).markdown;
+  } else {
+    newMarkdown = withSourceText(newMarkdown, sourceContents[0].markdown);
+  }
+  newMarkdown = tidyDraftLinks(newMarkdown, {
+    blocked: new Set([...sourceOnlyTitles(getAllPages()), page.title.toLowerCase()]),
+    sourceText: sourceContents.map((sc) => sc.markdown).join('\n'),
+    keepRelated: relatedLinkTargets(readPageMarkdown(pageId) ?? ''),
+    trimRelated: pageType !== 'source-summary',
+  }).markdown;
 
   // ── Phase 2: sync transaction — update pages + setPendingContent + FTS5 ──
   // File is NOT written yet. pending_content stores markdown so the boot
@@ -163,7 +248,9 @@ export async function recompilePage(
   const newSourceCount = sourceContents.length;
   const expectedPath = `/data/pages/${pageId}.md.gz`;
 
-  db.transaction(() => {
+  const committed = db.transaction((): boolean => {
+    if (pageVersionToken(pageId) !== expectedToken) return false;
+
     updatePageContent(
       pageId,
       expectedPath,
@@ -174,18 +261,41 @@ export async function recompilePage(
     // Outbox: store markdown for Phase 3a flush + crash recovery.
     setPendingContent(pageId, newMarkdown);
 
+    // Drafted from scratch with this version's prompt and cleanup, so the
+    // page now follows the current writing rules (lib/draft-rules.ts).
+    if (isDraftedPage({ page_id: pageId, page_type: pageType })) setPageDraftRules(db, pageId, CURRENT_DRAFT_RULES);
+
+    // A held page returns now that its text no longer carries the deleted source.
+    releaseHeldPage(db, pageId);
+
     // FTS5 upsert: strip frontmatter before indexing
     const bodyForFts = newMarkdown.replace(/^---[\s\S]*?---\n*/m, '');
     db.prepare('DELETE FROM pages_fts WHERE page_id = ?').run(pageId);
     db.prepare(
       'INSERT INTO pages_fts (page_id, title, content) VALUES (?, ?, ?)'
     ).run(pageId, page.title, bodyForFts);
+
+    // Disagreements the committed text records (lib/disagreements.ts).
+    recordPageDisagreements(db, { page_id: pageId, title: page.title }, newMarkdown);
+
+    // The deleted source's credit leaves with its material.
+    removeSourceFromPage(pageId, removedSourceId);
+    return true;
   })();
+  if (!committed) throw new Error('page_changed');
 
   // ── Phase 3a (awaited): flush pending_content to disk via nlp-service ────
-  // Throws on failure — caller catches and falls back to decrementPageSourceCount.
-  const writeResult = await callWritePage(pageId, newMarkdown);
-  clearPendingContent(pageId, writeResult.previous_path);
+  // On failure pending_content stays set and the boot reconciler
+  // (instrumentation.ts) writes the file, as for every commit path. Newer
+  // text another writer queued during the write stays queued.
+  let flushed = false;
+  try {
+    const writeResult = await callWritePage(pageId, newMarkdown);
+    clearPendingContentIfUnchanged(pageId, writeResult.previous_path, newMarkdown);
+    flushed = true;
+  } catch (err) {
+    console.error('[recompile] flush failed; the boot reconciler will retry', pageId, err);
+  }
 
   // ── Phase 3c: sync page_links — clear stale wikilinks, insert current ones ─
   // Must run after Phase 3a so the new markdown is available in newMarkdown.
@@ -193,21 +303,17 @@ export async function recompilePage(
   // partial/no wikilinks (boot reconciler covers pending_content, not page_links).
   syncPageWikilinks(getDb(), pageId, newMarkdown, getPageTitleMap());
 
-  // ── Phase 3b: vector upsert — fire-and-forget ────────────────────────────
-  void fetch(`${NLP_SERVICE_URL}/vectors/upsert`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      page_id: pageId,
-      metadata: {
-        title: page.title,
-        page_type: page.page_type,
-        category: page.category ?? '',
-        source_count: newSourceCount,
-      },
-    }),
-    signal: AbortSignal.timeout(30_000),
-  }).catch(() => {});
+  // ── Phase 3b: vector refresh — fire-and-forget, retried like a compile's ─
+  // It reads the flushed file; if the flush failed, the boot reconciler
+  // refreshes the vector once it writes the file.
+  if (flushed) {
+    void upsertVectorWithRetry(pageId, {
+      title: page.title,
+      page_type: pageType,
+      category: page.category ?? '',
+      source_count: newSourceCount,
+    });
+  }
 
   return { outcome: 'rewritten' };
 }

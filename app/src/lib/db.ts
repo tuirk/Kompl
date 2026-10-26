@@ -34,6 +34,19 @@ import zlib from 'node:zlib';
 import { COMPILE_STEP_KEYS, type CompileStepKey } from './compile-steps';
 import { assertSafeId, isSafeId } from './safe-paths';
 import type { ActivityEventType } from './activity-events';
+import { DEFAULT_COMPILE_MODEL, isLlmModel, type LlmModel } from './llm-models';
+import { buildFtsQuery } from './fts-query';
+import { numericConflict } from './name-guard';
+import { COMPARISON_RELATIONS, quoteVerifiedColumn, quoteVerifiedFromColumn, relationKey } from './relation-rows';
+import type { SourceMentionRows } from './mention-rows';
+import { urlKey, urlKeyCandidates } from './url-key';
+
+// Model registry lives in llm-models.ts (client-safe, no DB imports);
+// re-exported here so server code keeps importing it from '@/lib/db'.
+export {
+  LLM_MODELS, DEFAULT_COMPILE_MODEL, isLlmModel, getProviderForModel,
+  type LlmModel,
+} from './llm-models';
 
 const DB_PATH = process.env.DB_PATH ?? '/data/db/kompl.db';
 export const DATA_ROOT = path.dirname(path.dirname(DB_PATH)); // /data
@@ -117,8 +130,8 @@ export function getSchemaVersion(): number | null {
 
 /**
  * Enumerate user tables (excluding sqlite_* internals and FTS5 shadow
- * tables). Used by /api/health to verify migration completed. The
- * integration test asserts this returns exactly 14 names.
+ * tables). Used by /api/health to verify migration completed; stage 1
+ * of the integration test checks how many names it returns.
  */
 const EXPECTED_TABLES = [
   'sources',
@@ -139,6 +152,9 @@ const EXPECTED_TABLES = [
   'entity_mentions',
   'relationship_mentions',
   'collect_staging',
+  'triage_rechecks',
+  'disagreements',
+  'claim_verdicts',
 ] as const;
 
 export function listUserTables(): string[] {
@@ -170,6 +186,8 @@ export interface SourceRow {
   metadata: string | null; // JSON TEXT; caller parses if needed
   compile_status: string | null;
   compile_attempts: number | null;
+  /** Read by getAllSources only, so a backup carries it. */
+  compile_next_eligible_at?: string | null;
   onboarding_session_id: string | null;
   /** Which cascade step produced `title` at ingest time. Drives the
    *  /api/compile/extract rescue trigger. NULL for rows ingested before
@@ -181,6 +199,11 @@ export interface SourceRow {
    *  marker so recompile does not re-rescue and rename the wiki page
    *  on every cycle. */
   title_rescued_at: string | null;
+  /** v30: publication date, YYYY-MM-DD, and where it came from
+   *  (lib/source-dates.ts). NULL for sources added before: read them
+   *  with sourceDateOf, which gives their ingest day. */
+  published_at?: string | null;
+  published_at_source?: string | null;
 }
 
 export interface ActivityRow {
@@ -254,6 +277,10 @@ export interface InsertSourceArgs {
    *  compatibility with call sites not yet updated; missing → NULL,
    *  which the rescue trigger treats as "legacy row, use isGarbageTitle". */
   title_source?: string | null;
+  /** v30: the publication date the ingest step picked (lib/source-dates.ts
+   *  pickSourceDate); missing -> NULL. */
+  published_at?: string | null;
+  published_at_source?: string | null;
 }
 
 /**
@@ -267,11 +294,11 @@ export function insertSource(args: InsertSourceArgs): void {
       `INSERT INTO sources
          (source_id, title, source_type, source_url, content_hash,
           file_path, status, metadata, compile_status, onboarding_session_id,
-          title_source)
+          title_source, published_at, published_at_source)
        VALUES
          (@source_id, @title, @source_type, @source_url, @content_hash,
           @file_path, 'active', @metadata, @compile_status, @onboarding_session_id,
-          @title_source)`
+          @title_source, @published_at, @published_at_source)`
     )
     .run({
       source_id: args.source_id,
@@ -284,6 +311,8 @@ export function insertSource(args: InsertSourceArgs): void {
       compile_status: args.compile_status ?? 'pending',
       onboarding_session_id: args.onboarding_session_id ?? null,
       title_source: args.title_source ?? null,
+      published_at: args.published_at ?? null,
+      published_at_source: args.published_at_source ?? null,
     });
 }
 
@@ -297,7 +326,7 @@ export function getSource(sourceId: string): SourceRow | null {
       `SELECT source_id, title, source_type, source_url, content_hash,
               file_path, status, date_ingested, metadata,
               compile_status, compile_attempts, onboarding_session_id,
-              title_source, title_rescued_at
+              title_source, title_rescued_at, published_at, published_at_source
          FROM sources
          WHERE source_id = ?`
     )
@@ -307,23 +336,28 @@ export function getSource(sourceId: string): SourceRow | null {
 
 
 /**
- * Delete a source row and return its file_path for cleanup by the caller.
- * Returns null if the source does not exist.
+ * Delete a source row and return the path of its raw file for cleanup by the
+ * caller. Returns null if the source does not exist.
  * Intended to be called INSIDE a db.transaction() callback (sync only).
+ *
+ * The path comes from the source id (rawFilePath), never from the stored
+ * file_path column: a restored backup can put any path there, and the
+ * caller unlinks what this returns.
  */
 export function deleteSource(sourceId: string): string | null {
   const db = openDb();
   const row = db
-    .prepare('SELECT file_path FROM sources WHERE source_id = ?')
-    .get(sourceId) as { file_path: string } | null;
+    .prepare('SELECT 1 FROM sources WHERE source_id = ?')
+    .get(sourceId);
   if (!row) return null;
+  const filePath = rawFilePath(sourceId);
   // Must delete child rows before parent — foreign_keys = ON enforces this.
   db.prepare('DELETE FROM extractions WHERE source_id = ?').run(sourceId);
   db.prepare('DELETE FROM sources WHERE source_id = ?').run(sourceId);
   // Invalidate archived-page-ids cache — the deleted source's provenance rows
   // have been removed, which may change which pages are "all-archived".
   _archivedIdsCache = null;
-  return row.file_path;
+  return filePath;
 }
 
 // ============================================================================
@@ -427,8 +461,12 @@ export interface InsertPageArgs {
 }
 
 /**
- * Upsert a page row. On conflict (same page_id), update all fields and bump
- * last_updated + source_count. Called inside db.transaction() — no await.
+ * Upsert a page row. On conflict (same page_id, i.e. an update), update the
+ * fields and bump last_updated + source_count. An update keeps the page's
+ * category (it only fills one in when the page has none) and its summary
+ * when the update brings none, as lib/page-rewrite.ts does: a draft without
+ * a `category:` line no longer moves the page to "Uncategorized".
+ * Called inside db.transaction() — no await.
  */
 export function insertPage(args: InsertPageArgs): void {
   openDb()
@@ -442,8 +480,8 @@ export function insertPage(args: InsertPageArgs): void {
        ON CONFLICT(page_id) DO UPDATE SET
          title                 = excluded.title,
          page_type             = excluded.page_type,
-         category              = excluded.category,
-         summary               = excluded.summary,
+         category              = COALESCE(pages.category, excluded.category),
+         summary               = COALESCE(excluded.summary, pages.summary),
          content_path          = excluded.content_path,
          previous_content_path = excluded.previous_content_path,
          last_updated          = CURRENT_TIMESTAMP,
@@ -531,18 +569,20 @@ export function pagesFilePath(pageId: string): string {
  * Read and decompress a compiled wiki page. Used by /wiki/[page_id] server
  * component. Returns null if both the file and pending_content are missing.
  *
- * Falls back to pages.pending_content (raw TEXT) when the gzip file has not yet
- * been flushed to disk — covers the Phase 2→3a window and boot-reconciler lag.
+ * pages.pending_content (raw TEXT) wins while it is set: a commit sets it in
+ * its transaction and clears it only after the file write lands, so it is
+ * newer than any file on disk — the Phase 2→3a window, a failed write and
+ * boot-reconciler lag. Read-only: flushing it is the reconciler's job.
  */
 export function readPageMarkdown(pageId: string): string | null {
   const filePath = pagesFilePath(pageId);
+  const pending = getPage(pageId)?.pending_content;
+  if (pending != null) return pending;
   if (fs.existsSync(filePath)) {
     const gzipped = fs.readFileSync(filePath);
     return zlib.gunzipSync(gzipped).toString('utf-8');
   }
-  // File not yet flushed — return in-flight content if available.
-  const page = getPage(pageId);
-  return page?.pending_content ?? null;
+  return null;
 }
 
 // ============================================================================
@@ -611,24 +651,37 @@ export function getCategoryGroups(includeArchived = false): CategoryGroup[] {
 
 /** FTS5 full-text search against pages_fts (title + content).
  *
- * Each word in the query gets a trailing * for prefix matching so that
- * partial input like "cryp" matches "cryptocurrency". Uses parameterized
- * binding (no string interpolation) to eliminate SQL injection risk.
+ * The query is tokenized like the index (see buildFtsQuery), each term
+ * prefix-matched, so "sha-256", "proof-of-work" and "cryp" all find pages.
+ * Uses parameterized binding (no string interpolation) to eliminate SQL
+ * injection risk.
  *
  * Pass excludePageIds (e.g. getAllArchivedPageIds()) to post-filter results.
  * Post-filtering keeps FTS5 rank ordering intact — no subquery in the SQL.
  */
 export function searchPages(query: string, limit = 20, excludePageIds?: Set<string>): PageRow[] {
-  const words = query.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return [];
-  // Strip FTS5 special characters per word, then append * for prefix match.
-  const ftsQuery = words
-    .map((w) => w.replace(/['"*^():.,-]/g, '').trim())
-    .filter(Boolean)
-    .map((w) => `${w}*`)
-    .join(' ');
-  if (!ftsQuery.trim()) return [];
-  const rows = openDb()
+  const ftsQuery = buildFtsQuery(query);
+  if (ftsQuery === null) return [];
+  const rows = searchPagesFts(ftsQuery, limit);
+  if (!excludePageIds || excludePageIds.size === 0) return rows;
+  return rows.filter((r) => !excludePageIds.has(r.page_id));
+}
+
+/**
+ * Run a prebuilt FTS5 MATCH expression (see lib/fts-query.ts), best match
+ * first. Optional filters apply before LIMIT, so a filtered search isn't cut
+ * short by pages it would drop. Category matches case-insensitively.
+ * Archived pages never match: they carry no search row, but a restore
+ * made before import left them out still gave them one.
+ */
+export function searchPagesFts(
+  ftsQuery: string,
+  limit: number,
+  filters: { category?: string; pageType?: string } = {}
+): PageRow[] {
+  const category = filters.category ?? null;
+  const pageType = filters.pageType ?? null;
+  return openDb()
     .prepare(
       `SELECT p.page_id, p.title, p.page_type, p.category, p.summary,
               p.content_path, p.previous_content_path, p.last_updated,
@@ -636,12 +689,13 @@ export function searchPages(query: string, limit = 20, excludePageIds?: Set<stri
          FROM pages_fts f
          JOIN pages p ON p.page_id = f.page_id
         WHERE pages_fts MATCH ?
+          AND p.page_type != 'archived'
+          AND (? IS NULL OR p.category = ? COLLATE NOCASE)
+          AND (? IS NULL OR p.page_type = ?)
         ORDER BY rank
         LIMIT ?`
     )
-    .all(ftsQuery, limit) as PageRow[];
-  if (!excludePageIds || excludePageIds.size === 0) return rows;
-  return rows.filter((r) => !excludePageIds.has(r.page_id));
+    .all(ftsQuery, category, category, pageType, pageType, limit) as PageRow[];
 }
 
 /** Pages that link TO the given page_id (backlinks). */
@@ -658,6 +712,19 @@ export function getBacklinks(pageId: string): PageRow[] {
     .all(pageId) as PageRow[];
 }
 
+/** Pages the given page links TO (its wikilinks), by title. */
+export function getLinkedPages(pageId: string): Array<{ page_id: string; title: string }> {
+  return openDb()
+    .prepare(
+      `SELECT DISTINCT p.page_id, p.title
+         FROM page_links l
+         JOIN pages p ON p.page_id = l.target_page_id
+        WHERE l.source_page_id = ? AND l.target_page_id != l.source_page_id
+        ORDER BY p.title COLLATE NOCASE`
+    )
+    .all(pageId) as Array<{ page_id: string; title: string }>;
+}
+
 /** Insert a page_links row (called from compile commit when wikilinks are parsed). */
 export function insertPageLink(sourcePageId: string, targetPageId: string, linkType: 'wikilink' | 'provenance' | 'entity-ref'): void {
   openDb()
@@ -666,63 +733,6 @@ export function insertPageLink(sourcePageId: string, targetPageId: string, linkT
        VALUES (?, ?, ?)`
     )
     .run(sourcePageId, targetPageId, linkType);
-}
-
-/** Graph data for /api/wiki/graph — all pages as nodes, provenance as edges. */
-export interface GraphNode {
-  id: string;
-  label: string;
-  group: string;    // page_type
-  category: string;
-  source_count: number;
-  summary?: string | null;
-  last_updated?: string;
-  archived?: boolean;  // true when all backing sources are archived (muted styling)
-}
-
-export interface GraphLink {
-  source: string;
-  target: string;
-  type: string;
-}
-
-export interface GraphData {
-  nodes: GraphNode[];
-  links: GraphLink[];
-}
-
-export function getWikiGraph(includeArchived = false): GraphData {
-  const db = openDb();
-  const allNodes = db
-    .prepare(
-      `SELECT page_id AS id, title AS label, page_type AS "group",
-              COALESCE(category, 'Uncategorized') AS category,
-              source_count, summary, last_updated
-         FROM pages
-        ${includeArchived ? '' : "WHERE page_type != 'archived'"}`
-    )
-    .all() as GraphNode[];
-
-  const archivedIds = getAllArchivedPageIds();
-  let nodes: GraphNode[];
-  if (includeArchived) {
-    // Mark archived nodes for muted styling; include all
-    nodes = allNodes.map((n) => archivedIds.has(n.id) ? { ...n, archived: true } : n);
-  } else {
-    nodes = allNodes.filter((n) => !archivedIds.has(n.id));
-  }
-
-  const nodeIdSet = new Set(nodes.map((n) => n.id));
-  const allLinks = db
-    .prepare(
-      `SELECT source_page_id AS source, target_page_id AS target, link_type AS type
-         FROM page_links`
-    )
-    .all() as GraphLink[];
-  // Only include links where both endpoints are visible nodes
-  const links = allLinks.filter((l) => nodeIdSet.has(l.source) && nodeIdSet.has(l.target));
-
-  return { nodes, links };
 }
 
 /** Count of compiled wiki pages. Used by /api/compile/extract to determine wiki_exists. */
@@ -839,6 +849,23 @@ export function insertExtraction(data: {
     });
 }
 
+/**
+ * Store a new extraction, mark its source extracted and swap in its mention
+ * rows, in one transaction (the extract route). A crash part-way leaves none
+ * of it, so the next compile extracts the source again instead of finding it
+ * extracted with no mention rows.
+ */
+export function saveExtraction(
+  data: Parameters<typeof insertExtraction>[0],
+  mentions: Pick<SourceMentionRows, 'entities' | 'relations'>
+): void {
+  openDb().transaction(() => {
+    insertExtraction(data);
+    markSourceExtracted(data.source_id);
+    replaceSourceMentions(data.source_id, mentions.entities, mentions.relations);
+  })();
+}
+
 /** Fetch one extraction row by source_id. Returns null if not found. */
 export function getExtraction(sourceId: string): ExtractionRow | null {
   const row = openDb()
@@ -902,19 +929,27 @@ export function getExtractionsBySourceIds(sourceIds: string[]): ExtractionRow[] 
 /**
  * Bulk insert (canonical_name, source_id, entity_type) rows. Uses INSERT OR
  * IGNORE so a re-extracted source can't double-count (PRIMARY KEY is the
- * (canonical, source) pair). Runs in a single transaction.
+ * (canonical, source) pair). Runs in a single transaction. first_seen_at
+ * defaults to now; the resolve rebuild passes the old row's.
  */
 export function insertEntityMentions(
-  mentions: Array<{ canonical_name: string; source_id: string; entity_type: string | null }>
+  mentions: Array<{ canonical_name: string; source_id: string; entity_type: string | null; first_seen_at?: string | null }>
 ): void {
   if (mentions.length === 0) return;
   const db = openDb();
   const stmt = db.prepare(
-    `INSERT OR IGNORE INTO entity_mentions (canonical_name, source_id, entity_type)
-     VALUES (@canonical_name, @source_id, @entity_type)`
+    `INSERT OR IGNORE INTO entity_mentions (canonical_name, source_id, entity_type, first_seen_at)
+     VALUES (@canonical_name, @source_id, @entity_type, COALESCE(@first_seen_at, CURRENT_TIMESTAMP))`
   );
   db.transaction((rows: typeof mentions) => {
-    for (const row of rows) stmt.run(row);
+    for (const row of rows) {
+      stmt.run({
+        canonical_name: row.canonical_name,
+        source_id: row.source_id,
+        entity_type: row.entity_type,
+        first_seen_at: row.first_seen_at ?? null,
+      });
+    }
   })(mentions);
 }
 
@@ -962,7 +997,12 @@ export function getSourceIdsMentioning(canonicalName: string): string[] {
  * Bulk insert (from, to, type, source_id) rows into relationship_mentions.
  * Caller is responsible for normalizing from/to order for direction-agnostic
  * relationships (competes_with, contradicts) so the PK collapses "A vs B"
- * and "B vs A" to one row.
+ * and "B vs A" to one row (lib/relation-rows.ts does both).
+ *
+ * An existing row keeps its other columns (first_seen_at included); only its
+ * description (v28) is refreshed, and only by a non-null one, and its quote
+ * with quote_verified (v30), only by a non-null quote. A new row's
+ * first_seen_at defaults to now; the resolve rebuild passes the old row's.
  */
 export function insertRelationshipMentions(
   mentions: Array<{
@@ -970,17 +1010,40 @@ export function insertRelationshipMentions(
     to_canonical: string;
     relationship_type: string;
     source_id: string;
+    description?: string | null;
+    quote?: string | null;
+    quote_verified?: boolean | null;
+    first_seen_at?: string | null;
   }>
 ): void {
   if (mentions.length === 0) return;
   const db = openDb();
   const stmt = db.prepare(
-    `INSERT OR IGNORE INTO relationship_mentions
-       (from_canonical, to_canonical, relationship_type, source_id)
-     VALUES (@from_canonical, @to_canonical, @relationship_type, @source_id)`
+    `INSERT INTO relationship_mentions
+       (from_canonical, to_canonical, relationship_type, source_id, description, quote, quote_verified,
+        first_seen_at)
+     VALUES (@from_canonical, @to_canonical, @relationship_type, @source_id, @description, @quote,
+             @quote_verified, COALESCE(@first_seen_at, CURRENT_TIMESTAMP))
+     ON CONFLICT(from_canonical, to_canonical, relationship_type, source_id)
+       DO UPDATE SET description = COALESCE(excluded.description, description),
+                     quote_verified = CASE WHEN excluded.quote IS NULL THEN quote_verified
+                                           ELSE excluded.quote_verified END,
+                     quote = COALESCE(excluded.quote, quote)`
   );
   db.transaction((rows: typeof mentions) => {
-    for (const row of rows) stmt.run(row);
+    for (const row of rows) {
+      const quote = row.quote ?? null;
+      stmt.run({
+        from_canonical: row.from_canonical,
+        to_canonical: row.to_canonical,
+        relationship_type: row.relationship_type,
+        source_id: row.source_id,
+        description: row.description ?? null,
+        quote,
+        quote_verified: quote === null ? null : quoteVerifiedColumn(row.quote_verified),
+        first_seen_at: row.first_seen_at ?? null,
+      });
+    }
   })(mentions);
 }
 
@@ -989,6 +1052,117 @@ export function deleteRelationshipMentionsForSource(sourceId: string): void {
   openDb()
     .prepare(`DELETE FROM relationship_mentions WHERE source_id = ?`)
     .run(sourceId);
+}
+
+/**
+ * Swap a source's entity_mentions and relationship_mentions for a new
+ * extraction's, in one transaction: a failure part-way keeps the old rows
+ * instead of leaving the source with none while its extraction row stays
+ * (the next compile would not extract it again). The inserts' own
+ * transactions run as savepoints inside this one.
+ */
+export function replaceSourceMentions(
+  sourceId: string,
+  entities: Parameters<typeof insertEntityMentions>[0],
+  relations: Parameters<typeof insertRelationshipMentions>[0]
+): void {
+  openDb().transaction(() => {
+    deleteEntityMentionsForSource(sourceId);
+    deleteRelationshipMentionsForSource(sourceId);
+    insertEntityMentions(entities);
+    insertRelationshipMentions(relations);
+  })();
+}
+
+/**
+ * Rewrite a session's mention rows after resolve. Each source's rows, rebuilt
+ * from its extraction through the resolver's groups (lib/mention-rows.ts
+ * sessionMentionRows), replace its old ones through replaceSourceMentions,
+ * all in one transaction. The rows follow the resolver's latest groups, so a
+ * merge a rerun no longer makes leaves the counts, and a rerun with the same
+ * groups gives the same rows.
+ *
+ * A row keeps the first_seen_at of the old row with its key, else the
+ * source's earliest old row (a renamed row was seen when its source was),
+ * else the extraction's created_at (a source extracted without rows). A
+ * relation without a sentence keeps the old row's, and one without a quote
+ * the old row's quote. A source outside the session is skipped, so other
+ * sessions' rows never change. Returns the number of sources rewritten.
+ */
+export function rebuildSessionMentions(sessionId: string, sources: SourceMentionRows[]): number {
+  const inSession = openDb().prepare('SELECT 1 FROM sources WHERE source_id = ? AND onboarding_session_id = ?');
+  return rewriteMentionRows(sources, (sourceId) => Boolean(inSession.get(sourceId, sessionId)));
+}
+
+/**
+ * The same rewrite for every source given, whatever its session: the wiki
+ * repair (lib/wiki-repair) re-credits every source's mentions from its
+ * extraction in one transaction. A source no longer in the wiki is skipped.
+ */
+export function rebuildWikiMentions(sources: SourceMentionRows[]): number {
+  const exists = openDb().prepare('SELECT 1 FROM sources WHERE source_id = ?');
+  return rewriteMentionRows(sources, (sourceId) => Boolean(exists.get(sourceId)));
+}
+
+function rewriteMentionRows(sources: SourceMentionRows[], include: (sourceId: string) => boolean): number {
+  const db = openDb();
+  const oldEntities = db.prepare('SELECT canonical_name, first_seen_at FROM entity_mentions WHERE source_id = ?');
+  const oldRelations = db.prepare(
+    `SELECT from_canonical, to_canonical, relationship_type, first_seen_at, description, quote, quote_verified
+       FROM relationship_mentions WHERE source_id = ?`
+  );
+  const extractedAt = db.prepare('SELECT created_at FROM extractions WHERE source_id = ?');
+  // canonical_name is COLLATE NOCASE, which folds ASCII letters only.
+  const nocase = (name: string) => name.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  type OldRelation = {
+    from_canonical: string;
+    to_canonical: string;
+    relationship_type: string;
+    first_seen_at: string | null;
+    description: string | null;
+    quote: string | null;
+    quote_verified: number | null;
+  };
+
+  let rebuilt = 0;
+  db.transaction(() => {
+    for (const { source_id, entities, relations } of sources) {
+      if (!include(source_id)) continue;
+      const entitySeen = new Map<string, string | null>();
+      for (const r of oldEntities.all(source_id) as Array<{ canonical_name: string; first_seen_at: string | null }>) {
+        entitySeen.set(nocase(r.canonical_name), r.first_seen_at);
+      }
+      const relationOld = new Map<string, OldRelation>();
+      for (const r of oldRelations.all(source_id) as OldRelation[]) {
+        relationOld.set(relationKey(r.from_canonical, r.to_canonical, r.relationship_type), r);
+      }
+      const earliest = [...entitySeen.values(), ...[...relationOld.values()].map((r) => r.first_seen_at)]
+        .filter((d): d is string => !!d)
+        .sort()[0];
+      const seenAt =
+        earliest ?? (extractedAt.get(source_id) as { created_at: string | null } | undefined)?.created_at ?? null;
+      replaceSourceMentions(
+        source_id,
+        entities.map((e) => ({ ...e, source_id, first_seen_at: entitySeen.get(nocase(e.canonical_name)) ?? seenAt })),
+        relations.map((r) => {
+          const old = relationOld.get(relationKey(r.from_canonical, r.to_canonical, r.relationship_type));
+          const quote =
+            r.quote === null && old?.quote
+              ? { quote: old.quote, quote_verified: quoteVerifiedFromColumn(old.quote_verified) }
+              : { quote: r.quote, quote_verified: r.quote_verified };
+          return {
+            ...r,
+            ...quote,
+            source_id,
+            description: r.description ?? old?.description ?? null,
+            first_seen_at: old?.first_seen_at ?? seenAt,
+          };
+        })
+      );
+      rebuilt += 1;
+    }
+  })();
+  return rebuilt;
 }
 
 /**
@@ -1021,6 +1195,43 @@ export function getSourceIdsForRelationship(
         WHERE from_canonical = ? AND to_canonical = ? AND relationship_type = ?`
     )
     .all(fromCanonical, toCanonical, relationshipType) as Array<{ source_id: string }>
+  ).map((r) => r.source_id);
+}
+
+/**
+ * The (from, to) name pairs of a session's competes_with / contradicts rows
+ * (COMPARISON_RELATIONS), as resolve left them: the plan step's comparison
+ * candidates.
+ */
+export function getSessionComparisonPairs(sessionId: string): Array<{ from_canonical: string; to_canonical: string }> {
+  const types = [...COMPARISON_RELATIONS];
+  return openDb()
+    .prepare(
+      `SELECT DISTINCT rm.from_canonical, rm.to_canonical
+         FROM relationship_mentions rm
+         JOIN sources s ON s.source_id = rm.source_id
+        WHERE s.onboarding_session_id = ?
+          AND rm.relationship_type IN (${types.map(() => '?').join(', ')})
+        ORDER BY rm.from_canonical, rm.to_canonical`
+    )
+    .all(sessionId, ...types) as Array<{ from_canonical: string; to_canonical: string }>;
+}
+
+/**
+ * Distinct sources that say two subjects compete with or contradict each
+ * other: competes_with and contradicts rows together, in either stored
+ * order (a row renamed before rows were re-sorted may be unsorted).
+ */
+export function getComparisonSourceIds(nameA: string, nameB: string): string[] {
+  const types = [...COMPARISON_RELATIONS];
+  return (openDb()
+    .prepare(
+      `SELECT DISTINCT source_id FROM relationship_mentions
+        WHERE relationship_type IN (${types.map(() => '?').join(', ')})
+          AND ((from_canonical = ? AND to_canonical = ?) OR (from_canonical = ? AND to_canonical = ?))
+        ORDER BY source_id`
+    )
+    .all(...types, nameA, nameB, nameB, nameA) as Array<{ source_id: string }>
   ).map((r) => r.source_id);
 }
 
@@ -1133,63 +1344,140 @@ export function resetSourceForRecompile(sourceId: string): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * Alias status (schema v29). Compiles use 'active' rows only (getAliases).
+ * 'suspended' rows are set aside until confirmed (lib/alias-screen.ts sets
+ * them); a new resolver match re-activates one. 'retired' rows were judged
+ * wrong and are never used or re-added. NULL reads as 'active'.
+ */
+export type AliasStatus = 'active' | 'suspended' | 'retired';
+
+/** A new alias → canonical mapping and how the resolver made it. */
+export interface AliasInsert {
+  alias: string;
+  canonical: string;
+  /** The resolver rule or layer that matched the names ("skeleton", "llm", ...). */
+  method?: string | null;
+  /** The similarity behind the match, when the resolver knew one. */
+  score?: number | null;
+  session_id?: string | null;
+}
+
+/**
  * Batch-insert alias → canonical_name mappings in a single transaction.
  * The aliases table has no UNIQUE constraint on alias, so we load existing
- * aliases into a Set first and skip duplicates rather than relying on
- * INSERT OR IGNORE.
+ * pairs first and skip duplicates rather than relying on INSERT OR IGNORE.
+ * Duplicates are judged on the (alias, canonical) pair: an alias whose old
+ * row getAliases() ignores (see name-guard.ts) can get a new mapping; the
+ * old row is kept, never deleted. For a pair already stored:
+ *   - active: nothing changes
+ *   - suspended: the new match re-activates it and records its method,
+ *     score and session (status_reason 'rematched')
+ *   - retired: nothing changes, and no new row is added
  */
-export function bulkInsertAliases(
-  aliases: Array<{ alias: string; canonical: string }>
-): void {
+export function bulkInsertAliases(aliases: AliasInsert[]): void {
   if (aliases.length === 0) return;
   const db = openDb();
-  const existing = new Set(
-    (db.prepare('SELECT alias FROM aliases').all() as { alias: string }[]).map(
-      (r) => r.alias.toLowerCase()
-    )
-  );
+  const pairKey = (alias: string, canonical: string) => `${alias.toLowerCase()}\u0000${canonical.toLowerCase()}`;
+  const existing = new Map<string, Array<{ id: number; status: string }>>();
+  for (const r of db.prepare('SELECT id, alias, canonical_name, status FROM aliases').all() as Array<{
+    id: number;
+    alias: string;
+    canonical_name: string | null;
+    status: string | null;
+  }>) {
+    const key = pairKey(r.alias, r.canonical_name ?? '');
+    const list = existing.get(key) ?? [];
+    list.push({ id: r.id, status: r.status ?? 'active' });
+    existing.set(key, list);
+  }
   const insert = db.prepare(
-    'INSERT INTO aliases (alias, canonical_name) VALUES (?, ?)'
+    'INSERT INTO aliases (alias, canonical_name, method, score, session_id) VALUES (?, ?, ?, ?, ?)'
   );
-  db.transaction((rows: typeof aliases) => {
-    for (const { alias, canonical } of rows) {
-      if (!existing.has(alias.toLowerCase())) {
-        insert.run(alias, canonical);
-        existing.add(alias.toLowerCase());
+  const reactivate = db.prepare(
+    `UPDATE aliases
+        SET status = 'active', status_reason = 'rematched', status_at = datetime('now'),
+            method = ?, score = ?, session_id = ?
+      WHERE id = ? AND status = 'suspended'`
+  );
+  db.transaction((rows: AliasInsert[]) => {
+    for (const { alias, canonical, method = null, score = null, session_id = null } of rows) {
+      const key = pairKey(alias, canonical);
+      const stored = existing.get(key);
+      if (!stored) {
+        insert.run(alias, canonical, method, score, session_id);
+        existing.set(key, [{ id: -1, status: 'active' }]);
+        continue;
+      }
+      if (stored.some((r) => r.status === 'retired' || r.status === 'active')) continue;
+      for (const r of stored) {
+        if (r.status !== 'suspended') continue;
+        reactivate.run(method, score, session_id, r.id);
+        r.status = 'active';
       }
     }
   })(aliases);
 }
 
 /**
- * Return all known alias → canonical_name pairs (for passing to Layer 1
- * fuzzy resolution as existing_aliases).
+ * Return the alias → canonical_name pairs the compile steps may use (Layer 1
+ * fuzzy resolution, mention pinning, dossiers, crossref link targets).
+ *
+ * Only active rows (v29; NULL status counts as active): suspended and
+ * retired aliases bind nothing. Rows whose two names carry different numbers
+ * ("Python 3" → "Python 2", "Python" → "Python 2") are left out too:
+ * resolution created those before it could tell versions apart, and they
+ * would keep sending new sources to the wrong page. The rows stay in the
+ * table (getAllAliases, backups). Oldest first, so a newer mapping for the
+ * same alias wins where callers build a map.
  */
 export function getAliases(): Array<{ alias: string; canonical_name: string }> {
-  return openDb()
+  const rows = openDb()
     .prepare(
-      'SELECT alias, canonical_name FROM aliases WHERE canonical_name IS NOT NULL'
+      `SELECT alias, canonical_name FROM aliases
+        WHERE canonical_name IS NOT NULL AND COALESCE(status, 'active') = 'active'
+        ORDER BY id`
     )
     .all() as Array<{ alias: string; canonical_name: string }>;
+  return rows.filter((r) => numericConflict(r.alias, r.canonical_name) === null);
 }
 
-/** All alias rows including canonical_page_id — used for kompl backup export. */
-export function getAllAliases(): Array<{ alias: string; canonical_name: string; canonical_page_id: string | null }> {
+/** An alias row as a kompl backup carries it. */
+export interface AliasRecord {
+  alias: string;
+  canonical_name: string;
+  canonical_page_id: string | null;
+  method: string | null;
+  score: number | null;
+  session_id: string | null;
+  status: string | null;
+  status_reason: string | null;
+  status_at: string | null;
+  created_at: string | null;
+}
+
+/** All alias rows, whatever their status, oldest first — used for kompl backup export. */
+export function getAllAliases(): AliasRecord[] {
   return openDb()
-    .prepare('SELECT alias, canonical_name, canonical_page_id FROM aliases')
-    .all() as Array<{ alias: string; canonical_name: string; canonical_page_id: string | null }>;
+    .prepare(
+      `SELECT alias, canonical_name, canonical_page_id, method, score, session_id,
+              status, status_reason, status_at, created_at
+         FROM aliases ORDER BY id`
+    )
+    .all() as AliasRecord[];
 }
 
 /**
  * Return titles of all entity and concept pages — used by the resolver to match
  * session entities/concepts against pages that already exist in the wiki. This
  * is the cross-session bridge that keeps the alias drawer from being the sole
- * signal for cross-session canonicalisation.
+ * signal for cross-session canonicalisation. Sorted, so the resolver breaks
+ * ties between matching pages the same way on every run.
  */
 export function getEntityAndConceptPageTitles(): Array<{ title: string; page_type: string }> {
   return openDb()
     .prepare(
-      `SELECT title, page_type FROM pages WHERE page_type IN ('entity', 'concept')`
+      `SELECT title, page_type FROM pages WHERE page_type IN ('entity', 'concept')
+        ORDER BY title, page_type`
     )
     .all() as Array<{ title: string; page_type: string }>;
 }
@@ -1268,71 +1556,6 @@ export function getPageContradictions(pageId: string): PageContradiction[] {
   return out;
 }
 
-/**
- * Re-canonicalise the current session's entity_mentions + relationship_mentions
- * rows after resolve writes new aliases. Extract-commit pins mention rows via
- * the aliases table as it stood at extract time; resolve may later mint new
- * aliases (e.g. "GPT 4" → "GPT-4" via existing-page-title match) that the
- * extract pass couldn't know about yet.
- *
- * Without this pass, countSourcesMentioning and getSourceIdsMentioning miss
- * the current session's contribution when its LLM extraction used a variant
- * spelling — plan emits source_ids that don't include the session's own
- * sources, and commit writes no provenance rows for them.
- *
- * Scoped to this session's source_ids so prior sessions' history stays as it
- * was (historical faithfulness — if an older source was committed under the
- * old canonical, that's part of the wiki's evolution).
- */
-export function normalizeSessionMentionsToCanonical(
-  sessionId: string,
-  aliasToCanonical: Array<{ alias: string; canonical: string }>
-): void {
-  if (!aliasToCanonical.length) return;
-  const db = openDb();
-  const sources = db
-    .prepare(
-      `SELECT source_id FROM sources WHERE onboarding_session_id = ?`
-    )
-    .all(sessionId) as Array<{ source_id: string }>;
-  if (sources.length === 0) return;
-  const sourceIds = sources.map((s) => s.source_id);
-  const placeholders = sourceIds.map(() => '?').join(',');
-
-  // UPDATE OR REPLACE handles the case where the same source has BOTH the alias
-  // and the canonical extracted as separate entity_mentions rows (e.g. a source
-  // text mentioning both "OpenAI" and "OpenAI API" — resolver fuzzy-merges them
-  // via substring into a single group, then this helper tries to fold the alias
-  // row into the canonical for the same source and hits a PRIMARY KEY
-  // (canonical_name, source_id) conflict). OR REPLACE resolves by deleting the
-  // conflicting target row and applying the UPDATE — net result: one row
-  // under the canonical per source. Same pattern for relationship_mentions.
-  const updEntity = db.prepare(
-    `UPDATE OR REPLACE entity_mentions SET canonical_name = ?
-       WHERE canonical_name = ? COLLATE NOCASE
-         AND source_id IN (${placeholders})`
-  );
-  const updRelFrom = db.prepare(
-    `UPDATE OR REPLACE relationship_mentions SET from_canonical = ?
-       WHERE from_canonical = ? COLLATE NOCASE
-         AND source_id IN (${placeholders})`
-  );
-  const updRelTo = db.prepare(
-    `UPDATE OR REPLACE relationship_mentions SET to_canonical = ?
-       WHERE to_canonical = ? COLLATE NOCASE
-         AND source_id IN (${placeholders})`
-  );
-
-  db.transaction(() => {
-    for (const { alias, canonical } of aliasToCanonical) {
-      if (alias.toLowerCase() === canonical.toLowerCase()) continue;
-      updEntity.run(canonical, alias, ...sourceIds);
-      updRelFrom.run(canonical, alias, ...sourceIds);
-      updRelTo.run(canonical, alias, ...sourceIds);
-    }
-  })();
-}
-
 
 // ============================================================================
 // Page plan helpers (Part 2c-i)
@@ -1353,6 +1576,11 @@ export interface PagePlanRow {
   created_at: string;
 }
 
+/**
+ * `draft_status` defaults to 'planned' (draft writes it next). A plan with
+ * nothing to draft or link up, a provenance-only plan, is stored
+ * 'crossreffed': ready for commit.
+ */
 export function insertPagePlan(plan: {
   plan_id: string;
   session_id: string;
@@ -1362,15 +1590,16 @@ export function insertPagePlan(plan: {
   source_ids: string[];
   existing_page_id?: string | null;
   related_plan_ids?: string[];
+  draft_status?: 'planned' | 'crossreffed';
 }): void {
   openDb()
     .prepare(
       `INSERT INTO page_plans
          (plan_id, session_id, title, page_type, action,
-          source_ids, existing_page_id, related_plan_ids)
+          source_ids, existing_page_id, related_plan_ids, draft_status)
        VALUES
          (@plan_id, @session_id, @title, @page_type, @action,
-          @source_ids, @existing_page_id, @related_plan_ids)`
+          @source_ids, @existing_page_id, @related_plan_ids, @draft_status)`
     )
     .run({
       plan_id: plan.plan_id,
@@ -1381,6 +1610,7 @@ export function insertPagePlan(plan: {
       source_ids: JSON.stringify(plan.source_ids),
       existing_page_id: plan.existing_page_id ?? null,
       related_plan_ids: plan.related_plan_ids ? JSON.stringify(plan.related_plan_ids) : null,
+      draft_status: plan.draft_status ?? 'planned',
     });
 }
 
@@ -1390,7 +1620,7 @@ export function insertPagePlan(plan: {
  * 'crossreffed', and 'failed' rows from a prior failed run are cleared so
  * the draft step only sees plans from the current run.
  * Preserves 'committed' (already written to pages table),
- * 'pending_approval' (query-generated chat plans, separate lifecycle),
+ * 'pending_approval' (awaiting user review, separate lifecycle),
  * and 'rejected' (audit trail).
  */
 export function clearStagedPagePlans(sessionId: string): void {
@@ -1480,14 +1710,69 @@ export function getPagesForSession(
     .all(sessionId) as Array<{ page_id: string; title: string }>;
 }
 
-export function updatePlanDraft(planId: string, draftContent: string): void {
-  openDb()
+/**
+ * Store a plan's draft. `draftRules` records the writing rules an LLM draft
+ * was made under (lib/draft-rules.ts CURRENT_DRAFT_RULES); null for drafts
+ * that are not LLM-written (original-source passthroughs). `baseVersion`
+ * (v30) is the version of the page an update draft read
+ * (lib/page-rewrite.ts pageTextVersionToken); null for a new page.
+ *
+ * Only a plan still waiting for its draft ('planned', or 'failed' by an
+ * earlier attempt) takes it. A draft run that outlived its step (the
+ * orchestrator gave up and a Retry drafted, linked or saved the plan since)
+ * would otherwise move the plan back to 'drafted', where commit never reads
+ * it and the page is lost. Returns false when the plan was not waiting.
+ */
+export function updatePlanDraft(
+  planId: string,
+  draftContent: string,
+  draftRules: string | null,
+  baseVersion: string | null = null,
+  /** Sources the draft's prompt carried (v30); NULL credits every plan source (lib/plan-provenance.ts). */
+  usedSourceIds: string[] | null = null,
+): boolean {
+  const result = openDb()
     .prepare(
       `UPDATE page_plans
-          SET draft_content = ?, draft_status = 'drafted'
-        WHERE plan_id = ?`
+          SET draft_content = ?, draft_status = 'drafted', draft_rules = ?, base_version = ?,
+              used_source_ids = ?
+        WHERE plan_id = ? AND draft_status IN ('planned', 'failed')`
     )
-    .run(draftContent, planId);
+    .run(draftContent, draftRules, baseVersion, usedSourceIds ? JSON.stringify(usedSourceIds) : null, planId);
+  return result.changes > 0;
+}
+
+/**
+ * The draft step's failure write: updatePlanFailed, but only while the plan
+ * still waits for its draft, for the same reason as updatePlanDraft. Returns
+ * false when the plan was not waiting.
+ */
+export function updatePlanDraftFailed(planId: string, errorMessage: string): boolean {
+  const truncated = errorMessage.length > 1000 ? errorMessage.slice(0, 1000) + '… [truncated]' : errorMessage;
+  const result = openDb()
+    .prepare(
+      `UPDATE page_plans SET draft_status = 'failed', draft_error = ?
+        WHERE plan_id = ? AND draft_status IN ('planned', 'failed')`
+    )
+    .run(truncated, planId);
+  return result.changes > 0;
+}
+
+/**
+ * Was the page rewritten after `since` (a page_plans.created_at)? Approving
+ * an update draft made before v30, which records no base_version, falls
+ * back to this (lib/approve-plan.ts). Every rewrite bumps last_updated.
+ * Both are whole seconds: a page last written in the plan's own second was
+ * written before planning read it (planning writes no pages), so it counts
+ * as unchanged. A missing page counts as changed.
+ */
+export function pageRewrittenSince(pageId: string, since: string): boolean {
+  const row = openDb()
+    .prepare(
+      `SELECT julianday(last_updated) > julianday(?) AS changed FROM pages WHERE page_id = ?`
+    )
+    .get(since, pageId) as { changed: number | null } | undefined;
+  return row === undefined || row.changed !== 0;
 }
 
 export function updatePlanCrossref(planId: string, draftContent: string): void {
@@ -1531,6 +1816,151 @@ export function getPageByTitle(title: string): PageRow | null {
     )
     .get(title) as PageRow | undefined;
   return row ?? null;
+}
+
+const PLAN_PAGE_COLUMNS = `p.page_id, p.title, p.page_type, p.category, p.summary, p.content_path,
+              p.previous_content_path, p.last_updated, p.source_count, p.created_at`;
+
+/**
+ * A source's own page (plan Rule 1): the source-summary or original-source
+ * page whose provenance holds the source. Titles are not unique and match
+ * any page type, so a title lookup turned the "Ethereum" entity page into a
+ * summary, and two sources titled "Introduction" shared one page. When
+ * several pages hold the source, the one holding the fewest sources wins
+ * (its own page, not one an old bug overwrote), then the oldest.
+ *
+ * A source page with no provenance at all is still found by its title, so a
+ * page written before provenance existed keeps being updated, not duplicated.
+ */
+export function getSourcePage(sourceId: string, title: string): PageRow | null {
+  const db = openDb();
+  const own = db
+    .prepare(
+      `SELECT ${PLAN_PAGE_COLUMNS}
+         FROM pages p
+        WHERE p.page_type IN ('source-summary', 'original-source')
+          AND EXISTS (SELECT 1 FROM provenance pr WHERE pr.page_id = p.page_id AND pr.source_id = ?)
+        ORDER BY (SELECT COUNT(DISTINCT pr.source_id) FROM provenance pr WHERE pr.page_id = p.page_id),
+                 p.created_at, p.page_id
+        LIMIT 1`
+    )
+    .get(sourceId) as PageRow | undefined;
+  if (own) return own;
+  const untracked = db
+    .prepare(
+      `SELECT ${PLAN_PAGE_COLUMNS}
+         FROM pages p
+        WHERE p.title = ? COLLATE NOCASE
+          AND p.page_type IN ('source-summary', 'original-source')
+          AND NOT EXISTS (SELECT 1 FROM provenance pr WHERE pr.page_id = p.page_id)
+        ORDER BY p.created_at, p.page_id
+        LIMIT 1`
+    )
+    .get(title) as PageRow | undefined;
+  return untracked ?? null;
+}
+
+/**
+ * The page a canonical name updates (plan Rules 2 and 3): an entity,
+ * concept, comparison or overview page with that title. Source pages and
+ * archived pages are left out, so a source titled "Ethereum" never becomes
+ * the Ethereum page. An entity or concept page wins, then the oldest.
+ *
+ * A page held after a failed rewrite (lib/page-hold.ts: page_type
+ * 'archived', restore_page_type set) counts as the type it returns as, after
+ * any live page: it keeps its title, and the plan leaves it alone instead of
+ * making a second page with that title.
+ */
+export function getTopicPageByTitle(title: string): PageRow | null {
+  const row = openDb()
+    .prepare(
+      `SELECT ${PLAN_PAGE_COLUMNS}
+         FROM pages p
+        WHERE p.title = ? COLLATE NOCASE
+          AND (CASE WHEN p.page_type = 'archived' THEN p.restore_page_type ELSE p.page_type END)
+              IN ('entity', 'concept', 'comparison', 'overview')
+        ORDER BY CASE WHEN p.page_type = 'archived' THEN 1 ELSE 0 END,
+                 CASE WHEN p.page_type IN ('entity', 'concept') OR p.restore_page_type IN ('entity', 'concept') THEN 0 ELSE 1 END,
+                 p.created_at, p.page_id
+        LIMIT 1`
+    )
+    .get(title) as PageRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * Is a draft waiting for approval (auto-approve off) going to create a page
+ * with this title, of one of `pageTypes`? The plan step plans no second
+ * "create" of such a page while one waits (plan 1.8): approving both made
+ * two pages.
+ */
+export function hasPendingCreate(title: string, pageTypes: readonly string[]): boolean {
+  if (pageTypes.length === 0) return false;
+  const types = pageTypes.map(() => '?').join(', ');
+  return (
+    openDb()
+      .prepare(
+        `SELECT 1 FROM page_plans
+          WHERE draft_status = 'pending_approval' AND action = 'create'
+            AND title = ? COLLATE NOCASE AND page_type IN (${types})
+          LIMIT 1`
+      )
+      .get(title, ...pageTypes) !== undefined
+  );
+}
+
+/**
+ * Titles the resolver matches session names against: entity and concept
+ * pages, plus the new entity and concept pages drafts waiting for approval
+ * will create, so a name binds to such a page as it would once approved
+ * (plan 1.8). Each with its summary (none yet for a waiting draft), which
+ * Layer 2 compares names with by meaning, and `person` on an entity page
+ * most of whose mentions are people: by meaning Layer 2 pairs a person only
+ * with people, and an entity page's kind is otherwise unknown to it. Sorted
+ * like getEntityAndConceptPageTitles.
+ */
+export function getResolverPageTitles(): Array<{ title: string; page_type: string; summary: string | null; person?: true }> {
+  const person = (table: string) =>
+    `(${table}.page_type = 'entity' AND (SELECT 2 * SUM(m.entity_type = 'PERSON') > COUNT(*)
+        FROM entity_mentions m WHERE m.canonical_name = ${table}.title))`;
+  const rows = openDb()
+    .prepare(
+      `SELECT title, page_type, NULLIF(TRIM(summary), '') AS summary, ${person('pages')} AS person FROM pages
+        WHERE page_type IN ('entity', 'concept')
+       UNION
+       SELECT title, page_type, NULL, ${person('page_plans')} FROM page_plans
+        WHERE draft_status = 'pending_approval' AND action = 'create'
+          AND page_type IN ('entity', 'concept')
+       ORDER BY title, page_type`
+    )
+    .all() as Array<{ title: string; page_type: string; summary: string | null; person: number | null }>;
+  return rows.map(({ person: isPerson, ...page }) => (isPerson ? { ...page, person: true as const } : page));
+}
+
+/**
+ * The entity and concept pages with these titles (any case) and their
+ * summaries, for what Layer 3 reads about a pair side bound to a page
+ * (lib/resolve-page-sides.ts). A title can name an entity and a concept
+ * page; both rows come back.
+ */
+export function getResolverPageSummaries(
+  titles: string[]
+): Array<{ title: string; page_type: string; summary: string | null }> {
+  const stmt = openDb().prepare(
+    `SELECT title, page_type, summary FROM pages
+      WHERE title = ? COLLATE NOCASE AND page_type IN ('entity', 'concept')
+      ORDER BY page_type`
+  );
+  return [...new Set(titles)].flatMap(
+    (t) => stmt.all(t) as Array<{ title: string; page_type: string; summary: string | null }>
+  );
+}
+
+/** Each source's stored kind for a canonical name: entity_mentions.entity_type ('CONCEPT' for concepts). */
+export function getMentionKinds(canonicalName: string): Array<{ source_id: string; entity_type: string | null }> {
+  return openDb()
+    .prepare(`SELECT source_id, entity_type FROM entity_mentions WHERE canonical_name = ? ORDER BY source_id`)
+    .all(canonicalName) as Array<{ source_id: string; entity_type: string | null }>;
 }
 
 /**
@@ -1610,9 +2040,8 @@ export function createCompileProgress(
  * createCompileProgress. Callers should fall back to getCompileModel() on
  * null so legacy sessions keep working.
  *
- * This mirrors the chat_model lock pattern (chat_messages.chat_model,
- * getSessionChatModel) — read the stamp if present, fall back to the
- * current Settings value otherwise.
+ * Read the stamp if present, fall back to the current Settings value
+ * otherwise.
  */
 export function getSessionCompileModel(sessionId: string): string | null {
   const row = openDb()
@@ -1633,10 +2062,10 @@ export function getSessionCompileModel(sessionId: string): string | null {
  */
 export function getEffectiveCompileModel(
   sessionId: string | null | undefined,
-): ChatModel {
+): LlmModel {
   if (!sessionId) return getCompileModel();
   const locked = getSessionCompileModel(sessionId);
-  return isChatModel(locked) ? locked : getCompileModel();
+  return isLlmModel(locked) ? locked : getCompileModel();
 }
 
 /**
@@ -1827,6 +2256,53 @@ export function markStaleSessionsFailed(): number {
     }
   }
   return cleaned;
+}
+
+export type CompileRunClaim =
+  | { claimed: true; restarted: boolean }
+  | { claimed: false; reason: 'no_progress_record' | 'already_completed' | 'session_cancelled' | 'already_running' };
+
+/**
+ * The run gate of POST /api/compile/run: claim the session's row for a new
+ * pipeline, in one transaction.
+ *
+ *   - missing, completed or cancelled → refused;
+ *   - running within its time limit   → refused (already_running);
+ *   - running past its time limit (markStaleSessionsFailed) → claimed again:
+ *     a restart;
+ *   - queued, failed (or any other)   → claimed.
+ *
+ * A claim sets status 'running' and a fresh started_at at once. A restarted
+ * run therefore counts for getRunningCompileSession straight away, with a new
+ * time limit; left 'failed', or 'running' with the old started_at, it would
+ * let another session start alongside it.
+ */
+export function claimCompileRun(sessionId: string): CompileRunClaim {
+  const db = openDb();
+  return db.transaction((): CompileRunClaim => {
+    const row = getCompileProgress(sessionId);
+    if (!row) return { claimed: false, reason: 'no_progress_record' };
+    if (row.status === 'completed') return { claimed: false, reason: 'already_completed' };
+    if (row.status === 'cancelled') return { claimed: false, reason: 'session_cancelled' };
+
+    const restarted = row.status === 'running';
+    if (restarted) {
+      markStaleSessionsFailed();
+      if (getCompileProgress(sessionId)?.status === 'running') {
+        return { claimed: false, reason: 'already_running' };
+      }
+    }
+
+    db.prepare(
+      `UPDATE compile_progress
+          SET status       = 'running',
+              started_at   = CURRENT_TIMESTAMP,
+              error        = NULL,
+              completed_at = NULL
+        WHERE session_id   = ?`
+    ).run(sessionId);
+    return { claimed: true, restarted };
+  })();
 }
 
 /**
@@ -2102,13 +2578,39 @@ export function getPagesByType(types: string[]): PageRow[] {
 }
 
 /**
- * Increment the source_count column of a page by the given amount.
- * Called after a provenance-only commit so source_count stays accurate.
+ * Recount a page's source_count from provenance, the ground truth. Distinct
+ * sources: provenance may hold several rows for one source and page (a
+ * 'created' and later 'updated' rows).
  */
-export function incrementPageSourceCount(pageId: string, increment: number): void {
+export function recountPageSources(pageId: string): void {
   openDb()
-    .prepare('UPDATE pages SET source_count = source_count + ? WHERE page_id = ?')
-    .run(increment, pageId);
+    .prepare(
+      `UPDATE pages SET source_count = (
+         SELECT COUNT(DISTINCT source_id) FROM provenance WHERE page_id = ?
+       ) WHERE page_id = ?`
+    )
+    .run(pageId, pageId);
+}
+
+/**
+ * Link sources to a page without changing its text (a provenance-only plan:
+ * match triage found the source adds nothing to the page). Each source not
+ * yet recorded on the page gets one 'mentioned' row; a source already on it,
+ * whatever its rows say, gets none, so a retry or a later 'skip' verdict
+ * never adds a duplicate. Then recounts source_count. Returns the rows added.
+ * Sync, no file I/O: runs inside the commit transaction.
+ */
+export function linkSourcesToPage(pageId: string, sourceIds: string[], contentHash: string): number {
+  const db = openDb();
+  const linked = db.prepare('SELECT 1 FROM provenance WHERE page_id = ? AND source_id = ? LIMIT 1');
+  let added = 0;
+  for (const source_id of new Set(sourceIds)) {
+    if (linked.get(pageId, source_id)) continue;
+    insertProvenance({ source_id, page_id: pageId, content_hash: contentHash, contribution_type: 'mentioned' });
+    added++;
+  }
+  recountPageSources(pageId);
+  return added;
 }
 
 /**
@@ -2141,123 +2643,13 @@ export function getCurrentPageHash(pageId: string): string {
 }
 
 // ============================================================================
-// Chat messages (commit 7)
-// ============================================================================
-
-export interface ChatMessageRow {
-  id: number;
-  session_id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  citations: string | null;   // JSON: Array<{page_id, page_title}>
-  pages_used: string | null;  // JSON: string[]
-  chat_model: string | null;  // stamped only on the first row of each session
-  created_at: string;
-}
-
-export function insertChatMessage(data: {
-  session_id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  citations?: Array<{ page_id: string; page_title: string }>;
-  pages_used?: string[];
-  chat_model?: string;
-}): void {
-  openDb()
-    .prepare(
-      `INSERT INTO chat_messages (session_id, role, content, citations, pages_used, chat_model)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      data.session_id,
-      data.role,
-      data.content,
-      data.citations ? JSON.stringify(data.citations) : null,
-      data.pages_used ? JSON.stringify(data.pages_used) : null,
-      data.chat_model ?? null,
-    );
-}
-
-export function getSessionChatModel(sessionId: string): string | null {
-  const row = openDb()
-    .prepare(
-      `SELECT chat_model FROM chat_messages
-       WHERE session_id = ?
-       ORDER BY id ASC
-       LIMIT 1`
-    )
-    .get(sessionId) as { chat_model: string | null } | undefined;
-  return row?.chat_model ?? null;
-}
-
-export function getChatHistory(sessionId: string, limit = 20): ChatMessageRow[] {
-  return openDb()
-    .prepare(
-      `SELECT * FROM chat_messages
-       WHERE session_id = ?
-       ORDER BY created_at ASC
-       LIMIT ?`
-    )
-    .all(sessionId, limit) as ChatMessageRow[];
-}
-
-/**
- * Return all pages as a lightweight index for chat retrieval.
- * Sorted by source_count DESC so most-sourced pages appear first.
- * Excludes page_type='archived' and all-archived-sources pages by default.
- */
-export function getPageIndex(): Array<{
-  page_id: string;
-  title: string;
-  page_type: string;
-  summary: string | null;
-  category: string | null;
-  source_count: number;
-}> {
-  type Row = { page_id: string; title: string; page_type: string; summary: string | null; category: string | null; source_count: number };
-  const rows = openDb()
-    .prepare(
-      `SELECT page_id, title, page_type, summary, category, source_count
-       FROM pages
-       WHERE page_type != 'archived'
-       ORDER BY source_count DESC`
-    )
-    .all() as Row[];
-  const archivedIds = getAllArchivedPageIds();
-  if (archivedIds.size === 0) return rows;
-  return rows.filter((r) => !archivedIds.has(r.page_id));
-}
-
-/**
- * Insert a chat-compounding draft directly into page_plans.
- * Used when a chat answer synthesises 3+ pages — creates a
- * pending_approval draft for the user to review.
- */
-export function insertChatDraft(data: {
-  plan_id: string;
-  session_id: string;
-  title: string;
-  draft_content: string;
-  pages_used?: string[]; // page_ids that contributed to the answer
-}): void {
-  openDb()
-    .prepare(
-      `INSERT INTO page_plans
-         (plan_id, session_id, title, page_type, action,
-          source_ids, existing_page_id, related_plan_ids,
-          draft_content, draft_status)
-       VALUES (?, ?, ?, 'query-generated', 'create', ?, NULL, '[]', ?, 'pending_approval')`
-    )
-    .run(data.plan_id, data.session_id, data.title, JSON.stringify(data.pages_used ?? []), data.draft_content);
-}
-
-// ============================================================================
 // Source management helpers (commit 8)
 // ============================================================================
 
 /**
- * Fetch all sources with optional filtering, sorting and pagination.
- * Used by GET /api/sources and the /sources list page.
+ * Fetch all sources with optional filtering, sorting and pagination. Every
+ * source unless `limit` is given: the backup and JSON exports read the whole
+ * list (a default of 200 once cut larger wikis' backups short).
  */
 export function getAllSources(options?: {
   status?: string;
@@ -2305,14 +2697,16 @@ export function getAllSources(options?: {
   const SORT_DIRS: Record<string, string> = { asc: 'ASC', desc: 'DESC' };
   const sortCol = SORT_COLS[options?.sort_by ?? 'date_ingested'] ?? 'date_ingested';
   const sortDir = SORT_DIRS[options?.sort_order ?? 'desc'] ?? 'DESC';
-  const limit = options?.limit ?? 200;
+  const limit = options?.limit ?? -1; // SQLite: LIMIT -1 is no limit
   const offset = options?.offset ?? 0;
 
   return openDb()
     .prepare(
       `SELECT source_id, title, source_type, source_url, content_hash,
               file_path, status, date_ingested, metadata, compile_status,
-              compile_attempts, onboarding_session_id
+              compile_attempts, compile_next_eligible_at, onboarding_session_id,
+              title_source, title_rescued_at,
+              published_at, published_at_source
          FROM sources
          ${where}
          ORDER BY ${sortCol} ${sortDir}
@@ -2353,8 +2747,11 @@ function buildSourcesWhereSql(
     params.push(options.dateTo.includes('T') ? options.dateTo : options.dateTo + 'T23:59:59');
   }
   if (options?.search) {
-    conditions.push('s.title LIKE ?');
-    params.push(`%${options.search}%`);
+    // Title or address, so "did example.com make it in?" can be answered.
+    // % and _ in the search text are matched literally, not as wildcards.
+    const pattern = `%${options.search.replace(/[\\%_]/g, '\\$&')}%`;
+    conditions.push(`(s.title LIKE ? ESCAPE '\\' OR s.source_url LIKE ? ESCAPE '\\')`);
+    params.push(pattern, pattern);
   }
 
   return {
@@ -2446,8 +2843,10 @@ export function getSourceProvenanceMap(sourceId: string): Array<{
 }
 
 /**
- * Return pages that have at least one provenance link from the given source.
- * Used by cascade delete to determine which pages are affected.
+ * Return pages that have at least one provenance link from the given source,
+ * each once. Used by cascade delete to determine which pages are affected:
+ * a source can hold several rows on one page ('mentioned' next to 'updated'),
+ * and the delete must rewrite such a page once, not once per row.
  */
 export function getPagesBySourceId(sourceId: string): Array<{
   page_id: string;
@@ -2456,12 +2855,23 @@ export function getPagesBySourceId(sourceId: string): Array<{
 }> {
   return openDb()
     .prepare(
-      `SELECT p.page_id, p.title, p.source_count
+      `SELECT DISTINCT p.page_id, p.title, p.source_count
          FROM pages p
          JOIN provenance pr ON p.page_id = pr.page_id
         WHERE pr.source_id = ?`
     )
     .all(sourceId) as Array<{ page_id: string; title: string; source_count: number }>;
+}
+
+/**
+ * Remove one source's provenance rows from one page. A source delete calls
+ * it as it handles each page, so the pages it has not reached yet still
+ * name the source if it stops halfway (lib/source-delete.ts).
+ */
+export function removeSourceFromPage(pageId: string, sourceId: string): void {
+  openDb()
+    .prepare('DELETE FROM provenance WHERE page_id = ? AND source_id = ?')
+    .run(pageId, sourceId);
 }
 
 /**
@@ -2475,6 +2885,11 @@ export function removeProvenanceForSource(sourceId: string): void {
 }
 
 /**
+ * Legacy data hygiene: the in-app chat (since retired) could save answers as
+ * pending_approval drafts, and installs may still hold some. Nothing creates
+ * new ones, but this cleanup stays so those drafts can never be approved into
+ * pages with broken [[wikilinks]].
+ *
  * Strip a deleted page_id from every chat-save-draft's source_ids array
  * (chat drafts store cited page_ids in source_ids — known semantic quirk),
  * then drop any chat draft whose source_ids becomes empty. Run inside the
@@ -2586,6 +3001,46 @@ export function cleanupPendingPlansForDeletedSource(
 }
 
 /**
+ * Drop the ids of deleted sources from a plan about to be committed, and
+ * return the ids that remain. A compile can start while a source is being
+ * deleted (a delete is refused while a compile runs, not the other way
+ * round: lib/source-delete.ts); an id left in the plan fails the provenance
+ * foreign key and
+ * rolls back the whole page update, new sources included. The shrunk list is
+ * written back, so a draft queued for approval stays approvable. A plan left
+ * with no sources is deleted, as cleanupPendingPlansForDeletedSource does for
+ * queued drafts, so a deleted source's page is never created. Only a plan
+ * still 'crossreffed' is touched; one another commit already took is left
+ * as it is.
+ */
+export function pruneDeletedPlanSources(planId: string, sourceIds: string[]): string[] {
+  if (sourceIds.length === 0) return sourceIds;
+  const db = openDb();
+  const existing = new Set(
+    (
+      db
+        .prepare(
+          `SELECT j.value AS source_id
+             FROM json_each(?) j
+             JOIN sources s ON s.source_id = j.value`
+        )
+        .all(JSON.stringify(sourceIds)) as Array<{ source_id: string }>
+    ).map((r) => r.source_id)
+  );
+  const remaining = sourceIds.filter((id) => existing.has(id));
+  if (remaining.length === sourceIds.length) return sourceIds;
+  if (remaining.length === 0) {
+    db.prepare(`DELETE FROM page_plans WHERE plan_id = ? AND draft_status = 'crossreffed'`).run(planId);
+  } else {
+    db.prepare(`UPDATE page_plans SET source_ids = ? WHERE plan_id = ? AND draft_status = 'crossreffed'`).run(
+      JSON.stringify(remaining),
+      planId
+    );
+  }
+  return remaining;
+}
+
+/**
  * Return all provenance rows for a given page_id.
  * Used by recompilePage to discover remaining sources after one is deleted.
  */
@@ -2608,10 +3063,15 @@ export function getProvenanceForPage(pageId: string): Array<{ source_id: string;
  * The only caller is recompilePage() when a source delete leaves a page with no
  * remaining provenance. If you're looking for the missing UI — it is intentionally
  * missing.
+ *
+ * That archive is for good, so it also ends a hold (lib/page-hold.ts): a page
+ * with no sources left is never offered back for a rewrite.
  */
 export function archivePage(pageId: string): void {
   const db = openDb();
-  db.prepare(`UPDATE pages SET page_type = 'archived' WHERE page_id = ?`).run(pageId);
+  db.prepare(
+    `UPDATE pages SET page_type = 'archived', restore_page_type = NULL, archive_reason = NULL WHERE page_id = ?`
+  ).run(pageId);
   db.prepare(`DELETE FROM pages_fts WHERE page_id = ?`).run(pageId);
 }
 
@@ -2666,9 +3126,10 @@ export function deletePage(pageId: string): { chatDraftsRewritten: number; chatD
  * Zero-provenance pages are NOT included (HAVING COUNT(*) > 0 guard prevents
  * the degenerate 0=0 case from hiding pages with no provenance at all).
  *
- * Result is cached for 30s — this query runs on every chat message in hybrid
- * mode and is expensive (GROUP BY JOIN on provenance). Cache is invalidated by
- * setSourceStatus (archive/unarchive) and deleteSource (source removal).
+ * Result is cached for 30s — wiki listing, category and graph reads all call
+ * this and the query is expensive (GROUP BY JOIN on provenance). Cache is
+ * invalidated by setSourceStatus (archive/unarchive) and deleteSource
+ * (source removal).
  */
 let _archivedIdsCache: { ids: Set<string>; ts: number } | null = null;
 const ARCHIVED_IDS_TTL = 30_000;
@@ -2707,6 +3168,21 @@ export function setSourceStatus(sourceId: string, status: 'active' | 'archived')
 // ============================================================================
 // Settings helpers (commit 8)
 // ============================================================================
+
+/**
+ * Whether AI agents may add sources through MCP add_source, which starts
+ * compiles (LLM spend). Off unless the user turns it on in Settings, and
+ * never carried in backups, so restoring one can't switch it on.
+ */
+export const AGENT_ADD_SOURCES_KEY = 'agent_add_sources_enabled';
+
+export function getAgentAddSourcesEnabled(): boolean {
+  return getSetting(AGENT_ADD_SOURCES_KEY) === '1';
+}
+
+export function setAgentAddSourcesEnabled(value: boolean): void {
+  setSetting(AGENT_ADD_SOURCES_KEY, value ? '1' : '0');
+}
 
 /**
  * Get the auto-approve setting. Defaults to true (direct commit) if not set.
@@ -2829,57 +3305,21 @@ export function setDossierMinScore(value: number): void {
   setSetting('dossier_min_score', String(clamped));
 }
 
-export const CHAT_MODELS = [
-  'gemini-2.5-flash-lite',
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'deepseek-v4-pro',
-  'deepseek-v4-flash',
-] as const;
-export type ChatModel = typeof CHAT_MODELS[number];
-export const DEFAULT_CHAT_MODEL: ChatModel = 'gemini-2.5-flash-lite';
+// The 'chat_model' settings row may still exist on installs that used the
+// retired in-app chat. Nothing reads it; it is left in place (and in exports)
+// rather than deleted so old backups round-trip unchanged.
 
-export function isChatModel(v: unknown): v is ChatModel {
-  return typeof v === 'string' && (CHAT_MODELS as readonly string[]).includes(v);
-}
-
-// Phase 4 multi-provider: prefix dispatch matches the nlp-service factory at
-// nlp-service/services/providers/__init__.py. Settings UI uses this to drive
-// per-provider <optgroup> placement in the dropdowns.
-export function getProviderForModel(m: string): 'gemini' | 'deepseek' {
-  if (m.startsWith('deepseek-')) return 'deepseek';
-  return 'gemini';
-}
-
-export function getChatModel(): ChatModel {
-  const v = getSetting('chat_model');
-  return isChatModel(v) ? v : DEFAULT_CHAT_MODEL;
-}
-
-export function setChatModel(value: string): void {
-  if (!isChatModel(value)) {
-    throw new Error(`invalid chat_model: ${value}`);
-  }
-  setSetting('chat_model', value);
-}
-
-// Compile steps use a separate model setting from chat. Chat-favoured model
-// (usually Flash-Lite for speed, optionally Pro for quality) can differ from
-// the compile workload (usually Flash for balance, optionally Pro for large
-// extractions). Same allowlist as CHAT_MODELS — Kompl only supports the 2.5
-// family on Gemini Developer API.
-//
-// Default matches the historical hardcoded value in llm_client.py so upgrading
-// to the setting-driven code is a no-op for existing deployments.
-export const DEFAULT_COMPILE_MODEL: ChatModel = 'gemini-2.5-flash';
-
-export function getCompileModel(): ChatModel {
+// Model used by every compile-pipeline LLM step (extract, resolve, draft,
+// crossref, schema) plus lint and recompile. Validated against LLM_MODELS
+// (lib/llm-models.ts). Migration v26 gives every install an explicit
+// compile_model row, so DEFAULT_COMPILE_MODEL is only a last resort.
+export function getCompileModel(): LlmModel {
   const v = getSetting('compile_model');
-  return isChatModel(v) ? v : DEFAULT_COMPILE_MODEL;
+  return isLlmModel(v) ? v : DEFAULT_COMPILE_MODEL;
 }
 
 export function setCompileModel(value: string): void {
-  if (!isChatModel(value)) {
+  if (!isLlmModel(value)) {
     throw new Error(`invalid compile_model: ${value}`);
   }
   setSetting('compile_model', value);
@@ -2977,24 +3417,87 @@ export interface InsertIngestFailureArgs {
   session_id?: string | null;
 }
 
-export function insertIngestFailure(args: InsertIngestFailureArgs): void {
-  openDb()
+/**
+ * One Saved Links row per link (issue #139): the same page however it is
+ * written (host case, a trailing slash; lib/url-key.ts, as the agent
+ * duplicate checks spell it). Anything that isn't a URL matches only itself.
+ */
+function savedLinkKey(url: string): string {
+  return urlKey(url) ?? url;
+}
+
+/** The unresolved rows of the link `url` names, newest first. */
+function unresolvedFailuresForLink(url: string): string[] {
+  const key = savedLinkKey(url);
+  const candidates = urlKey(url) ? urlKeyCandidates(key) : [url.toLowerCase()];
+  const rows = openDb()
     .prepare(
+      `SELECT failure_id, source_url FROM ingest_failures
+        WHERE resolved_source_id IS NULL
+          AND lower(source_url) IN (${candidates.map(() => '?').join(', ')})
+        ORDER BY datetime(date_attempted) DESC, rowid DESC`
+    )
+    .all(...candidates) as Array<{ failure_id: string; source_url: string }>;
+  return rows.filter((r) => savedLinkKey(r.source_url) === key).map((r) => r.failure_id);
+}
+
+/**
+ * Record a link that could not be imported. A link that already has an
+ * unresolved row updates it instead of adding one: the newest error, the
+ * session that last tried (so retry-failed finds it), title and preview
+ * kept when this attempt brings none, and one more attempt counted.
+ */
+export function insertIngestFailure(args: InsertIngestFailureArgs): void {
+  const db = openDb();
+  const values = {
+    failure_id: args.failure_id,
+    source_url: args.source_url ?? null,
+    title_hint: args.title_hint ?? null,
+    date_saved: args.date_saved ?? null,
+    error: args.error,
+    source_type: args.source_type ?? 'url',
+    metadata: args.metadata ?? null,
+    session_id: args.session_id ?? null,
+  };
+  db.transaction(() => {
+    const [existing] = values.source_url ? unresolvedFailuresForLink(values.source_url) : [];
+    if (existing) {
+      db.prepare(
+        `UPDATE ingest_failures
+            SET error          = @error,
+                date_attempted = CURRENT_TIMESTAMP,
+                source_type    = @source_type,
+                session_id     = COALESCE(@session_id, session_id),
+                title_hint     = COALESCE(@title_hint, title_hint),
+                metadata       = COALESCE(@metadata, metadata),
+                date_saved     = COALESCE(date_saved, @date_saved),
+                attempts       = attempts + 1
+          WHERE failure_id = @existing`
+      ).run({ ...values, existing });
+      return;
+    }
+    db.prepare(
       `INSERT OR IGNORE INTO ingest_failures
          (failure_id, source_url, title_hint, date_saved, error, source_type, metadata, session_id)
        VALUES
          (@failure_id, @source_url, @title_hint, @date_saved, @error, @source_type, @metadata, @session_id)`
-    )
-    .run({
-      failure_id: args.failure_id,
-      source_url: args.source_url ?? null,
-      title_hint: args.title_hint ?? null,
-      date_saved: args.date_saved ?? null,
-      error: args.error,
-      source_type: args.source_type ?? 'url',
-      metadata: args.metadata ?? null,
-      session_id: args.session_id ?? null,
-    });
+    ).run(values);
+  })();
+}
+
+/**
+ * The link was imported (in any session): its unresolved rows are marked
+ * resolved by the new source, so it leaves Saved Links. The rows are kept.
+ * Returns how many rows it resolved.
+ */
+export function resolveIngestFailuresForUrl(url: string, sourceId: string): number {
+  const db = openDb();
+  return db.transaction(() => {
+    const ids = unresolvedFailuresForLink(url);
+    const mark = db.prepare('UPDATE ingest_failures SET resolved_source_id = ? WHERE failure_id = ?');
+    for (const id of ids) mark.run(sourceId, id);
+    return ids.length;
+  })();
 }
 
 /**
@@ -3030,10 +3533,20 @@ export interface SavedLinkRow {
   error: string;
   source_type: string;
   metadata: string | null;
+  /** Failed attempts for this link, rows saved before one row per link included. */
+  attempts: number;
 }
 
+/**
+ * One row per link, newest attempt first (issue #139). Rows saved before
+ * failures were merged read as one: the newest row's error and date, every
+ * row's attempts, and the title, preview and saved date the newest row
+ * lacks taken from older ones. A link already in the wiki (a source with
+ * the same address, however it was written) is left out.
+ */
 export function getUnresolvedLinks(): SavedLinkRow[] {
-  return openDb()
+  const db = openDb();
+  const rows = db
     .prepare(
       `SELECT failure_id,
               source_url,
@@ -3042,44 +3555,53 @@ export function getUnresolvedLinks(): SavedLinkRow[] {
               date_attempted,
               error,
               source_type,
-              metadata
+              metadata,
+              attempts
          FROM ingest_failures
         WHERE resolved_source_id IS NULL
           AND source_url IS NOT NULL
-        ORDER BY date_attempted DESC`
+        ORDER BY datetime(date_attempted) DESC, rowid DESC`
     )
     .all() as SavedLinkRow[];
-}
-
-export function deleteIngestFailure(failureId: string): boolean {
-  const info = openDb()
-    .prepare('DELETE FROM ingest_failures WHERE failure_id = ?')
-    .run(failureId);
-  return info.changes > 0;
+  if (rows.length === 0) return [];
+  const inWiki = new Set(
+    (db
+      .prepare(`SELECT source_url FROM sources WHERE source_url IS NOT NULL AND compile_status != 'collected'`)
+      .all() as Array<{ source_url: string }>).map((r) => savedLinkKey(r.source_url))
+  );
+  const byLink = new Map<string, SavedLinkRow>();
+  for (const row of rows) {
+    const key = savedLinkKey(row.source_url);
+    if (inWiki.has(key)) continue;
+    const link = byLink.get(key);
+    if (!link) {
+      byLink.set(key, { ...row });
+      continue;
+    }
+    link.attempts += row.attempts;
+    link.title ??= row.title;
+    link.metadata ??= row.metadata;
+    link.date_saved = row.date_saved ?? link.date_saved; // older rows come later: the first save wins
+  }
+  return [...byLink.values()];
 }
 
 /**
- * Delete ingest_failures rows matching (session_id, source_url) pairs.
- * Called by /api/compile/retry-failed before flipping the corresponding
- * staging rows back to 'pending', so a successful retry leaves no ghost
- * row in the Saved Links / /api/sources/failures surfaces (which filter
- * by resolved_source_id IS NULL). If the retry fails again, ingest-urls
- * re-inserts the row. Idempotent — missing rows are fine.
+ * Dismiss a saved link: the row, and every other unresolved row of the
+ * same link (rows saved before one row per link), so none takes its place.
  */
-export function deleteIngestFailuresBySourceUrls(
-  sessionId: string,
-  sourceUrls: string[]
-): number {
-  if (sourceUrls.length === 0) return 0;
-  const placeholders = sourceUrls.map(() => '?').join(', ');
-  const info = openDb()
-    .prepare(
-      `DELETE FROM ingest_failures
-        WHERE session_id = ?
-          AND source_url IN (${placeholders})`
-    )
-    .run(sessionId, ...sourceUrls);
-  return info.changes;
+export function deleteIngestFailure(failureId: string): boolean {
+  const db = openDb();
+  return db.transaction(() => {
+    const row = db
+      .prepare('SELECT source_url, resolved_source_id FROM ingest_failures WHERE failure_id = ?')
+      .get(failureId) as { source_url: string | null; resolved_source_id: string | null } | undefined;
+    if (!row) return false;
+    const ids = row.source_url && row.resolved_source_id === null ? unresolvedFailuresForLink(row.source_url) : [];
+    const drop = db.prepare('DELETE FROM ingest_failures WHERE failure_id = ?');
+    for (const id of new Set([failureId, ...ids])) drop.run(id);
+    return true;
+  })();
 }
 
 /**
@@ -3168,9 +3690,10 @@ export function getStaleSources(thresholdDays: number): StaleSourceRow[] {
 // ============================================================================
 
 /**
- * Whether the scheduled lint pass (36h startup hook fired by `kompl start`) is enabled.
- * Defaults to true. When false, lint-pass/route.ts returns early immediately.
- * Manual trigger in settings bypasses this flag.
+ * Legacy setting for the scheduled lint pass that `kompl start` used to fire.
+ * That schedule was retired in v0.4: lint-pass/route.ts runs only when the user
+ * asks, whatever this says. Kept so the settings API, older clients and
+ * backups that carry the row keep working.
  */
 export function getLintEnabled(): boolean {
   return getSetting('lint_enabled') !== '0';
@@ -3221,7 +3744,7 @@ export function getLastLintResult(): Record<string, unknown> | null {
 }
 
 // ============================================================================
-// Wiki stats (commit 8 — meta query support in chat)
+// Wiki stats (commit 8) — served by GET /api/wiki/stats
 // ============================================================================
 
 export interface WikiStats {
@@ -3234,8 +3757,8 @@ export interface WikiStats {
 }
 
 /**
- * Quick stats snapshot for answering meta queries in chat ("how many sources?").
- * All reads are cheap index scans — no full table scans.
+ * Quick stats snapshot (source/page/entity/concept counts, last ingest and
+ * compile times). All reads are cheap index scans — no full table scans.
  */
 export function getWikiStats(): WikiStats {
   const db = openDb();
@@ -3263,24 +3786,18 @@ export function getWikiStats(): WikiStats {
   };
 }
 
-/**
- * Return a summary of what topics/categories are in the wiki.
- * Used by detectMetaQuery for "what topics does my wiki cover" questions.
- */
-export function getPageCategories(): Array<{ category: string; page_type: string; count: number }> {
-  return openDb()
-    .prepare(
-      `SELECT COALESCE(category, 'General') AS category, page_type, COUNT(*) AS count
-         FROM pages
-        GROUP BY category, page_type
-        ORDER BY count DESC`
-    )
-    .all() as Array<{ category: string; page_type: string; count: number }>;
-}
-
 // ============================================================================
 // Draft approval helpers (commit 8)
 // ============================================================================
+
+/** Number of drafts waiting for approval, without loading their text. */
+export function countPendingDrafts(): number {
+  return (
+    openDb().prepare(`SELECT COUNT(*) AS n FROM page_plans WHERE draft_status = 'pending_approval'`).get() as {
+      n: number;
+    }
+  ).n;
+}
 
 /**
  * Fetch all page_plans with draft_status = 'pending_approval'.
@@ -3346,6 +3863,36 @@ export function clearPendingContent(pageId: string, previousContentPath: string 
       'UPDATE pages SET pending_content = NULL, previous_content_path = ? WHERE page_id = ?'
     )
     .run(previousContentPath, pageId);
+}
+
+/** A page's outbox text, or null when nothing is waiting to be flushed. */
+export function getPendingContent(pageId: string): string | null {
+  const row = openDb()
+    .prepare('SELECT pending_content FROM pages WHERE page_id = ?')
+    .get(pageId) as { pending_content: string | null } | undefined;
+  return row?.pending_content ?? null;
+}
+
+/**
+ * Compare-and-set clearPendingContent: clears the outbox only while it still
+ * holds `writtenContent`, the text the flush just wrote. Another writer can
+ * replace pending_content while a flush is in flight; clearing it anyway
+ * would drop that newer text from the outbox while the file holds the older
+ * one. Returns true when the row was cleared.
+ */
+export function clearPendingContentIfUnchanged(
+  pageId: string,
+  previousContentPath: string | null,
+  writtenContent: string
+): boolean {
+  return (
+    openDb()
+      .prepare(
+        `UPDATE pages SET pending_content = NULL, previous_content_path = ?
+          WHERE page_id = ? AND pending_content = ?`
+      )
+      .run(previousContentPath, pageId, writtenContent).changes > 0
+  );
 }
 
 /**
@@ -3668,12 +4215,19 @@ export interface RelationshipMentionRow {
   relationship_type: string;
   source_id: string;
   first_seen_at: string;
+  /** v28; null until filled (lib/relation-backfill.ts). */
+  description: string | null;
+  /** v30: the source's sentence; null for relations extracted before quotes. */
+  quote: string | null;
+  /** v30: 1 found in the source, 0 not found, null without a quote. */
+  quote_verified: number | null;
 }
 
 export function getAllRelationshipMentions(): RelationshipMentionRow[] {
   return openDb()
     .prepare(
-      `SELECT from_canonical, to_canonical, relationship_type, source_id, first_seen_at
+      `SELECT from_canonical, to_canonical, relationship_type, source_id, first_seen_at,
+              description, quote, quote_verified
          FROM relationship_mentions
         ORDER BY first_seen_at`
     )
@@ -3705,14 +4259,18 @@ export interface ActivityLogRow {
   action_type: string;
   source_id: string | null;
   details: string | null;
+  /** v23: the compile session and step the event belongs to. */
+  session_id: string | null;
+  step_key: string | null;
 }
 
+/** In the order they were logged, so a restore keeps events that share a timestamp in order. */
 export function getAllActivityLog(): ActivityLogRow[] {
   return openDb()
     .prepare(
-      `SELECT timestamp, action_type, source_id, details
+      `SELECT timestamp, action_type, source_id, details, session_id, step_key
          FROM activity_log
-        ORDER BY timestamp`
+        ORDER BY id`
     )
     .all() as ActivityLogRow[];
 }
@@ -3727,19 +4285,50 @@ export interface CompileProgressExportRow {
   completed_at: string | null;
   created_at: string;
   source_count: number;
+  /** v20: the model the session was locked to; null for older sessions. */
+  compile_model: string | null;
 }
 
 export function getAllCompileProgress(): CompileProgressExportRow[] {
   return openDb()
     .prepare(
       `SELECT session_id, status, current_step, steps, error,
-              started_at, completed_at, created_at, source_count
+              started_at, completed_at, created_at, source_count, compile_model
          FROM compile_progress
         ORDER BY created_at`
     )
     .all() as CompileProgressExportRow[];
 }
 
+export interface IngestFailureExportRow {
+  failure_id: string;
+  source_url: string | null;
+  title_hint: string | null;
+  date_saved: string | null;
+  date_attempted: string;
+  error: string;
+  source_type: string;
+  resolved_source_id: string | null;
+  metadata: string | null;
+  session_id: string | null;
+  attempts: number;
+}
+
+/** The links saved but not fetched (the Saved Links page), resolved ones too. */
+export function getAllIngestFailures(): IngestFailureExportRow[] {
+  return openDb()
+    .prepare(
+      `SELECT failure_id, source_url, title_hint, date_saved, date_attempted, error,
+              source_type, resolved_source_id, metadata, session_id, attempts
+         FROM ingest_failures
+        ORDER BY date_attempted, failure_id`
+    )
+    .all() as IngestFailureExportRow[];
+}
+
+// chat_messages is legacy: the in-app chat was retired in favour of MCP, but
+// the table and its rows are kept so existing history survives export →
+// import round-trips (old backups carry db/chat_messages.json).
 export interface ChatMessageExportRow {
   session_id: string;
   role: string;
@@ -3772,14 +4361,26 @@ export interface PagePlanExportRow {
   draft_content: string | null;
   draft_status: string;
   created_at: string;
+  /** v27: writing rules the draft was made under; null for pre-v0.4 drafts. */
+  draft_rules: string | null;
+  /** v24: why the draft failed. */
+  draft_error: string | null;
+  /** v30: JSON list of the sources the draft's prompt carried; null credits every plan source. */
+  used_source_ids: string | null;
 }
 
+/**
+ * Plans for a backup. base_version (v30) is left out: it counts provenance
+ * row ids, which an import renumbers, so a restored draft waiting for
+ * approval is checked by date instead (lib/approve-plan.ts).
+ */
 export function getAllPagePlans(): PagePlanExportRow[] {
   return openDb()
     .prepare(
       `SELECT plan_id, session_id, title, page_type, action,
               source_ids, existing_page_id, related_plan_ids,
-              draft_content, draft_status, created_at
+              draft_content, draft_status, created_at, draft_rules,
+              draft_error, used_source_ids
          FROM page_plans
         ORDER BY created_at`
     )

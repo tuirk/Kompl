@@ -23,6 +23,7 @@ import { getSource, getSourceProvenanceMap, readRawMarkdown, type SourceRow } fr
 import { renderMarkdown } from '../../../lib/markdown';
 import { safeExternalUrl } from '../../../lib/safe-url';
 import SourceActions from './SourceActions';
+import { LocalDatetime } from '../../../components/LocalDate';
 
 interface PageProps {
   params: Promise<{ source_id: string }>;
@@ -35,12 +36,6 @@ function parseMetadata(raw: string | null): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
-  if (isNaN(d.getTime())) return iso;
-  return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
 }
 
 export default async function SourcePage({ params }: PageProps) {
@@ -104,7 +99,7 @@ export default async function SourcePage({ params }: PageProps) {
           >
             {source.source_type}
           </span>
-          <span>{formatDate(source.date_ingested)}</span>
+          <span><LocalDatetime iso={source.date_ingested} /></span>
           {safeExternalUrl(source.source_url) && (
             <a href={safeExternalUrl(source.source_url)!} target="_blank" rel="noopener noreferrer">
               {source.source_url}
@@ -168,7 +163,7 @@ export default async function SourcePage({ params }: PageProps) {
                   </span>
                 </span>
                 <span className="meta">
-                  {p.contribution_type} · {formatDate(p.date_compiled)}
+                  {p.contribution_type} · <LocalDatetime iso={p.date_compiled} />
                 </span>
               </Link>
             ))}
@@ -203,6 +198,9 @@ export default async function SourcePage({ params }: PageProps) {
           <details style={{ marginTop: '0.75rem' }}>
             <summary style={{ cursor: 'pointer' }}>Source metadata</summary>
             <pre
+              tabIndex={0}
+              role="group"
+              aria-label="Source metadata"
               style={{
                 background: 'var(--bg-card)',
                 padding: '0.8em 1em',

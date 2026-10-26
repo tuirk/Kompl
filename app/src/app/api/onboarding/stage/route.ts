@@ -40,6 +40,7 @@ import {
   insertCollectStaging,
   type StagingConnector,
 } from '../../../../lib/db';
+import { isUploadPath } from '../../../../lib/upload-path';
 import { isBlockedHost } from '../../../../lib/url-blocklist';
 
 const VALID_CONNECTORS: readonly StagingConnector[] = [
@@ -122,6 +123,14 @@ export async function POST(request: Request) {
           { status: 422 }
         );
       }
+      // Web links only, as everywhere in Kompl (lib/url-lines.ts): the
+      // connector UIs already drop anything else, so this is a broken client.
+      if (!isValidHttpUrl(item.url)) {
+        return NextResponse.json(
+          { error: `connector='${connector}' item.url must be a valid http(s) URL` },
+          { status: 422 }
+        );
+      }
       // The URL connector is user-initiated ("paste a link"); saved-link is
       // internal plumbing that may legitimately carry an x.com tweet_url in
       // its metadata. Only block the user-initiated path.
@@ -137,6 +146,14 @@ export async function POST(request: Request) {
       if (typeof item.file_path !== 'string' || !item.file_path) {
         return NextResponse.json(
           { error: "connector='file-upload' requires item.file_path" },
+          { status: 422 }
+        );
+      }
+      // Only a file POST /api/onboarding/upload saved: the import step reads
+      // this path and discarding the session unlinks it.
+      if (!isUploadPath(item.file_path)) {
+        return NextResponse.json(
+          { error: "connector='file-upload' item.file_path must be a file from /api/onboarding/upload" },
           { status: 422 }
         );
       }

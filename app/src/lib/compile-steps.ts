@@ -15,8 +15,17 @@ export const COMPILE_STEPS = [
   { key: 'plan',     label: 'Planning wiki structure'   },
   { key: 'draft',    label: 'Writing pages'             },
   { key: 'crossref', label: 'Cross-referencing'         },
+  // Merges category labels that mean the same thing in the drafts before
+  // commit writes the pages (lib/compile/label-merge.ts). Sessions from
+  // before this step have no entry: a retry of one resets from here and
+  // runs labels, commit (always re-run anyway) and schema.
+  { key: 'labels',   label: 'Merging categories'        },
   { key: 'commit',   label: 'Finalizing'                },
   { key: 'schema',   label: 'Setting up wiki structure' },
+  // Claim check (plan 3.3, lib/compile/steps/claims.ts): after the pages are
+  // committed, so findings land on them. Behind a flag that is off by
+  // default; marked skipped (and so hidden) at the start of a run while off.
+  { key: 'claims',   label: 'Checking claims'           },
 ] as const;
 
 export type CompileStepKey = (typeof COMPILE_STEPS)[number]['key'];

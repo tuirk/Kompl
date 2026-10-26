@@ -6,13 +6,14 @@
  * Does everything:
  *   1. Checks Docker Desktop is running
  *   2. Creates .env from .env.example (if not already present)
- *   3. Prompts for Firecrawl (required) plus Gemini and/or DeepSeek (at least one
+ *   3. Prompts for Firecrawl (required) plus DeepSeek and/or Gemini (at least one
  *      compile provider required) and YouTube (optional); writes them to .env
  *   4. Installs and globally links the kompl CLI (npm link)
+ *   4b. Builds the MCP server (mcp-server/dist) that AI agents launch
  *   5. Writes ~/.kompl/config.json so `kompl` commands work immediately
  *   6. Runs `docker compose up --build -d` to start the full stack
  *
- * Requires: Docker Desktop running, Node >= 18
+ * Requires: Docker Desktop running, Node >= 24 (same floor as install.sh / install.ps1)
  */
 
 'use strict'
@@ -84,8 +85,8 @@ async function main() {
     console.log('\n  Required:')
     console.log(dim('    Firecrawl: https://firecrawl.dev                (500 scrapes/month free)'))
     console.log('\n  Wiki compilation — at least one (Enter to skip if using the other):')
-    console.log(dim('    Gemini:    https://aistudio.google.com/apikey   (free works for the demo; paid Tier 1 strongly recommended for real use)'))
-    console.log(dim('    DeepSeek:  https://api-docs.deepseek.com        (pay-as-you-go; pick a DeepSeek compile model in Settings)'))
+    console.log(dim('    DeepSeek:  https://api-docs.deepseek.com        (pay-as-you-go; the default compile model is DeepSeek V4.1 Flash)'))
+    console.log(dim('    Gemini:    https://aistudio.google.com/apikey   (alternative; pick a Gemini model in Settings → AI model & spend)'))
     console.log('\n  Optional (press Enter to skip):')
     console.log(dim('    YouTube:   https://console.cloud.google.com/apis/library/youtube.googleapis.com  (10K units/day free; required for YouTube URL ingestion)\n'))
 
@@ -97,21 +98,21 @@ async function main() {
       env = env.replace(/^FIRECRAWL_API_KEY=.*$/m, `FIRECRAWL_API_KEY=${key}`)
     }
 
+    if (!alreadyHasDeepSeek) {
+      const key = (await ask(rl, '  DeepSeek API key (default provider; Enter to skip if using Gemini only): ')).trim()
+      if (key) {
+        env = env.replace(/^DEEPSEEK_API_KEY=.*$/m, `DEEPSEEK_API_KEY=${key}`)
+      } else {
+        console.log(dim('    Skipped — pick a Gemini model in Settings → AI model & spend before your first compile'))
+      }
+    }
+
     if (!alreadyHasGemini) {
       const key = (await ask(rl, '  Gemini API key (Enter to skip if using DeepSeek only): ')).trim()
       if (key) {
         env = env.replace(/^GEMINI_API_KEY=.*$/m, `GEMINI_API_KEY=${key}`)
       } else {
-        console.log(dim('    Skipped — set a DeepSeek compile model in Settings if DeepSeek is your only provider'))
-      }
-    }
-
-    if (!alreadyHasDeepSeek) {
-      const key = (await ask(rl, '  DeepSeek API key (Enter to skip if using Gemini only): ')).trim()
-      if (key) {
-        env = env.replace(/^DEEPSEEK_API_KEY=.*$/m, `DEEPSEEK_API_KEY=${key}`)
-      } else {
-        console.log(dim('    Skipped — Gemini remains the default compile backend when its key is set'))
+        console.log(dim('    Skipped — DeepSeek V4.1 Flash is the default compile model'))
       }
     }
 
@@ -165,6 +166,21 @@ async function main() {
     console.log(yellow('  kompl CLI installed but not in PATH.'))
     console.log(dim('  You may need to open a new terminal, or add the npm global bin to your PATH.'))
     console.log(dim('  Run: npm config get prefix  → then add <prefix>/bin to PATH.\n'))
+  }
+
+  // ── 4b. Build the MCP server ───────────────────────────────────────────────
+  // AI agents launch mcp-server/dist/index.js, which isn't in git. Optional:
+  // a failed build only costs agent access, so warn and keep going.
+  // `kompl update` repeats this step (cli/src/mcp-build.ts).
+  console.log('\n  Building the MCP server for AI agents...')
+  try {
+    const mcpDir = path.join(ROOT, 'mcp-server')
+    run('npm ci --no-audit --no-fund', mcpDir)
+    run('npm run build', mcpDir)
+    console.log(green('  MCP server built'))
+  } catch {
+    console.log(yellow('  MCP server build failed — Kompl works without it, but AI agents can\'t connect until it builds.'))
+    console.log(dim('  Retry later with: cd mcp-server && npm ci && npm run build\n'))
   }
 
   // ── 5. Write ~/.kompl/config.json ──────────────────────────────────────────

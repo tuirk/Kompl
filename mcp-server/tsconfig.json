@@ -6,7 +6,8 @@
     "outDir": "dist",
     "strict": true,
     "esModuleInterop": true,
+    "noEmitOnError": true,
     "types": ["node"]
   },
-  "include": ["index.ts"]
+  "include": ["index.ts", "src/**/*.ts"]
 }

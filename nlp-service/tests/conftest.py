@@ -44,7 +44,7 @@ sys.modules.setdefault("pytextrank", pytextrank_stub)
 # routers/resolution.py lazy-loads sentence-transformers inside
 # _get_embed_model() — no module-level ML import — so real routers.* modules
 # are safe to import. Stubbing `routers` or `routers.resolution` up-front
-# breaks `from routers.chat import ...` in main.py because the stub lacks
+# breaks `from routers.<name> import ...` in main.py because the stub lacks
 # __path__ and Python refuses to resolve it as a package.
 
 # ---------------------------------------------------------------------------
@@ -88,6 +88,8 @@ def mock_gemini(monkeypatch):
     mock_response.text = "---\ntitle: Test\npage_type: source-summary\n---\n## Content\nBody."
     mock_response.usage_metadata.prompt_token_count = 100
     mock_response.usage_metadata.candidates_token_count = 50
+    # A finished answer: free-text calls accept only a normal stop.
+    mock_response.candidates = [MagicMock(finish_reason="FinishReason.STOP")]
     mock_client.models.generate_content.return_value = mock_response
 
     from services.providers import gemini as gemini_provider  # noqa: PLC0415
@@ -107,6 +109,17 @@ def mock_limiter(monkeypatch):
     from services.providers import gemini as gemini_provider  # noqa: PLC0415
     monkeypatch.setattr(gemini_provider, "_get_limiter", lambda: mock_lim)
     return mock_lim
+
+
+@pytest.fixture(autouse=True)
+def _isolated_llm_spend(tmp_path, monkeypatch):
+    """Keep the daily spend files in a temp dir and start with no call in
+    flight: every provider complete() reads the files before sending."""
+    from services import llm_client  # noqa: PLC0415
+    monkeypatch.setattr(llm_client, "_CAP_FILE", tmp_path / "llm-cap.json")
+    monkeypatch.setattr(llm_client, "_CONFIG_FILE", tmp_path / "llm-config.json")
+    monkeypatch.setattr(llm_client, "_cap_cache", {"value": None, "read_at": 0.0})
+    monkeypatch.setattr(llm_client, "_in_flight", {"calls": 0, "usd": 0.0})
 
 
 @pytest.fixture

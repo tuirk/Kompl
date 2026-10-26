@@ -21,6 +21,15 @@ const controlStyle: React.CSSProperties = {
   fontFamily: 'var(--font-mono)',
 };
 
+const dateLabelStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.4rem',
+  color: 'var(--fg-muted)',
+  fontSize: '0.8rem',
+  fontFamily: 'var(--font-mono)',
+};
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SourcesPage() {
@@ -187,7 +196,7 @@ export default function SourcesPage() {
         padding: '1rem 0', borderBottom: '1px solid var(--border)', marginBottom: '1.5rem',
       }}>
         {/* Status */}
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={controlStyle}>
+        <select aria-label="Status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={controlStyle}>
           <option value="">All statuses</option>
           <option value="active">Active</option>
           <option value="archived">Archived</option>
@@ -195,7 +204,7 @@ export default function SourcesPage() {
         </select>
 
         {/* Source type */}
-        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} style={controlStyle}>
+        <select aria-label="Source type" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} style={controlStyle}>
           <option value="">All types</option>
           <option value="paste">Paste</option>
           <option value="url">URL</option>
@@ -204,27 +213,31 @@ export default function SourcesPage() {
           <option value="tweet">Tweet</option>
         </select>
 
-        {/* Date range */}
-        <input
-          type="date"
-          value={dateFrom}
-          onChange={(e) => setDateFrom(e.target.value)}
-          style={controlStyle}
-          title="Ingested from"
-        />
-        <span style={{ color: 'var(--fg-secondary)', fontSize: '0.85rem' }}>—</span>
-        <input
-          type="date"
-          value={dateTo}
-          onChange={(e) => setDateTo(e.target.value)}
-          style={controlStyle}
-          title="Ingested to"
-        />
+        {/* Date range: visible labels, not only a tooltip */}
+        <label style={dateLabelStyle}>
+          Ingested from
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            style={controlStyle}
+          />
+        </label>
+        <label style={dateLabelStyle}>
+          to
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            style={controlStyle}
+          />
+        </label>
 
         {/* Title search */}
         <input
           type="search"
-          placeholder="Search titles…"
+          aria-label="Search titles and addresses"
+          placeholder="Search titles and addresses…"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           style={{ ...controlStyle, minWidth: '200px' }}

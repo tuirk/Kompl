@@ -61,6 +61,11 @@ services:
       # parallel NLP calls, comfortable on the new cap. Raise to 4 only if
       # nlp-service memory stays well under limit on a real PDF batch.
       EXTRACT_CONCURRENCY: ${EXTRACT_CONCURRENCY:-2}
+      # Extra host names (comma-separated) Kompl answers to, e.g. your own
+      # authenticating reverse proxy. localhost, IP addresses and the service
+      # names (app, nlp-service, n8n) always work; a request to any other
+      # Host is refused (DNS rebinding guard, app/src/proxy.ts).
+      KOMPL_ALLOWED_HOSTS: ${KOMPL_ALLOWED_HOSTS:-}
     volumes:
       - kompl-data:/data
     depends_on:
@@ -113,6 +118,10 @@ services:
       # youtube_metadata_unavailable — by design, no oEmbed fallback. URL routes
       # to Saved Links via the app-side onFailure path.
       YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      # Same list as the app's: besides localhost, IP addresses and the
+      # service names, the host names this service answers to
+      # (services/known_host.py, DNS rebinding guard on the published port).
+      KOMPL_ALLOWED_HOSTS: ${KOMPL_ALLOWED_HOSTS:-}
     volumes:
       # Shared file access to /data/raw so MarkItDown can read uploads
       # that Next.js wrote. Does NOT include write access to /data/db/kompl.db

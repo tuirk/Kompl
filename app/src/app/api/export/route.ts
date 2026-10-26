@@ -1,43 +1,23 @@
 export const dynamic = 'force-dynamic';
 
 import JSZip from 'jszip';
-import fs from 'fs/promises';
-import path from 'path';
 import { NextResponse } from 'next/server';
 
 import {
-  getAllActivityLog,
-  getAllAliases,
-  getAllChatMessages,
-  getAllCompileProgress,
-  getAllDrafts,
-  getAllEntityMentions,
-  getAllExtractions,
-  getAllPageLinks,
-  getAllPagePlans,
   getAllPages,
   getAllProvenance,
-  getAllRelationshipMentions,
   getAllSources,
-  getExportableSettings,
-  getSchemaVersion,
-  pagesFilePath,
-  rawFilePath,
-  DATA_ROOT,
   readPageMarkdown,
   setLastBackupAt,
 } from '@/lib/db';
 import { yamlDoubleQuote } from '@/lib/yaml-escape';
+import { buildKomplBackup } from '@/lib/kompl-backup';
+import { exportPageBody } from '@/lib/page-export';
+import { getSourceTitleSet } from '@/lib/page-sources';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function stripFrontmatter(md: string): string {
-  if (!md.startsWith('---')) return md;
-  const end = md.indexOf('\n---', 3);
-  return end !== -1 ? md.slice(end + 4).trimStart() : md;
-}
 
 function slugifyFilename(title: string): string {
   return (
@@ -57,6 +37,8 @@ function slugifyFilename(title: string): string {
 async function buildMarkdownZip(): Promise<Buffer> {
   const zip = new JSZip();
   const pages = getAllPages();
+  const sourceTitles = getSourceTitleSet();
+  const isKnownTitle = (t: string) => sourceTitles.has(t.toLowerCase());
 
   for (const page of pages) {
     const raw = readPageMarkdown(page.page_id);
@@ -64,7 +46,7 @@ async function buildMarkdownZip(): Promise<Buffer> {
       console.warn(`[export] missing content for page ${page.page_id}, skipping`);
       continue;
     }
-    const body = stripFrontmatter(raw);
+    const { body } = exportPageBody(page.page_id, raw, isKnownTitle);
     const folder = page.page_type || 'other';
     const filename = `${slugifyFilename(page.title)}.md`;
     zip.file(`${folder}/${filename}`, body);
@@ -76,20 +58,8 @@ async function buildMarkdownZip(): Promise<Buffer> {
 async function buildObsidianZip(): Promise<Buffer> {
   const zip = new JSZip();
   const pages = getAllPages();
-  const provenance = getAllProvenance();
-  const sources = getAllSources();
-
-  // Build source_id → title map
-  const sourceTitle = new Map<string, string>(sources.map((s) => [s.source_id, s.title]));
-
-  // Build page_id → [source titles] map
-  const pageSourceTitles = new Map<string, string[]>();
-  for (const prov of provenance) {
-    const title = sourceTitle.get(prov.source_id);
-    if (!title) continue;
-    if (!pageSourceTitles.has(prov.page_id)) pageSourceTitles.set(prov.page_id, []);
-    pageSourceTitles.get(prov.page_id)!.push(title);
-  }
+  const knownSourceTitles = getSourceTitleSet();
+  const isKnownTitle = (t: string) => knownSourceTitles.has(t.toLowerCase());
 
   // Index table rows
   const indexRows: string[] = ['| Title | Type | Category | Updated |', '|-------|------|----------|---------|'];
@@ -100,7 +70,8 @@ async function buildObsidianZip(): Promise<Buffer> {
       console.warn(`[export] missing content for page ${page.page_id}, skipping`);
       continue;
     }
-    const body = stripFrontmatter(raw);
+    // Numbered footnotes with definitions; sources listed once each, cited first.
+    const { body, sourceTitles: pageSources } = exportPageBody(page.page_id, raw, isKnownTitle);
 
     // Build tags array
     const tags: string[] = [page.page_type];
@@ -108,14 +79,13 @@ async function buildObsidianZip(): Promise<Buffer> {
       tags.push(page.category.toLowerCase().replace(/\s+/g, '-'));
     }
 
-    // Build sources list
-    const pageSources = pageSourceTitles.get(page.page_id) ?? [];
     const sourcesYaml =
       pageSources.length > 0
         ? `[${pageSources.map((t) => yamlDoubleQuote(t)).join(', ')}]`
         : '[]';
 
-    const dateUpdated = page.last_updated ? page.last_updated.split('T')[0] : '';
+    // SQLite timestamps are "YYYY-MM-DD HH:MM:SS"; ISO strings use "T".
+    const dateUpdated = page.last_updated ? page.last_updated.split(/[T ]/)[0] : '';
 
     const frontmatter =
       `---\n` +
@@ -230,86 +200,10 @@ export async function GET(request: Request) {
   }
 
   if (format === 'kompl') {
-    const includeVectors = searchParams.get('include_vectors') === 'true';
-    const zip = new JSZip();
-    const sources = getAllSources();
-    const pages = getAllPages();
-
-    // Fetch vectors from nlp-service if requested (before building zip)
-    let vectorCount = 0;
-    if (includeVectors) {
-      try {
-        const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
-        const vRes = await fetch(`${NLP_SERVICE_URL}/vectors/export`, {
-          signal: AbortSignal.timeout(60_000),
-        });
-        if (vRes.ok) {
-          const vData = await vRes.json() as { count: number; items: unknown[] };
-          vectorCount = vData.count;
-          zip.file('vectors.json', JSON.stringify(vData, null, 2));
-        } else {
-          console.warn(`[export] vectors/export returned ${vRes.status}, skipping vectors`);
-        }
-      } catch (e) {
-        console.warn('[export] could not fetch vectors:', e instanceof Error ? e.message : e);
-      }
-    }
-
-    zip.file(
-      'manifest.json',
-      JSON.stringify(
-        {
-          format: 'kompl',
-          version: 1,
-          exported_at: new Date().toISOString(),
-          schema_version: getSchemaVersion(),
-          source_count: sources.length,
-          page_count: pages.length,
-          vector_count: vectorCount,
-          app_version: '2.0.0',
-        },
-        null,
-        2
-      )
-    );
-
-    const dbFolder = zip.folder('db')!;
-    dbFolder.file('sources.json', JSON.stringify(sources, null, 2));
-    dbFolder.file('pages.json', JSON.stringify(pages, null, 2));
-    dbFolder.file('provenance.json', JSON.stringify(getAllProvenance(), null, 2));
-    dbFolder.file('aliases.json', JSON.stringify(getAllAliases(), null, 2));
-    dbFolder.file('extractions.json', JSON.stringify(getAllExtractions(), null, 2));
-    dbFolder.file('page_links.json', JSON.stringify(getAllPageLinks(), null, 2));
-    dbFolder.file('entity_mentions.json', JSON.stringify(getAllEntityMentions(), null, 2));
-    dbFolder.file('relationship_mentions.json', JSON.stringify(getAllRelationshipMentions(), null, 2));
-    dbFolder.file('drafts.json', JSON.stringify(getAllDrafts(), null, 2));
-    dbFolder.file('activity_log.json', JSON.stringify(getAllActivityLog(), null, 2));
-    dbFolder.file('compile_progress.json', JSON.stringify(getAllCompileProgress(), null, 2));
-    dbFolder.file('chat_messages.json', JSON.stringify(getAllChatMessages(), null, 2));
-    dbFolder.file('page_plans.json', JSON.stringify(getAllPagePlans(), null, 2));
-    dbFolder.file('settings.json', JSON.stringify(getExportableSettings(), null, 2));
-
-    const rawFolder = zip.folder('raw')!;
-    for (const s of sources) {
-      try {
-        rawFolder.file(`${s.source_id}.md.gz`, await fs.readFile(rawFilePath(s.source_id)));
-      } catch { /* skip missing source file */ }
-    }
-
-    const pagesFolder = zip.folder('pages')!;
-    for (const p of pages) {
-      try {
-        pagesFolder.file(`${p.page_id}.md.gz`, await fs.readFile(pagesFilePath(p.page_id)));
-      } catch { /* skip missing page file */ }
-    }
-
-    try {
-      zip.file('schema.md', await fs.readFile(path.join(DATA_ROOT, 'schema.md'), 'utf-8'));
-    } catch { /* no schema.md yet */ }
-
-    const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+    const buffer = await buildKomplBackup({ includeVectors: searchParams.get('include_vectors') === 'true' });
     setLastBackupAt(new Date().toISOString());
-    return new NextResponse(new Uint8Array(buffer), {
+    // A view of the zip, not a copy: a large wiki's backup is held once.
+    return new NextResponse(new Uint8Array(buffer.buffer as ArrayBuffer, buffer.byteOffset, buffer.byteLength), {
       headers: {
         'Content-Type': 'application/zip',
         'Content-Disposition': 'attachment; filename="kompl-export.kompl.zip"',

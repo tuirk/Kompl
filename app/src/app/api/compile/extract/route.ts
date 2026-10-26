@@ -11,7 +11,8 @@
  *   5. Fan out to method endpoints in parallel:
  *        - rake, keybert, textrank, yake, tfidf-overlap (as per profile)
  *   6. POST /pipeline/extract-llm   → structured knowledge extraction via Gemini
- *   7. insertExtraction() + markSourceExtracted()
+ *   7. saveExtraction(): the extraction, the 'extracted' status and the
+ *      source's mention rows, in one transaction
  *
  * After this route succeeds, the source has compile_status = 'extracted'.
  * The session-compile workflow will pick up 'extracted' sources.
@@ -29,23 +30,23 @@
 
 import { NextResponse } from 'next/server';
 import {
-  deleteEntityMentionsForSource,
-  deleteRelationshipMentionsForSource,
   getAliases,
   getAllPageIds,
   getEffectiveCompileModel,
+  getEntityAndConceptPageTitles,
   getExtraction,
   getPageCount,
   getSource,
   logActivity,
-  insertEntityMentions,
-  insertExtraction,
-  insertRelationshipMentions,
-  markSourceExtracted,
   readRawMarkdown,
+  saveExtraction,
   updateSourceTitle,
 } from '../../../../lib/db';
+import { extractionCheckCounts } from '../../../../lib/extraction-checks';
 import { LONG_HTTP_AGENT } from '../../../../lib/long-http-agent';
+import { buildMentionPin } from '../../../../lib/mention-pin';
+import { buildSourceMentionRows } from '../../../../lib/mention-rows';
+import { OUT_OF_CREDIT, OutOfCreditError, isOutOfCredit } from '../../../../lib/out-of-credit';
 
 // "Garbage" source titles — what we get when MarkItDown can't pull a title
 // from PDF metadata and the cascade falls through to the filename stub.
@@ -212,13 +213,21 @@ async function callExtractLLM(payload: Record<string, unknown>): Promise<any> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(600_000), // 10 min — DeepSeek extract on a 95K-char source clocks ~290s; Vilnius travel guide hit ~387s in Phase 7. Gemini thinking adds another minute on top of that on its bad days. 600s gives ~55% headroom over the worst observed for either provider.
+    // 15 min: DeepSeek extract on a 95K-char source clocks ~290s; the Vilnius
+    // travel guide hit ~387s in Phase 7. nlp-service gives one DeepSeek
+    // attempt 420 s (providers/deepseek.py _STEP_TIMEOUT_S), so a stalled
+    // first attempt and its retry both fit; at 600 s here, one stalled
+    // attempt used the whole window and no retry ever ran (2026-10-25).
+    // nlp-service ends the call, retries included, 30 s before this
+    // (llm_client._CALL_DEADLINE_S): change both together.
+    signal: AbortSignal.timeout(900_000),
     // @ts-expect-error — dispatcher is an undici-specific fetch option not in the DOM RequestInit type
     dispatcher: LONG_HTTP_AGENT, // 600s AbortSignal > undici 300s default headersTimeout
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     if (res.status === 429) throw Object.assign(new Error('llm_rate_limited'), { status: 429 });
+    if (isOutOfCredit(res.status, detail)) throw new OutOfCreditError();
     if (res.status === 503) throw Object.assign(new Error('daily_cost_ceiling'), { status: 503 });
     throw new Error(`extract_llm_failed: ${res.status} ${detail}`);
   }
@@ -334,16 +343,32 @@ export async function POST(request: Request) {
       compile_model: getEffectiveCompileModel(source.onboarding_session_id),
     });
 
-    // Step 7: persist
-    insertExtraction({
-      source_id,
-      ner_output: nerResult,
-      profile: routeResult.profile,
-      keyphrase_output: Object.keys(keyphraseOutput).length > 0 ? keyphraseOutput : null,
-      tfidf_output: tfidfOutput,
-      llm_output: llmOutput,
-    });
-    markSourceExtracted(source_id);
+    // Step 7: persist the extraction, the 'extracted' status and the source's
+    // entity/concept and relation mentions (wiki-wide threshold counting) in
+    // one transaction (saveExtraction): a crash in between left a source
+    // extracted with no mention rows, and the next compile skips extracted
+    // sources. Each name is pinned to an existing page's exact title first,
+    // then through the active aliases (lib/mention-pin.ts), so variants
+    // discovered in prior sessions ("GPT4" → "GPT-4") collapse to the
+    // existing canonical at write time. This session's resolve then rebuilds
+    // these rows through its own groups (db.ts rebuildSessionMentions).
+    // Re-extraction swaps the rows for the latest llm_output's; relation
+    // rows come from lib/relation-rows.ts (type spelling, sorted
+    // competes_with / contradicts, the LLM's one-sentence description, v28,
+    // and the source quote with the nlp-service check of it, v30). The
+    // claims' quotes and checks stay in llm_output.
+    const pin = buildMentionPin(getEntityAndConceptPageTitles(), getAliases());
+    saveExtraction(
+      {
+        source_id,
+        ner_output: nerResult,
+        profile: routeResult.profile,
+        keyphrase_output: Object.keys(keyphraseOutput).length > 0 ? keyphraseOutput : null,
+        tfidf_output: tfidfOutput,
+        llm_output: llmOutput,
+      },
+      buildSourceMentionRows(llmOutput, source_id, pin)
+    );
 
     // Step 7a: title rescue (phase 2). MarkItDown's PDF path doesn't extract
     // a title, so the ingest cascade falls through to the filename stub —
@@ -391,75 +416,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // Step 7b: record entity/concept mentions for wiki-wide threshold counting.
-    // Alias-pin against the HISTORICAL aliases table so variants discovered in
-    // prior sessions ("GPT4" → "GPT-4") collapse to the existing canonical at
-    // write time. New aliases minted by this session's resolve apply to
-    // subsequent sources, not this one — the usual incremental-graph tradeoff.
-    // Re-extraction wipes + reinserts so the mention set reflects latest llm_output.
-    deleteEntityMentionsForSource(source_id);
-    deleteRelationshipMentionsForSource(source_id);
-    const aliasMap = new Map<string, string>();
-    for (const { alias, canonical_name } of getAliases()) {
-      aliasMap.set(alias.toLowerCase(), canonical_name);
-    }
-    const pin = (name: string): string => aliasMap.get(name.toLowerCase()) ?? name;
-
-    const llm = llmOutput as {
-      entities?: Array<{ name?: string; type?: string }>;
-      concepts?: Array<{ name?: string }>;
-      relationships?: Array<{ from_entity?: string; to?: string; type?: string }>;
-    };
-    const mentionRows: Array<{ canonical_name: string; source_id: string; entity_type: string | null }> = [];
-    const seen = new Set<string>();
-    for (const ent of llm.entities ?? []) {
-      const raw = (ent.name ?? '').trim();
-      if (!raw) continue;
-      const canonical = pin(raw);
-      const key = canonical.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      mentionRows.push({
-        canonical_name: canonical,
-        source_id,
-        entity_type: (ent.type ?? '').trim() || null,
-      });
-    }
-    for (const con of llm.concepts ?? []) {
-      const raw = (con.name ?? '').trim();
-      if (!raw) continue;
-      const canonical = pin(raw);
-      const key = canonical.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      mentionRows.push({ canonical_name: canonical, source_id, entity_type: 'CONCEPT' });
-    }
-    insertEntityMentions(mentionRows);
-
-    // Relationship mentions. Direction-agnostic types (competes_with,
-    // contradicts) are stored with from/to sorted lowercase so "A vs B" and
-    // "B vs A" share one PK. Directional types keep their natural order.
-    const DIRECTION_AGNOSTIC = new Set(['competes_with', 'contradicts']);
-    const relRows: Array<{
-      from_canonical: string;
-      to_canonical: string;
-      relationship_type: string;
-      source_id: string;
-    }> = [];
-    for (const rel of llm.relationships ?? []) {
-      const fromRaw = (rel.from_entity ?? '').trim();
-      const toRaw = (rel.to ?? '').trim();
-      const type = (rel.type ?? '').trim();
-      if (!fromRaw || !toRaw || !type) continue;
-      let from = pin(fromRaw);
-      let to = pin(toRaw);
-      if (DIRECTION_AGNOSTIC.has(type) && from.toLowerCase() > to.toLowerCase()) {
-        [from, to] = [to, from];
-      }
-      relRows.push({ from_canonical: from, to_canonical: to, relationship_type: type, source_id });
-    }
-    insertRelationshipMentions(relRows);
-
     logActivity('extraction_complete', {
       source_id,
       session_id: source.onboarding_session_id ?? null,
@@ -470,6 +426,8 @@ export async function POST(request: Request) {
         concept_count:      ((llmOutput as Record<string, unknown[]>).concepts        ?? []).length,
         claim_count:        ((llmOutput as Record<string, unknown[]>).claims          ?? []).length,
         relationship_count: ((llmOutput as Record<string, unknown[]>).relationships   ?? []).length,
+        // The nlp-service quote check and relation-end count (plan 3.2).
+        ...extractionCheckCounts(llmOutput),
       },
     });
 
@@ -487,6 +445,9 @@ export async function POST(request: Request) {
     const e = err as Error & { status?: number };
     if (e.status === 429) {
       return NextResponse.json({ error: 'llm_rate_limited' }, { status: 429 });
+    }
+    if (e instanceof OutOfCreditError) {
+      return NextResponse.json({ error: OUT_OF_CREDIT, message: e.message }, { status: 503 });
     }
     if (e.status === 503) {
       return NextResponse.json({ error: 'daily_cost_ceiling' }, { status: 503 });

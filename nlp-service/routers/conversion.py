@@ -33,18 +33,23 @@ import logging
 import mimetypes
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
 import httpx
+import trafilatura
+import requests
 from fastapi import APIRouter, HTTPException
 from markitdown import MarkItDown
 from pydantic import BaseModel, ConfigDict, Field
 
 from services._safe_paths import safe_join
 from services.http_client import HttpClient, HttpClientError
+from services.published_date import PublishedDate, from_file, from_html, from_meta_map, normalise_date
 from services.url_safety import validate_outbound_url
 
 
@@ -93,6 +98,18 @@ class ConvertResponse(BaseModel):
     markdown: str
     content_hash: str
     metadata: ContentMetadata
+    # The source's publication date (YYYY-MM-DD) when its own metadata names
+    # one, and where it came from (services/published_date.py; plan 3.2,
+    # D5). None when it names none: the app then looks for a date in the
+    # text, else uses the day the source was added (app/src/lib/source-dates.ts).
+    published_at: str | None = None
+    published_at_source: Literal[
+        "page_published",
+        "page_modified",
+        "file_metadata",
+        "youtube",
+        "github_push",
+    ] | None = None
 
 
 class UrlConvertRequest(BaseModel):
@@ -124,6 +141,12 @@ router = APIRouter(tags=["conversion"])
 # wall-clock budget. Keep one attempt so the total convert budget stays small
 # enough to fit inside the Next.js client's AbortSignal window.
 _http = HttpClient(timeout=30.0, max_retries=1)
+# Firecrawl queues a scrape when the plan's concurrent browsers are busy
+# (the app fetches 5 links at once), and its own 30 s scrape timeout starts
+# only then. Waiting 30 s here timed out 10 of 32 links on 2026-10-25;
+# 60 s leaves room for the queue and still fits the convert budget below.
+_FIRECRAWL_CLIENT_TIMEOUT_SECS = 60.0
+_firecrawl_http = HttpClient(timeout=_FIRECRAWL_CLIENT_TIMEOUT_SECS, max_retries=1)
 _FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
 # Minimum character count for a MarkItDown URL result to be considered usable.
 # Results below this threshold indicate a JS-rendered SPA or paywall — Firecrawl
@@ -135,6 +158,30 @@ _MARKITDOWN_MIN_CHARS = 500
 # forever without this cap. On timeout we return None, which matches the
 # existing "too few chars" signal and triggers the Firecrawl fallback.
 _MARKITDOWN_URL_TIMEOUT_SECS = 20.0
+# Redirects a MarkItDown fetch follows, each checked by the SSRF guard
+# (_KeepBodySession). requests' own limit is 30.
+_MAX_REDIRECTS = 10
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+# Firecrawl answers 429 when the plan's requests per minute are used up; a
+# batch import (5 links at once, ingest-urls.ts) used to lose them all
+# (owner decision 2026-10-25: wait and retry). Wait as long as its message
+# asks ("retry after 23s"), else back off, and stop once the whole convert
+# would outrun the app's 120 s window (lib/nlp-convert.ts callConvertUrl).
+_FIRECRAWL_429_BACKOFF_SECS = (10.0, 20.0, 30.0)
+_FIRECRAWL_429_MAX_WAIT_SECS = 30.0
+_CONVERT_URL_BUDGET_SECS = 100.0
+_RETRY_AFTER_RE = re.compile(r"retry after (\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
+# Bot checks served instead of the page ("Checking your browser...", 62
+# characters, became a wiki page on the film run). Only short pages are
+# judged, so an article about such pages is never refused.
+_BOT_CHECK_MAX_CHARS = 2000
+_BOT_CHECK_RE = re.compile(
+    r"checking your browser|just a moment\.\.\.|attention required!? \| cloudflare|"
+    r"enable javascript and cookies to continue|verify you are (a )?human|"
+    r"are you a robot|ddos protection by|please wait while we verify|"
+    r"performing security verification",
+    re.IGNORECASE,
+)
 _DATA_ROOT = Path("/data")
 _ALLOWED_EXTENSIONS = {
     ".pdf",
@@ -269,6 +316,13 @@ _GITHUB_HEADERS = {
 }
 
 
+def _date_fields(found: PublishedDate | None) -> dict[str, Any]:
+    """ConvertResponse's published_at / published_at_source for a found date."""
+    if found is None:
+        return {}
+    return {"published_at": found.date, "published_at_source": found.origin}
+
+
 def _is_github_repo_url(url: str) -> tuple[str, str] | None:
     """Return (owner, repo) if url is a GitHub repo root, else None."""
     m = _GITHUB_REPO_RE.match(url)
@@ -325,6 +379,8 @@ def _convert_github_repo(
 
     markdown = "\n".join(parts).strip()
     content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    # A README is as current as the repo's last push.
+    pushed = normalise_date(meta.get("pushed_at"))
 
     return ConvertResponse(
         source_id=source_id,
@@ -342,6 +398,7 @@ def _convert_github_repo(
             github_topics=topics or None,
             github_language=lang,
         ),
+        **(_date_fields(PublishedDate(pushed, "github_push")) if pushed else {}),
     )
 
 
@@ -570,6 +627,7 @@ def _convert_youtube(source_id: str, url: str) -> "ConvertResponse":
     markdown = "\n".join(md_parts)
 
     content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    published = normalise_date(meta["published_at"])
 
     return ConvertResponse(
         source_id=source_id,
@@ -586,7 +644,137 @@ def _convert_youtube(source_id: str, url: str) -> "ConvertResponse":
             content_type="text/html",
             final_url=url,
         ),
+        **(_date_fields(PublishedDate(published, "youtube")) if published else {}),
     )
+
+
+class _RedirectBlocked(Exception):
+    """A redirect pointed at an address the SSRF guard refuses."""
+
+
+class _KeepBodySession(requests.Session):
+    """The session MarkItDown fetches a URL with: its own Accept header, and
+    the body kept, so the page's publication date can be read from its HTML
+    after MarkItDown converts it, without fetching the page twice.
+
+    It follows redirects itself. requests would follow them unchecked, and
+    convert_url's SSRF guard sees only the first URL, so a public page that
+    answers 302 to http://app:3000/api/export or 169.254.169.254 was
+    fetched and stored. Each Location is checked like the first URL before
+    it is fetched (services/url_safety.py)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.headers.update({"Accept": "text/markdown, text/html;q=0.9, text/plain;q=0.8, */*;q=0.1"})
+        self.body: bytes | None = None
+        self.content_type = ""
+
+    def get(self, url, **kwargs):  # type: ignore[override]
+        kwargs["stream"] = False  # read whole, so the body is still there afterwards
+        kwargs["allow_redirects"] = False
+        response = super().get(url, **kwargs)
+        for _hop in range(_MAX_REDIRECTS):
+            location = response.headers.get("location") if response.status_code in _REDIRECT_CODES else None
+            if not location:
+                break
+            url = urljoin(response.url, location)
+            try:
+                validate_outbound_url(url)
+            except ValueError as e:
+                raise _RedirectBlocked(f"{e} at {url}") from e
+            response = super().get(url, **kwargs)
+        else:
+            if response.status_code in _REDIRECT_CODES:
+                raise requests.TooManyRedirects(f"more than {_MAX_REDIRECTS} redirects")
+        self.body = response.content
+        self.content_type = response.headers.get("content-type", "")
+        return response
+
+
+# Shorter than this, an extract is not trusted as the article and the whole
+# page is kept: Firecrawl's own main-content mode once returned only an
+# 858-character newsletter box for a Wallpaper* article (2026-10-26). A
+# little site clutter beats a lost article.
+_MIN_ARTICLE_CHARS = 1000
+
+
+def _article(html: str, url: str) -> str | None:
+    """The article's own text in a web page's HTML, as markdown with its
+    headings, tables and links: no site menu, newsletter box, related
+    articles, comments or footer (a 6sqft interview came in at 50,745
+    characters, 13,881 of them the interview). None when the page cannot be
+    read or the extract is too short to trust (_MIN_ARTICLE_CHARS)."""
+    try:
+        article = trafilatura.extract(
+            html, url=url, output_format="markdown",
+            include_tables=True, include_links=True, include_formatting=True, include_comments=False,
+        )
+    except Exception:  # noqa: BLE001 — a page the extractor cannot parse keeps the whole text
+        return None
+    return article if article and len(article) >= _MIN_ARTICLE_CHARS else None
+
+
+def _main_content(session: _KeepBodySession, markdown: str, url: str) -> str:
+    """The article from the HTML page the session fetched, or MarkItDown's
+    whole text when the page is not HTML or no article can be trusted."""
+    if session.body is None or "html" not in session.content_type.lower():
+        return markdown
+    return _article(session.body.decode("utf-8", errors="replace"), url) or markdown
+
+
+def _page_date(session: _KeepBodySession) -> PublishedDate | None:
+    """The publication date in an HTML page the session fetched."""
+    if session.body is None or "html" not in session.content_type.lower():
+        return None
+    return from_html(session.body.decode("utf-8", errors="replace"))
+
+
+def _clean_title(title: str | None) -> str:
+    """A page title on one line: a <title> can carry the page's own
+    indentation ("
+		On automatically generating contrasting text
+    colors with CSS", film run 2026-10-25), which reached the source title,
+    the draft step's detail and MCP list_sources."""
+    return " ".join((title or "").split())
+
+
+def _url_title(page_title: str, markdown: str, url: str, found_by: str) -> tuple[str, str]:
+    """A web source's title and how it was found: the page's own title, else
+    the article's first heading, else the URL. A page without a <title>
+    ("Censorship, Creativity, and the Polish School of Posters" under an
+    H2, film run 2026-10-25) was named by its URL, and so were its page and
+    its node on the map."""
+    if page_title:
+        return page_title, found_by
+    heading = _extract_title_from_markdown_body(markdown)
+    if heading:
+        return _clean_title(heading[0]), heading[1]
+    return url, "firecrawl_url_fallback"
+
+
+def _is_bot_check(title: str | None, markdown: str) -> bool:
+    """A short page whose title or text is a bot check, not the article."""
+    if len(markdown) > _BOT_CHECK_MAX_CHARS:
+        return False
+    return bool(_BOT_CHECK_RE.search(f"{title or ''}\n{markdown}"))
+
+
+def _firecrawl_scrape(body: dict[str, Any], headers: dict[str, str], started: float) -> dict[str, Any]:
+    """POST /v2/scrape, waiting out 429s while the convert budget allows."""
+    for wait_default in (*_FIRECRAWL_429_BACKOFF_SECS, None):
+        try:
+            return _firecrawl_http.post_json(url="https://api.firecrawl.dev/v2/scrape", json_body=body, headers=headers)
+        except HttpClientError as e:
+            if e.status_code != 429 or wait_default is None:
+                raise
+            asked = _RETRY_AFTER_RE.search(f"{e.message} {e.upstream_body or ''}")
+            wait = min(float(asked.group(1)) + 1.0, _FIRECRAWL_429_MAX_WAIT_SECS) if asked else wait_default
+            # The retry itself can take up to the client timeout.
+            if time.monotonic() - started + wait + _FIRECRAWL_CLIENT_TIMEOUT_SECS > _CONVERT_URL_BUDGET_SECS:
+                raise
+            logger.info("firecrawl 429, retrying in %.0fs", wait)
+            time.sleep(wait)
+    raise AssertionError("unreachable")
 
 
 def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
@@ -598,7 +786,9 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     or the attempt exceeded _MARKITDOWN_URL_TIMEOUT_SECS — in all those cases
     the caller falls back to Firecrawl.
 
-    Never raises — all exceptions (including timeout) become None.
+    Never raises — all exceptions (including timeout) become None — except
+    _RedirectBlocked: a redirect to a refused address is refused like such a
+    URL, not handed on to Firecrawl.
     YouTube URLs are intercepted upstream by _convert_youtube (transcript-api +
     Data API v3) and never reach this function.
     """
@@ -608,28 +798,32 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     # the daemon thread will exit naturally when its socket closes. Not using
     # `with ...` because the context-manager's implicit shutdown(wait=True)
     # would reintroduce the blocking we're trying to avoid.
+    session = _KeepBodySession()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(MarkItDown().convert, url)
+    future = pool.submit(MarkItDown(requests_session=session).convert, url)
     try:
         result = future.result(timeout=_MARKITDOWN_URL_TIMEOUT_SECS)
     except concurrent.futures.TimeoutError:
         pool.shutdown(wait=False)
         return None
+    except _RedirectBlocked:
+        pool.shutdown(wait=False)
+        raise
     except Exception:
         pool.shutdown(wait=False)
         return None
     pool.shutdown(wait=False)
 
     markdown = result.text_content or ""
-    if len(markdown) < _MARKITDOWN_MIN_CHARS:
+    if len(markdown) < _MARKITDOWN_MIN_CHARS or _is_bot_check(result.title, markdown):
         return None
+    markdown = _main_content(session, markdown, url)
 
-    title = result.title or url
     # title_source: "markitdown" when MarkItDown extracted a real title from
     # the page; "firecrawl_url_fallback" name reused here for the URL-as-title
     # case (contract value covers any URL-fallback path, regardless of which
     # converter produced it). Keeps the Literal small.
-    title_source = "markitdown" if result.title else "firecrawl_url_fallback"
+    title, title_source = _url_title(_clean_title(result.title), markdown, url, "markitdown")
     content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
     return ConvertResponse(
@@ -647,6 +841,7 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
             content_type="text/html",
             final_url=url,
         ),
+        **_date_fields(_page_date(session)),
     )
 
 
@@ -699,6 +894,9 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     # from the URL — they never fetch the user URL itself — and keeping
     # them above preserves their network-free unit tests.
     #
+    # Redirects MarkItDown meets are checked the same way, hop by hop
+    # (_KeepBodySession). Firecrawl fetches from its own network.
+    #
     # Residual risk: MarkItDown re-resolves DNS internally, so an
     # attacker-controlled authoritative nameserver could rebind between
     # this check and the fetch (TOCTOU). Eliminating that requires
@@ -712,9 +910,16 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
             detail=f"url_blocked: {e} — URL does not resolve to a fetchable public address",
         ) from e
 
+    started = time.monotonic()
     # Layer 1: MarkItDown (free, local). YouTube URLs are handled above and
     # never reach this layer.
-    markitdown_result = _try_markitdown_url(req.source_id, req.url)
+    try:
+        markitdown_result = _try_markitdown_url(req.source_id, req.url)
+    except _RedirectBlocked as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"url_blocked: redirect {e} — URL does not resolve to a fetchable public address",
+        ) from e
     if markitdown_result is not None:
         return markitdown_result
 
@@ -728,8 +933,11 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
 
     firecrawl_body = {
         "url": req.url,
-        "formats": ["markdown"],
-        "onlyCleanContent": True,
+        # The whole page and its HTML, in one request: the article is picked
+        # from the HTML here (_article). Firecrawl's own main-content mode
+        # returned a newsletter box instead of a Wallpaper* article.
+        "formats": ["markdown", "rawHtml"],
+        "onlyMainContent": False,
         "timeout": 30000,
     }
     firecrawl_headers = {
@@ -738,11 +946,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     }
 
     try:
-        response: dict[str, Any] = _http.post_json(
-            url="https://api.firecrawl.dev/v2/scrape",
-            json_body=firecrawl_body,
-            headers=firecrawl_headers,
-        )
+        response: dict[str, Any] = _firecrawl_scrape(firecrawl_body, firecrawl_headers, started)
     except HttpClientError as e:
         # status_code is None → network error or timeout → 504 per contract 2a.
         # status_code set → upstream HTTP failure → 502 per contract 2a.
@@ -788,13 +992,19 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     fc_metadata = data.get("metadata")
     if not isinstance(fc_metadata, dict):
         fc_metadata = {}
+    # 422 like other unconvertible inputs: the link goes to Saved Links, and
+    # Retry failed can fetch it again later.
+    if _is_bot_check(fc_metadata.get("title"), markdown):
+        raise HTTPException(status_code=422, detail="bot_check_page: the site served a bot check instead of the page")
+    raw_html = data.get("rawHtml")
+    if isinstance(raw_html, str) and raw_html:
+        markdown = _article(raw_html, req.url) or markdown
 
     # Flatten per docs/research/2026-04-08-conversion-deps.md section 1.
-    fc_title = fc_metadata.get("title")
+    fc_title = _clean_title(fc_metadata.get("title"))
     # The contract (2a) permits falling back to the request URL when Firecrawl
     # does not surface a title. This is the only allowed `or` fallback.
-    title = fc_title if fc_title else req.url
-    title_source = "firecrawl" if fc_title else "firecrawl_url_fallback"
+    title, title_source = _url_title(fc_title, markdown, req.url, "firecrawl")
 
     # Prefer sourceURL, fall back to url. Both are the flat root `source_url`.
     fc_source_url = fc_metadata.get("sourceURL")
@@ -834,6 +1044,7 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
         markdown=markdown,
         content_hash=content_hash,
         metadata=metadata,
+        **_date_fields(from_meta_map(fc_metadata)),
     )
 
 
@@ -890,7 +1101,7 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
     #   3.   p.stem — last resort; will include the UUID prefix if title_hint
     #        was omitted, which is the bug we're preventing.
     # Discard obviously-junk titles from MarkItDown (Word's default filenames).
-    markitdown_title = result.title or ""
+    markitdown_title = _clean_title(result.title)
     if any(frag in markitdown_title.lower() for frag in _JUNK_TITLE_FRAGMENTS):
         markitdown_title = ""
     body_result = _extract_title_from_markdown_body(markdown)
@@ -934,4 +1145,5 @@ def convert_file_path(req: FileConvertRequest) -> ConvertResponse:
             content_type=content_type,
             final_url=None,
         ),
+        **_date_fields(from_file(p)),
     )

@@ -14,6 +14,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { toUserMessage } from '@/lib/service-errors';
 import { COMPILE_STEPS } from '@/lib/compile-steps';
+import { formatTime } from '@/lib/date-format';
+import RedoPanel from './RedoPanel';
 
 const POLL_INTERVAL_MS    = 2000;
 const PATIENCE_TIMEOUT_MS = 15 * 60 * 1000;
@@ -445,16 +447,21 @@ function ProgressPageInner() {
         setRetrying(false);
         return;
       }
-      isActiveRef.current = true;
-      setProgress(null);
       setRetrying(false);
-      setQueuedRetry(false);
-      void fetchProgress();
-      intervalRef.current = setInterval(fetchProgress, POLL_INTERVAL_MS);
+      resumePolling();
     } catch {
       setActionError('Retry failed — network error.');
       setRetrying(false);
     }
+  }
+
+  // The session runs again (Retry, or a redo started from RedoPanel): poll it.
+  function resumePolling() {
+    isActiveRef.current = true;
+    setProgress(null);
+    setQueuedRetry(false);
+    void fetchProgress();
+    intervalRef.current = setInterval(fetchProgress, POLL_INTERVAL_MS);
   }
 
   async function handleRetryFailed() {
@@ -634,8 +641,8 @@ function ProgressPageInner() {
         overflow: 'hidden',
       }}>
 
-        {/* Background flourish */}
-        <span style={{
+        {/* Background flourish: decoration only (exempt from text contrast), so hidden from screen readers */}
+        <span aria-hidden="true" style={{
           position: 'absolute', right: -300, top: '50%',
           transform: 'rotate(90deg)',
           fontFamily: 'var(--font-mono)', fontSize: 8,
@@ -812,11 +819,12 @@ function ProgressPageInner() {
                   flexDirection: 'row',
                   alignItems: isStepActive ? 'flex-start' : 'center',
                   gap: 24,
-                  opacity: isStepPending ? 0.3 : 1,
                 }}
               >
-                {/* Icon box */}
+                {/* Icon box. A pending step fades its icon; its text dims by colour,
+                    since opacity would take the text below 4.5:1 contrast. */}
                 <div style={{
+                  opacity: isStepPending ? 0.3 : 1,
                   width: 40, height: 40, flexShrink: 0,
                   background: iconBg,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -872,7 +880,7 @@ function ProgressPageInner() {
                         fontFamily: 'var(--font-heading)', fontWeight: 500,
                         fontSize: isStepDone ? 16 : 14,
                         lineHeight: isStepDone ? '24px' : '20px',
-                        color: isStepFailed ? 'var(--danger)' : 'var(--fg)',
+                        color: isStepFailed ? 'var(--danger)' : isStepPending ? 'var(--fg-dim)' : 'var(--fg)',
                         opacity: isStepDone ? 0.6 : 1,
                       }}>
                         {step.label}
@@ -894,10 +902,9 @@ function ProgressPageInner() {
                         fontFamily: 'var(--font-mono)',
                         fontSize: 11,
                         lineHeight: '16px',
-                        color: isStepFailed ? 'var(--danger)' : 'var(--fg-subtle)',
+                        color: isStepFailed ? 'var(--danger)' : isStepDone ? 'var(--fg-dim)' : 'var(--fg-subtle)',
                         whiteSpace: 'pre-wrap',
                         wordBreak: 'break-word',
-                        opacity: isStepDone ? 0.7 : 1,
                       }}>
                         {detail}
                       </span>
@@ -938,7 +945,6 @@ function ProgressPageInner() {
                   display: 'flex',
                   flexDirection: 'column',
                   gap: 16,
-                  opacity: isStepDone && !isStepActive ? 0.75 : 1,
                 }}>
                   {data?.loading && (
                     <div style={{
@@ -1013,7 +1019,7 @@ function ProgressPageInner() {
                             fontFamily: 'var(--font-mono)', fontSize: 10,
                             color: ev.action_type.includes('failed') ? 'var(--danger)' : 'var(--fg-subtle)',
                           }}>
-                            <span>{ev.timestamp.slice(11, 19)}</span>
+                            <span>{formatTime(ev.timestamp, { seconds: true })}</span>
                             <span>{ev.action_type}</span>
                             <span style={{
                               whiteSpace: 'nowrap',
@@ -1224,6 +1230,9 @@ function ProgressPageInner() {
             {actionError}
           </pre>
         )}
+
+        {/* Redo part of the most recent compile (GitHub #140) */}
+        {sessionId && <RedoPanel sessionId={sessionId} terminal={isTerminal} onStarted={resumePolling} />}
       </div>
 
       {/* Background hint — below the card, always visible while in-flight */}

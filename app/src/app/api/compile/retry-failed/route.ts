@@ -31,11 +31,11 @@
  *     orchestrator's draft step can re-attempt them. Plan re-runs are
  *     decided in runCompilePipeline via hasNewSources, not here.
  *
- * Ghost-row fix: for URL-connector retryable rows, matching
- *   ingest_failures rows (session_id + source_url) are deleted in the
- *   same transaction as the staging flip. If the retry fails again,
- *   ingest-urls re-inserts them. Without this delete, successful retry
- *   leaves stale /api/sources/failures + saved-links wiki rows.
+ * Saved Links rows (ingest_failures) are left as they are: the link stays
+ *   listed until the retry imports it, which resolves its rows from every
+ *   session (ingest-urls), or fails again, which counts one more attempt on
+ *   the same row (db.insertIngestFailure). A retry that never runs no
+ *   longer drops the link from Saved Links (issue #139).
  *
  * Body: { session_id: string }
  * Response:
@@ -53,17 +53,17 @@ import {
 import {
   countFailedDraftPlansBySession,
   countUnextractedSourcesBySession,
-  deleteIngestFailuresBySourceUrls,
   getCompileProgress,
   getDb,
   getRunningCompileSession,
+  logActivity,
 } from '@/lib/db';
+import { pageUpgradeBlock } from '@/lib/page-upgrade-state';
+import { wikiRepairBlock } from '@/lib/wiki-repair/state';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
 
 interface StagingMini {
   stage_id: string;
-  connector: string;
-  payload: string;
 }
 
 export async function POST(request: Request) {
@@ -89,6 +89,10 @@ export async function POST(request: Request) {
     );
   }
 
+  // No compile while pages are being updated to the current writing rules.
+  const upgrading = pageUpgradeBlock() ?? wikiRepairBlock();
+  if (upgrading) return NextResponse.json(upgrading, { status: 409 });
+
   // Global concurrency gate: block retry if a DIFFERENT session is active.
   const active = getRunningCompileSession();
   if (active && active.session_id !== session_id) {
@@ -105,7 +109,7 @@ export async function POST(request: Request) {
   const db = getDb();
   const failedRows = db
     .prepare(
-      `SELECT stage_id, connector, payload
+      `SELECT stage_id
          FROM collect_staging
         WHERE session_id = ?
           AND status     = 'failed'
@@ -120,30 +124,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ retried: 0, status: 'noop' });
   }
 
-  // Extract source URLs from URL-connector payloads so we can delete the
-  // stale ingest_failures rows. File/text retries don't have ingest_failures
-  // rows to clean (those steps only write activity_log on failure).
-  const urlsToClean: string[] = [];
-  for (const row of failedRows) {
-    if (row.connector !== 'url') continue;
-    try {
-      const payload = JSON.parse(row.payload) as { url?: string };
-      if (typeof payload.url === 'string' && payload.url) {
-        urlsToClean.push(payload.url);
-      }
-    } catch {
-      // Malformed payload — skip ghost-row cleanup for this one but still
-      // proceed with the staging flip; the row will be re-processed.
-    }
-  }
-
   const resetSteps = JSON.stringify(
     Object.fromEntries(COMPILE_STEP_KEYS.map((k) => [k, { status: 'pending' }]))
   );
 
   db.transaction(() => {
-    deleteIngestFailuresBySourceUrls(session_id, urlsToClean);
-
     db.prepare(
       `UPDATE collect_staging
           SET status        = 'pending',
@@ -170,6 +155,15 @@ export async function POST(request: Request) {
     ).run(resetSteps, session_id);
   })();
 
+  // The user pressed Retry: recent_changes(session_id) tells it from the
+  // service's own automatic LLM retries.
+  const retried = failedRows.length + failedDraftCount + unextractedCount;
+  logActivity('compile_retried', {
+    source_id: null,
+    session_id,
+    details: { session_id, retried, message: `retry of ${retried} failed item${retried === 1 ? '' : 's'}` },
+  });
+
   const trigger = await triggerSessionCompile(session_id);
   if (!trigger.ok) {
     const httpStatus = trigger.reason === 'n8n_timeout' ? 504 : 502;
@@ -180,7 +174,7 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({
-    retried: failedRows.length + failedDraftCount + unextractedCount,
+    retried,
     status: 'retrying',
   });
 }

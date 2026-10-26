@@ -9,7 +9,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { setupTestDb, seedSource, seedExtraction, type TestDbHandle } from './helpers/test-db';
-import { deleteSource } from '../lib/db';
+import { deleteSource, rawFilePath } from '../lib/db';
 
 let handle: TestDbHandle | null = null;
 
@@ -24,11 +24,12 @@ describe('deleteSource', () => {
     expect(deleteSource('does-not-exist')).toBeNull();
   });
 
-  it('deletes a source with no extractions and returns its file_path', () => {
+  it('deletes a source with no extractions and returns its raw file path, found from its id', () => {
     handle = setupTestDb();
-    const source_id = seedSource(handle.db, { file_path: '/data/raw/abc.md' });
+    // The stored column can name any file (a restored backup); it is never returned for unlinking.
+    const source_id = seedSource(handle.db, { file_path: '/data/db/kompl.db' });
     const result = deleteSource(source_id);
-    expect(result).toBe('/data/raw/abc.md');
+    expect(result).toBe(rawFilePath(source_id));
     const row = handle.db.prepare('SELECT 1 FROM sources WHERE source_id = ?').get(source_id);
     expect(row).toBeUndefined();
   });

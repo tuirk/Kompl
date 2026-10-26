@@ -60,6 +60,14 @@ RUN pip install --no-cache-dir --upgrade "youtube-transcript-api>=1.2.4,<2.0.0"
 RUN python -m spacy download en_core_web_sm && \
     python -m nltk.downloader stopwords punkt_tab
 
+# The sentence-transformers model behind search, related pages, entity
+# resolution and KeyBERT (~90 MB). Baked in so a new container never
+# downloads it on first use (which outlasted the app's search timeout and
+# needed internet after every update); the service then loads its models
+# offline.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+ENV HF_HUB_OFFLINE=1
+
 # Copy the rest of the nlp-service source.
 COPY . /app
 

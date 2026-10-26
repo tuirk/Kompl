@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { __setDbForTesting, DATA_ROOT } from '../../lib/db';
+import { normalizeRelationType } from '../../lib/relation-rows';
 
 const SCHEMA_SQL = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
 
@@ -138,7 +139,7 @@ export function seedExtraction(db: Database.Database, args: SeedExtractionArgs):
   for (const rel of llm.relationships ?? []) {
     const fromRaw = (rel.from_entity ?? '').trim();
     const toRaw = (rel.to ?? '').trim();
-    const type = (rel.type ?? '').trim();
+    const type = normalizeRelationType((rel.type ?? '').trim());
     if (!fromRaw || !toRaw || !type) continue;
     let from = fromRaw;
     let to = toRaw;
@@ -187,6 +188,12 @@ export interface SeedPagePlanArgs {
   related_plan_ids?: string[];
   draft_content?: string | null;
   draft_status?: string;
+  /** v27 writing-rules marker on the draft; NULL (pre-v0.4 draft) by default. */
+  draft_rules?: string | null;
+  /** v30 page version the update draft read; NULL (new page or pre-v30 draft) by default. */
+  base_version?: string | null;
+  /** v30 sources the draft's prompt carried; NULL (credit every plan source) by default. */
+  used_source_ids?: string[] | null;
 }
 
 export function seedPagePlan(db: Database.Database, args: SeedPagePlanArgs): string {
@@ -195,8 +202,8 @@ export function seedPagePlan(db: Database.Database, args: SeedPagePlanArgs): str
     `INSERT INTO page_plans
        (plan_id, session_id, title, page_type, action,
         source_ids, existing_page_id, related_plan_ids,
-        draft_content, draft_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        draft_content, draft_status, draft_rules, base_version, used_source_ids)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     plan_id,
     args.session_id,
@@ -207,7 +214,10 @@ export function seedPagePlan(db: Database.Database, args: SeedPagePlanArgs): str
     args.existing_page_id ?? null,
     args.related_plan_ids ? JSON.stringify(args.related_plan_ids) : null,
     args.draft_content ?? null,
-    args.draft_status ?? 'planned'
+    args.draft_status ?? 'planned',
+    args.draft_rules ?? null,
+    args.base_version ?? null,
+    args.used_source_ids ? JSON.stringify(args.used_source_ids) : null
   );
   return plan_id;
 }

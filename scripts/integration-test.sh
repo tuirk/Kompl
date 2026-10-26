@@ -15,7 +15,7 @@
 #
 # Stage state at commit 8:
 #   Stage 0  — REAL (cold start)
-#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=25)
+#   Stage 1  — REAL (migration & schema sanity via /api/health, schema_version=30)
 #   Stage 4  — REAL (text connector stage end-to-end, no API key needed)
 #   Stage 11 — REAL (onboarding API canary via /stage → /finalize → pipeline)
 #   Stage 11b — REAL (finalize surfaces n8n-down as 503)
@@ -27,8 +27,9 @@
 #   Stage 16 — REAL (full compilation pipeline, skipped without GEMINI_API_KEY)
 #   Stage 17 — REAL (session compile via n8n, skipped without GEMINI_API_KEY)
 #   Stage 18 — REAL (wiki-aware update, skipped without GEMINI_API_KEY)
-#   Stage 19 — REAL (chat canary, skipped without GEMINI_API_KEY or page_count<1)
+#   Stage 19 — removed (in-app chat retired; MCP is the query surface)
 #   Stage 20 — REAL (source management + settings + drafts endpoints)
+#   Stage 28 — REAL (MCP server: every tool over stdio, no API key needed)
 #   All other stages — TODO.
 #
 # As real services land, each stage gets its real implementation in the same
@@ -298,13 +299,13 @@ stage_1_migration_schema() {
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"schema_version":25'; then
-        echo "  FAIL: schema_version != 25"
+    if ! echo "$response" | grep -q '"schema_version":30'; then
+        echo "  FAIL: schema_version != 30"
         record_stage 1 REAL FAIL
         return 1
     fi
-    if ! echo "$response" | grep -q '"table_count":18'; then
-        echo "  FAIL: table_count != 18"
+    if ! echo "$response" | grep -q '"table_count":21'; then
+        echo "  FAIL: table_count != 21"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -325,6 +326,21 @@ stage_1_migration_schema() {
     fi
     if ! echo "$response" | grep -q '"relationship_mentions"'; then
         echo "  FAIL: relationship_mentions table missing from /api/health tables list"
+        record_stage 1 REAL FAIL
+        return 1
+    fi
+    if ! echo "$response" | grep -q '"triage_rechecks"'; then
+        echo "  FAIL: triage_rechecks table missing from /api/health tables list"
+        record_stage 1 REAL FAIL
+        return 1
+    fi
+    if ! echo "$response" | grep -q '"disagreements"'; then
+        echo "  FAIL: disagreements table missing from /api/health tables list"
+        record_stage 1 REAL FAIL
+        return 1
+    fi
+    if ! echo "$response" | grep -q '"claim_verdicts"'; then
+        echo "  FAIL: claim_verdicts table missing from /api/health tables list"
         record_stage 1 REAL FAIL
         return 1
     fi
@@ -349,25 +365,8 @@ stage_1_migration_schema() {
         fi
     done
 
-    # nlp-service-specific env vars (read by nlp-service only, not app).
-    # YOUTUBE_API_KEY is required by routers/conversion.py for the YouTube
-    # direct-ingest path (videos.list metadata fetch). Without it the route
-    # 422s on every YouTube URL and routes to Saved Links — that's the
-    # designed graceful degradation, but if the host has the key set we
-    # want to be SURE it reached the nlp-service container.
-    echo "  checking env-var wire (host -> nlp-service container)..."
-    for var in YOUTUBE_API_KEY; do
-        host_val=$(printenv "$var" 2>/dev/null || true)
-        if [ -n "$host_val" ]; then
-            container_val=$($COMPOSE exec -T nlp-service printenv "$var" 2>/dev/null || true)
-            if [ -z "$container_val" ]; then
-                echo "  FAIL: host has $var set but nlp-service container does not"
-                echo "         -> add '$var: \${$var:-}' to the 'nlp-service.environment' block in docker-compose.yml"
-                record_stage 1 REAL FAIL
-                return 1
-            fi
-        fi
-    done
+    # The nlp-service env-var wire is checked in stage 4: this stage starts
+    # app only (--no-deps), so nlp-service isn't running yet.
 
     echo "  PASS"
     record_stage 1 REAL PASS
@@ -406,6 +405,27 @@ stage_4_live_ingest() {
         record_stage 4 REAL FAIL
         return 1
     fi
+
+    # nlp-service-specific env vars (read by nlp-service only, not app).
+    # YOUTUBE_API_KEY is required by routers/conversion.py for the YouTube
+    # direct-ingest path (videos.list metadata fetch). Without it the route
+    # 422s on every YouTube URL and routes to Saved Links — that's the
+    # designed graceful degradation, but if the host has the key set we
+    # want to be SURE it reached the nlp-service container. Checked here
+    # rather than in stage 1, which starts app only.
+    echo "  checking env-var wire (host -> nlp-service container)..."
+    for var in YOUTUBE_API_KEY; do
+        host_val=$(printenv "$var" 2>/dev/null || true)
+        if [ -n "$host_val" ]; then
+            container_val=$($COMPOSE exec -T nlp-service printenv "$var" 2>/dev/null || true)
+            if [ -z "$container_val" ]; then
+                echo "  FAIL: host has $var set but nlp-service container does not"
+                echo "         -> add '$var: \${$var:-}' to the 'nlp-service.environment' block in docker-compose.yml"
+                record_stage 4 REAL FAIL
+                return 1
+            fi
+        fi
+    done
 
     local SESSION_ID
     SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
@@ -1601,7 +1621,6 @@ main() {
     stage_16_full_pipeline
     stage_17_session_compile
     stage_18_wiki_aware_update
-    stage_19_chat_canary
     stage_20_source_mgmt_canary
     stage_21_wiki_data_canary
     stage_22_original_source_gate2
@@ -1610,6 +1629,7 @@ main() {
     stage_25_finalize_end_to_end
     stage_26_finalize_accepts_ingested
     stage_27_patch_excludes_from_finalize
+    stage_28_mcp_server
 
     echo
     echo "=== Stage summary ==="
@@ -1617,76 +1637,8 @@ main() {
         echo "  $result"
     done
     echo
-    echo "=== All 21 stages (0, 1, 4, 11–12b, 13–27) executed, all passed ==="
+    echo "=== All 24 stages (0, 1, 4, 11–12b, 13–18, 20–28) executed, all passed ==="
     exit 0
-}
-
-# ---------------------------------------------------------------------------
-# Stage 19: chat canary
-#   Skip if no GEMINI_API_KEY or page_count < 1.
-#   1. POST /api/chat with a generic question
-#   2. Assert answer non-empty + citations key present
-#   3. GET /api/chat/history — assert >= 2 messages
-# ---------------------------------------------------------------------------
-stage_19_chat_canary() {
-    echo "--- stage 19: chat canary ---"
-
-    if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-        echo "  SKIP: no GEMINI_API_KEY"
-        record_stage 19 REAL SKIPPED
-        return 0
-    fi
-
-    local HEALTH PAGE_COUNT CHAT_SESSION CHAT_RESP ANSWER CITATIONS_PRESENT
-    local HISTORY_RESP MSG_COUNT
-
-    HEALTH=$(curl -sf "http://localhost:3000/api/health" 2>/dev/null || echo "")
-    PAGE_COUNT=$(echo "$HEALTH" | grep -o '"page_count":[0-9]*' | grep -o '[0-9]*' || echo "0")
-    if [[ "$PAGE_COUNT" -lt 1 ]]; then
-        echo "  SKIP: page_count=$PAGE_COUNT (need at least 1 compiled page)"
-        record_stage 19 REAL SKIPPED
-        return 0
-    fi
-
-    CHAT_SESSION=$(python3 -c "import uuid; print(str(uuid.uuid4()))")
-
-    CHAT_RESP=$(curl -sf -X POST "http://localhost:3000/api/chat" \
-        -H "Content-Type: application/json" \
-        -d "{\"session_id\":\"$CHAT_SESSION\",\"question\":\"What topics does my knowledge base cover?\"}" \
-        2>/dev/null || echo "")
-
-    if [[ -z "$CHAT_RESP" ]]; then
-        echo "  FAIL: POST /api/chat returned empty"
-        record_stage 19 REAL FAIL
-        return 1
-    fi
-
-    ANSWER=$(echo "$CHAT_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('answer',''))" 2>/dev/null || echo "")
-    if [[ -z "$ANSWER" ]]; then
-        echo "  FAIL: answer field missing or empty. response: $CHAT_RESP"
-        record_stage 19 REAL FAIL
-        return 1
-    fi
-
-    CITATIONS_PRESENT=$(echo "$CHAT_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if 'citations' in d else 'no')" 2>/dev/null || echo "no")
-    if [[ "$CITATIONS_PRESENT" != "yes" ]]; then
-        echo "  FAIL: citations key missing from response"
-        record_stage 19 REAL FAIL
-        return 1
-    fi
-
-    HISTORY_RESP=$(curl -sf "http://localhost:3000/api/chat/history?session_id=$CHAT_SESSION" 2>/dev/null || echo "")
-    MSG_COUNT=$(echo "$HISTORY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('messages',[])))" 2>/dev/null || echo "0")
-    if [[ "$MSG_COUNT" -lt 2 ]]; then
-        echo "  FAIL: expected >= 2 messages in history, got $MSG_COUNT"
-        record_stage 19 REAL FAIL
-        return 1
-    fi
-
-    echo "  answer length: ${#ANSWER} chars, messages in history: $MSG_COUNT"
-    echo "  stage 19 PASS — chat answered with citations, history persisted"
-    record_stage 19 REAL PASS
-    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -2465,6 +2417,41 @@ except Exception:
     echo "  stage 27 PASS — PATCH filter respected by finalize"
     record_stage 27 REAL PASS
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage 28 — MCP server (REAL)
+#
+# Builds mcp-server/, launches dist/index.js over stdio the way an AI agent
+# does, and calls every tool against the running app through
+# scripts/mcp-smoke.mjs: the eight tools are listed, the routes behind them
+# have the fields of the MCP contract fixture, the read tools answer with the
+# app's own pages and sources, an unknown page or source is an error, and
+# add_source refuses an address that isn't a link, so nothing is staged or
+# compiled.
+# ---------------------------------------------------------------------------
+stage_28_mcp_server() {
+    echo "--- stage 28: MCP server tools over stdio ---"
+    local root
+    root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+    # Always build (seconds), so a stale dist/ never stands in for the source;
+    # install first only when node_modules is missing or half-written.
+    if ! (cd "$root/mcp-server" \
+        && { [ -f node_modules/.package-lock.json ] || npm ci --no-audit --no-fund; } \
+        && npm run build); then
+        echo "  FAIL: could not build mcp-server"
+        record_stage 28 REAL FAIL
+        return 1
+    fi
+
+    if node "$root/scripts/mcp-smoke.mjs"; then
+        echo "  stage 28 PASS — MCP tools answer over stdio"
+        record_stage 28 REAL PASS
+        return 0
+    fi
+    record_stage 28 REAL FAIL
+    return 1
 }
 
 main "$@"

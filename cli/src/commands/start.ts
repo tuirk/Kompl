@@ -5,6 +5,7 @@ import { readConfig } from '../config.js'
 import { dockerRunning, upAll } from '../compose.js'
 import { pollHealth } from '../health.js'
 import type { HealthResponse } from '../health.js'
+import { buildMcpServer, MCP_RETRY_HINT, mcpServerIsStale } from '../mcp-build.js'
 import { runStartupTasks } from '../startup-tasks.js'
 
 export async function startCommand(): Promise<void> {
@@ -59,6 +60,19 @@ export async function startCommand(): Promise<void> {
     console.log(pc.yellow('  Note: NLP still warming — compile may retry until models load.'))
   }
   console.log(pc.dim(`  DB: schema v${health.schema_version}, ${health.page_count} pages`))
+
+  // Catches builds left behind by `git pull`, an interrupted install, or an
+  // update from a CLI that didn't rebuild the MCP server yet. Once a build
+  // succeeds, later starts find it fresh; a failed build is retried next start.
+  if (mcpServerIsStale(config.projectDir)) {
+    console.log(pc.dim('Updating the MCP server for AI agents...'))
+    if (buildMcpServer(config.projectDir)) {
+      console.log(pc.dim('  Restart your AI agent to load the updated Kompl MCP tools.'))
+    } else {
+      console.log(pc.yellow('⚠ MCP server build failed — Kompl tools in your AI agent may not start until it builds.'))
+      console.log(pc.dim(`  ${MCP_RETRY_HINT}`))
+    }
+  }
 
   // Fire-and-forget — does not block the prompt returning.
   runStartupTasks(config).catch((err: unknown) => {

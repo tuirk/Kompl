@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { RetryButton } from '@/components/RetryButton';
 import { friendlyIngestError } from './ingest-error-copy';
 import { normalizeLintResult, lintCounts } from './lint-result';
+import { MAX_TRIAGE_ATTEMPTS } from './triage-recheck-limits';
 
 // ── Shared shapes ──────────────────────────────────────────────────────────
 // FeedActivityRow is the CLIENT-facing row shape — includes server-joined
@@ -134,6 +135,110 @@ function renderResolutionComplete(row: FeedActivityRow): RowContent {
   return {
     primary: <strong>{merged} entities merged → {resolved} canonical</strong>,
     secondary: null,
+    action: null,
+    isError: false,
+  };
+}
+
+// Name pairs entity resolution never put to the LLM: over the per-compile
+// cap, or in a batch whose call failed. Each may be a duplicate kept as two
+// pages.
+function renderResolutionPairsUnchecked(row: FeedActivityRow): RowContent {
+  const { num } = makeGetters(row);
+  const overCap = num('over_cap') ?? 0;
+  const failed = num('llm_failed') ?? 0;
+  const parts: string[] = [];
+  if (overCap > 0) parts.push(`${overCap} over the ${num('cap') ?? 120}-pair limit`);
+  if (failed > 0) parts.push(`${failed} in AI calls that failed`);
+  return {
+    primary: <strong>{overCap + failed} possible duplicate pairs not checked</strong>,
+    secondary: parts.length > 0 ? <span style={MONO_DIM}>{parts.join(' · ')}</span> : null,
+    action: null,
+    isError: false,
+  };
+}
+
+// Written by compile/match: checks of this session's sources against
+// existing pages that gave no verdict. Nothing was recorded on those pages.
+function renderMatchTriageFailed(row: FeedActivityRow): RowContent {
+  const { d, num } = makeGetters(row);
+  const failed = num('failed') ?? 0;
+  const parts: string[] = [];
+  const costCeiling = num('cost_ceiling') ?? 0;
+  const rateLimited = num('rate_limited') ?? 0;
+  const errors = num('errors') ?? 0;
+  if (costCeiling > 0) parts.push(`${costCeiling} hit the daily cost limit`);
+  if (rateLimited > 0) parts.push(`${rateLimited} rate limited`);
+  if (errors > 0) parts.push(`${errors} failed`);
+  const examples = Array.isArray(d?.examples)
+    ? (d.examples as Array<{ source_title?: unknown; page_title?: unknown }>)
+        .filter((e) => typeof e.page_title === 'string')
+        .map((e) => (typeof e.source_title === 'string' ? `${e.source_title} → ${e.page_title as string}` : (e.page_title as string)))
+    : [];
+  if (examples.length > 0) parts.push(examples.join(', '));
+  return {
+    primary: <strong>{failed} {failed === 1 ? 'check' : 'checks'} against existing pages not done</strong>,
+    secondary: parts.length > 0 ? <span style={MONO_DIM}>{parts.join(' · ')}</span> : null,
+    action: null,
+    isError: false,
+  };
+}
+
+// Written by compile/match: stored checks that failed in an earlier compile
+// and were run again (lib/compile/triage-recheck.ts), or dropped.
+function renderMatchTriageRechecked(row: FeedActivityRow): RowContent {
+  const { d, num } = makeGetters(row);
+  const rechecked = num('rechecked') ?? 0;
+  const dropped = num('dropped') ?? 0;
+  const gaveUp = num('gave_up') ?? 0;
+  const failed = num('failed') ?? 0;
+  const costCeiling = num('cost_ceiling') ?? 0;
+  const parts: string[] = [];
+  const answered = num('answered') ?? 0;
+  if (answered > 0) parts.push(`${answered} answered`);
+  if (failed > 0) parts.push(`${failed} failed again${costCeiling > 0 ? ` (${costCeiling} hit the daily cost limit)` : ''}`);
+  if (gaveUp > 0) parts.push(`${gaveUp} given up after ${MAX_TRIAGE_ATTEMPTS} tries`);
+  if (dropped - gaveUp > 0) parts.push(`${dropped - gaveUp} no longer needed`);
+  const waiting = num('waiting') ?? 0;
+  if (waiting > 0) parts.push(`${waiting} still waiting`);
+  const givenUp = Array.isArray(d?.examples)
+    ? (d.examples as Array<{ source_title?: unknown; page_title?: unknown; outcome?: unknown }>)
+        .filter((e) => e.outcome === 'gave_up' && typeof e.page_title === 'string')
+        .map((e) => (typeof e.source_title === 'string' ? `${e.source_title} → ${e.page_title as string}` : (e.page_title as string)))
+    : [];
+  if (givenUp.length > 0) parts.push(`given up: ${givenUp.join(', ')}`);
+  const n = rechecked > 0 ? rechecked : dropped;
+  return {
+    primary: (
+      <strong>
+        {n} earlier failed {n === 1 ? 'check' : 'checks'} against existing pages {rechecked > 0 ? 'run again' : 'dropped'}
+      </strong>
+    ),
+    secondary: parts.length > 0 ? <span style={MONO_DIM}>{parts.join(' · ')}</span> : null,
+    action: null,
+    isError: false,
+  };
+}
+
+// Stored name matches the alias screen set aside (lib/alias-screen.ts): new
+// sources stop following them until a later compile matches the names again.
+function renderAliasesSuspended(row: FeedActivityRow): RowContent {
+  const { d, num } = makeGetters(row);
+  const n = num('suspended') ?? 0;
+  const examples = Array.isArray(d?.examples)
+    ? (d.examples as Array<{ alias?: unknown; canonical?: unknown }>)
+        .filter((e) => typeof e.alias === 'string' && typeof e.canonical === 'string')
+        .map((e) => `${e.alias as string} → ${e.canonical as string}`)
+    : [];
+  const more = n > examples.length && examples.length > 0 ? ` and ${n - examples.length} more` : '';
+  return {
+    primary: <strong>{n} name {n === 1 ? 'match' : 'matches'} set aside</strong>,
+    secondary: (
+      <span style={MONO_DIM}>
+        {examples.length > 0 ? `${examples.join(', ')}${more} · ` : ''}
+        new sources no longer go to these pages under these names
+      </span>
+    ),
     action: null,
     isError: false,
   };
@@ -294,7 +399,7 @@ function renderPageContradictionDetected(row: FeedActivityRow): RowContent {
 }
 
 function renderPageRecompileFailed(row: FeedActivityRow): RowContent {
-  const { str } = makeGetters(row);
+  const { d, str } = makeGetters(row);
   const detailTitle = str('title');
   const page_id = str('page_id');
   const pageName = detailTitle ?? page_id ?? '…';
@@ -302,11 +407,182 @@ function renderPageRecompileFailed(row: FeedActivityRow): RowContent {
     ? <Link href={`/wiki/${page_id}`} style={LINK_STYLE}><strong>{pageName}</strong></Link>
     : <strong>{pageName}</strong>;
   const errMsg = str('error');
-  const secondary = errMsg ? <span style={MONO_ERR}>{errMsg}</span> : null;
+  // A page archived until it is rewritten (lib/page-hold.ts) says so.
+  const hidden = d?.hidden === true;
+  const text = hidden ? `archived until it is rewritten${errMsg ? ` · ${errMsg}` : ''}` : errMsg;
+  const secondary = text ? <span style={MONO_ERR}>{text}</span> : null;
   const action = page_id
     ? <Link href={`/wiki/${page_id}`} style={{ ...LINK_STYLE, color: 'var(--danger)' }}>View</Link>
     : null;
   return { primary, secondary, action, isError: true };
+}
+
+/**
+ * Page-level actions (page update, Restore): page link + what happened.
+ * `what` may read the row's details (e.g. the rules version it recorded).
+ */
+function renderPageAction(what: string | ((str: (k: string) => string | null) => string)) {
+  return function renderPageActionRow(row: FeedActivityRow): RowContent {
+    const { str } = makeGetters(row);
+    const page_id = str('page_id');
+    const pageName = str('title') ?? page_id ?? '…';
+    const primary = page_id
+      ? <Link href={`/wiki/${page_id}`} style={LINK_STYLE}><strong>{pageName}</strong></Link>
+      : <strong>{pageName}</strong>;
+    const action = page_id
+      ? <Link href={`/wiki/${page_id}`} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+      : null;
+    const text = typeof what === 'string' ? what : what(str);
+    return { primary, secondary: <span style={MONO_DIM}>{text}</span>, action, isError: false };
+  };
+}
+
+/** A Disputed/Changed section a page records in its own text (lib/disagreements.ts). */
+function renderPageDisputeRecorded(row: FeedActivityRow): RowContent {
+  const { d, str } = makeGetters(row);
+  const page_id = str('page_id');
+  const anchor = str('anchor');
+  const href = page_id ? `/wiki/${page_id}${anchor ? `#${anchor}` : ''}` : null;
+  const pageName = str('title') ?? page_id ?? '…';
+  const sides = d && Array.isArray(d.source_ids) ? d.source_ids.length : 0;
+  const primary = href
+    ? <Link href={href} style={LINK_STYLE}><strong>{pageName}</strong></Link>
+    : <strong>{pageName}</strong>;
+  const action = href
+    ? <Link href={href} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+    : null;
+  const topic = str('topic') ?? 'a claim';
+  // kind (from the disagreements record): 'changed' is a claim a later
+  // source superseded; rows logged before it carry none and were disputes.
+  const text =
+    str('kind') === 'changed'
+      ? `changed: ${topic}${sides > 0 ? ` · ${sides} sources` : ''}`
+      : sides > 0
+        ? `disputed: ${topic} · ${sides} sources disagree`
+        : `disputed: ${topic}`;
+  return { primary, secondary: <span style={MONO_DIM}>{text}</span>, action, isError: false };
+}
+
+const PAGE_UPGRADE_STOP_TEXT: Record<string, string> = {
+  user: 'stopped by you',
+  flag_off: 'stopped by you',
+  compile_started: 'a compile started',
+  daily_cost_ceiling: "today's spending limit reached",
+  consecutive_failures: '3 failures in a row',
+  overspend: 'spending passed 1.5 × the estimate',
+  error: 'unexpected error',
+};
+
+/** One row per run of the bulk page update (lib/page-upgrade.ts): started, finished or stopped. */
+function renderPageUpgradeRun(row: FeedActivityRow): RowContent {
+  const { str, num } = makeGetters(row);
+  const phase = str('phase');
+  const pages = num('pages') ?? 0;
+  const verb = phase === 'started' ? 'started' : phase === 'finished' ? 'finished' : 'stopped';
+  const parts =
+    phase === 'started'
+      ? [`${pages} page${pages !== 1 ? 's' : ''}`]
+      : [
+          `${num('updated') ?? 0} updated`,
+          `${num('skipped') ?? 0} skipped`,
+          `${num('failed') ?? 0} failed`,
+          phase === 'stopped' ? PAGE_UPGRADE_STOP_TEXT[str('reason') ?? ''] ?? null : null,
+        ].filter((p): p is string => Boolean(p));
+  return {
+    primary: <>Page update to the {str('rules') ?? 'current'} writing rules {verb}</>,
+    secondary: <span style={MONO_DIM}>{parts.join(' · ')}</span>,
+    action: <Link href="/settings#page-upgrade" style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>,
+    isError: phase === 'stopped' && (str('reason') === 'error' || str('reason') === 'consecutive_failures'),
+  };
+}
+
+const WIKI_REPAIR_STOP_TEXT: Record<string, string> = {
+  user: 'stopped by you',
+  flag_off: 'stopped by you',
+  daily_cost_ceiling: "today's spending limit reached",
+  rate_limited: 'the AI model was busy',
+  nlp_unreachable: "Kompl's NLP service did not answer",
+  consecutive_failures: '3 pages in a row failed',
+  overspend: 'spending passed 1.5 × the estimate',
+  pages_over_confirmed: 'more pages to rewrite than confirmed',
+  restart: 'Kompl restarted',
+  error: 'unexpected error',
+};
+
+const WIKI_REPAIR_STEP_TEXT: Record<string, string> = {
+  backup: 'backup saved',
+  aliases: 'name matches checked',
+  mentions: 'sources given to the right pages',
+  links: 'links to the wrong page fixed',
+  pages: 'pages rewritten',
+  labels: 'categories tidied',
+};
+
+/** The wiki repair (lib/wiki-repair): one row per finished step, one for the end. */
+function renderWikiRepair(row: FeedActivityRow): RowContent {
+  const { str, num } = makeGetters(row);
+  const phase = str('phase');
+  const step = str('step') ?? '';
+  const n = (k: string) => num(k) ?? 0;
+  let primary: string;
+  let parts: string[];
+  if (phase === 'step') {
+    primary = `Wiki repair: ${WIKI_REPAIR_STEP_TEXT[step] ?? step}`;
+    parts =
+      step === 'backup'
+        ? [str('file') ?? '']
+        : step === 'aliases'
+          ? [`${n('confirmed')} kept`, `${n('retired')} retired`, `${n('undecided')} undecided`]
+          : step === 'mentions'
+            ? [`${n('sources')} sources`, `${n('pages')} pages to rewrite`]
+            : step === 'links'
+              ? [`${n('links')} links`, `${n('pages')} pages`, n('missed') > 0 ? `${n('missed')} left for the next repair` : '']
+              : step === 'pages'
+                ? [`${n('rebuilt')} rewritten`, `${n('skipped')} skipped`, `${n('failed')} failed`]
+                : [`${n('merged')} merged`, `${n('pages')} pages`];
+  } else {
+    primary = phase === 'finished' ? 'Wiki repair finished' : 'Wiki repair stopped';
+    parts = [
+      `${n('pages_rebuilt')} pages rewritten`,
+      `${n('aliases_retired')} name matches retired`,
+      n('links_corrected') > 0 ? `${n('links_corrected')} links fixed` : '',
+      phase === 'stopped' ? WIKI_REPAIR_STOP_TEXT[str('reason') ?? ''] ?? '' : '',
+    ];
+  }
+  return {
+    primary: <>{primary}</>,
+    secondary: <span style={MONO_DIM}>{parts.filter(Boolean).join(' · ')}</span>,
+    action: <Link href="/settings#wiki-repair" style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>,
+    isError: phase === 'stopped' && ['error', 'consecutive_failures', 'nlp_unreachable'].includes(str('reason') ?? ''),
+  };
+}
+
+const REDO_POINT_TEXT: Record<string, string> = {
+  plan: 'pages planned again',
+  write: 'pages written again',
+  save: 'pages saved again',
+};
+
+/** A redo of the last compile (lib/compile-redo/finish.ts). */
+function renderCompileRedo(row: FeedActivityRow): RowContent {
+  const { str, num } = makeGetters(row);
+  const n = (k: string) => num(k) ?? 0;
+  const spent = num('spent_usd');
+  const parts = [
+    `${n('saved')} saved`,
+    n('archived') > 0 ? `${n('archived')} archived` : '',
+    n('skipped') > 0 ? `${n('skipped')} skipped (changed since)` : '',
+    spent !== null ? `$${spent.toFixed(2)} spent` : '',
+  ];
+  const session = str('session_id');
+  return {
+    primary: <>Last compile redone: {REDO_POINT_TEXT[str('point') ?? ''] ?? 'pages redone'}</>,
+    secondary: <span style={MONO_DIM}>{parts.filter(Boolean).join(' · ')}</span>,
+    action: session
+      ? <Link href={`/onboarding/progress?session_id=${encodeURIComponent(session)}`} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+      : null,
+    isError: false,
+  };
 }
 
 function renderLintComplete(row: FeedActivityRow): RowContent {
@@ -322,7 +598,8 @@ function renderLintComplete(row: FeedActivityRow): RowContent {
           `${c.stale} stale`,
           `${c.crossRefs} cross-ref${c.crossRefs !== 1 ? 's' : ''}`,
           c.deadProv > 0 && `${c.deadProv} dead prov`,
-          `${c.contradictions} contradiction${c.contradictions !== 1 ? 's' : ''}`,
+          // Passes since plan 3.6 look for none (the whole-wiki check does).
+          c.contradictions > 0 && `${c.contradictions} contradiction${c.contradictions !== 1 ? 's' : ''}`,
         ].filter(Boolean).join(' · ')}
       </span>
     )
@@ -338,9 +615,12 @@ function renderWikiImported(row: FeedActivityRow): RowContent {
   const { num } = makeGetters(row);
   const sources = num('source_count');
   const pages = num('page_count');
+  // Rows an old backup held for sources or pages it lacked (api/import).
+  const skipped = num('skipped_rows');
   const parts = [
     sources !== null && `${sources} source${sources !== 1 ? 's' : ''}`,
     pages !== null && `${pages} page${pages !== 1 ? 's' : ''}`,
+    skipped !== null && skipped > 0 && `${skipped} row${skipped !== 1 ? 's' : ''} left out: the backup lacked their sources or pages`,
   ].filter(Boolean);
   const secondary = parts.length > 0
     ? <span style={MONO_DIM}>{parts.join(' · ')}</span>
@@ -355,6 +635,12 @@ function renderCompileCancelled(row: FeedActivityRow): RowContent {
     {step ? `at step: ${step}` : 'before first step'}
   </span>;
   return { primary: <>Compile cancelled</>, secondary, action: null, isError: false };
+}
+
+function renderCompileRetried(row: FeedActivityRow): RowContent {
+  const { str } = makeGetters(row);
+  const secondary = <span style={MONO_DIM}>{str('message') ?? 'retry pressed'}</span>;
+  return { primary: <>Compile retried by you</>, secondary, action: null, isError: false };
 }
 
 function renderPendingDraftsCleaned(row: FeedActivityRow): RowContent {
@@ -447,6 +733,81 @@ function renderDraftQueuedForApproval(row: FeedActivityRow): RowContent {
   return { primary: <strong>{name}</strong>, secondary, action: null, isError: false };
 }
 
+function renderLabelsMerged(row: FeedActivityRow): RowContent {
+  // Written by the compile's 'labels' step (lib/compile/label-merge.ts).
+  const { d, num } = makeGetters(row);
+  const merged = num('merged') ?? 0;
+  const pages = num('drafts') ?? 0;
+  const shown = Array.isArray(d?.merges)
+    ? (d.merges as Array<{ label?: unknown; into?: unknown }>)
+        .filter((m) => typeof m.label === 'string' && typeof m.into === 'string')
+        .slice(0, 5)
+        .map((m) => `${m.label as string} → ${m.into as string}`)
+    : [];
+  const more = merged > shown.length && shown.length > 0 ? ` and ${merged - shown.length} more` : '';
+  return {
+    primary: <strong>{merged} duplicate {merged === 1 ? 'category' : 'categories'} merged</strong>,
+    secondary: (
+      <span style={MONO_DIM}>
+        {shown.length > 0 ? `${shown.join(', ')}${more} · ` : ''}
+        {pages} {pages === 1 ? 'page' : 'pages'} from this compile
+      </span>
+    ),
+    action: null,
+    isError: false,
+  };
+}
+
+const CLAIM_CHECK_STOP_TEXT: Record<string, string> = {
+  daily_cost_ceiling: "stopped: today's spending limit reached",
+  rate_limited: 'stopped: rate limited',
+  failures: 'stopped: 3 failed checks in a row',
+  stopped: 'stopped',
+};
+
+const CLAIM_KIND_TEXT: Record<string, string> = {
+  disputed: 'disputed',
+  changed: 'changed',
+  scope: 'different scope',
+  opinion: 'different opinions',
+};
+
+/**
+ * One row per claim check (lib/claim-check/run.ts): a compile's check of its
+ * new sources' claims, or a whole-wiki check run from Settings.
+ */
+function renderClaimCheckRun(row: FeedActivityRow): RowContent {
+  const { d, str, num } = makeGetters(row);
+  const wiki = str('found_by') === 'wiki_check';
+  const findings = num('findings') ?? 0;
+  const judged = num('judged') ?? 0;
+  const examples = Array.isArray(d?.examples)
+    ? (d.examples as Array<{ page_id?: unknown; page_title?: unknown; topic?: unknown; kind?: unknown }>).filter(
+        (e) => typeof e.page_id === 'string' && typeof e.page_title === 'string',
+      )
+    : [];
+  const shown = examples.map(
+    (e) => `${e.page_title as string}: ${typeof e.topic === 'string' ? e.topic : ''}${typeof e.kind === 'string' && CLAIM_KIND_TEXT[e.kind] ? ` (${CLAIM_KIND_TEXT[e.kind]})` : ''}`,
+  );
+  const stop = CLAIM_CHECK_STOP_TEXT[str('stopped') ?? ''] ?? null;
+  const parts = [`${judged} claim ${judged === 1 ? 'pair' : 'pairs'} checked`, ...shown, ...(stop ? [stop] : [])];
+  const first = examples[0]?.page_id as string | undefined;
+  return {
+    primary: (
+      <strong>
+        {wiki ? 'Wiki check' : 'Claim check'}: {findings} possible {findings === 1 ? 'disagreement' : 'disagreements'}
+      </strong>
+    ),
+    secondary: <span style={MONO_DIM}>{parts.join(' · ')}</span>,
+    action: first ? (
+      <Link href={`/wiki/${first}`} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+    ) : wiki ? (
+      <Link href="/settings#wiki-check" style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>View</Link>
+    ) : null,
+    isError: false,
+  };
+}
+
 // ── NEW render fns for Onboarding v2 Phase 1 events ────────────────────────
 
 function renderOnboardingStaged(row: FeedActivityRow): RowContent {
@@ -461,6 +822,23 @@ function renderOnboardingStaged(row: FeedActivityRow): RowContent {
     primary: <>{count} {label} staged</>,
     secondary,
     action: null,
+    isError: false,
+  };
+}
+
+function renderAgentSourcesAdded(row: FeedActivityRow): RowContent {
+  const { str, num } = makeGetters(row);
+  const count = num('count') ?? 0;
+  const client = str('client');
+  const session = str('session_id');
+  return {
+    primary: <>{client ?? 'An AI agent'} added {count} {count === 1 ? 'source' : 'sources'}</>,
+    secondary: <span style={MONO_DIM}>via MCP add_source</span>,
+    action: session ? (
+      <Link href={`/onboarding/progress?session_id=${encodeURIComponent(session)}`} style={{ ...LINK_STYLE, color: 'var(--fg-dim)' }}>
+        Progress
+      </Link>
+    ) : null,
     isError: false,
   };
 }
@@ -560,9 +938,18 @@ export const ACTIVITY_EVENTS = {
   extraction_complete:    { key: 'extraction_complete',    badge: { label: 'EXTRACTED',  tone: 'mint' as Tone }, render: renderExtractionComplete },
   extraction_failed:      { key: 'extraction_failed',      badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   resolution_complete:    { key: 'resolution_complete',    badge: { label: 'RESOLVED',   tone: 'mint' as Tone }, render: renderResolutionComplete },
+  resolution_pairs_unchecked: { key: 'resolution_pairs_unchecked', badge: { label: 'UNCHECKED', tone: 'dim' as Tone }, render: renderResolutionPairsUnchecked },
+  match_triage_failed:    { key: 'match_triage_failed',    badge: { label: 'UNCHECKED',  tone: 'dim'  as Tone }, render: renderMatchTriageFailed },
+  match_triage_rechecked: { key: 'match_triage_rechecked', badge: { label: 'RECHECKED',  tone: 'neut' as Tone }, render: renderMatchTriageRechecked },
+  aliases_suspended:      { key: 'aliases_suspended',      badge: { label: 'SET ASIDE',  tone: 'dim'  as Tone }, render: renderAliasesSuspended },
   draft_too_thin:         { key: 'draft_too_thin',         badge: { label: 'TOO THIN',   tone: 'dim'  as Tone }, render: renderDraftTooThin },
   draft_queued_for_approval: { key: 'draft_queued_for_approval', badge: { label: 'QUEUED', tone: 'dim' as Tone }, render: renderDraftQueuedForApproval },
+  labels_merged:          { key: 'labels_merged',          badge: { label: 'MERGED',     tone: 'neut' as Tone }, render: renderLabelsMerged },
   compile_cancelled:      { key: 'compile_cancelled',      badge: { label: 'CANCELLED',  tone: 'dim'  as Tone }, render: renderCompileCancelled },
+  compile_retried:        { key: 'compile_retried',        badge: { label: 'RETRYING',   tone: 'dim'  as Tone }, render: renderCompileRetried },
+  // A save that left a page alone because it changed after its draft was written.
+  compile_page_skipped:   { key: 'compile_page_skipped',   badge: { label: 'SKIPPED',    tone: 'dim'  as Tone }, render: renderPageAction('not saved: the page changed after this draft was written') },
+  compile_redo:           { key: 'compile_redo',           badge: { label: 'REDONE',     tone: 'neut' as Tone }, render: renderCompileRedo },
   compile_trigger_failed: { key: 'compile_trigger_failed', badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   compile_failed:         { key: 'compile_failed',         badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   // ── Sources ─────────────────────────────────────────────────────────────
@@ -576,8 +963,45 @@ export const ACTIVITY_EVENTS = {
   page_archived:          { key: 'page_archived',          badge: { label: 'ARCHIVED',   tone: 'dim'  as Tone }, render: renderPageArchived },
   page_recompiled:        { key: 'page_recompiled',        badge: { label: 'RECOMPILED', tone: 'neut' as Tone }, render: renderPageRecompiled },
   page_recompile_failed:  { key: 'page_recompile_failed',  badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderPageRecompileFailed },
+  // page_redrafted: a page rebuilt from its sources (internal name kept for existing rows).
+  page_redrafted:         { key: 'page_redrafted',         badge: { label: 'UPGRADED',   tone: 'neut' as Tone }, render: renderPageAction((str) => `updated to the ${str('draft_rules') ?? 'current'} writing rules`) },
+  page_redraft_failed:    { key: 'page_redraft_failed',    badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderPageRecompileFailed },
+  page_version_restored:  { key: 'page_version_restored',  badge: { label: 'RESTORED',   tone: 'dim'  as Tone }, render: renderPageAction('previous version restored') },
+  page_upgrade_run: {
+    key: 'page_upgrade_run',
+    badge: (row: FeedActivityRow) => {
+      const { str } = makeGetters(row);
+      const phase = str('phase');
+      if (phase === 'finished') return { label: 'UPGRADED', tone: 'mint' as Tone };
+      if (phase === 'stopped') return { label: 'STOPPED', tone: 'dim' as Tone };
+      return { label: 'UPGRADING', tone: 'neut' as Tone };
+    },
+    render: renderPageUpgradeRun,
+  },
+  wiki_repair: {
+    key: 'wiki_repair',
+    badge: (row: FeedActivityRow) => {
+      const { str } = makeGetters(row);
+      const phase = str('phase');
+      if (phase === 'finished') return { label: 'REPAIRED', tone: 'mint' as Tone };
+      if (phase === 'stopped') return { label: 'STOPPED', tone: 'dim' as Tone };
+      return { label: 'REPAIR', tone: 'neut' as Tone };
+    },
+    render: renderWikiRepair,
+  },
   page_provenance_updated: { key: 'page_provenance_updated', badge: { label: 'NOTED',    tone: 'dim'  as Tone }, render: renderPageProvenanceUpdated },
   page_contradiction_detected: { key: 'page_contradiction_detected', badge: { label: 'CONFLICT', tone: 'red' as Tone }, render: renderPageContradictionDetected },
+  page_dispute_recorded:  { key: 'page_dispute_recorded',  badge: { label: 'DISPUTE',    tone: 'red'  as Tone }, render: renderPageDisputeRecorded },
+  claim_check_run: {
+    key: 'claim_check_run',
+    badge: (row: FeedActivityRow) => {
+      const { num } = makeGetters(row);
+      return (num('findings') ?? 0) > 0
+        ? { label: 'DISAGREE', tone: 'red' as Tone }
+        : { label: 'CHECKED', tone: 'dim' as Tone };
+    },
+    render: renderClaimCheckRun,
+  },
   // ── Drafts ──────────────────────────────────────────────────────────────
   draft_approved:         { key: 'draft_approved',         badge: { label: 'APPROVED',   tone: 'mint' as Tone }, render: renderDraftApproved },
   draft_rejected:         { key: 'draft_rejected',         badge: { label: 'REJECTED',   tone: 'red'  as Tone }, render: renderDraftRejected },
@@ -591,6 +1015,7 @@ export const ACTIVITY_EVENTS = {
   onboarding_confirmed:   { key: 'onboarding_confirmed',   badge: { label: 'ONBOARDING', tone: 'dim'  as Tone }, render: renderOnboardingConfirmed },
   // ── Onboarding v2 Phase 1 (no prior renderer cases) ─────────────────────
   onboarding_staged:      { key: 'onboarding_staged',      badge: { label: 'STAGED',     tone: 'dim'  as Tone }, render: renderOnboardingStaged },
+  agent_sources_added:    { key: 'agent_sources_added',    badge: { label: 'AGENT',      tone: 'neut' as Tone }, render: renderAgentSourcesAdded },
   onboarding_blocked_urls_skipped: { key: 'onboarding_blocked_urls_skipped', badge: { label: 'SKIPPED', tone: 'dim' as Tone }, render: renderOnboardingBlockedUrlsSkipped },
   ingest_url_failed:      { key: 'ingest_url_failed',      badge: { label: 'URL FAIL',   tone: 'red'  as Tone }, render: renderIngestUrlFailed },
   ingest_file_failed:     { key: 'ingest_file_failed',     badge: { label: 'FILE FAIL',  tone: 'red'  as Tone }, render: renderIngestFileFailed },

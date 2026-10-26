@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from services.llm_client import (
     Contradiction,
@@ -31,6 +31,7 @@ from services.llm_client import (
     LLMCompileError,
     LLMExtractionResponse,
     LLMRateLimitedError,
+    cost_ceiling_detail,
     crossref_pages,
     draft_page,
     extract_source,
@@ -38,29 +39,22 @@ from services.llm_client import (
     lint_scan,
     triage_page_update,
 )
+from services.llm_models import LLMModel
 
 router = APIRouter(tags=["pipeline"])
 
 
-# Compile-steps share this Literal with chat.py's ChatModel. Kept local to
-# each router rather than extracting to a shared module since each router
-# has a small, independent scope. Default is Flash — historical hardcode
-# that every llm_client call site used before compile_model became a
-# setting.
-GeminiModel = Literal[
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "deepseek-v4-pro",
-    "deepseek-v4-flash",
-]
+# Allowlist shared with resolution.py (services/llm_models.py). The
+# "gemini-2.5-flash" field defaults below are the historical hardcode every
+# llm_client call site used before compile_model became a setting; Next.js
+# always sends compile_model, so they only matter for direct API calls.
 
 
 class LintScanRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     pages: list[str]  # list of "[page_id] title: summary" strings
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 class ExtractLLMRequest(BaseModel):
@@ -71,7 +65,7 @@ class ExtractLLMRequest(BaseModel):
     ner_output: dict   # type: ignore[type-arg]  # JSON from /extract/ner
     keyphrase_output: dict | None = None   # type: ignore[type-arg]
     tfidf_output: dict | None = None       # type: ignore[type-arg]
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 @router.post("/pipeline/extract-llm", response_model=LLMExtractionResponse)
@@ -97,7 +91,7 @@ def pipeline_extract_llm(req: ExtractLLMRequest) -> LLMExtractionResponse:
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -132,6 +126,28 @@ class SourceContent(BaseModel):
     source_id: str
     title: str
     markdown: str
+    # Short label such as "S1" the page should cite this source with. The
+    # app converts labels back to stored source ids after drafting.
+    citation_label: str | None = None
+    # This session's source: it goes into the prompt first and whole; older
+    # sources share what the prompt budget leaves (services/draft_budget.py).
+    is_new: bool = False
+    # The source's date (YYYY-MM-DD), so a draft can tell a claim that
+    # changed over time from a live disagreement (plan 3.1, D5): the
+    # publication date when the app knows it, else the day it was saved.
+    # Older apps send neither.
+    date: str | None = Field(default=None, max_length=40)
+    date_kind: Literal["published", "saved"] | None = None
+
+
+class EarlierSource(BaseModel):
+    """A source cited in the existing page content but not re-sent."""
+    model_config = ConfigDict(extra='forbid')
+
+    citation_label: str
+    title: str
+    date: str | None = Field(default=None, max_length=40)
+    date_kind: Literal["published", "saved"] | None = None
 
 
 class RelatedPage(BaseModel):
@@ -154,24 +170,39 @@ class DraftPageRequest(BaseModel):
     existing_page_titles: list[str] = []
     extraction_dossier: str = ""
     existing_categories: list[str] = []
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    earlier_sources: list[EarlierSource] = []
+    compile_model: LLMModel = "gemini-2.5-flash"
+
+
+class DraftSourceCut(BaseModel):
+    """A source the prompt budget left out (sent_chars 0) or shortened."""
+    model_config = ConfigDict(extra='forbid')
+
+    source_id: str
+    sent_chars: int
+    cut_chars: int
 
 
 class DraftPageResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     markdown: str
+    # Sources whose text or pre-extracted data the prompt carried; the
+    # commit records provenance for these only.
+    used_source_ids: list[str]
+    cut_sources: list[DraftSourceCut]
 
 
 @router.post("/pipeline/draft-page", response_model=DraftPageResponse)
 def pipeline_draft_page(req: DraftPageRequest) -> DraftPageResponse:
     """Draft a single wiki page from source content via Gemini.
 
-    Returns raw markdown including YAML frontmatter. Temperature=0.3 for
-    natural writing; thinking enabled for quality synthesis.
+    Returns raw markdown including YAML frontmatter, the sources the prompt
+    used and the ones its budget cut. Temperature=0.3 for natural writing;
+    thinking enabled for quality synthesis.
     """
     try:
-        markdown = draft_page(
+        result = draft_page(
             page_type=req.page_type,
             title=req.title,
             source_contents=[sc.model_dump() for sc in req.source_contents],
@@ -181,13 +212,21 @@ def pipeline_draft_page(req: DraftPageRequest) -> DraftPageResponse:
             existing_page_titles=req.existing_page_titles if req.existing_page_titles else None,
             extraction_dossier=req.extraction_dossier,
             existing_categories=req.existing_categories,
+            earlier_sources=[es.model_dump() for es in req.earlier_sources],
             model=req.compile_model,
         )
-        return DraftPageResponse(markdown=markdown)
+        return DraftPageResponse(
+            markdown=result.markdown,
+            used_source_ids=result.used_source_ids,
+            cut_sources=[
+                DraftSourceCut(source_id=c.source_id, sent_chars=c.sent_chars, cut_chars=c.cut_chars)
+                for c in result.cuts
+            ],
+        )
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -205,7 +244,7 @@ class CrossrefRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     pages: list[CrossrefPageInput]
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 @router.post("/pipeline/crossref", response_model=CrossrefResponse)
@@ -222,7 +261,7 @@ def pipeline_crossref(req: CrossrefRequest) -> CrossrefResponse:
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -239,7 +278,7 @@ class GenerateSchemaRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     pages: list[PageSummaryInput]
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 class GenerateSchemaResponse(BaseModel):
@@ -256,16 +295,20 @@ class GenerateSchemaResponse(BaseModel):
 class TriageRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
+    # The source's claims about the page's subject (evidence='claims'), or
+    # its text when its extraction has none (evidence='source_text').
     source_claims: str
     existing_page_summary: str
     page_title: str
-    compile_model: GeminiModel = "gemini-2.5-flash"
+    page_section: str = ""
+    evidence: Literal['claims', 'source_text'] = 'source_text'
+    compile_model: LLMModel = "gemini-2.5-flash"
 
 
 class TriageResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
-    decision: str  # 'update' | 'contradiction' | 'skip'
+    decision: Literal['update', 'contradiction', 'skip']
     reason: str
 
 
@@ -276,7 +319,8 @@ def pipeline_triage(req: TriageRequest) -> TriageResponse:
     Returns decision ('update'|'contradiction'|'skip') and a brief reason.
     HTTP 429 when rate limit bucket is full.
     HTTP 503 when daily cost ceiling is exceeded.
-    HTTP 500 when the LLM call fails or JSON parse fails.
+    HTTP 500 when the LLM call fails, JSON parse fails, or the model answers
+    with another decision (the app records a failed triage, never a skip).
     """
     try:
         result = triage_page_update(
@@ -284,11 +328,13 @@ def pipeline_triage(req: TriageRequest) -> TriageResponse:
             req.existing_page_summary,
             req.page_title,
             model=req.compile_model,
+            page_section=req.page_section,
+            evidence=req.evidence,
         )
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return TriageResponse(**result)
@@ -307,6 +353,6 @@ def pipeline_generate_schema(req: GenerateSchemaRequest) -> GenerateSchemaRespon
     except LLMRateLimitedError as e:
         raise HTTPException(status_code=429, detail="llm_rate_limited") from e
     except CostCeilingError as e:
-        raise HTTPException(status_code=503, detail="daily_cost_ceiling") from e
+        raise HTTPException(status_code=503, detail=cost_ceiling_detail(e)) from e
     except LLMCompileError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

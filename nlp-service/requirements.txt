@@ -5,6 +5,10 @@ uvicorn[standard]==0.52.4
 pydantic==2.13.4
 httpx==0.28.1
 markitdown[all]==0.1.7
+# The article's own text from a fetched web page: MarkItDown keeps the whole
+# page (site menu, newsletter box, related articles, footer), which a source
+# page now shows as it is. Local and fast (~0.1 s a page); no key, no cost.
+trafilatura==2.3.1
 # Promoted to a direct dep so routers/conversion.py can call
 # youtube-transcript-api WITHOUT going through MarkItDown for YouTube URLs.
 # Reason: MarkItDown's YouTubeConverter silently falls back to scraping the

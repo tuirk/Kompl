@@ -5,7 +5,9 @@
  * Two-tier cascade for each affected page:
  *   - 0 or 1 remaining sources → permanently delete the page
  *   - 2+ remaining, deleted source < min_source_chars → keep, append provenance note
- *   - 2+ remaining, deleted source ≥ min_source_chars → keep, recompile from remaining
+ *   - 2+ remaining, deleted source ≥ min_source_chars → keep, recompile from remaining;
+ *     if that rewrite fails (after one retry of a temporary failure), archive
+ *     the page until a rewrite succeeds (lib/page-hold.ts, issue #8)
  *
  *   The "short source" threshold is the same `min_source_chars` Setting the
  *   compile pipeline reads at plan time (plan/route.ts), so the UI is the
@@ -21,9 +23,13 @@
  *   per page on the wrong branch).
  *
  * INVARIANTS (do not break):
- *   1. getPagesBySourceId MUST be called BEFORE removeProvenanceForSource —
- *      the underlying SQL joins through provenance (db.ts:2150) and returns
- *      [] post-prune.
+ *   1. The source's provenance leaves each page only once that page is
+ *      handled (removeSourceFromPage; a rewrite removes it in its own
+ *      commit), and the source row goes last. getPagesBySourceId joins
+ *      through provenance, so if the delete stops halfway (an app restart
+ *      during its rewrites), deleting the source again finds the pages it
+ *      had not reached. A delete that pruned first and stopped left them
+ *      holding the material for good.
  *   2. entity_mentions and relationship_mentions reference source_id and are
  *      cleaned up by deleteSource. aliases reference page_id only — untouched
  *      here.
@@ -32,7 +38,9 @@
  *   4. In bulk context, batchSiblingIds names other sources being deleted in
  *      the same batch. Their provenance rows are subtracted from remainingCount
  *      so a page shared by N batch siblings gets deletePage'd once (by whichever
- *      sibling lands first), instead of N-1 wasted recompiles.
+ *      sibling lands first), instead of N-1 wasted recompiles. A page that
+ *      survives is rewritten without any batch sibling's text (invariant 5
+ *      means no sibling rewrites it again).
  *   5. In bulk context, bulkState.handledPages records the terminal outcome of
  *      each affected page on first encounter. Subsequent siblings that touch
  *      the same surviving page mirror the recorded outcome into their per-source
@@ -41,28 +49,43 @@
  *      deleted sibling. First-sibling-wins: if siblings would land in different
  *      branches (one short, one long), the order in dedupedIds decides; revisit
  *      if mixed-length bulks surface user-visible surprises.
+ *   6. No delete starts while a compile, the wiki repair or the page update
+ *      runs (sourceDeleteBlock): they write the same pages. A compile that
+ *      starts during a delete is guarded per page by the page lock and the
+ *      version token in recompilePage.
+ *   7. Deletes run one at a time (inSourceDeleteTurn; a bulk delete is one
+ *      turn): each decides from the sources a page has left, and a delete
+ *      running alongside would change them under it, e.g. rewrite a page
+ *      from a source another delete has not yet removed from it.
  */
 
 import path from 'node:path';
 import { promises as fsPromises } from 'fs';
-import zlib from 'node:zlib';
 
 import {
   DATA_ROOT,
   cleanupPendingPlansForDeletedSource,
   deletePage,
   deleteSource,
+  getDb,
   getMinSourceChars,
-  getPage,
   getPagesBySourceId,
   getProvenanceForPage,
+  getRunningCompileSession,
   getSource,
   logActivity,
+  readPageMarkdown,
   readRawMarkdown,
   removeProvenanceForSource,
+  removeSourceFromPage,
   setPageSourceCount,
 } from './db';
 import { recompilePage } from './recompile';
+import { withPageLock } from './redraft';
+import { commitPageRewrite, pageVersionToken } from './page-rewrite';
+import { REWRITE_RETRY_DELAY_MS, holdPage, isRetryableRewriteError, rewriteFailedReason } from './page-hold';
+import { isPageUpgradeRunning } from './page-upgrade-state';
+import { isWikiRepairRunning } from './wiki-repair/state';
 
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL ?? 'http://nlp-service:8000';
 const PAGES_DIR = path.join(DATA_ROOT, 'pages');
@@ -72,6 +95,8 @@ export interface SourceDeleteCounts {
   pages_rewritten: number;
   pages_archived: number;
   pages_noted: number;
+  /** Archived until a rewrite succeeds: the rewrite from the remaining sources failed. */
+  pages_hidden: number;
 }
 
 export type SourceDeleteResult =
@@ -79,10 +104,100 @@ export type SourceDeleteResult =
   | { status: 'not_found'; source_id: string }
   | { status: 'error'; source_id: string; error: string };
 
-type PageOutcome = 'deleted' | 'recompiled' | 'archived' | 'note_fallback';
+type PageOutcome = 'deleted' | 'recompiled' | 'archived' | 'note_fallback' | 'hidden';
 
 export interface BulkDeleteState {
   handledPages: Map<string, PageOutcome>;
+  /** A retry failed during this bulk: later pages are not retried (lib/page-hold.ts). */
+  retryFailed?: boolean;
+}
+
+export interface SourceDeleteBlock {
+  error_code: 'session_in_progress' | 'wiki_repair_in_progress' | 'page_upgrade_in_progress';
+  error: string;
+}
+
+/**
+ * 409 body for the delete routes while a compile, the wiki repair or the
+ * page update runs, or null. They rewrite the same pages as a delete does.
+ */
+export function sourceDeleteBlock(): SourceDeleteBlock | null {
+  if (getRunningCompileSession()) {
+    return {
+      error_code: 'session_in_progress',
+      error: 'A compile is running. Delete sources once it has finished, so the two don\'t rewrite the same pages.',
+    };
+  }
+  if (isWikiRepairRunning()) {
+    return {
+      error_code: 'wiki_repair_in_progress',
+      error: 'Kompl is repairing the wiki. Delete sources once the repair finishes, or stop it in Settings → Wiki health.',
+    };
+  }
+  if (isPageUpgradeRunning()) {
+    return {
+      error_code: 'page_upgrade_in_progress',
+      error: 'Kompl is updating pages. Delete sources once the update finishes, or stop it in Settings → Wiki health.',
+    };
+  }
+  return null;
+}
+
+// On globalThis so dev-server reloads share one queue.
+const deleteTurns: { tail: Promise<void> } = ((globalThis as { __komplSourceDeleteTurns?: { tail: Promise<void> } })
+  .__komplSourceDeleteTurns ??= { tail: Promise.resolve() });
+
+/**
+ * Run `fn` once no other source delete is running (invariant 7), in the
+ * order the deletes arrived. If a compile, the wiki repair or the page
+ * update has started by then, `fn` does not run and the 409 body is
+ * returned instead.
+ */
+export async function inSourceDeleteTurn<T>(
+  fn: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; blocked: SourceDeleteBlock }> {
+  const turn = deleteTurns.tail.then(async () => {
+    const blocked = sourceDeleteBlock();
+    if (blocked) return { ok: false as const, blocked };
+    return { ok: true as const, value: await fn() };
+  });
+  deleteTurns.tail = turn.then(
+    () => undefined,
+    () => undefined,
+  );
+  return turn;
+}
+
+/** A rewrite that failed, and how many times it was tried. */
+class RewriteFailure extends Error {
+  constructor(readonly error: unknown, readonly attempts: number) {
+    super(String(error));
+  }
+}
+
+/**
+ * recompilePage, tried once more after a temporary failure. Once a retry
+ * has failed during this delete, later pages are not retried: the outage is
+ * evident, and each retry would add its wait to the delete.
+ */
+async function recompileWithOneRetry(
+  pageId: string,
+  sourceId: string,
+  batchSiblingIds: ReadonlySet<string>,
+  retry: { retryFailed?: boolean },
+): Promise<{ outcome: 'rewritten' | 'archived' }> {
+  try {
+    return await recompilePage(pageId, sourceId, batchSiblingIds);
+  } catch (err) {
+    if (retry.retryFailed || !isRetryableRewriteError(err)) throw new RewriteFailure(err, 1);
+  }
+  await new Promise((resolve) => setTimeout(resolve, REWRITE_RETRY_DELAY_MS));
+  try {
+    return await recompilePage(pageId, sourceId, batchSiblingIds);
+  } catch (err) {
+    retry.retryFailed = true;
+    throw new RewriteFailure(err, 2);
+  }
 }
 
 export async function deleteOneSourceWithCascade(
@@ -100,10 +215,8 @@ export async function deleteOneSourceWithCascade(
     const minSourceChars = getMinSourceChars();
     const isShortSource = minSourceChars > 0 && sourceChars < minSourceChars;
 
-    // Invariant 1: enumerate BEFORE pruning provenance.
+    // Invariant 1: the source's provenance leaves each page as it is handled.
     const affectedPages = getPagesBySourceId(sourceId);
-
-    removeProvenanceForSource(sourceId);
 
     const planCleanup = cleanupPendingPlansForDeletedSource(sourceId);
     if (planCleanup.rewritten > 0 || planCleanup.deleted > 0) {
@@ -124,7 +237,9 @@ export async function deleteOneSourceWithCascade(
       pages_rewritten: 0,
       pages_archived: 0,
       pages_noted: 0,
+      pages_hidden: 0,
     };
+    const retry: { retryFailed?: boolean } = bulkState ?? {};
     const today = new Date().toISOString().split('T')[0];
 
     for (const page of affectedPages) {
@@ -147,20 +262,24 @@ export async function deleteOneSourceWithCascade(
           case 'note_fallback':
             counts.pages_noted++;
             break;
+          case 'hidden':
+            counts.pages_hidden++;
+            break;
         }
+        removeSourceFromPage(page.page_id, sourceId);
         continue;
       }
 
-      const remainingProvenance = getProvenanceForPage(page.page_id);
-      const remainingExcludingBatch = remainingProvenance.filter(
-        (p) => !batchSiblingIds.has(p.source_id),
-      );
-      const remainingCount = remainingExcludingBatch.length;
-      const siblingsInBatch = remainingProvenance.length - remainingCount;
+      // A source can hold several rows on a page; each remaining source counts once.
+      const remainingSourceIds = [
+        ...new Set(getProvenanceForPage(page.page_id).map((p) => p.source_id).filter((id) => id !== sourceId)),
+      ];
+      const remainingCount = remainingSourceIds.filter((id) => !batchSiblingIds.has(id)).length;
+      const siblingsInBatch = remainingSourceIds.length - remainingCount;
       const baseDetails = {
         page_id: page.page_id,
         title: page.title,
-        remaining_sources: remainingProvenance.length,
+        remaining_sources: remainingSourceIds.length,
         remaining_after_batch: remainingCount,
         siblings_in_batch: siblingsInBatch,
         ...(bulkId ? { bulk_id: bulkId } : {}),
@@ -169,7 +288,7 @@ export async function deleteOneSourceWithCascade(
       if (remainingCount <= 1) {
         const reason =
           remainingCount === 0
-            ? remainingProvenance.length === 0
+            ? remainingSourceIds.length === 0
               ? 'no_remaining_sources'
               : 'all_remaining_in_batch'
             : 'sole_remaining_source';
@@ -197,12 +316,11 @@ export async function deleteOneSourceWithCascade(
         counts.pages_deleted++;
         bulkState?.handledPages.set(page.page_id, 'deleted');
       } else if (isShortSource) {
-        const fullPage = getPage(page.page_id);
-        void addProvenanceNote(
-          fullPage?.content_path ?? null,
-          `Source "${source.title}" deleted on ${today}.`,
-        ).catch(() => {});
-        setPageSourceCount(page.page_id, remainingCount);
+        await addProvenanceNote(page.page_id, `Source "${source.title}" deleted on ${today}.`);
+        getDb().transaction(() => {
+          removeSourceFromPage(page.page_id, sourceId);
+          setPageSourceCount(page.page_id, remainingCount);
+        })();
         logActivity('page_provenance_updated', {
           source_id: sourceId,
           details: {
@@ -214,41 +332,54 @@ export async function deleteOneSourceWithCascade(
         counts.pages_noted++;
         bulkState?.handledPages.set(page.page_id, 'note_fallback');
       } else {
+        let outcome: 'rewritten' | 'archived';
         try {
-          const { outcome } = await recompilePage(page.page_id, sourceId);
-          setPageSourceCount(page.page_id, remainingCount);
-          if (outcome === 'archived') {
-            logActivity('page_archived', {
-              source_id: sourceId,
-              details: { ...baseDetails, reason: 'source_deleted', source_chars: sourceChars },
-            });
-            counts.pages_archived++;
-            bulkState?.handledPages.set(page.page_id, 'archived');
-          } else {
-            logActivity('page_recompiled', {
-              source_id: sourceId,
-              details: { ...baseDetails, reason: 'source_deleted', source_chars: sourceChars },
-            });
-            counts.pages_rewritten++;
-            bulkState?.handledPages.set(page.page_id, 'recompiled');
-          }
+          ({ outcome } = await recompileWithOneRetry(page.page_id, sourceId, batchSiblingIds, retry));
         } catch (err) {
-          const fullPage = getPage(page.page_id);
-          void addProvenanceNote(
-            fullPage?.content_path ?? null,
-            `Source "${source.title}" deleted on ${today}. Rewrite failed.`,
-          ).catch(() => {});
-          setPageSourceCount(page.page_id, remainingCount);
+          // The page still holds the deleted source's material: archive it
+          // until a rewrite succeeds, with the reason it shows under
+          // "Show archived" (lib/page-hold.ts).
+          const failure = err instanceof RewriteFailure ? err : new RewriteFailure(err, 1);
+          getDb().transaction(() => {
+            holdPage(page.page_id, rewriteFailedReason(source.title, today));
+            removeSourceFromPage(page.page_id, sourceId);
+            setPageSourceCount(page.page_id, remainingCount);
+          })();
           logActivity('page_recompile_failed', {
             source_id: sourceId,
-            details: { ...baseDetails, error: String(err) },
+            details: { ...baseDetails, error: String(failure.error), attempts: failure.attempts, hidden: true },
           });
-          counts.pages_noted++;
-          bulkState?.handledPages.set(page.page_id, 'note_fallback');
+          counts.pages_hidden++;
+          bulkState?.handledPages.set(page.page_id, 'hidden');
+          continue;
+        }
+        // A rewrite removed the rows in its own commit; a page found with
+        // no sources left (outcome 'archived') still has them.
+        getDb().transaction(() => {
+          removeSourceFromPage(page.page_id, sourceId);
+          setPageSourceCount(page.page_id, remainingCount);
+        })();
+        if (outcome === 'archived') {
+          logActivity('page_archived', {
+            source_id: sourceId,
+            details: { ...baseDetails, reason: 'source_deleted', source_chars: sourceChars },
+          });
+          counts.pages_archived++;
+          bulkState?.handledPages.set(page.page_id, 'archived');
+        } else {
+          logActivity('page_recompiled', {
+            source_id: sourceId,
+            details: { ...baseDetails, reason: 'source_deleted', source_chars: sourceChars },
+          });
+          counts.pages_rewritten++;
+          bulkState?.handledPages.set(page.page_id, 'recompiled');
         }
       }
     }
 
+    // Rows that reached a page after it was listed (none, normally), so the
+    // source row can go.
+    removeProvenanceForSource(sourceId);
     const rawFilePath = deleteSource(sourceId);
     if (rawFilePath) void fsPromises.unlink(rawFilePath).catch(() => {});
 
@@ -287,14 +418,25 @@ async function deleteFromVectorStore(pageId: string): Promise<void> {
   });
 }
 
-async function addProvenanceNote(contentPath: string | null, note: string): Promise<void> {
-  if (!contentPath) return;
-  const filePath = path.join(PAGES_DIR, path.basename(contentPath));
+/**
+ * Append the note through the normal page write (lib/page-rewrite.ts): the
+ * outbox, the version token and nlp-service's atomic file write, which
+ * archives the text it replaces. Rewriting the live .md.gz in place could
+ * leave a half-written file that made the page fail to open.
+ */
+async function addProvenanceNote(pageId: string, note: string): Promise<void> {
   try {
-    const compressed = await fsPromises.readFile(filePath);
-    const md = zlib.gunzipSync(compressed).toString('utf-8');
-    const updated = md + `\n\n> _${note}_\n`;
-    await fsPromises.writeFile(filePath, zlib.gzipSync(updated));
+    await withPageLock(pageId, async () => {
+      const md = readPageMarkdown(pageId);
+      if (md === null) return;
+      await commitPageRewrite({
+        pageId,
+        markdown: md + `\n\n> _${note}_\n`,
+        expectedToken: pageVersionToken(pageId),
+        draftRules: null,
+        activity: null,
+      });
+    });
   } catch {
     // Non-fatal: page still intact, note just won't appear.
   }

@@ -1,31 +1,24 @@
 'use client';
 
 /**
- * /wiki/search — Full-text search against pages_fts (FTS5).
- * Client component: search-as-you-type via /api/pages/search.
- * Seeds from `?q=` so TopNav / header "See all" does not force retyping.
+ * /wiki/search — hybrid search: keyword and meaning matches together, so
+ * plain-language questions find the right page (lib/search-client.ts).
+ * Client component: search-as-you-type; a newer query cancels the one in
+ * flight. Seeds from `?q=` so TopNav / header "See all" does not force
+ * retyping.
  */
 
 import Link from 'next/link';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import type { PageRow } from '../../../lib/db';
+import { createSearch, debounce, type SearchHit } from '../../../lib/search-client';
 import WikiPageHeader from '../../../components/WikiPageHeader';
 import { PAGE_TYPE_VAR } from '../../../lib/page-type-palette';
 import { stripWikilinkBrackets } from '../../../lib/wikilink-render';
+import { highlightParts } from '../../../lib/search-highlight';
 
-interface SearchResult {
-  items: PageRow[];
-  count: number;
-}
-
-function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number): T {
-  let timer: ReturnType<typeof setTimeout>;
-  return ((...args: Parameters<T>) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  }) as T;
-}
+/** The search API's default page size: a full list may have more behind it. */
+const RESULT_LIMIT = 20;
 
 /** Default export wraps the searchParams-dependent body in Suspense for Next prerender. */
 export default function WikiSearchPage() {
@@ -47,33 +40,50 @@ function WikiSearchInner() {
   const searchParams = useSearchParams();
   const initialQ = (searchParams.get('q') ?? '').trim();
   const [query, setQuery] = useState(initialQ);
-  const [results, setResults] = useState<PageRow[]>([]);
+  // The query the shown results belong to, so marking matched words never
+  // runs ahead of a search still waiting on the typing pause.
+  const [resultQuery, setResultQuery] = useState('');
+  const [results, setResults] = useState<SearchHit[]>([]);
   const [loading, setLoading] = useState(!!initialQ);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const search = useCallback(
+  // One runner for this box: a newer query cancels the one still in flight.
+  // Lazy state keeps the runner and its debouncer for the component's life.
+  const [runSearch] = useState(() => createSearch());
+  const [search] = useState(() =>
     debounce(async (q: string) => {
-      if (!q.trim()) {
-        setResults([]);
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
       try {
-        const res = await fetch(`/api/pages/search?q=${encodeURIComponent(q)}`);
-        if (!res.ok) throw new Error(`search failed: ${res.status}`);
-        const data = (await res.json()) as SearchResult;
-        setResults(data.items);
+        const items = await runSearch(q);
+        // Replaced by a newer search, which ends the loading state, or by an
+        // emptied box, which already did.
+        if (items === null) return;
+        setResults(items);
+        setResultQuery(q);
         setError(null);
+        setLoading(false);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'search error');
-      } finally {
         setLoading(false);
       }
-    }, 250),
-    []
+    }, 250)
   );
+
+  // Empty box: drop the search waiting on the pause and the one in flight,
+  // so neither fills the page afterwards.
+  const clearSearch = useCallback(() => {
+    search.cancel();
+    runSearch.cancel();
+    setResults([]);
+    setError(null);
+    setLoading(false);
+  }, [search, runSearch]);
+
+  // Leaving the page drops them too.
+  useEffect(() => () => {
+    search.cancel();
+    runSearch.cancel();
+  }, [search, runSearch]);
 
   // Seed from URL on mount and whenever `?q=` changes (TopNav push).
   useEffect(() => {
@@ -83,17 +93,20 @@ function WikiSearchInner() {
       setLoading(true);
       search(q);
     } else {
-      setResults([]);
-      setLoading(false);
+      clearSearch();
     }
     inputRef.current?.focus();
-  }, [searchParams, search]);
+  }, [searchParams, search, clearSearch]);
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const q = e.target.value;
     setQuery(q);
-    setLoading(!!q.trim());
-    search(q);
+    if (q.trim()) {
+      setLoading(true);
+      search(q);
+    } else {
+      clearSearch();
+    }
   }
 
   return (
@@ -117,11 +130,23 @@ function WikiSearchInner() {
         <p style={{ color: 'var(--fg-muted)', fontSize: 14 }}>Searching…</p>
       )}
 
-      {!loading && query && results.length === 0 && (
-        <p style={{ color: 'var(--fg-muted)', fontSize: 14 }}>
-          No pages found for &ldquo;{query}&rdquo;.
-        </p>
-      )}
+      <div role="status" aria-live="polite">
+        {!loading && !error && query && results.length === 0 && (
+          <div style={{ fontSize: 14 }}>
+            <p style={{ margin: '0 0 0.35rem', color: 'var(--fg-secondary)' }}>
+              No pages match &ldquo;{query}&rdquo;.
+            </p>
+            <p style={{ margin: 0, color: 'var(--fg-muted)' }}>
+              Your wiki has nothing on this yet. Try other words, or add a source about it.
+            </p>
+          </div>
+        )}
+        {!loading && !error && query && results.length > 0 && (
+          <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 0.75rem' }}>
+            {resultCountLabel(results.length)}
+          </p>
+        )}
+      </div>
 
       {results.map((page) => (
         <Link
@@ -148,7 +173,9 @@ function WikiSearchInner() {
                 flexShrink: 0,
               }}
             />
-            <span style={{ fontWeight: 500, fontSize: 14 }}>{page.title}</span>
+            <span style={{ fontWeight: 500, fontSize: 14 }}>
+              <Highlighted text={page.title} query={resultQuery} />
+            </span>
             {page.category && (
               <span
                 style={{
@@ -175,11 +202,41 @@ function WikiSearchInner() {
                 overflow: 'hidden',
               }}
             >
-              {stripWikilinkBrackets(page.summary)}
+              <Highlighted text={stripWikilinkBrackets(page.summary)} query={resultQuery} />
             </p>
           )}
         </Link>
       ))}
     </main>
+  );
+}
+
+function resultCountLabel(n: number): string {
+  if (n >= RESULT_LIMIT) return `Best ${n} matching pages`;
+  return n === 1 ? '1 matching page' : `${n} matching pages`;
+}
+
+/** Text with the query's words marked (lib/search-highlight.ts). */
+function Highlighted({ text, query }: { text: string; query: string }) {
+  return (
+    <>
+      {highlightParts(text, query).map((part, i) =>
+        part.match ? (
+          <mark
+            key={i}
+            style={{
+              background: 'rgba(var(--accent-rgb), 0.18)',
+              color: 'var(--fg)',
+              borderRadius: 2,
+              padding: '0 1px',
+            }}
+          >
+            {part.text}
+          </mark>
+        ) : (
+          part.text
+        )
+      )}
+    </>
   );
 }

@@ -13,6 +13,8 @@ interface WikiLintResultsProps {
   result: LintResult | null;
   raw?: Record<string, unknown> | null;
   running: boolean;
+  /** When the shown result was taken (settings last_lint_at); null when unknown. */
+  ranAt?: string | null;
 }
 
 interface LintCheckSectionProps {
@@ -121,7 +123,7 @@ const linkStyle: React.CSSProperties = {
   textDecoration: 'none',
 };
 
-export default function WikiLintResults({ result, raw, running }: WikiLintResultsProps) {
+export default function WikiLintResults({ result, raw, running, ranAt = null }: WikiLintResultsProps) {
   if (running) {
     return (
       <div
@@ -154,8 +156,14 @@ export default function WikiLintResults({ result, raw, running }: WikiLintResult
         }}
       >
         Last run
+        {ranAt && (
+          <>
+            {' · '}
+            <LocalDatetime iso={ranAt} />
+          </>
+        )}
         {result.run_duration_ms > 0 && (
-          <span style={{ marginLeft: 8 }}>({result.run_duration_ms}ms)</span>
+          <span style={{ marginLeft: 8 }}>{`(${result.run_duration_ms} ms)`}</span>
         )}
       </div>
 
@@ -194,30 +202,21 @@ export default function WikiLintResults({ result, raw, running }: WikiLintResult
         </ul>
       </LintCheckSection>
 
-      <LintCheckSection
-        label="Contradictions"
-        count={counts.contradictions}
-        legacyHint={legacyCountHint(counts.contradictions, result.contradictions.length)}
-        variant="issue"
-        defaultOpen={counts.contradictions > 0}
-      >
-        <ul style={{ margin: 0, paddingLeft: '1.1rem', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {result.contradictions.map((c, i) => (
-            <li key={`${c.page_a_id}-${c.page_b_id}-${i}`}>
-              <Link href={`/wiki/${c.page_a_id}`} style={linkStyle}>
-                {c.page_a_title}
-              </Link>
-              <span style={{ color: 'var(--fg-dim)' }}> ↔ </span>
-              <Link href={`/wiki/${c.page_b_id}`} style={linkStyle}>
-                {c.page_b_title}
-              </Link>
-              <span style={{ fontFamily: 'var(--font-body)', fontSize: '0.85rem', color: 'var(--fg-muted)' }}>
-                : {c.claim}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </LintCheckSection>
+      {/* This check no longer looks for contradictions: the Disagreements
+          check does. A result saved before that change still holds its old
+          pairs; they stay stored but are not shown, since they are stale
+          and the Disagreements check is where they are kept up to date. */}
+      {counts.contradictions > 0 && (
+        <div
+          style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-dim)', margin: '0 0 0.65rem' }}
+        >
+          Contradictions are no longer part of this check. See{' '}
+          <a href="#wiki-check" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>
+            Disagreements between sources
+          </a>
+          .
+        </div>
+      )}
 
       <div
         style={{

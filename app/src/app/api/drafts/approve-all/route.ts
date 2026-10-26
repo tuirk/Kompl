@@ -3,12 +3,15 @@
  *
  * Bulk-approve every draft currently in 'pending_approval'. Optional
  * { session_id } body filters to a single compile session — recommended
- * default for OFF-mode usage so chat-save-draft drafts from older sessions
- * are not swept up accidentally.
+ * default for OFF-mode usage so drafts from older sessions (including legacy
+ * chat-save-draft drafts from before chat was retired) are not swept up
+ * accidentally.
  *
  * Each plan is committed via commitSinglePlan (same path as /approve).
  * Per-plan failures are isolated; the bulk loop continues. Returns aggregate
- * { approved, failed, errors[] }. Single-user scale: ~20 plans × ~200ms ≈ 4s.
+ * { approved, failed, errors[] }; a draft refused because its page changed
+ * since it was written carries the message to show (and stays pending).
+ * Single-user scale: ~20 plans × ~200ms ≈ 4s.
  */
 
 import { NextResponse } from 'next/server';
@@ -47,7 +50,7 @@ export async function POST(request: Request) {
 
   let approved = 0;
   let failed = 0;
-  const errors: Array<{ plan_id: string; error: string }> = [];
+  const errors: Array<{ plan_id: string; error: string; message?: string }> = [];
 
   for (const { plan_id } of planIds) {
     const result = await commitSinglePlan(plan_id);
@@ -55,7 +58,7 @@ export async function POST(request: Request) {
       approved++;
     } else {
       failed++;
-      errors.push({ plan_id, error: result.error });
+      errors.push(result.message ? { plan_id, error: result.error, message: result.message } : { plan_id, error: result.error });
     }
   }
 

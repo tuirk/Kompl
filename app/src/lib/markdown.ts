@@ -24,6 +24,11 @@ function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
 }
 
+/** The id the renderer gives a heading whose raw markdown source is `raw`. */
+export function headingAnchor(raw: string): string {
+  return slugify(raw);
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -52,6 +57,11 @@ renderer.link = (href: string, title: string | null | undefined, text: string) =
   const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
   return `<a href="${escapeHtml(safe)}"${titleAttr}>${text}</a>`;
 };
+// Code blocks scroll sideways, so keyboard users must be able to focus them
+// (WCAG 2.1.1); the group role gives the focus stop a name to announce.
+const baseCode = renderer.code.bind(renderer);
+renderer.code = (code: string, infostring: string | undefined, escaped: boolean) =>
+  baseCode(code, infostring, escaped).replace(/^<pre>/, '<pre tabindex="0" role="group" aria-label="Code block">');
 renderer.image = (href: string, title: string | null | undefined, text: string) => {
   const safe = safeMarkdownHref(href);
   // Unsafe src → render the alt text only.
@@ -175,4 +185,14 @@ export function stripSourcesSection(md: string): string {
  */
 export function stripLeadingContentHeading(md: string): string {
   return md.replace(/^\s*##\s+Content\s*\n/, '');
+}
+
+/**
+ * Page body as the wiki shows it: frontmatter removed and legacy draft
+ * wrappers healed (body-only code fence, duplicate `## Sources`, leading
+ * `## Content`). Shared by the page view and file exports so citation
+ * numbers match.
+ */
+export function healedPageBody(raw: string): string {
+  return stripLeadingContentHeading(stripSourcesSection(stripWrappingFence(stripFrontmatter(raw))));
 }

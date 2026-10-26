@@ -3,11 +3,12 @@
  *
  * Validates the next-PR scope after Flag 2:
  *   - Rule 6 now acts on match.decision = 'update' (emit update plan) and
- *     'contradiction' (log rich activity row; no plan). 'skip' unchanged.
- *   - Rule 4 canonicalises rel.from_entity / rel.to via the resolver's
- *     aliases BEFORE the entityNameSet check — a relationship like
- *     "gpt 4 competes_with Claude" now lands on the "Claude vs GPT-4" page
- *     instead of being silently dropped.
+ *     'contradiction' (log rich activity row and emit an update plan, plan
+ *     3.5). One update plan per page takes every such source. 'skip'
+ *     unchanged.
+ *   - Rule 4 reads the relation rows resolve rebuilt on canonical names,
+ *     so a relationship written "gpt 4 competes_with Claude" lands on the
+ *     "Claude vs GPT-4" page instead of being silently dropped.
  *   - getPageContradictions(pageId) reads activity_log rows and returns
  *     the parsed details in newest-first order — the data the sidebar
  *     /api/wiki/[page_id]/contradictions route consumes.
@@ -110,8 +111,8 @@ describe("Rule 6 — match.decision='update' emits update plan", () => {
   });
 });
 
-describe("Rule 6 — match.decision='contradiction' writes rich activity row, no plan", () => {
-  it('logs page_contradiction_detected with full payload and emits no plan', async () => {
+describe("Rule 6 — match.decision='contradiction' plans an update and writes the activity row", () => {
+  it('logs page_contradiction_detected with full payload and plans an update of the page with the source', async () => {
     handle = setupTestDb();
     const { db } = handle;
     const session_id = 'sess-contradict';
@@ -149,11 +150,14 @@ describe("Rule 6 — match.decision='contradiction' writes rich activity row, no
     expect(resp.status).toBe(200);
     const data = (await resp.json()) as PlanResponse;
 
-    // No plan emitted for this pair.
+    // One update plan carries the source, so the draft can write the
+    // disagreement into the page; the page keeps its type.
     const anyForPair = data.pages.filter(
       (p) => p.existing_page_id === pageId && p.source_ids.includes(sourceId)
     );
-    expect(anyForPair).toHaveLength(0);
+    expect(anyForPair).toEqual([
+      expect.objectContaining({ title: 'GPT-4', page_type: 'entity', action: 'update', source_ids: [sourceId] }),
+    ]);
 
     // Activity row written with the full details shape the sidebar relies on.
     const row = db
@@ -172,6 +176,73 @@ describe("Rule 6 — match.decision='contradiction' writes rich activity row, no
     expect(d.reason).toBe('source claims 32k context; page says 128k');
     expect(d.session_id).toBe(session_id);
     expect(typeof d.detected_at).toBe('string');
+
+    // And it is a possible disagreement in the record, keyed on the new source.
+    const found = db
+      .prepare(`SELECT found_by, kind, status, source_b, reason FROM disagreements WHERE page_id = ?`)
+      .all(pageId);
+    expect(found).toEqual([
+      { found_by: 'triage', kind: 'contradiction', status: 'possible', source_b: sourceId, reason: 'source claims 32k context; page says 128k' },
+    ]);
+  });
+});
+
+describe('Rule 6 — one update plan per page', () => {
+  const extracted = (session_id: string, source_id: string, entities: string[]) => {
+    seedSource(handle!.db, { source_id, onboarding_session_id: session_id, compile_status: 'extracted', raw_markdown: 'x'.repeat(600) });
+    seedExtraction(handle!.db, {
+      source_id,
+      llm_output: { entities: entities.map((name) => ({ name, type: 'PRODUCT' })), concepts: [], relationships: [] },
+    });
+  };
+  const verdictFor = (source_id: string, decision: string): MatchEntry => ({
+    source_id,
+    page_id: 'gpt4-page',
+    page_title: 'GPT-4',
+    decision,
+    reason: 'r',
+  });
+
+  it('a contradiction joins the update Rule 2 already plans for the page', async () => {
+    handle = setupTestDb();
+    const session_id = 'sess-join';
+    seedPage(handle.db, { page_id: 'gpt4-page', title: 'GPT-4', page_type: 'entity' });
+    extracted(session_id, 's-1', ['GPT-4']);
+    extracted(session_id, 's-2', ['GPT-4']);
+    extracted(session_id, 's-3', []);
+    const canonical_entities: ResolvedGroup[] = [
+      { canonical: 'GPT-4', type: 'PRODUCT', aliases: [], source_ids: ['s-1', 's-2'], method: 'existing_page_title' },
+    ];
+
+    const resp = await planPOST(
+      planRequest({ session_id, canonical_entities, matches: [verdictFor('s-3', 'contradiction')] }),
+    );
+    const data = (await resp.json()) as PlanResponse;
+
+    const forPage = data.pages.filter((p) => p.existing_page_id === 'gpt4-page');
+    expect(forPage).toHaveLength(1);
+    expect([...forPage[0].source_ids].sort()).toEqual(['s-1', 's-2', 's-3']);
+  });
+
+  it('an update and a contradiction from two sources make one plan with both', async () => {
+    handle = setupTestDb();
+    const session_id = 'sess-two';
+    seedPage(handle.db, { page_id: 'gpt4-page', title: 'GPT-4', page_type: 'concept' });
+    extracted(session_id, 's-a', []);
+    extracted(session_id, 's-b', []);
+
+    const resp = await planPOST(
+      planRequest({
+        session_id,
+        canonical_entities: [],
+        matches: [verdictFor('s-a', 'update'), verdictFor('s-b', 'contradiction')],
+      }),
+    );
+    const data = (await resp.json()) as PlanResponse;
+
+    expect(data.pages.filter((p) => p.existing_page_id === 'gpt4-page')).toEqual([
+      expect.objectContaining({ action: 'update', page_type: 'concept', source_ids: ['s-a', 's-b'] }),
+    ]);
   });
 });
 
@@ -281,7 +352,7 @@ describe("Rule 6 — match.decision='skip' unchanged", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Rule 4 — non-canonical relationship endpoint survives filter', () => {
-  it('canonicalises rel.from_entity via canonicalEntities.aliases and emits comparison plan', async () => {
+  it('reads the canonical names resolve left on the relation rows and emits comparison plan', async () => {
     handle = setupTestDb();
     const { db } = handle;
     const session_id = 'sess-rel';
@@ -306,18 +377,18 @@ describe('Rule 4 — non-canonical relationship endpoint survives filter', () =>
           ],
           concepts: [],
           relationships: [
-            // Variant spelling on from_entity — exercises the in-route canonicalize.
+            // Variant spelling on from_entity; resolve renames the row below.
             { from_entity: 'gpt 4', to: 'Claude', type: 'competes_with', description: '' },
           ],
         },
       });
     }
 
-    // Simulate what normalizeSessionMentionsToCanonical does in production
-    // after resolve mints the alias "gpt 4" → "GPT-4": rewrite the
-    // relationship_mentions rows to carry the canonical spelling. The
-    // seedExtraction test helper writes raw spellings; production's resolve
-    // step canonicalises them before plan runs.
+    // Simulate what resolve's mention rebuild does in production after it
+    // groups "gpt 4" under "GPT-4": the relationship_mentions rows carry the
+    // canonical spelling. The seedExtraction test helper writes raw
+    // spellings; production's resolve step canonicalises them before plan
+    // runs.
     db.prepare(
       `UPDATE relationship_mentions
           SET from_canonical = 'GPT-4'
@@ -330,9 +401,7 @@ describe('Rule 4 — non-canonical relationship endpoint survives filter', () =>
     ).run();
 
     // canonicalEntities mirror what the resolver would hand us: GPT-4 with
-    // 'gpt 4' as a known alias. This is what exercises the Rule 4 fix —
-    // Rule 4 reads the RAW llm.relationships ("gpt 4") and must canonicalise
-    // via the aliases[] field before the entityNameSet filter.
+    // 'gpt 4' as a known alias.
     const canonical_entities: ResolvedGroup[] = [
       {
         canonical: 'GPT-4',
@@ -362,7 +431,7 @@ describe('Rule 4 — non-canonical relationship endpoint survives filter', () =>
 });
 
 describe('Rule 4 — endpoint not in canonicalEntities is still filtered out', () => {
-  it('regression guard — entityNameSet check still works post-canonicalize', async () => {
+  it('regression guard — an end that is no resolved subject drops the pair', async () => {
     handle = setupTestDb();
     const { db } = handle;
     const session_id = 'sess-rel-filter';

@@ -75,23 +75,67 @@ class TestFuzzyExistingPageTitles:
         assert g["canonical"] == "GPT-4"
         assert g["method"] == "existing_page_title"
 
-    def test_type_mismatch_rejects_page_title_binding(self, resolution_client):
-        """A CONCEPT entity must not bind to an 'entity' page type."""
+    def test_exact_title_binds_across_page_kinds(self, resolution_client):
+        """A name that is an existing page's title binds to it whatever its kind.
+
+        2026-10-17, session e55c740b: "APCA" was an entity page; a source typed
+        "APCA" as CONCEPT, the kind check refused the anchor, and the session
+        LLM renamed it to "APCA contrast algorithm" — a duplicate page.
+        """
         body = {
             "entities": [
-                {"name": "Transformer Architecture", "type": "CONCEPT", "source_id": "src1", "context": ""}
+                {"name": "apca", "type": "CONCEPT", "source_id": "src1", "context": ""}
             ],
             "existing_aliases": [],
+            "existing_page_titles": [{"title": "APCA", "page_type": "entity"}],
+        }
+        resp = resolution_client.post("/resolve/fuzzy", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["resolved"]) == 1
+        g = data["resolved"][0]
+        assert g["canonical"] == "APCA"
+        assert g["method"] == "existing_page_title"
+        assert data["unresolved"] == []
+
+    def test_fuzzy_title_match_stays_type_gated(self, resolution_client):
+        """Near-spellings of a page title still need a compatible kind."""
+        body = {
+            "entities": [
+                {"name": "GPT 4", "type": "CONCEPT", "source_id": "src1", "context": ""}
+            ],
+            "existing_aliases": [],
+            "existing_page_titles": [{"title": "GPT-4", "page_type": "entity"}],
+        }
+        resp = resolution_client.post("/resolve/fuzzy", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["resolved"] == []
+        assert len(data["unresolved"]) == 1
+
+    def test_page_title_beats_alias_pointing_elsewhere(self, resolution_client):
+        """An alias row must not send a page's own title to another canonical.
+
+        Session e55c740b (2026-10-17) left the row "APCA" → "APCA contrast algorithm";
+        alias-first lookup then routed every later "APCA" to the duplicate.
+        """
+        body = {
+            "entities": [
+                {"name": "APCA", "type": "CONCEPT", "source_id": "src1", "context": ""}
+            ],
+            "existing_aliases": [{"alias": "APCA", "canonical": "APCA contrast algorithm"}],
             "existing_page_titles": [
-                {"title": "Transformer Architecture", "page_type": "entity"}  # wrong page_type
+                {"title": "APCA", "page_type": "concept"},
+                {"title": "APCA contrast algorithm", "page_type": "concept"},
             ],
         }
         resp = resolution_client.post("/resolve/fuzzy", json=body)
         assert resp.status_code == 200
         data = resp.json()
-        # Falls through to unresolved — no cross-session binding happens
-        assert data["resolved"] == []
-        assert len(data["unresolved"]) == 1
+        assert len(data["resolved"]) == 1
+        g = data["resolved"][0]
+        assert g["canonical"] == "APCA"
+        assert g["method"] == "existing_page_title"
 
     def test_concept_binds_to_concept_page(self, resolution_client):
         body = {
@@ -113,8 +157,8 @@ class TestFuzzyExistingPageTitles:
         assert len(data["resolved"]) + len(data["unresolved"]) == 1
 
     def test_existing_alias_still_wins_when_both_present(self, resolution_client):
-        """If an entity matches BOTH an existing_alias and existing_page_title,
-        the alias resolution happens first (unchanged behaviour)."""
+        """A name that is not itself a page title still resolves through its
+        alias, ahead of any fuzzy page-title match."""
         body = {
             "entities": [
                 {"name": "ML", "type": "CONCEPT", "source_id": "src1", "context": ""}
@@ -248,7 +292,8 @@ def patched_embed_model(monkeypatch):
 class TestEmbeddingExistingPageTitles:
     def test_high_similarity_anchors_to_page_title(self, resolution_client, patched_embed_model):
         """cosine > 0.9 → emit ResolvedGroup with canonical=page title, method=existing_page_title.
-        The session entity is NOT dropped into the ambiguous bucket.
+        The session entity is NOT dropped into the ambiguous bucket. (It needs
+        a context and the same content words: test_resolution_layer2_gate.py.)
         """
         # Two vectors that are nearly identical (sim ≈ 1.0):
         patched_embed_model({
@@ -257,7 +302,7 @@ class TestEmbeddingExistingPageTitles:
         })
         body = {
             "entities": [
-                {"name": "GPT 4", "type": "PRODUCT", "source_id": "src_b", "context": ""}
+                {"name": "GPT 4", "type": "PRODUCT", "source_id": "src_b", "context": "OpenAI's model"}
             ],
             "existing_page_titles": [{"title": "GPT-4", "page_type": "entity"}],
         }
@@ -319,8 +364,11 @@ class TestEmbeddingExistingPageTitles:
         assert len(data["unresolved"]) == 1
         assert data["unresolved"][0]["name"] == "Banana"
 
-    def test_type_mismatch_skips_page_title(self, resolution_client, patched_embed_model):
-        """Entity of type PERSON should not anchor to a concept page even if embeddings are identical."""
+    def test_type_mismatch_never_anchors_to_page_title(self, resolution_client, patched_embed_model):
+        """Entity of type PERSON never anchors to a concept page, even with identical
+        embeddings; a concept and a named thing can still be one topic, so Layer 3
+        is asked (concept vs ORG/PRODUCT/PERSON/LOCATION/EVENT is compared by name).
+        """
         patched_embed_model({
             "Transformer": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         })
@@ -333,10 +381,10 @@ class TestEmbeddingExistingPageTitles:
         resp = resolution_client.post("/resolve/embedding", json=body)
         assert resp.status_code == 200
         data = resp.json()
-        # Type mismatch → no anchoring, no ambiguous pair → entity falls through
         assert data["resolved"] == []
-        assert data["ambiguous"] == []
-        assert len(data["unresolved"]) == 1
+        assert len(data["ambiguous"]) == 1
+        assert data["ambiguous"][0]["entity_b"]["source_id"] == "__existing_page__"
+        assert data["unresolved"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +416,7 @@ class TestDisambiguateConceptPromptRouting:
                     "entity_a": {"name": "Transformer Architecture", "type": "CONCEPT", "source_id": "s1", "context": ""},
                     "entity_b": {"name": "Self-Attention", "type": "CONCEPT", "source_id": "s2", "context": ""},
                     "similarity": 0.85,
+                    "name_similarity": 0.85,
                 }
             ]
         }
@@ -394,6 +443,7 @@ class TestDisambiguateConceptPromptRouting:
                     "entity_a": {"name": "OpenAI", "type": "ORG", "source_id": "s1", "context": ""},
                     "entity_b": {"name": "Open AI", "type": "ORG", "source_id": "s2", "context": ""},
                     "similarity": 0.85,
+                    "name_similarity": 0.85,
                 }
             ]
         }
@@ -421,11 +471,13 @@ class TestDisambiguateConceptPromptRouting:
                     "entity_a": {"name": "Transformer Architecture", "type": "CONCEPT", "source_id": "s1", "context": ""},
                     "entity_b": {"name": "Self-Attention", "type": "CONCEPT", "source_id": "s2", "context": ""},
                     "similarity": 0.85,
+                    "name_similarity": 0.85,
                 },
                 {
                     "entity_a": {"name": "OpenAI", "type": "ORG", "source_id": "s1", "context": ""},
                     "entity_b": {"name": "Open AI", "type": "ORG", "source_id": "s2", "context": ""},
                     "similarity": 0.85,
+                    "name_similarity": 0.85,
                 },
             ]
         }
@@ -449,11 +501,21 @@ class TestDisambiguatePairCap:
 
     @staticmethod
     def _make_pairs(n: int) -> list[dict[str, Any]]:
+        # Letters only: names that differ by a number ("Amb0A" / "Amb0B") are
+        # answered 'different' without an LLM call, before the cap applies.
+        def letters(i: int) -> str:
+            out, i = "", i + 1
+            while i:
+                i, r = divmod(i - 1, 26)
+                out = chr(65 + r) + out
+            return out
+
         return [
             {
-                "entity_a": {"name": f"Amb{i}A", "type": "ORG", "source_id": "s1", "context": ""},
-                "entity_b": {"name": f"Amb{i}B", "type": "ORG", "source_id": "s2", "context": ""},
+                "entity_a": {"name": f"Amb{letters(i)}A", "type": "ORG", "source_id": "s1", "context": ""},
+                "entity_b": {"name": f"Amb{letters(i)}B", "type": "ORG", "source_id": "s2", "context": ""},
                 "similarity": 0.8,
+                "name_similarity": 0.8,
             }
             for i in range(n)
         ]

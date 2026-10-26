@@ -1,13 +1,15 @@
 /**
- * Comparison page threshold — compile/plan/route.ts:280-332.
+ * Comparison page threshold — compile/plan/route.ts Rule 4.
  *
- * A 'comparison' page is only emitted when the SAME relationship pair appears
- * in COMPARISON_SOURCE_THRESHOLD (3) distinct sources. This prevents one
+ * A 'comparison' page is only emitted when the SAME pair appears in
+ * COMPARISON_SOURCE_THRESHOLD (3) distinct sources (competes_with and
+ * contradicts together; plan-comparison-pairs.test.ts). This prevents one
  * article's opinion ("X competes with Y") from spawning a synthesis page;
  * three independent sources noting the same rivalry is the bar.
  *
- * Both entities must also be in the resolved canonical_entities list — random
- * relationship targets that didn't survive entity resolution are filtered out.
+ * Both ends must also be resolved subjects (canonical_entities or
+ * canonical_concepts) — random relationship targets that didn't survive
+ * resolution are filtered out.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -167,6 +169,28 @@ describe('Comparison page threshold', () => {
     const body = (await res.json()) as PlanResponse;
 
     expect(body.stats.comparison_pages).toBe(1);
+  });
+
+  it("reads a variant spelling like 'competes-with' as competes_with", async () => {
+    handle = setupTestDb();
+    const session_id = 'sess-cmp-variant';
+    // The helper builds source ids from the type, and ids are lowercase only.
+    const ids = seedSourcesWithRelationship(handle.db, session_id, 3, {
+      from_entity: 'Alpha',
+      to: 'Beta',
+      type: 'competes-with',
+    });
+
+    const res = await planPOST(
+      planRequestWith(session_id, [
+        { ...ALPHA, source_ids: ids },
+        { ...BETA, source_ids: ids },
+      ])
+    );
+    const body = (await res.json()) as PlanResponse;
+
+    expect(body.stats.comparison_pages).toBe(1);
+    expect(body.pages.find((p) => p.page_type === 'comparison')?.title).toBe('Alpha vs Beta');
   });
 
   it("collapses 'A vs B' and 'B vs A' into one bucket", async () => {

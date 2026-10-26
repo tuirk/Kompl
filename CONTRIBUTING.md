@@ -33,6 +33,9 @@ cd app && npm test
 # CLI tests (Jest)
 cd cli && npm test
 
+# MCP server tests (type-check + Vitest)
+cd mcp-server && npm test
+
 # NLP service tests (pytest)
 cd nlp-service && python -m pytest
 ```
@@ -41,9 +44,15 @@ The integration test harness (`bash scripts/integration-test.sh`) is **destructi
 
 ### Building the MCP server
 
+Setup, `kompl update` and `kompl start` build it. By hand:
+
 ```bash
-cd mcp-server && npm install && npm run build
+cd mcp-server && npm ci && npm run build
 ```
+
+`node scripts/mcp-smoke.mjs` then launches the built server the way an agent
+does and calls every tool against your running Kompl (integration stage 28
+runs the same check). It changes nothing.
 
 ## Commit style
 
