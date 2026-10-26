@@ -1,11 +1,10 @@
 version: 2
 
-# Routine minor and patch bumps are skipped: version updates are opened only
-# for new major versions. A minor or patch bump that fixes a vulnerability
-# still arrives as a security update, because `update-types` ignores never
-# block security updates. Checks run monthly; security updates arrive as soon
-# as GitHub knows of the vulnerability, whatever the schedule. Each entry
-# repeats the rule (no YAML anchors).
+# Security updates only. open-pull-requests-limit: 0 turns version updates
+# off (GitHub docs: security updates are not affected by it), so Dependabot
+# opens a PR only when a dependency has a known vulnerability. Major upgrades
+# are done on purpose, not on a schedule. The minor/patch ignores stay as a
+# second guard. Each entry repeats the rule (no YAML anchors).
 updates:
   - package-ecosystem: npm
     directory: /app
@@ -13,7 +12,7 @@ updates:
       interval: monthly
       time: "09:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-minor", "version-update:semver-patch"]
@@ -29,7 +28,7 @@ updates:
       interval: monthly
       time: "09:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-minor", "version-update:semver-patch"]
@@ -42,7 +41,7 @@ updates:
       interval: monthly
       time: "09:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-minor", "version-update:semver-patch"]
@@ -55,7 +54,7 @@ updates:
       interval: monthly
       time: "09:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-minor", "version-update:semver-patch"]
@@ -77,7 +76,7 @@ updates:
       interval: monthly
       time: "09:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-minor", "version-update:semver-patch"]
@@ -91,7 +90,7 @@ updates:
       interval: monthly
       time: "09:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0
 
   - package-ecosystem: docker
     directory: /app
@@ -99,5 +98,5 @@ updates:
       interval: monthly
       time: "09:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0
 
