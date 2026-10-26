@@ -48,7 +48,12 @@ describe('controls carry an accessible name', () => {
       expect(html).toContain(`aria-checked="${value}"`);
       expect(html).not.toContain('aria-label');
       expect(html).not.toContain('aria-pressed');
-      const text = html.replace(/<[^>]+>/g, '').replace(/<!-- -->/g, '');
+      // Tags stripped until none is left, so no tag survives a strip.
+      let text = html;
+      for (let prev = ''; prev !== text; ) {
+        prev = text;
+        text = text.replace(/<[^>]*>/g, '');
+      }
       expect(text).toContain('Auto-approve wiki changes');
       expect(text).toContain(value ? 'ON' : 'OFF');
     }

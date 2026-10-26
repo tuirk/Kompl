@@ -299,7 +299,12 @@ describe('ConnectionsPanel', () => {
     expect(html).toContain('May be outdated');
     expect(html).toContain('href="/source/s-ro"');
     expect(html).toContain('says otherwise');
-    const text = html.replace(/<[^>]+>/g, '').replace(/<!-- -->/g, '');
+    // Tags stripped until none is left, so no tag survives a strip.
+    let text = html;
+    for (let prev = ''; prev !== text; ) {
+      prev = text;
+      text = text.replace(/<[^>]*>/g, '');
+    }
     expect(text).toContain('Sources disagree on direction: DailyArt says “Part of”; BFI, Other and 1 more say “Includes”.');
     expect(html).toContain('href="/source/s-bfi"');
   });

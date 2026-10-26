@@ -72,8 +72,8 @@ function buildMarkdown(links: SavedLinkRow[]): string {
     const dateStr = link.date_saved ?? link.date_attempted.slice(0, 10);
     // Short readable reason, never the raw JSON envelope (nested Firecrawl
     // errors used to show as `{"detail":{"detail":"firecrawl_error",…`).
-    // Asterisks are escaped so the reason can't break the italics.
-    const reason = ingestFailureReason(link.error).replace(/\*/g, '\\*');
+    // Backslashes and asterisks are escaped so the reason can't break the italics.
+    const reason = ingestFailureReason(link.error).replace(/[\\*]/g, '\\$&');
     const tries = link.attempts > 1 ? ` · failed ${link.attempts} times` : '';
     lines.push(`- [${title}](${link.source_url}) — ${dateStr} · *${reason}*${tries}`);
     if (meta.description) {

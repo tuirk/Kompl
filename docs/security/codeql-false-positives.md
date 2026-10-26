@@ -48,6 +48,8 @@ The TypeScript equivalent is **`assertSafeId(id, kind)`** at
 | 22 | db.ts:224 | Same as #21 |
 | 24 | _safe_paths.py:43 | `relative_to` (48) — three lines later, in same function |
 | 25 | _safe_paths.py:45 | Same as #24 |
+| PR #291 | file_store.py:124, :129 (×3) | `write_page` runs `validate_page_id` (98) before `_write_page_locked`; `current_path` and `previous_path` come from `safe_join(_PAGES_DIR, …)` (105, 128) |
+| PR #291 | published_date.py:234, :245 | `from_file(path)` is called only from `convert_file_path` with `p = safe_join(_DATA_ROOT, req.file_path)` (conversion.py:1045) |
 | 26 | file_store.py:70 | `validate_page_id` (60) + `safe_join` (63) |
 
 **Special case — `_safe_paths.py:43, 45`:** these are inside the sanitizer
