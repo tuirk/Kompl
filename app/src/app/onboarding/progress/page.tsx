@@ -15,6 +15,7 @@ import { Suspense, useEffect, useRef, useState } from 'react';
 import { toUserMessage } from '@/lib/service-errors';
 import { COMPILE_STEPS } from '@/lib/compile-steps';
 import { formatTime } from '@/lib/date-format';
+import RedoPanel from './RedoPanel';
 
 const POLL_INTERVAL_MS    = 2000;
 const PATIENCE_TIMEOUT_MS = 15 * 60 * 1000;
@@ -446,16 +447,21 @@ function ProgressPageInner() {
         setRetrying(false);
         return;
       }
-      isActiveRef.current = true;
-      setProgress(null);
       setRetrying(false);
-      setQueuedRetry(false);
-      void fetchProgress();
-      intervalRef.current = setInterval(fetchProgress, POLL_INTERVAL_MS);
+      resumePolling();
     } catch {
       setActionError('Retry failed — network error.');
       setRetrying(false);
     }
+  }
+
+  // The session runs again (Retry, or a redo started from RedoPanel): poll it.
+  function resumePolling() {
+    isActiveRef.current = true;
+    setProgress(null);
+    setQueuedRetry(false);
+    void fetchProgress();
+    intervalRef.current = setInterval(fetchProgress, POLL_INTERVAL_MS);
   }
 
   async function handleRetryFailed() {
@@ -1224,6 +1230,9 @@ function ProgressPageInner() {
             {actionError}
           </pre>
         )}
+
+        {/* Redo part of the most recent compile (GitHub #140) */}
+        {sessionId && <RedoPanel sessionId={sessionId} terminal={isTerminal} onStarted={resumePolling} />}
       </div>
 
       {/* Background hint — below the card, always visible while in-flight */}
