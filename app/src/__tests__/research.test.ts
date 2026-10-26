@@ -61,9 +61,17 @@ describe('research pack', () => {
       [a, b]
     );
     stubVectors();
+    // Full: one line each with shared source numbers; a change gives only
+    // what holds now, so the stale claim never reaches the agent (2026-10-26).
+    const full = (await research('topic=block%20reward&detail=full')).body;
+    expect(full.pages.find((p: { page_id: string }) => p.page_id === 'reward').disputes).toEqual([
+      'Changed: Reward size; now: 50 coins as of 2009[1]; 3.125 coins as of 2024[2].',
+      'Disputed: First halving date; 2012[1] or 2013[2].',
+    ]);
+    // Brief: the headings; read_page has the rest.
     const { body } = await research('topic=block%20reward');
     const reward = body.pages.find((p: { page_id: string }) => p.page_id === 'reward');
-    expect(reward.disputes).toEqual(['Reward size (changed over time)', 'First halving date']);
+    expect(reward.disputes).toEqual(['Changed: Reward size', 'Disputed: First halving date']);
   });
 
   it('numbers sources once across pages and keeps only the cited lines about the topic', async () => {
@@ -99,7 +107,7 @@ describe('research pack', () => {
     expect(pow.key_lines).toHaveLength(3);
     expect(pow.key_lines.join(' ')).not.toContain('1993');
     expect(pow.key_lines.join(' ')).not.toContain('uncited');
-    expect(pow.disputes).toEqual(['Energy figures']);
+    expect(pow.disputes).toEqual(['Disputed: Energy figures']);
     expect(pow.path).toBe('/wiki/pow');
 
     // One list for the whole pack: the paper keeps its number on both pages.
@@ -153,10 +161,14 @@ describe('research pack', () => {
     const { body } = await research('topic=mining%20energy');
     const byId = Object.fromEntries(body.pages.map((p: { page_id: string }) => [p.page_id, p]));
     const noteN = body.sources.find((s: { source_id: string }) => s.source_id === note).n;
-    expect(byId.note.key_lines[0]).toBe(`Mining uses a lot of energy[${noteN}].`);
+    // Topic pages come first (film run 2026-10-26), so the concept page quotes
+    // the shared line and the source page, credited to its own source, its other line.
+    expect(body.pages.map((p: { page_id: string }) => p.page_id).indexOf('pow')).toBeLessThan(
+      body.pages.map((p: { page_id: string }) => p.page_id).indexOf('note'),
+    );
+    expect(byId.pow.key_lines.join(' ')).toContain('Mining uses a lot of energy');
+    expect(byId.note.key_lines[0]).toBe(`Unrelated sentence here[${noteN}].`);
     expect(byId.note.summary).toBe('Uses PoW for mining.');
-    // Quoted on the note already: the concept page quotes its other line instead.
-    expect(byId.pow.key_lines.join(' ')).not.toContain('energy');
     expect(body.missing_pages).toEqual([]);
   });
 
@@ -175,5 +187,25 @@ describe('key lines', () => {
     );
     const lines = keyLines(scan.markdown, ['mining', 'energy'], 5).map((l) => placeholdersToSharedText(l, scan.order, []));
     expect(lines).toEqual(['Mining is costly[1].', 'Energy use grows[1].']);
+  });
+});
+
+describe('packPages', () => {
+  it('takes topic pages first, at most the given source pages, and sources again only when topic pages run out', async () => {
+    const { packPages } = await import('../lib/research');
+    const hit = (id: string, page_type: string) => ({ id, page_type });
+    const ranked = [hit('s1', 'source-summary'), hit('s2', 'source-summary'), hit('t1', 'concept'),
+      hit('s3', 'original-source'), hit('t2', 'entity'), hit('t3', 'concept')];
+    expect(packPages(ranked, 4, 2).map((h) => h.id)).toEqual(['t1', 't2', 's1', 's2']);
+    expect(packPages(ranked, 5, 1).map((h) => h.id)).toEqual(['t1', 't2', 't3', 's1', 's2']);
+  });
+});
+
+describe('lastSentence', () => {
+  it('gives the newer claim a Changed section ends with', async () => {
+    const { lastSentence } = await import('../lib/research');
+    expect(lastSentence('The draft referenced APCA[^a]. A 2022 article called it the candidate[^b]. APCA was removed in 2023[^c].'))
+      .toBe('APCA was removed in 2023[^c].');
+    expect(lastSentence('About 550,000 as of 2010[^a]; about 600,000 as of 2024[^b].')).toBe('About 550,000 as of 2010[^a]; about 600,000 as of 2024[^b].');
   });
 });

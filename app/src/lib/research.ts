@@ -23,9 +23,16 @@ import { stripWikilinks } from './wikilink-syntax';
 
 /** Pages in the pack and key lines per page, by detail level. */
 const DETAIL = {
-  brief: { pages: 5, lines: 3 },
-  full: { pages: 10, lines: 6 },
+  brief: { pages: 5, lines: 3, sourcePages: 1 },
+  full: { pages: 10, lines: 6, sourcePages: 2 },
 } as const;
+/**
+ * Matches looked at per pack page. A source page holds its whole source, so
+ * on a long topic it matches more words than the wiki's own topic pages and
+ * filled 6 of 10 places (film run 2026-10-26: Contrast ratio ranked 15th,
+ * APCA 24th); the pack takes topic pages first from a wider pool.
+ */
+const POOL_PER_PAGE = 3;
 export type ResearchDetail = keyof typeof DETAIL;
 
 /** Further matching pages named (not quoted) after the pack. */
@@ -97,8 +104,9 @@ export interface ResearchPack {
 
 export async function researchTopic(topic: string, detail: ResearchDetail): Promise<ResearchPack> {
   const size = DETAIL[detail];
-  const { items, degraded } = await hybridSearch(topic, { limit: size.pages + MORE_PAGES });
-  const chosen = items.slice(0, size.pages);
+  const { items, degraded } = await hybridSearch(topic, { limit: size.pages * POOL_PER_PAGE + MORE_PAGES });
+  const chosen = packPages(items, size.pages, size.sourcePages);
+  const left = items.filter((hit) => !chosen.includes(hit));
   const terms = topicTerms(topic).map((t) => t.toLowerCase());
   const sourceTitles = getSourceTitleSet();
   const provenance = sourcesByPage(chosen.map((p) => p.page_id));
@@ -127,8 +135,17 @@ export async function researchTopic(topic: string, detail: ResearchDetail): Prom
       summary: hit.summary === null ? null : stripWikilinks(hit.summary),
       last_updated: hit.last_updated,
       key_lines: lines,
-      // A claim a later source superseded says so; MCP lists these as "Disputed here".
-      disputes: findPageDisputes(body).map((d) => (d.kind === 'changed' ? `${d.topic} (changed over time)` : d.topic)),
+      // MCP lists these as "Disputed here". One line each, so an agent sees
+      // what holds now without the stale claim filling its context: a change
+      // gives only its newer claim (the section's last sentence), a dispute
+      // its sides; read_page has the rest. A brief pack gives the headings.
+      disputes: findPageDisputes(body).map((d) => {
+        const head = d.kind === 'changed' ? `Changed: ${d.topic}` : `Disputed: ${d.topic}`;
+        const text = detail === 'full' ? sectionText(scan.markdown, d.headingIndex) : '';
+        if (!text) return head;
+        const said = d.kind === 'changed' ? `now: ${lastSentence(text)}` : text;
+        return `${head}; ${placeholdersToSharedText(clipCited(stripWikilinks(said), MAX_LINE_CHARS), scan.order, shared)}`;
+      }),
       thin: SYNTHESIZED_PAGE_TYPES.has(hit.page_type) && sources.length === 1,
     };
   });
@@ -171,7 +188,7 @@ export async function researchTopic(topic: string, detail: ResearchDetail): Prom
     pages,
     sources: numberedSources(shared),
     missing_pages: missing,
-    more_pages: items.slice(size.pages).map(({ page_id, title, page_type }) => ({ page_id, title, page_type })),
+    more_pages: left.slice(0, MORE_PAGES).map(({ page_id, title, page_type }) => ({ page_id, title, page_type })),
     connections,
   };
 }
@@ -270,6 +287,48 @@ function numberedSources(ids: string[]): ResearchSource[] {
       date_ingested: row?.date_ingested ?? null,
     };
   });
+}
+
+/**
+ * The pack's pages: the wiki's topic pages first, in search order, with at
+ * most `sourcePages` source pages, and source pages again only when topic
+ * pages run out.
+ */
+export function packPages<T extends { page_type: string }>(items: T[], pages: number, sourcePages: number): T[] {
+  const topic = items.filter((hit) => !SOURCE_PAGE_TYPES.has(hit.page_type));
+  const source = items.filter((hit) => SOURCE_PAGE_TYPES.has(hit.page_type));
+  const sources = source.slice(0, Math.min(sourcePages, pages));
+  const picked = [...topic.slice(0, pages - sources.length), ...sources];
+  for (const hit of [...topic, ...source]) if (picked.length < pages && !picked.includes(hit)) picked.push(hit);
+  return picked;
+}
+
+/**
+ * The prose of the section under the page's `headingIndex`-th ## or ###
+ * heading (lib/page-disputes.ts counts them the same way), up to the next
+ * heading; '' for another level or none.
+ */
+export function sectionText(markdown: string, headingIndex: number): string {
+  if (headingIndex < 0) return '';
+  const lines = markdown.split('\n');
+  let seen = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^#{2,3}\s/.test(lines[i])) continue;
+    if (++seen !== headingIndex) continue;
+    const out: string[] = [];
+    for (const line of lines.slice(i + 1)) {
+      if (/^#{1,6}\s/.test(line)) break;
+      if (line.trim()) out.push(line.trim().replace(/^[-*]\s+/, ''));
+    }
+    return out.join(' ');
+  }
+  return '';
+}
+
+/** A section's last sentence: in a Changed section, the newer claim. */
+export function lastSentence(text: string): string {
+  const sentences = text.split(/(?<=[.!?])\s+(?=[\p{Lu}\p{N}“"‘'(])/u);
+  return sentences[sentences.length - 1];
 }
 
 function escapeRegExp(text: string): string {
