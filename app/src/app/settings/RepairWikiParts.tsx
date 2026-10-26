@@ -46,7 +46,7 @@ export const STOP_TEXT: Record<string, string> = {
   error: 'something unexpected went wrong',
 };
 
-/** What a run will do: the six steps, with this wiki's numbers. */
+/** What a run will do: the eight steps, with this wiki's numbers. */
 export function PlanSteps({ plan }: { plan: NonNullable<RepairOverview['plan']> }) {
   return (
     <ol style={LIST}>
@@ -62,6 +62,16 @@ export function PlanSteps({ plan }: { plan: NonNullable<RepairOverview['plan']> 
         {plan.link_pages_high > 0
           ? `Fix links that go to the wrong page because of a name pair that is no longer used, on ${between(plan.link_pages_low, plan.link_pages_high, 'page')}. The words stay; the link goes, or points to the page with exactly that name. This needs no AI. The previous version of each page is kept.`
           : 'No link goes to the wrong page.'}
+      </li>
+      <li>
+        {plan.sense_pages > 0
+          ? `Turn ${plural(plan.sense_links, 'link')} on ${plural(plan.sense_pages, 'page')} back into plain words where a common word was linked as a name (a medical "vertigo" linked to the film Vertigo). Only where the page's own sources never write the word with a capital. This needs no AI. The previous version of each page is kept.`
+          : 'No common word is linked as a name.'}
+      </li>
+      <li>
+        {plan.title_sources > 0
+          ? `Put ${plural(plan.title_sources, 'source title')} on one line (stray line breaks and spaces removed). Only the source's title changes, not the page written from it.`
+          : 'Source titles are already clean.'}
       </li>
       <li>
         {plan.pages_high > 0
@@ -97,6 +107,8 @@ const STEP_LABEL: Record<string, string> = {
   aliases: 'Ask the AI about doubtful name pairs',
   mentions: 'Give each source to the right pages',
   links: 'Fix links that go to the wrong page',
+  senses: 'Unlink common words linked as names',
+  titles: 'Clean up source titles',
   pages: 'Rewrite the pages whose sources changed',
   labels: 'Merge categories that mean the same thing',
 };
@@ -114,6 +126,13 @@ function stepNote(run: RepairRunView, step: string): string {
     const fixed = l.links > 0 ? `${plural(l.links, 'link')} fixed on ${plural(l.pages, 'page')}` : 'none needed fixing';
     return l.missed > 0 ? `${fixed} · ${plural(l.missed, 'page')} left for the next repair` : fixed;
   }
+  if (step === 'senses') {
+    const l = run.senses;
+    if (!l) return '';
+    const fixed = l.links > 0 ? `${plural(l.links, 'link')} turned back into words on ${plural(l.pages, 'page')}` : 'none found';
+    return l.missed > 0 ? `${fixed} · ${plural(l.missed, 'page')} left for the next repair` : fixed;
+  }
+  if (step === 'titles') return run.titles ? `${plural(run.titles.sources, 'title')} cleaned` : '';
   if (step === 'pages') {
     const p = run.pages;
     return p.total > 0 ? `${p.done} of ${p.total} · ${p.rebuilt} rewritten${p.skipped ? ` · ${p.skipped} left as they were` : ''}${p.failed ? ` · ${p.failed} failed` : ''}` : '';
@@ -121,7 +140,7 @@ function stepNote(run: RepairRunView, step: string): string {
   return run.labels ? `${plural(run.labels.merged, 'category', 'categories')} merged on ${plural(run.labels.pages, 'page')}` : '';
 }
 
-/** The six steps with what each has done so far. */
+/** The eight steps with what each has done so far. */
 export function RunSteps({ run }: { run: RepairRunView }) {
   return (
     <ol style={LIST}>

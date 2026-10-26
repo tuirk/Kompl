@@ -12,8 +12,8 @@
 import { getSetting, setSetting } from '../db';
 import { WIKI_REPAIR_FLAG, WIKI_REPAIR_STATE_KEY } from './limits';
 
-export type RepairStep = 'backup' | 'aliases' | 'mentions' | 'links' | 'pages' | 'labels';
-export const REPAIR_STEPS: readonly RepairStep[] = ['backup', 'aliases', 'mentions', 'links', 'pages', 'labels'];
+export type RepairStep = 'backup' | 'aliases' | 'mentions' | 'links' | 'senses' | 'titles' | 'pages' | 'labels';
+export const REPAIR_STEPS: readonly RepairStep[] = ['backup', 'aliases', 'mentions', 'links', 'senses', 'titles', 'pages', 'labels'];
 
 export type RepairStopReason =
   | 'user'
@@ -60,6 +60,10 @@ export interface RepairRun {
   mentions: { sources: number; pages: number } | null;
   /** Links through unused name matches corrected; absent in a record saved before this step existed. */
   links?: { pages: number; links: number; missed: number } | null;
+  /** Links to the wrong sense of a word turned back into words; absent in an older record. */
+  senses?: { pages: number; links: number; missed: number } | null;
+  /** Source titles put on one line; absent in an older record. */
+  titles?: { sources: number } | null;
   pages: {
     total: number;
     done: number;

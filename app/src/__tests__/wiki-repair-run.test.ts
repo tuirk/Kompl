@@ -87,7 +87,7 @@ describe('a full run', () => {
     await runToEnd();
     const run = readSavedRun()!;
     expect(run.status).toBe('finished');
-    expect(run.steps_done).toEqual(['backup', 'aliases', 'mentions', 'links', 'pages', 'labels']);
+    expect(run.steps_done).toEqual(['backup', 'aliases', 'mentions', 'links', 'senses', 'titles', 'pages', 'labels']);
 
     // 1. The backup is on the data volume and is a kompl backup.
     const file = path.join(DATA_ROOT, REPAIR_BACKUP_DIR, run.backup!.file);
@@ -129,7 +129,7 @@ describe('a full run', () => {
     expect(nlp.writes.filter((w) => w === EF)).toHaveLength(2);
 
     // One activity row per step and one for the end; no per-page rows.
-    expect(repairRows().map((r) => r.step ?? r.phase)).toEqual(['backup', 'aliases', 'mentions', 'links', 'pages', 'labels', 'finished']);
+    expect(repairRows().map((r) => r.step ?? r.phase)).toEqual(['backup', 'aliases', 'mentions', 'links', 'senses', 'titles', 'pages', 'labels', 'finished']);
     expect(repairRows().at(-1)!.phase).toBe('finished');
     const types = handle!.db.prepare("SELECT DISTINCT action_type FROM activity_log").all() as Array<{ action_type: string }>;
     expect(types.map((t) => t.action_type)).toEqual(['wiki_repair']);
@@ -212,7 +212,7 @@ describe('all or none', () => {
     await runToEnd();
     const run = readSavedRun()!;
     expect(run).toMatchObject({ status: 'stopped', stop_reason: 'daily_cost_ceiling', step: 'pages' });
-    expect(run.steps_done).toEqual(['backup', 'aliases', 'mentions', 'links']);
+    expect(run.steps_done).toEqual(['backup', 'aliases', 'mentions', 'links', 'senses', 'titles']);
     expect(run.pages.rebuilt).toBe(1);
     expect(run.pending_pages.map((p) => p.page_id)).toEqual([EF]);
     expect(nlp.labelBodies).toHaveLength(0);
@@ -253,7 +253,7 @@ describe('steps that stop or leave work', () => {
       status: 'stopped',
       stop_reason: 'daily_cost_ceiling',
       step: 'labels',
-      steps_done: ['backup', 'aliases', 'mentions', 'links', 'pages'],
+      steps_done: ['backup', 'aliases', 'mentions', 'links', 'senses', 'titles', 'pages'],
     });
     expect(handle!.db.prepare('SELECT category FROM pages WHERE page_id = ?').get(EF)).toEqual({ category: 'Crypto' });
   });

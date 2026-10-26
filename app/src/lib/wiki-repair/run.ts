@@ -8,6 +8,8 @@
  *   3. every source's mentions credited again (./mentions.ts)
  *   4. links written through name matches no longer used corrected, no
  *      AI call (./links.ts)
+ *      links to the wrong sense of a one-word name turned back into words
+ *      (./senses.ts) and source titles put on one line (./titles.ts), no AI
  *   5. the pages whose sources changed rebuilt from them, through the
  *      outbox, previous versions kept (lib/redraft.ts)
  *   6. labels that mean the same thing merged (./labels.ts)
@@ -91,6 +93,9 @@ export interface RepairOverview {
     pages_waiting: number;
     link_pages_low: number;
     link_pages_high: number;
+    sense_pages: number;
+    sense_links: number;
+    title_sources: number;
     labels: number;
   } | null;
   nothing_to_do: boolean;
@@ -104,9 +109,11 @@ export interface RepairOverview {
   max_overspend: number;
 }
 
-/** No name pair to ask about, no page to rewrite and no link to correct. */
+/** No name pair to ask about, no page to rewrite, no link to correct and no title to clean. */
 function nothingToRepair(plan: RepairPlan): boolean {
-  return plan.aliases.length === 0 && plan.pages_high === 0 && plan.link_pages_high === 0;
+  return (
+    plan.aliases.length === 0 && plan.pages_high === 0 && plan.link_pages_high === 0 && plan.sense_pages === 0 && plan.title_sources === 0
+  );
 }
 
 function busyWith(): RepairOverview['busy'] {
@@ -153,6 +160,9 @@ export async function getRepairOverview(opts: { withPlan: boolean }): Promise<Re
     pages_waiting: plan.pages_waiting,
     link_pages_low: plan.link_pages_low,
     link_pages_high: plan.link_pages_high,
+    sense_pages: plan.sense_pages,
+    sense_links: plan.sense_links,
+    title_sources: plan.title_sources,
     labels: plan.labels.length,
   };
   overview.nothing_to_do = nothingToRepair(plan);

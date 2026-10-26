@@ -85,10 +85,14 @@ function fixText(text: string, ctx: LinkContext): { text: string; fixed: number 
 }
 
 /**
- * The page text with its links through unused name matches corrected.
- * Frontmatter, fenced code and inline code are left as they are.
+ * Runs `fn` over the prose of a page: the lines outside frontmatter and
+ * fenced code, split around inline code. `fn` gets one stretch of text and
+ * says what it fixed there.
  */
-export function correctAliasLinks(markdown: string, ctx: LinkContext): { markdown: string; fixed: number } {
+export function mapProse(
+  markdown: string,
+  fn: (part: string) => { text: string; fixed: number },
+): { markdown: string; fixed: number } {
   const lines = markdown.split('\n');
   let i = 0;
   if (lines[0]?.trim() === '---') {
@@ -108,13 +112,21 @@ export function correctAliasLinks(markdown: string, ctx: LinkContext): { markdow
       .split(/(`[^`\n]*`)/)
       .map((part, idx) => {
         if (idx % 2 === 1) return part;
-        const r = fixText(part, ctx);
+        const r = fn(part);
         fixed += r.fixed;
         return r.text;
       })
       .join('');
   }
   return { markdown: fixed === 0 ? markdown : lines.join('\n'), fixed };
+}
+
+/**
+ * The page text with its links through unused name matches corrected.
+ * Frontmatter, fenced code and inline code are left as they are.
+ */
+export function correctAliasLinks(markdown: string, ctx: LinkContext): { markdown: string; fixed: number } {
+  return mapProse(markdown, (part) => fixText(part, ctx));
 }
 
 function titleMap(db: Database.Database): Map<string, string> {

@@ -25,6 +25,8 @@ import type { RepairEstimateInput } from './estimate';
 import { repairLabels } from './labels';
 import { MAX_REPAIR_ALIASES, MAX_REPAIR_PAGES } from './limits';
 import { planLinkFixes, unusedAliasPairs } from './links';
+import { planSenseFixes } from './senses';
+import { countTitleFixes } from './titles';
 import {
   mergePendingPages,
   nocase,
@@ -71,6 +73,11 @@ export interface RepairPlan {
    */
   link_pages_low: number;
   link_pages_high: number;
+  /** Pages with links to the wrong sense of a word turned back into words, and those links (no AI call). */
+  sense_pages: number;
+  sense_links: number;
+  /** Source titles with stray whitespace (no AI call). */
+  title_sources: number;
   labels: string[];
   /** The estimate's inputs (sizes), for lib/wiki-repair/estimate.ts. */
   estimate_input: RepairEstimateInput;
@@ -132,6 +139,7 @@ export function computeRepairPlan(db: Database.Database): RepairPlan {
   const low = pages.filter((p) => p.certain);
 
   const pairs = buildJudgePairs(db, toJudge, ext);
+  const senses = planSenseFixes(db);
   const labels = repairLabels();
   return {
     aliases: toJudge.map((r) => ({ id: r.id, alias: r.alias, canonical: r.canonical_name })),
@@ -148,6 +156,9 @@ export function computeRepairPlan(db: Database.Database): RepairPlan {
     pages_waiting: waitingNow.length,
     link_pages_low: planLinkFixes(db, unusedAliasPairs(db, new Set(toJudge.map((r) => r.id)))).length,
     link_pages_high: planLinkFixes(db, unusedAliasPairs(db)).length,
+    sense_pages: senses.length,
+    sense_links: senses.reduce((sum, p) => sum + p.links, 0),
+    title_sources: countTitleFixes(db),
     labels,
     estimate_input: {
       nameCheckBatches: judgeBatches(pairs).map((batch) =>

@@ -5,6 +5,9 @@
  *   3. mentions  every source's mentions credited again from its extraction
  *   4. links     links written through name matches no longer used corrected
  *                (no AI call)
+ *      senses    links to the wrong sense of a one-word name turned back into
+ *                words (./senses.ts, no AI call)
+ *      titles    source titles put on one line (./titles.ts, no AI call)
  *   5. pages     the pages whose credited sources changed rebuilt from them
  *   6. labels    labels that mean the same thing merged
  *
@@ -26,6 +29,8 @@ import { RepairCallError, type RepairCallCode } from './calls';
 import { applyLabelMerges, consolidateWikiLabels, repairLabels } from './labels';
 import { REPAIR_MAX_CONSECUTIVE_FAILURES, WIKI_REPAIR_FLAG } from './limits';
 import { applyLinkFixes } from './links';
+import { applySenseFixes } from './senses';
+import { applyTitleFixes } from './titles';
 import { mergePendingPages, readWikiExtractions, recreditMentions } from './mentions';
 import { saveRun, type RepairIssue, type RepairRun, type RepairStep, type RepairStopReason } from './state';
 
@@ -72,6 +77,10 @@ function stepDetails(run: RepairRun, step: RepairStep): Record<string, unknown> 
       return { sources: run.mentions?.sources ?? 0, pages: run.mentions?.pages ?? 0 };
     case 'links':
       return { ...(run.links ?? { pages: 0, links: 0, missed: 0 }) };
+    case 'senses':
+      return { ...(run.senses ?? { pages: 0, links: 0, missed: 0 }) };
+    case 'titles':
+      return { ...(run.titles ?? { sources: 0 }) };
     case 'pages': {
       const { current_title: _t, consecutive_failures: _c, ...pages } = run.pages;
       return { ...pages, waiting: run.pending_pages.length };
@@ -112,6 +121,8 @@ function endRun(run: RepairRun, status: 'finished' | 'stopped', reason: RepairSt
         aliases_confirmed: run.aliases.confirmed,
         aliases_retired: run.aliases.retired,
         links_corrected: run.links?.links ?? 0,
+        sense_links_fixed: run.senses?.links ?? 0,
+        source_titles_fixed: run.titles?.sources ?? 0,
         pages_rebuilt: run.pages.rebuilt,
         pages_waiting: run.pending_pages.length,
         labels_merged: run.labels?.merged ?? 0,
@@ -193,6 +204,18 @@ export async function runRepairSteps(run: RepairRun, ctx: StepContext): Promise<
       saveRun(run);
     }, run.links);
     finishStep(run, 'links');
+
+    // ── 4b. Links to the wrong sense of a word, and source titles (no AI call) ──
+    enter('senses');
+    run.senses = { pages: 0, links: 0, missed: 0 };
+    await applySenseFixes(db, () => {
+      check();
+      saveRun(run);
+    }, run.senses);
+    finishStep(run, 'senses');
+    enter('titles');
+    run.titles = { sources: applyTitleFixes(db) };
+    finishStep(run, 'titles');
 
     // ── 5. Pages ──
     enter('pages');
