@@ -41,6 +41,7 @@ from urllib.parse import urljoin
 logger = logging.getLogger(__name__)
 
 import httpx
+import trafilatura
 import requests
 from fastapi import APIRouter, HTTPException
 from markitdown import MarkItDown
@@ -690,6 +691,25 @@ class _KeepBodySession(requests.Session):
         return response
 
 
+def _main_content(session: _KeepBodySession, markdown: str, url: str) -> str:
+    """The article's own text from the HTML page the session fetched, as
+    markdown with its headings, tables and links: no site menu, newsletter
+    box, related articles, comments or footer (a 6sqft interview came in at
+    50,745 characters, 13,881 of them the interview). MarkItDown's text is
+    kept when the page is not HTML or the extract is shorter than a usable
+    source, so a page the extractor misreads is never lost."""
+    if session.body is None or "html" not in session.content_type.lower():
+        return markdown
+    try:
+        article = trafilatura.extract(
+            session.body.decode("utf-8", errors="replace"), url=url, output_format="markdown",
+            include_tables=True, include_links=True, include_formatting=True, include_comments=False,
+        )
+    except Exception:  # noqa: BLE001 — a page the extractor cannot parse keeps MarkItDown's text
+        return markdown
+    return article if article and len(article) >= _MARKITDOWN_MIN_CHARS else markdown
+
+
 def _page_date(session: _KeepBodySession) -> PublishedDate | None:
     """The publication date in an HTML page the session fetched."""
     if session.body is None or "html" not in session.content_type.lower():
@@ -785,6 +805,7 @@ def _try_markitdown_url(source_id: str, url: str) -> "ConvertResponse | None":
     markdown = result.text_content or ""
     if len(markdown) < _MARKITDOWN_MIN_CHARS or _is_bot_check(result.title, markdown):
         return None
+    markdown = _main_content(session, markdown, url)
 
     # title_source: "markitdown" when MarkItDown extracted a real title from
     # the page; "firecrawl_url_fallback" name reused here for the URL-as-title
@@ -901,7 +922,8 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     firecrawl_body = {
         "url": req.url,
         "formats": ["markdown"],
-        "onlyCleanContent": True,
+        # Firecrawl's own main-content mode: no header, menu or footer.
+        "onlyMainContent": True,
         "timeout": 30000,
     }
     firecrawl_headers = {

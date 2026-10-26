@@ -127,3 +127,40 @@ def test_an_uploaded_file_carries_its_metadata_date(tmp_path, monkeypatch):
     # A date in the text is the app's fallback, not file metadata.
     plain = tc.post("/convert/file-path", json={"source_id": "s2", "file_path": "note.md"}).json()
     assert plain["published_at"] is None and plain["published_at_source"] is None
+
+
+SITE_PAGE = (
+    "<html><head><title>Paula Scher interview</title></head><body>"
+    "<nav><ul><li><a href='/homes'>Distinctive Homes</a></li><li><a href='/guides'>NYC Guides</a></li></ul></nav>"
+    "<div class='newsletter'>Get the best of the site in your inbox</div>"
+    "<article><h1>Paula Scher interview</h1>"
+    + "".join(
+        f"<p>In part {i} of the interview, Paula Scher talks about the identity she designed for the Public "
+        f"Theater, her years as an art director for CBS Records, and how type and colour carry a brand "
+        f"across posters, signs and screens in year {1990 + i}.</p>"
+        for i in range(8)
+    )
+    + "</article>"
+    "<aside><h2>You May Also Like</h2><ul><li><a href='/plaza'>Plaza Hotel to close for restoration</a></li></ul></aside>"
+    "<section id='comments'><p>What an inspiring woman. Loved her episode on Abstract!</p></section>"
+    "<footer><a href='/pitch'>Pitch a Story</a> <a href='/tip'>Send us a Tip</a></footer>"
+    "</body></html>"
+)
+
+
+def test_a_web_page_keeps_only_its_article(monkeypatch):
+    """A source page shows the stored text as it is, so the fetch keeps the
+    article and drops the site around it (6sqft, 2026-10-26)."""
+    _stub_fetch(monkeypatch, SITE_PAGE.encode(), "text/html; charset=utf-8")
+    result = conv._try_markitdown_url("src-1", "https://example.com/scher")
+    assert result is not None
+    assert "Public Theater" in result.markdown
+    for chrome in ("Distinctive Homes", "in your inbox", "Plaza Hotel", "Pitch a Story", "inspiring woman"):
+        assert chrome not in result.markdown, chrome
+
+
+def test_a_page_the_extractor_cannot_use_keeps_the_fetched_text(monkeypatch):
+    _stub_fetch(monkeypatch, SITE_PAGE.encode(), "text/html")
+    monkeypatch.setattr(conv.trafilatura, "extract", lambda *a, **k: "too short")
+    result = conv._try_markitdown_url("src-1", "https://example.com/scher")
+    assert result is not None and "Distinctive Homes" in result.markdown
