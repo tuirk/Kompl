@@ -44,4 +44,15 @@ describe('a one-word name written with a capital', () => {
       'Benign paroxysmal positional vertigo (BPPV) is common. Hitchcock made [[Vertigo]]; [[Saul Bass]] and [[contrast ratio]].',
     );
   });
+
+  it('does not take a capital that only starts a sentence for the name when the page also writes the word in lowercase', () => {
+    const targets = [{ title: 'Vertigo' }];
+    expect(injectWikilinks('Vertigo is a spinning feeling.\n\n- Vertigo lasts seconds; positional vertigo is common.', targets).markdown)
+      .toBe('Vertigo is a spinning feeling.\n\n- Vertigo lasts seconds; positional vertigo is common.');
+    // Mid-sentence the capital still says the film; without a lowercase use, a sentence start does too.
+    expect(injectWikilinks('Inner-ear vertigo is common. Hitchcock made Vertigo in 1958.', targets).markdown)
+      .toBe('Inner-ear vertigo is common. Hitchcock made [[Vertigo]] in 1958.');
+    expect(injectWikilinks('A thriller. Vertigo is a 1958 film.', targets).markdown)
+      .toBe('A thriller. [[Vertigo]] is a 1958 film.');
+  });
 });

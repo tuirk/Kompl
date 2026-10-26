@@ -52,6 +52,9 @@ _CURATED = [
     "United Nations Educational, Scientific and Cultural Organization", "LOTR", "Lord of the Rings",
     "BOE", "Bank of England", "BTC", "Bitcoin", "AI Act", "Generative Pre-trained Transformer", "GPT",
     " ETH", "ETHEREUMX", "US", "USB",
+    # A spelling of the full name beside its bracketed form (audit 2026-10-26).
+    "Organisation for Economic Co-operation and Development (OECD)", "OECD",
+    "Organization for Economic Co-operation and Development", "OECD (Organisation for Economic Co-operation and Development)",
 ]
 
 _WORDS = (
@@ -134,6 +137,28 @@ def test_output_equals_comparing_every_pair(seed: int, monkeypatch: pytest.Monke
         return {("all", "")}
 
     monkeypatch.setattr(resolution, "_block_keys", one_block)
+    assert blocked == _dump(req)
+
+
+def test_a_bracketed_name_meets_a_spelling_of_its_full_name(monkeypatch: pytest.MonkeyPatch):
+    """"Organisation for Economic Co-operation and Development (OECD)" and
+    "Organization for ..." match (a head-word spelling of the full name),
+    but the bracketed name had keys only for its exact parts, so blocking
+    never compared the two, in a session or against a page title."""
+    names = ["Organisation for Economic Co-operation and Development (OECD)",
+             "Organization for Economic Co-operation and Development"]
+    req = FuzzyResolveRequest(
+        entities=[{"name": names[0], "type": "ORG", "source_id": "s1", "context": ""},
+                  {"name": names[1], "type": "ORG", "source_id": "s2", "context": ""},
+                  {"name": names[0], "type": "ORG", "source_id": "s3", "context": ""}],
+        existing_aliases=[],
+        existing_page_titles=[{"title": "OECD (Organisation for Economic Co-operation and Development)",
+                               "page_type": "entity"}],
+    )
+    blocked = _dump(req)
+    assert [sorted(set(g["aliases"])) for g in json.loads(blocked)["resolved"]] == [sorted(names)]
+
+    monkeypatch.setattr(resolution, "_block_keys", lambda name, *, person=False: {("all", "")})  # noqa: ARG005
     assert blocked == _dump(req)
 
 

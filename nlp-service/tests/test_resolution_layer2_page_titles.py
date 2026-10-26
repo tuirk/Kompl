@@ -191,3 +191,26 @@ def test_without_a_summary_the_title_stands_for_the_page(client, encoder):
     data = _embedding(client, [_entity("Colorblindness", "CONCEPT", "x")],
                       [{"title": "Color Vision Deficiency", "page_type": "concept"}])
     assert [p["by_meaning"] for p in data["ambiguous"]] == [True]
+
+
+def test_by_meaning_a_person_meets_people_s_pages_and_nothing_else_does(client, encoder):
+    """Entity pages came typed OTHER, so a person met no page by meaning,
+    not even a person's (a pen name and the writer's page), while a concept
+    met people's pages, though a person and anything else one article ties
+    to them are never one thing ("Candid photography" / "Francis Wolff").
+    The app marks a person's page (audit 2026-10-26)."""
+    clemens, label = "American writer and humorist.", "A jazz record label."
+    encoder({
+        "Mark Twain": _toward(1.0, 0, 9), "Mark Twain: x": _toward(1.0, 1, 9),
+        "Candid photography": _toward(1.0, 2, 9), "Candid photography: x": _toward(1.0, 1, 9),
+        "Samuel Clemens": _toward(0.3, 0, 8), f"Samuel Clemens: {clemens}": _toward(0.8, 1, 7),
+        "Blue Note Records": _toward(0.0, 0, 6), f"Blue Note Records: {label}": _toward(0.75, 1, 5),
+    })
+    pages = [{"title": "Samuel Clemens", "page_type": "entity", "summary": clemens, "person": True},
+             {"title": "Blue Note Records", "page_type": "entity", "summary": label}]
+    data = _embedding(client, [_entity("Mark Twain", "PERSON", "x"), _entity("Candid photography", "CONCEPT", "x")],
+                      pages)
+    assert _asked(data, by_meaning=True) == [
+        ("Mark Twain", "Samuel Clemens", 0.3, 0.8),
+        ("Candid photography", "Blue Note Records", 0.0, 0.75),
+    ]

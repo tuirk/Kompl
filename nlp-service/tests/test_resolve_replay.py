@@ -136,6 +136,60 @@ def test_a_hub_does_not_chain_two_names_through_the_route_fold(replay, monkeypat
         == "different"
 
 
+def test_a_group_does_not_chain_two_names_through_the_route_fold(replay, monkeypatch):
+    """"CI" in two sources is a Layer 1 group; called the same as both
+    expansions, it still joins one only, as the route folds (audit
+    2026-10-26)."""
+    from services import llm_client as llm_client_mod  # noqa: PLC0415
+    from services.llm_client import DisambiguationResponse, DisambiguationResult  # noqa: PLC0415
+
+    module, _calls = replay
+    item = _item("continuous-integration-vs-confidence-interval")
+    ci = item["others"][0]
+    item = {**item, "others": [ci, {**ci, "source": "s4"}]}
+    monkeypatch.setattr(llm_client_mod, "disambiguate_entities", lambda pairs, model, pair_kind="entity": (
+        DisambiguationResponse(results=[DisambiguationResult(entity_a=p["entity_a"]["name"], entity_b=p["entity_b"]["name"],
+                                                             decision="same", canonical=None, reason="fake")
+                                        for p in pairs])))
+    assert module.judge(item, "http://x", "deepseek-flash")["got"] == "different"
+
+
+def test_a_group_layer_1_built_from_an_abbreviation_and_its_expansion_takes_no_other(replay, monkeypatch):
+    """"Continuous Integration (CI)", "CI" and "Continuous Integration" are
+    one Layer 1 group, which has settled what CI stands for; the model's
+    same on it and "Confidence Interval" is not applied."""
+    from services import llm_client as llm_client_mod  # noqa: PLC0415
+    from services.llm_client import DisambiguationResponse, DisambiguationResult  # noqa: PLC0415
+
+    module, _calls = replay
+    item = _item("continuous-integration-vs-confidence-interval")
+    ci = item["others"][0]
+    item = {**item, "others": [ci, {**ci, "name": "Continuous Integration (CI)", "source": "s4"}]}
+    monkeypatch.setattr(llm_client_mod, "disambiguate_entities", lambda pairs, model, pair_kind="entity": (
+        DisambiguationResponse(results=[DisambiguationResult(entity_a=p["entity_a"]["name"], entity_b=p["entity_b"]["name"],
+                                                             decision="same", canonical=None, reason="fake")
+                                        for p in pairs])))
+    assert module.judge(item, "http://x", "deepseek-flash")["got"] == "different"
+    groups = [{"canonical": "LLM", "type": "CONCEPT", "aliases": ["LLMs"], "source_ids": ["s1", "s2"], "method": "plural"}]
+    pair = {"entity_a": {"name": "LLM", "type": "CONCEPT", "source_id": "__group__:0", "context": ""},
+            "entity_b": {"name": "Large language models", "type": "CONCEPT", "source_id": "s3", "context": ""}}
+    u = module.fold(groups, [pair], [{"decision": "same"}])
+    assert u.find(("group", 0)) == u.find(("entity", "Large language models", "s3"))  # a plural settles nothing
+
+
+def test_a_group_does_not_chain_across_a_pair_called_different(replay):
+    """A = B and B = C with A and C called different, where B is a group."""
+    module, _calls = replay
+    group = [{"entity_a": {"name": "B", "type": "CONCEPT", "source_id": "__group__:0", "context": ""},
+              "entity_b": {"name": n, "type": "CONCEPT", "source_id": s, "context": ""}} for n, s in (("A", "s3"), ("C", "s4"))]
+    across = {"entity_a": group[0]["entity_b"], "entity_b": group[1]["entity_b"]}
+    groups = [{"canonical": "B", "type": "CONCEPT", "aliases": [], "source_ids": ["s1", "s2"], "method": "exact"}]
+    same, different = {"decision": "same"}, {"decision": "different"}
+    u = module.fold(groups, [*group, across], [same, same, different])
+    assert u.find(("entity", "A", "s3")) == u.find(("group", 0))
+    assert u.find(("entity", "C", "s4")) != u.find(("group", 0))
+
+
 def test_without_the_model_it_reports_what_is_asked(replay):
     module, calls = replay
     result = module.judge(_item("ml-is-machine-learning"), "http://x", None)

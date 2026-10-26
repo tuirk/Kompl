@@ -56,6 +56,7 @@ import {
 } from '../../../../lib/db';
 import { computeDisambiguateMs } from '../../../../lib/compile-timeouts';
 import { makeDispatcher } from '../../../../lib/long-http-agent';
+import { isSimplePlural, skeleton } from '../../../../lib/alias-shapes';
 import { buildMentionPin, KIND_FAMILIES } from '../../../../lib/mention-pin';
 import { sessionMentionRows } from '../../../../lib/mention-rows';
 import { numericConflict } from '../../../../lib/name-guard';
@@ -146,6 +147,7 @@ interface ExistingPageTitle {
   title: string;
   page_type: string;  // 'entity' | 'concept'
   summary: string | null;  // for the closest-by-meaning candidates (Layer 2)
+  person?: true;  // an entity page about a person (Layer 2 pairs people only with people)
 }
 
 async function callFuzzy(
@@ -213,6 +215,17 @@ async function callDisambiguate(
     throw new Error(`disambiguate_failed: ${res.status} ${detail}`);
   }
   return res.json() as Promise<DisambiguateResponse>;
+}
+
+/**
+ * The kind most of a group's weight carries; a tie goes to the kind first in
+ * alphabetical order. Mirrors majority_kind in
+ * nlp-service/routers/resolution_rules.py, which Layers 1 and 2 use.
+ */
+function majorityKind(kinds: Array<[string, number]>): string {
+  const totals = new Map<string, number>();
+  for (const [kind, weight] of kinds) totals.set(kind, (totals.get(kind) ?? 0) + weight);
+  return [...totals].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0))[0][0];
 }
 
 /**
@@ -443,7 +456,19 @@ export async function POST(request: Request) {
     // Name pairs Layer 3 called different in this run: a chain never joins
     // two groups across one of them.
     const differentKeys = new Set<string>();
-    const saidDifferent = (xs: string[], ys: string[]) => xs.some((x) => ys.some((y) => differentKeys.has(nameKey(x, y))));
+    // Groups a Layer 3 'same' verdict formed or added to in this run: joining
+    // one of them to more is a chain.
+    const grown = new Set<number>();
+    // Names a 'same' verdict put in each group, or bound to a new canonical.
+    // Their alias rows say 'llm', not the spelling rule that made the group
+    // in Layer 1: "Continuous Integration" folded into the "CI" group was
+    // stored as an 'exact' match (audit 2026-10-26).
+    const byVerdict = new Map<ResolvedGroup, Set<string>>();
+    const fromVerdict = (g: ResolvedGroup, names: string[]) => {
+      const held = byVerdict.get(g) ?? new Set<string>();
+      for (const name of names) held.add(name);
+      byVerdict.set(g, held);
+    };
 
     const addName = (g: ResolvedGroup, name: string) => {
       if (name !== g.canonical && !g.aliases.includes(name)) g.aliases.push(name);
@@ -451,6 +476,8 @@ export async function POST(request: Request) {
     const addGroup = (g: ResolvedGroup) => {
       groups.push(g);
       parent.push(groups.length - 1);
+      grown.add(groups.length - 1);
+      fromVerdict(g, g.aliases);
       if (isAnchored(g)) anchoredGroup.set(g.canonical.toLowerCase(), groups.length - 1);
     };
     const absorb = (gi: number, e: EntityInput): boolean => {
@@ -458,6 +485,8 @@ export async function POST(request: Request) {
       addName(groups[gi], e.name);
       if (!groups[gi].source_ids.includes(e.source_id)) groups[gi].source_ids.push(e.source_id);
       markMerged(e, gi);
+      grown.add(gi);
+      fromVerdict(groups[gi], [e.name]);
       return true;
     };
     const rename = (g: ResolvedGroup, canonical: string) => {
@@ -466,6 +495,7 @@ export async function POST(request: Request) {
       g.canonical = canonical;
       g.aliases = g.aliases.filter((a) => a !== canonical);
       addName(g, previous);
+      fromVerdict(g, g.aliases);
     };
     // Folds one group into the other. An anchored canonical wins; otherwise
     // the one more sources back, and on a tie the one Layer 3 picked. Two
@@ -485,7 +515,9 @@ export async function POST(request: Request) {
       for (const name of [source.canonical, ...source.aliases]) addName(target, name);
       for (const sid of source.source_ids) if (!target.source_ids.includes(sid)) target.source_ids.push(sid);
       if (!isAnchored(target)) target.method = 'llm';
+      fromVerdict(target, namesOf(source));
       parent[from] = into;
+      grown.add(into);
       return true;
     };
     // Applies one Layer 3 'same' verdict; false when it cannot be applied.
@@ -495,17 +527,38 @@ export async function POST(request: Request) {
       if (sides.some((e) => isGroupRef(e) && groupOf(e) === null)) return false; // malformed group reference
       const ids = sides.map(sideGroup).filter((k): k is number => k !== null);
       if (ids.length === 2 && ids[0] === ids[1]) return true; // one group already
-      // A lone name that already joined a group brings it along (a chain),
-      // unless it is an abbreviation of the other side: "CI" called the
-      // same as "Continuous Integration" and as "Confidence Interval" must
-      // not make them one. Nor across a pair Layer 3 called different.
-      for (const [hub, other] of [[pair.entity_a, pair.entity_b], [pair.entity_b, pair.entity_a]]) {
-        const gi = isGroupRef(hub) ? null : memberOf.get(entityKey(hub));
-        if (gi === undefined || gi === null) continue;
-        if (isAbbreviation(hub.name, other.name) || isAbbreviation(other.name, hub.name)) return false;
-        const otherNames = isExistingPage(other) ? [other.name]
-          : sideGroup(other) !== null ? namesOf(groups[sideGroup(other)!]) : [other.name];
-        if (saidDifferent(namesOf(groups[find(gi)]), otherNames)) return false;
+      // A side a 'same' verdict already joined to more (a lone name in a
+      // group, a group this run grew, a page whose group it grew) brings all
+      // of it along: a chain. So does a side whose names already hold an
+      // abbreviation and an expansion of it, as Layer 1 joins "CI" and
+      // "Continuous Integration (CI)": it has settled what the abbreviation
+      // stands for; a spelling or plural of it ("C.I.", "LLMs") settles
+      // nothing. Not when a name on one side is an abbreviation of a name
+      // on the other: "CI" called the same as "Continuous Integration" and
+      // as "Confidence Interval" must not make them one, also when "CI" is
+      // a group because two sources name it (audit 2026-10-26). Nor across
+      // a name pair Layer 3 called different, other than this pair's own
+      // two names: that verdict was on namesakes of another kind or source.
+      const settled = (names: string[]) => names.some((x) => names.some((y) =>
+        x !== y && isAbbreviation(x, y) && skeleton(x) !== skeleton(y) && !isSimplePlural(x, y)));
+      const standsFor = (e: EntityInput): { names: string[]; chained: boolean } => {
+        if (isExistingPage(e)) {
+          const holder = anchoredGroup.get(e.name.toLowerCase());
+          if (holder === undefined) return { names: [e.name], chained: false };
+          const names = [e.name, ...namesOf(groups[find(holder)])];
+          return { names, chained: grown.has(find(holder)) || settled(names) };
+        }
+        const gi = sideGroup(e);
+        if (gi === null) return { names: [e.name], chained: false };
+        const names = namesOf(groups[gi]);
+        return { names, chained: !isGroupRef(e) || grown.has(gi) || settled(names) };
+      };
+      const [a, b] = sides.map(standsFor);
+      if (a.chained || b.chained) {
+        const own = nameKey(pair.entity_a.name, pair.entity_b.name);
+        const across = (linked: (x: string, y: string) => boolean) => a.names.some((x) => b.names.some((y) => linked(x, y)));
+        if (across((x, y) => isAbbreviation(x, y) || isAbbreviation(y, x))) return false;
+        if (across((x, y) => nameKey(x, y) !== own && differentKeys.has(nameKey(x, y)))) return false;
       }
       const lone = loneSides(pair).filter((e) => !memberOf.has(entityKey(e)));
       if (ids.length + lone.length === 0) return false; // two pages: nothing of this session's
@@ -521,6 +574,7 @@ export async function POST(request: Request) {
           rename(g, page.name);
           g.method = 'existing_page_title';
           anchoredGroup.set(page.name.toLowerCase(), ids[0]);
+          grown.add(ids[0]);
           return true;
         }
         if (holder !== undefined) return absorb(find(holder), lone[0]);
@@ -544,7 +598,8 @@ export async function POST(request: Request) {
       if (lone.length === 2 && numbersClash([lone[0].name], [lone[1].name])) return false;
       addGroup({
         canonical: picked,
-        type: pair.entity_a.type,
+        // As Layers 1 and 2 type a group, not by which side came first.
+        type: majorityKind(lone.map((e) => [e.type, 1])),
         aliases: lone.map((e) => e.name).filter((n) => n !== picked),
         source_ids: [...new Set(lone.map((e) => e.source_id))],
         method: 'llm',
@@ -695,10 +750,13 @@ export async function POST(request: Request) {
 
     // Step 5: persist aliases for both kinds. The aliases table is untagged —
     // page_type is inferred via canonical_page_id once the page is committed.
-    // Each new row records its group's method and this session (schema v29);
-    // the groups carry no per-name similarity, so score stays empty.
+    // Each new row records its group's method, or 'llm' for a name a Layer 3
+    // verdict matched, and this session (schema v29); the groups carry no
+    // per-name similarity, so score stays empty.
     const aliasesToInsert = allCanonical.flatMap((g) =>
-      g.aliases.map((a) => ({ alias: a, canonical: g.canonical, method: g.method, session_id }))
+      g.aliases.map((a) => ({
+        alias: a, canonical: g.canonical, method: byVerdict.get(g)?.has(a) ? 'llm' : g.method, session_id,
+      }))
     );
     if (aliasesToInsert.length > 0) bulkInsertAliases(aliasesToInsert);
 

@@ -166,13 +166,24 @@ def _disambiguate(client, pairs) -> dict[str, Any]:
 
 
 def test_two_pairs_with_the_same_names_each_get_their_own_verdict(client, monkeypatch):
-    _llm(monkeypatch, lambda pairs, _kind: [
-        ("Mercury", "Mercury", "same", "Mercury"),
-        ("Mercury", "Mercury", "different", None),
-    ])
+    """The model copies back the names, not the kinds, so only the order of
+    its reply told the two "Mercury" pairs apart, and a reply in another
+    order swapped their verdicts (audit 2026-10-26). They go in batches of
+    their own."""
+    def reply(pairs, _kind):
+        # Only the planet is the same as the Mercury concept; it answers about places first.
+        planet = lambda p: p["entity_a"]["type"] == "LOCATION" and p["entity_b"]["name"] == "Mercury"  # noqa: E731
+        return [(p["entity_a"]["name"], p["entity_b"]["name"], "same" if planet(p) else "different", None)
+                for p in sorted(pairs, key=lambda p: p["entity_a"]["type"] != "LOCATION")]
+
+    calls = _llm(monkeypatch, reply)
     data = _disambiguate(client, [_ask("Mercury", "Mercury", "p0", "PERSON", "CONCEPT"),
-                                  _ask("Mercury", "Mercury", "p1", "LOCATION", "CONCEPT")])
-    assert [(r["pair_id"], r["decision"]) for r in data["results"]] == [("p0", "same"), ("p1", "different")]
+                                  _ask("Mercury", "Mercury", "p1", "LOCATION", "CONCEPT"),
+                                  _ask("Mercury", "Venus", "p2", "LOCATION", "CONCEPT")])
+    assert [(r["pair_id"], r["decision"]) for r in data["results"]] == [
+        ("p0", "different"), ("p1", "same"), ("p2", "different"),
+    ]
+    assert [[p["entity_a"]["type"] for p in c] for c in calls] == [["PERSON", "LOCATION"], ["LOCATION"]]
 
 
 def test_a_reply_out_of_order_with_swapped_or_recased_names_reaches_its_pair(client, monkeypatch):

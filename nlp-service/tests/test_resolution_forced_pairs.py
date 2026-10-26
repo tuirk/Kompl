@@ -127,6 +127,19 @@ def test_a_name_that_adds_words_to_a_page_title_is_asked_against_the_page(client
     assert data["unresolved"] == []
 
 
+def test_a_name_that_adds_words_to_many_page_titles_is_asked_about_the_two_most_like_it(client, encoder):
+    """On a large wiki a long name adds words to many short titles; all of
+    them took Layer 3 slots ahead of the pairs one source names, most of
+    them broader topics (audit 2026-10-26)."""
+    name = "APCA contrast algorithm"
+    titles = {"APCA": 0.53, "Contrast algorithm": 0.6, "Contrast": 0.45, "Algorithm": 0.3}
+    encoder({name: _like(1.0, 0), f"{name}: b": _like(1.0, 2), **{t: _like(s, 0) for t, s in titles.items()}})
+    data = _embedding(client, [_entity(name, "CONCEPT", "s2", "b")],
+                      pages=[{"title": t, "page_type": "concept"} for t in titles])
+    assert _pairs(data) == [(name, "s2", "APCA", "__existing_page__", 0.53),
+                            (name, "s2", "Contrast algorithm", "__existing_page__", 0.6)]
+
+
 @pytest.mark.parametrize("sim", [0.4, 0.99])
 def test_a_name_that_adds_words_to_an_alias_canonical_is_asked_never_merged(client, encoder, sim):
     """Below the band it is asked all the same; past the merge bar it is

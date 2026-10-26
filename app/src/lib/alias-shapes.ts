@@ -54,11 +54,11 @@ function sameSet(a: Set<string>, b: Set<string>): boolean {
 }
 
 /** Case, spaces, hyphens and punctuation removed; "+" and "#" kept. */
-function skeleton(name: string): string {
+export function skeleton(name: string): string {
   return name.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}+#]/gu, '');
 }
 
-function isSimplePlural(a: string, b: string): boolean {
+export function isSimplePlural(a: string, b: string): boolean {
   let [sa, sb] = [skeleton(a), skeleton(b)];
   if (sa.length > sb.length) {
     [a, b, sa, sb] = [b, a, sb, sa];

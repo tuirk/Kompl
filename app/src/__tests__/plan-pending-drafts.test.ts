@@ -159,3 +159,21 @@ describe('resolve: a page waiting for approval is matched like a page', () => {
     expect(titles).toEqual([{ title: 'Gemini', page_type: 'entity', summary: null }]);
   });
 });
+
+describe("resolve: a person's page is marked as one", () => {
+  it('marks an entity page most of whose mentions are people, so Layer 2 pairs people only with people', () => {
+    handle = setupTestDb();
+    seedPage(handle.db, { title: 'Samuel Clemens', page_type: 'entity' });
+    seedPage(handle.db, { title: 'Blue Note Records', page_type: 'entity' });
+    source('sess-a', [{ name: 'Samuel Clemens', type: 'PERSON' }, { name: 'Blue Note Records', type: 'ORG' }]);
+    source('sess-a', [{ name: 'samuel clemens', type: 'PERSON' }, { name: 'Blue Note Records', type: 'PERSON' }]);
+    source('sess-a', [{ name: 'Blue Note Records', type: 'ORG' }, { name: 'Ada Lovelace', type: 'PERSON' }]);
+    pending('Ada Lovelace', 'entity', []);
+
+    expect(getResolverPageTitles()).toEqual([
+      { title: 'Ada Lovelace', page_type: 'entity', summary: null, person: true },
+      { title: 'Blue Note Records', page_type: 'entity', summary: null },
+      { title: 'Samuel Clemens', page_type: 'entity', summary: null, person: true },
+    ]);
+  });
+});

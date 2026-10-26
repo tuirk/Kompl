@@ -40,7 +40,7 @@ import logging
 import re
 import threading
 import unicodedata
-from collections import Counter
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,6 +86,43 @@ def _get_embed_model() -> Any:
     return _embed_model
 
 
+# Vectors of the texts Layer 2 encoded lately, for the model loaded now.
+# Every compile sends the wiki's page titles and summaries again, two texts
+# a page, and each call encoded them all again inside the route's 60 s
+# limit (audit 2026-10-26). Bounded by count, oldest out first: about 30 MB
+# of 384-number vectors.
+_VECTOR_CACHE_SIZE = 20_000
+_vector_cache: OrderedDict[str, Any] = OrderedDict()
+_vector_cache_model: list[Any] = [None]
+_vector_cache_lock = threading.Lock()
+
+
+def _encode(model: Any, texts: list[str]) -> Any:
+    """model.encode(texts) for distinct texts, through _vector_cache: a
+    text seen lately gets the vector the model gave it then."""
+    import numpy as np
+
+    with _vector_cache_lock:
+        if _vector_cache_model[0] is not model:
+            _vector_cache.clear()
+            _vector_cache_model[0] = model
+        vectors: dict[str, Any] = {}
+        for t in texts:
+            if t in _vector_cache:
+                _vector_cache.move_to_end(t)
+                vectors[t] = _vector_cache[t]
+    missing = [t for t in texts if t not in vectors]
+    if missing:
+        fresh = [v.copy() for v in model.encode(missing, convert_to_numpy=True)]
+        vectors.update(zip(missing, fresh))
+        with _vector_cache_lock:
+            if _vector_cache_model[0] is model:
+                _vector_cache.update(zip(missing, fresh))
+                while len(_vector_cache) > _VECTOR_CACHE_SIZE:
+                    _vector_cache.popitem(last=False)
+    return np.array([vectors[t] for t in texts])
+
+
 # ---------------------------------------------------------------------------
 # Shared types
 # ---------------------------------------------------------------------------
@@ -121,6 +158,10 @@ class ExistingPageTitle(BaseModel):
     # What the page is about, for the closest-by-meaning candidates (Layer 2).
     # Optional, so older callers still validate.
     summary: str | None = None
+    # An entity page about a person (most of its mentions are people), so
+    # closest by meaning a person meets people's pages and nothing else does.
+    # Optional, so older callers still validate.
+    person: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +679,8 @@ def _block_keys(name: str, *, person: bool = False) -> set[tuple[str, str]]:
       - ticker (Layer 3 only): two to six capitals ("tick"), which meet the
         initials of a name's words without stopwords and the starts of its
         first word ("tock");
-      - "Full Name (ABBR)": the same keys for the bracket and the full name;
+      - "Full Name (ABBR)": also every key of the bracket and of the full
+        name;
       - people (person=True): each word, for surname and initial matches.
     A name that adds words to a page title is found by WordBagIndex
     instead (_extension_node_pairs).
@@ -653,15 +695,15 @@ def _block_keys(name: str, *, person: bool = False) -> set[tuple[str, str]]:
     if len(skeleton) >= 8:
         keys.update(("drop", skeleton[:k] + skeleton[k + 1:]) for k in range(len(skeleton)))
         keys.add(("drop", skeleton))
-    caps, initials = [name.upper()], [_initials(name)]
+    keys.update(("caps", c) for c in [name.upper()] if c)
+    keys.update(("init", c) for c in [_initials(name)] if c)
     bracket = _split_parenthetical(name)
     if bracket is not None:
-        base, inner = bracket
-        keys.update(("skel", s) for s in (_skeleton(base), _skeleton(inner)) if s)
-        caps.append(inner.upper())
-        initials.append(_initials(base))
-    keys.update(("caps", c) for c in caps if c)
-    keys.update(("init", c) for c in initials if c)
+        # Every key of each part: "Organisation for ... (OECD)" meets
+        # "Organization for ..." by the head word and spelling of its full
+        # name, which its own keys never gave (audit 2026-10-26).
+        for part in bracket:
+            keys |= _block_keys(part, person=person)
     if is_ticker(name):
         keys.add(("tick", name.strip().lower()))
     ticker_initial = ticker_initials(name)
@@ -765,6 +807,12 @@ class _GuardedUnion:
             self._links[key] = _types_compatible(a.type, b.type) and \
                 _fuzzy_method(a.name, b.name, person_pair=person) is not None
         return self._links[key]
+
+    def define(self, x: int, y: int) -> None:
+        """Two names a third defines as one ("WCAG" and "Web Content
+        Accessibility Guidelines" beside "Web Content Accessibility
+        Guidelines (WCAG)"), though neither matches the other on its own."""
+        self._links[(x, y) if x < y else (y, x)] = True
 
     def _matches_anchor(self, anchored: int, joining: int) -> bool:
         """Every name of the joining group matches the anchored group's page
@@ -959,6 +1007,26 @@ def resolve_fuzzy(req: FuzzyResolveRequest) -> FuzzyResolveResponse:
             if method:
                 links[i][j] = links[j][i] = method
 
+    # A bracketed name says its abbreviation and its full name are one
+    # thing, so beside "Web Content Accessibility Guidelines (WCAG)" the
+    # names "WCAG" and "Web Content Accessibility Guidelines" match too.
+    # Otherwise, with all three in a session, the bracketed name is a hub
+    # between two names that do not match and none of them merge (audit
+    # 2026-10-26).
+    for i in range(n):
+        if _split_parenthetical(entities[i].name) is None:
+            continue
+        parts: dict[str, list[int]] = {"abbreviation": [], "expansion": []}
+        for j, method in links[i].items():
+            part = _parenthetical_match(entities[i].name, entities[j].name) if method == "parenthetical" else None
+            if part is not None:
+                parts[part].append(j)
+        for j in parts["abbreviation"]:
+            for k in parts["expansion"]:
+                if k not in links[j] and _types_compatible(entities[j].type, entities[k].type):
+                    links[j][k] = links[k][j] = "parenthetical"
+                    guard.define(j, k)
+
     def linked(j: int, k: int) -> bool:
         aj, ak = alias_canonical.get(j), alias_canonical.get(k)
         if aj is not None and ak is not None:
@@ -1131,6 +1199,13 @@ _CROSS_KIND_CONTEXT_MIN_NAME_SIMILARITY = 0.6
 # read alike), so 3 at 0.6 found 1 of 5 (owner decision 2026-10-25: wider).
 _MEANING_CANDIDATES = 5
 _MEANING_MIN_SIMILARITY = 0.5
+
+# A long name adds words to many short page titles on a large wiki ("APCA
+# contrast algorithm": "APCA", "Contrast", "Algorithm" ...), at most one or
+# two of them its own topic. Each took a Layer 3 slot ahead of the pairs one
+# source names (audit 2026-10-26), so a name is asked about the few it is
+# most like by name (_forced_page_pairs).
+_EXTENSION_PAGES = 2
 
 # A concept and a named thing can be one topic ("UNESCO World Heritage" /
 # "UNESCO World Heritage list"), so Layer 2 compares them; only Layer 3 may
@@ -1394,13 +1469,15 @@ def _forced_node_pairs(nodes: list[_Node]) -> dict[tuple[int, int], str]:
     return dict(sorted(out.items()))
 
 
-def _forced_page_pairs(nodes: list[_Node], pages: list[ExistingPageTitle]) -> list[tuple[int, int, str]]:
+def _forced_page_pairs(nodes: list[_Node], pages: list[ExistingPageTitle],
+                       name_sim: Any) -> list[tuple[int, int, str]]:
     """(node, page, kind) for each unanchored node and page title Layer 3 is
     asked about whatever their similarity: an acronym or slip (see
     _layer3_only_page_kind), "CI" against both "Continuous Integration" and
     "Confidence Interval"; and a name that adds words to the title
     ("extension": "APCA contrast algorithm" / "APCA", see
-    _extension_node_pairs)."""
+    _extension_node_pairs), for the _EXTENSION_PAGES such titles most like
+    it by name (`name_sim`, node by page)."""
     titles_by_key: dict[tuple[str, str], list[int]] = {}
     for k, pt in enumerate(pages):
         for key in _block_keys(pt.title):
@@ -1417,9 +1494,10 @@ def _forced_page_pairs(nodes: list[_Node], pages: list[ExistingPageTitle]) -> li
             kind = _layer3_only_page_kind(nd.names, nd.type, pages[k])
             if kind is not None:
                 forced[k] = kind
-        for k in _extensions(nd.names, index, titles):
-            if _entity_matches_page_type(nd.type, pages[k].page_type) or _page_kinds_cross(nd.type, pages[k].page_type):
-                forced.setdefault(k, "extension")
+        extended = [k for k in _extensions(nd.names, index, titles) if k not in forced and (
+            _entity_matches_page_type(nd.type, pages[k].page_type) or _page_kinds_cross(nd.type, pages[k].page_type))]
+        extended.sort(key=lambda k: (-round(float(name_sim[i][k]), 6), pages[k].title, pages[k].page_type))
+        forced.update((k, "extension") for k in extended[:_EXTENSION_PAGES])
         out.extend((i, k, kind) for k, kind in sorted(forced.items()))
     return out
 
@@ -1460,7 +1538,8 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
         its expansion or a one-letter slip (_layer3_only_method), which
         Layer 1 no longer merges, and a name that adds words to a page
         title or a stored alias's canonical, against that page
-        (_extension_node_pairs); and each name's few closest other names
+        (_extension_node_pairs; of the wiki's other titles, the
+        _EXTENSION_PAGES most like it); and each name's few closest other names
         and pages by meaning ("title: summary" for a page), `by_meaning`
         (_MEANING_CANDIDATES);
       - different: the rest, and two people who share only a surname.
@@ -1512,7 +1591,7 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
     page_texts = [_title_for_similarity(pt.title) for pt in pages]
     page_meanings = [f"{t}: {pt.summary}" if pt.summary else t for t, pt in zip(page_texts, pages)]
     texts = list(dict.fromkeys([nd.name for nd in nodes] + [nd.text for nd in nodes] + page_texts + page_meanings))
-    vectors = model.encode(texts, convert_to_numpy=True)
+    vectors = _encode(model, texts)
     row = {t: k for k, t in enumerate(texts)}
     name_vecs = vectors[[row[nd.name] for nd in nodes]]
     ctx_vecs = vectors[[row[nd.text] for nd in nodes]]
@@ -1533,7 +1612,12 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
             anchor_to: tuple[float, ExistingPageTitle] | None = None
             ask_about: tuple[float, float, ExistingPageTitle] | None = None
             refused = False
-            for j, pt in enumerate(pages):
+            # Only a page alike enough by name or context can be asked
+            # about; the rest are left out in one step, not one by one
+            # (600 names by 5,000 pages, audit 2026-10-26).
+            reach = np.maximum(name_page[i], ctx_page[i]) >= _AMBIGUOUS_SIMILARITY - 1e-6
+            for j in np.flatnonzero(reach).tolist():
+                pt = pages[j]
                 same_kind = _entity_matches_page_type(nd.type, pt.page_type)
                 if not same_kind and not _page_kinds_cross(nd.type, pt.page_type):
                     continue
@@ -1681,7 +1765,7 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
         note(key_of(ri, rj), max(ns, cs) if _types_compatible(nodes[i].type, nodes[j].type) else ns, ns)
         if kind == "acronym":
             acronym.add(key_of(ri, rj))
-    for i, k, kind in _forced_page_pairs(nodes, pages):
+    for i, k, kind in _forced_page_pairs(nodes, pages, name_page):
         root, pt = union.find(i), pages[k]
         if union.anchor[root] is not None:
             continue
@@ -1715,10 +1799,14 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
                     and any(_person_names_clash(x, y) for x in a.names for y in names_b))
 
     # Nearest first; ties by name and sources, so the input order never
-    # decides which candidates are taken.
+    # decides which candidates are taken. Only those alike enough to be
+    # taken are sorted: the walk below stops at the first one under the bar.
+    def near(sims: Any) -> list[int]:
+        return np.flatnonzero(sims >= _MEANING_MIN_SIMILARITY - 1e-6).tolist()
+
     def node_order(i: int) -> list[int]:
-        return sorted(range(len(nodes)), key=lambda j: (-round(float(ctx_sim[i][j]), 6), nodes[j].name,
-                                                       sorted(nodes[j].source_ids)))
+        return sorted(near(ctx_sim[i]), key=lambda j: (-round(float(ctx_sim[i][j]), 6), nodes[j].name,
+                                                      sorted(nodes[j].source_ids)))
 
     for i, nd in enumerate(nodes):
         ri = union.find(i)
@@ -1744,14 +1832,15 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
             if union.anchor[root] is not None:
                 continue
             taken = 0
-            for k in sorted(range(len(pages)), key=lambda k: (-round(float(meaning_page[i][k]), 6),
-                                                              pages[k].title, pages[k].page_type)):
+            for k in sorted(near(meaning_page[i]), key=lambda k: (-round(float(meaning_page[i][k]), 6),
+                                                                  pages[k].title, pages[k].page_type)):
                 sim = float(meaning_page[i][k])
                 if taken == _MEANING_CANDIDATES or sim < _MEANING_MIN_SIMILARITY:
                     break
                 pt = pages[k]
                 kinds_ok = _entity_matches_page_type(nd.type, pt.page_type) or _page_kinds_cross(nd.type, pt.page_type)
-                if not may_pair(nd, [pt.title], _page_type_to_entity_type(pt.page_type), kinds_ok):
+                kind = "PERSON" if pt.person else _page_type_to_entity_type(pt.page_type)
+                if not may_pair(nd, [pt.title], kind, kinds_ok):
                     continue
                 taken += 1
                 ns = float(name_page[i][k])
@@ -1828,7 +1917,8 @@ def resolve_embedding(req: EmbeddingResolveRequest) -> EmbeddingResolveResponse:
 # LLM iteration cap (CLAUDE.md rule #7): hard bound on pairs per
 # /resolve/disambiguate request. At 10 pairs per LLM call in four groups
 # (entity or concept, with or without a page side) this caps a single request
-# at 63 batched calls. The app sends a session's own, smaller budget: 10 pairs
+# at 63 batched calls, plus one for each further pair that repeats another's
+# names (_batches). The app sends a session's own, smaller budget: 10 pairs
 # per source it adds, at least 120 (app/src/lib/resolve-ranking.ts
 # disambiguatePairCap). Excess pairs come back decision='ambiguous'
 # (the app keeps ambiguous entities separate — safe degradation, never an
@@ -1917,6 +2007,27 @@ def _verdicts_by_pair(batch: list[DisambiguatePair], results: list[Any]) -> list
         if len(fits) == 1:
             out[fits[0]] = r
     return out
+
+
+def _batches(indices: list[int], pairs: list[DisambiguatePair]) -> list[list[int]]:
+    """`indices` (into `pairs`) in LLM batches of up to 10, in order. Two
+    pairs whose names fold the same never share a batch: the model copies
+    back names, not kinds, so in one batch only the order of its reply told
+    "Mercury" / "Mercury" (a person) from "Mercury" / "Mercury" (a place)
+    apart, and a reply in another order swapped their verdicts (audit
+    2026-10-26). Without such pairs the batches are the plain runs of 10."""
+    batches: list[list[int]] = []
+    held: list[set[tuple[str, ...]]] = []
+    for k in indices:
+        names = tuple(_folded(pairs[k].entity_a.name, pairs[k].entity_b.name))
+        slot = next((b for b, h in enumerate(held) if len(batches[b]) < 10 and names not in h), None)
+        if slot is None:
+            batches.append([])
+            held.append(set())
+            slot = len(batches) - 1
+        batches[slot].append(k)
+        held[slot].add(names)
+    return batches
 
 
 def _same_canonical(pair: AmbiguousPair, picked: str | None) -> str:
@@ -2023,7 +2134,7 @@ def resolve_disambiguate(req: DisambiguateRequest) -> DisambiguateResponse:
     for pair_kind, concept in (("entity", False), ("concept", True)):
         for page in (False, True):
             indices = [k for k in capped_pairs if is_concept[k] == concept and has_page[k] == page]
-            jobs += [(indices[s:s + 10], pair_kind) for s in range(0, len(indices), 10)]
+            jobs += [(batch, pair_kind) for batch in _batches(indices, req.pairs)]
 
     # A few batches at once (owner decision 2026-10-25), so asking more
     # pairs does not make the compile wait longer; the cost ceiling is

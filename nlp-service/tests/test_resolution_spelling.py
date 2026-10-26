@@ -187,6 +187,33 @@ def test_full_name_with_its_abbreviation_in_brackets_merges(client):
     ]
 
 
+@pytest.mark.parametrize("bracketed", [
+    "Web Content Accessibility Guidelines (WCAG)", "WCAG (Web Content Accessibility Guidelines)",
+])
+def test_a_bracketed_name_joins_its_abbreviation_and_its_full_name_when_all_three_appear(client, bracketed):
+    """The bracket says the abbreviation and the full name are one thing.
+    With all three in a session the bracketed name matched two names that
+    did not match each other, so as a hub it joined neither and none of
+    the three merged (audit 2026-10-26)."""
+    names = [bracketed, "WCAG", "Web Content Accessibility Guidelines"]
+    data = _fuzzy(client, [_entity(n, "CONCEPT", f"s{k}") for k, n in enumerate(names)])
+    assert [(sorted([g["canonical"], *g["aliases"]]), g["method"]) for g in data["resolved"]] == [
+        (sorted(names), "parenthetical"),
+    ]
+    assert data["unresolved"] == []
+
+
+def test_two_bracketed_names_that_define_one_abbreviation_two_ways_stay_apart(client):
+    names = ["Continuous Integration (CI)", "Confidence Interval (CI)", "CI", "Continuous Integration",
+             "Confidence Interval"]
+    data = _fuzzy(client, [_entity(n, "CONCEPT", f"s{k}") for k, n in enumerate(names)])
+    assert sorted(sorted([g["canonical"], *g["aliases"]]) for g in data["resolved"]) == [
+        ["Confidence Interval", "Confidence Interval (CI)"],
+        ["Continuous Integration", "Continuous Integration (CI)"],
+    ]
+    assert [e["name"] for e in data["unresolved"]] == ["CI"]
+
+
 def test_bracketed_page_binds_its_abbreviation_whatever_the_kind(client):
     page = [{"title": "Web Content Accessibility Guidelines (WCAG)", "page_type": "concept"}]
     data = _fuzzy(client, [_entity("WCAG", "ORG", "s1"), _entity("WCAG 2", "ORG", "s2")], page_titles=page)

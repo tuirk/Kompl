@@ -228,3 +228,21 @@ it('renders the unchecked-pairs row for the activity feed', () => {
   expect(text(content.primary)).toBe('23 possible duplicate pairs not checked');
   expect(text(content.secondary)).toBe('13 over the 120-pair limit · 10 in AI calls that failed');
 });
+
+it('gives a group Layer 3 forms from two lone names the kind Layers 1 and 2 would, whichever side comes first', async () => {
+  const kinds: string[] = [];
+  for (const [a, b] of [[ent('APCA', 's1', 'PRODUCT'), ent('APCA contrast algorithm', 's2')],
+                        [ent('APCA contrast algorithm', 's2'), ent('APCA', 's1', 'PRODUCT')]]) {
+    const { canonical_entities, canonical_concepts } = await resolveWith({
+      ambiguous: [pair(a, b, 0.8)],
+      decide: () => ({ decision: 'same', canonical: 'APCA' }),
+    });
+    const groups = [...canonical_entities, ...canonical_concepts].filter((g) => g.canonical === 'APCA');
+    expect(groups).toHaveLength(1);
+    kinds.push(groups[0].type);
+    handle?.cleanup();
+    handle = null;
+  }
+  // A tie in sources goes to the kind first in alphabetical order (majority_kind).
+  expect(kinds).toEqual(['CONCEPT', 'CONCEPT']);
+});

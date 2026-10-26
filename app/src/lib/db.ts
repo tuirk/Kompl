@@ -1914,21 +1914,27 @@ export function hasPendingCreate(title: string, pageTypes: readonly string[]): b
  * pages, plus the new entity and concept pages drafts waiting for approval
  * will create, so a name binds to such a page as it would once approved
  * (plan 1.8). Each with its summary (none yet for a waiting draft), which
- * Layer 2 compares names with by meaning. Sorted like
- * getEntityAndConceptPageTitles.
+ * Layer 2 compares names with by meaning, and `person` on an entity page
+ * most of whose mentions are people: by meaning Layer 2 pairs a person only
+ * with people, and an entity page's kind is otherwise unknown to it. Sorted
+ * like getEntityAndConceptPageTitles.
  */
-export function getResolverPageTitles(): Array<{ title: string; page_type: string; summary: string | null }> {
-  return openDb()
+export function getResolverPageTitles(): Array<{ title: string; page_type: string; summary: string | null; person?: true }> {
+  const person = (table: string) =>
+    `(${table}.page_type = 'entity' AND (SELECT 2 * SUM(m.entity_type = 'PERSON') > COUNT(*)
+        FROM entity_mentions m WHERE m.canonical_name = ${table}.title))`;
+  const rows = openDb()
     .prepare(
-      `SELECT title, page_type, NULLIF(TRIM(summary), '') AS summary FROM pages
+      `SELECT title, page_type, NULLIF(TRIM(summary), '') AS summary, ${person('pages')} AS person FROM pages
         WHERE page_type IN ('entity', 'concept')
        UNION
-       SELECT title, page_type, NULL FROM page_plans
+       SELECT title, page_type, NULL, ${person('page_plans')} FROM page_plans
         WHERE draft_status = 'pending_approval' AND action = 'create'
           AND page_type IN ('entity', 'concept')
        ORDER BY title, page_type`
     )
-    .all() as Array<{ title: string; page_type: string; summary: string | null }>;
+    .all() as Array<{ title: string; page_type: string; summary: string | null; person: number | null }>;
+  return rows.map(({ person: isPerson, ...page }) => (isPerson ? { ...page, person: true as const } : page));
 }
 
 /**

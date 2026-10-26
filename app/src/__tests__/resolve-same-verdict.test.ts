@@ -9,6 +9,7 @@
 
 import { it, expect, afterEach, vi } from 'vitest';
 import { POST as resolvePOST } from '../app/api/compile/resolve/route';
+import { getAllAliases } from '../lib/db';
 import { setupTestDb, seedSource, seedExtraction, type TestDbHandle } from './helpers/test-db';
 
 let handle: TestDbHandle | null = null;
@@ -69,6 +70,9 @@ async function resolveWith(
 
 const concept = (name: string, source_id: string): Ent => ({ name, type: 'CONCEPT', source_id, context: '' });
 const existingPage = (name: string): Ent => ({ name, type: 'CONCEPT', source_id: '__existing_page__', context: '' });
+const groupRef = (k: number, name: string): Ent => ({ name, type: 'CONCEPT', source_id: `__group__:${k}`, context: '' });
+const group = (canonical: string, source_ids: string[]): Group =>
+  ({ canonical, type: 'CONCEPT', aliases: [], source_ids, method: 'exact' });
 
 it("keeps a 'same'-merged entity out of the singletons", async () => {
   const out = await resolveWith(
@@ -163,4 +167,124 @@ it("never chains across a pair called different", async () => {
     ],
   );
   expect(out.map((g) => g.canonical).sort()).toEqual(['Search engine', 'Search engine optimization']);
+});
+
+it("does not chain through an abbreviation that is a group: CI in two sources (audit 2026-10-26)", async () => {
+  const out = await resolveWith(
+    ['CI', 'Continuous Integration', 'Confidence Interval'],
+    (sid) => ({
+      resolved: [group('CI', [sid, 's2'])],
+      ambiguous: [
+        { entity_a: groupRef(0, 'CI'), entity_b: concept('Continuous Integration', 's3'), similarity: 0.6, name_similarity: 0.5 },
+        { entity_a: groupRef(0, 'CI'), entity_b: concept('Confidence Interval', 's4'), similarity: 0.6, name_similarity: 0.4 },
+      ],
+    }),
+    [
+      { a: 'CI', b: 'Continuous Integration', decision: 'same', canonical: 'CI' },
+      { a: 'CI', b: 'Confidence Interval', decision: 'same', canonical: 'CI' },
+    ],
+  );
+  // The group takes the first expansion; the second stays its own.
+  expect(out).toEqual([
+    expect.objectContaining({ canonical: 'CI', aliases: ['Continuous Integration'] }),
+    expect.objectContaining({ canonical: 'Confidence Interval', aliases: [] }),
+  ]);
+});
+
+it("never chains through a group across a pair called different", async () => {
+  const out = await resolveWith(
+    ['Search engine', 'Web search engine', 'Search engine optimization'],
+    (sid) => ({
+      resolved: [group('Search engine', [sid, 's2'])],
+      ambiguous: [
+        { entity_a: groupRef(0, 'Search engine'), entity_b: concept('Web search engine', 's3'), similarity: 0.9, name_similarity: 0.9 },
+        { entity_a: groupRef(0, 'Search engine'), entity_b: concept('Search engine optimization', 's4'), similarity: 0.8, name_similarity: 0.8 },
+        { entity_a: concept('Web search engine', 's3'), entity_b: concept('Search engine optimization', 's4'), similarity: 0.7, name_similarity: 0.7 },
+      ],
+    }),
+    [
+      { a: 'Search engine', b: 'Web search engine', decision: 'same', canonical: 'Search engine' },
+      { a: 'Search engine', b: 'Search engine optimization', decision: 'same', canonical: 'Search engine' },
+      { a: 'Web search engine', b: 'Search engine optimization', decision: 'different', canonical: null },
+    ],
+  );
+  expect(out.map((g) => [g.canonical, ...g.aliases])).toEqual([
+    ['Search engine', 'Web search engine'],
+    ['Search engine optimization'],
+  ]);
+});
+
+it("never joins two groups across a pair called different", async () => {
+  const out = await resolveWith(
+    ['Search engine', 'Web search engine', 'Search engine optimization'],
+    (sid) => ({
+      resolved: [group('Search engine', [sid, 's2']), group('Search engine optimization', ['s4', 's5'])],
+      ambiguous: [
+        { entity_a: groupRef(0, 'Search engine'), entity_b: concept('Web search engine', 's3'), similarity: 0.9, name_similarity: 0.9 },
+        { entity_a: groupRef(0, 'Search engine'), entity_b: groupRef(1, 'Search engine optimization'), similarity: 0.8, name_similarity: 0.8 },
+        { entity_a: concept('Web search engine', 's3'), entity_b: groupRef(1, 'Search engine optimization'), similarity: 0.7, name_similarity: 0.7 },
+      ],
+    }),
+    [
+      { a: 'Search engine', b: 'Web search engine', decision: 'same', canonical: 'Search engine' },
+      { a: 'Search engine', b: 'Search engine optimization', decision: 'same', canonical: 'Search engine' },
+      { a: 'Web search engine', b: 'Search engine optimization', decision: 'different', canonical: null },
+    ],
+  );
+  expect(out.map((g) => [g.canonical, ...g.aliases])).toEqual([
+    ['Search engine', 'Web search engine'],
+    ['Search engine optimization'],
+  ]);
+});
+
+it("stores a name a 'same' verdict added to a group as the AI's match, not the group's spelling rule", async () => {
+  await resolveWith(
+    ['CI', 'Continuous Integration'],
+    (sid) => ({
+      resolved: [{ ...group('CI', [sid, 's2']), aliases: ['C.I.'] }],
+      ambiguous: [
+        { entity_a: groupRef(0, 'CI'), entity_b: concept('Continuous Integration', 's3'), similarity: 0.6, name_similarity: 0.5 },
+      ],
+    }),
+    [{ a: 'CI', b: 'Continuous Integration', decision: 'same', canonical: 'CI' }],
+  );
+  expect(getAllAliases().map((a) => [a.alias, a.canonical_name, a.method])).toEqual([
+    ['C.I.', 'CI', 'exact'],
+    ['Continuous Integration', 'CI', 'llm'],
+  ]);
+});
+
+it.each([
+  [['CI']],
+  [['CI', 'Continuous Integration']],
+])("does not chain through a group Layer 1 built from an abbreviation and its expansion (%j)", async (aliases) => {
+  const out = await resolveWith(
+    ['Continuous Integration (CI)', ...aliases, 'Confidence Interval'],
+    (sid) => ({
+      resolved: [{ ...group('Continuous Integration (CI)', [sid, 's2']), aliases, method: 'parenthetical' }],
+      ambiguous: [
+        { entity_a: groupRef(0, 'Continuous Integration (CI)'), entity_b: concept('Confidence Interval', 's3'), similarity: 0.6, name_similarity: 0.4 },
+      ],
+    }),
+    [{ a: 'Continuous Integration (CI)', b: 'Confidence Interval', decision: 'same', canonical: 'Continuous Integration (CI)' }],
+  );
+  // The group already says what CI stands for; the other expansion stays its own.
+  expect(out.map((g) => [g.canonical, ...g.aliases])).toEqual([
+    ['Continuous Integration (CI)', ...aliases],
+    ['Confidence Interval'],
+  ]);
+});
+
+it("lets a group of one abbreviation's spellings take its first expansion", async () => {
+  const out = await resolveWith(
+    ['LLM', 'LLMs', 'Large language models'],
+    (sid) => ({
+      resolved: [{ ...group('LLM', [sid, 's2']), aliases: ['LLMs'], method: 'plural' }],
+      ambiguous: [
+        { entity_a: groupRef(0, 'LLM'), entity_b: concept('Large language models', 's3'), similarity: 0.6, name_similarity: 0.5 },
+      ],
+    }),
+    [{ a: 'LLM', b: 'Large language models', decision: 'same', canonical: 'LLM' }],
+  );
+  expect(out.map((g) => [g.canonical, ...g.aliases])).toEqual([['LLM', 'LLMs', 'Large language models']]);
 });

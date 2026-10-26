@@ -16,6 +16,9 @@ The encoder below gives each text its own vector, so a name and its
 from __future__ import annotations
 
 import math
+import random
+import time
+import zlib
 from typing import Any
 
 import numpy as np
@@ -380,3 +383,65 @@ def test_page_of_the_other_kind_is_asked_about_not_anchored(client, encoder):
     assert data["ambiguous"][0]["entity_b"] == {"name": "UNESCO World Heritage", "type": "CONCEPT",
                                                 "source_id": "__existing_page__", "context": ""}
     assert [e["name"] for e in data["unresolved"]] == ["Francis Wolff"]
+
+
+# ---------------------------------------------------------------------------
+# A large wiki: the route aborts /resolve/embedding at 60 s
+# ---------------------------------------------------------------------------
+
+
+class _Counting:
+    """One model for the whole run, as in the service; counts what it encodes.
+    Each text gets a fixed vector picked by its checksum."""
+
+    def __init__(self, dim: int = 384):
+        self.base = np.random.default_rng(7).standard_normal((4096, dim)).astype(np.float32)
+        self.encoded: list[str] = []
+
+    def encode(self, texts, convert_to_numpy=True, normalize_embeddings=False):  # noqa: ARG002
+        self.encoded.extend(texts)
+        return self.base[[zlib.crc32(t.encode("utf-8")) % len(self.base) for t in texts]]
+
+
+def _wiki(n_names: int, n_pages: int, seed: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rng = random.Random(seed)
+    words = [f"term{k}" for k in range(400)] + "alpha beta network model language search engine data".split()
+
+    def name() -> str:
+        return " ".join(rng.choice(words).capitalize() for _ in range(rng.randint(1, 4)))
+
+    pages = [{"title": name(), "page_type": rng.choice(["entity", "concept"]), "summary": f"About {name()}."}
+             for _ in range(n_pages)]
+    names = [_entity(name(), rng.choice(["ORG", "CONCEPT", "PERSON", "PRODUCT"]), f"s{rng.randint(1, 30)}",
+                     f"Context {name()}") for _ in range(n_names)]
+    return names, pages
+
+
+def test_the_wiki_s_page_texts_are_encoded_once_across_compiles(client, monkeypatch):
+    from routers import resolution  # noqa: PLC0415
+
+    model = _Counting()
+    monkeypatch.setattr(resolution, "_get_embed_model", lambda: model)
+    names, pages = _wiki(20, 300, seed=1)
+    _embedding(client, names, pages=pages)
+    first = len(model.encoded)
+    later, _ = _wiki(20, 0, seed=2)
+    _embedding(client, later, pages=pages)
+    assert first >= 600
+    # Only the new session's names and "name: context" texts not met before.
+    texts = {e["name"] for e in later} | {f"{e['name']}: {e['context']}" for e in later}
+    assert sorted(model.encoded[first:]) == sorted(texts - set(model.encoded[:first]))
+
+
+def test_a_large_session_against_a_large_wiki_stays_well_inside_the_route_timeout(client, monkeypatch):
+    """600 names against 5,000 pages took 15 s before, the encoding aside:
+    every name was checked against every page one by one in Python, and
+    every page sorted for every name (audit 2026-10-26)."""
+    from routers import resolution  # noqa: PLC0415
+
+    monkeypatch.setattr(resolution, "_get_embed_model", lambda: _Counting())
+    names, pages = _wiki(600, 5000, seed=7)
+    start = time.perf_counter()
+    _embedding(client, names, pages=pages)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 10, f"/resolve/embedding took {elapsed:.1f}s on 600 names × 5,000 pages"

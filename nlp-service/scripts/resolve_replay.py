@@ -45,7 +45,9 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import sys
+import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -180,13 +182,21 @@ def where(side: dict[str, Any], groups: list[dict[str, Any]]) -> tuple[Any, ...]
 def fold(groups: list[dict[str, Any]], pairs: list[dict[str, Any]], verdicts: list[dict[str, Any] | None]) -> _Union:
     """Groups bound to a page hold it; then each 'same' verdict joins its two
     sides, verdicts touching the wiki first and two pages never joining
-    (route.ts applySame). A lone name already joined brings its group along,
-    unless it is an abbreviation of the other side or Layer 3 called a name
-    pair across the two different."""
+    (route.ts applySame). A side a verdict already joined to more (a lone
+    name, a group or a page), or whose names already hold an abbreviation
+    and an expansion of it, brings all of it along, unless a name on one
+    side is an abbreviation of a name on the other or Layer 3 called a pair
+    across the two different."""
     u = _Union()
+    names: dict[tuple[Any, ...], list[str]] = {}
     for k, g in enumerate(groups):
+        names[("group", k)] = [g["canonical"], *g["aliases"]]
         if g["method"] in ANCHORED:
+            names[("page", g["canonical"].lower())] = [g["canonical"]]
             u.union(("group", k), ("page", g["canonical"].lower()))
+    for p in pairs:
+        for e in (p["entity_a"], p["entity_b"]):
+            names.setdefault(label(e), [e["name"]])
 
     def touches_wiki(pair: dict[str, Any]) -> bool:
         sides = [label(pair["entity_a"]), label(pair["entity_b"])]
@@ -195,29 +205,55 @@ def fold(groups: list[dict[str, Any]], pairs: list[dict[str, Any]], verdicts: li
     order = sorted(range(len(pairs)), key=lambda k: not touches_wiki(pairs[k]))
     different = [(label(p["entity_a"]), label(p["entity_b"])) for p, v in zip(pairs, verdicts)
                  if v is not None and v["decision"] == "different"]
-    merged: set[tuple[Any, ...]] = set()
+    merged: set[tuple[Any, ...]] = set()  # sides a 'same' verdict joined
+
+    def held(x: tuple[Any, ...]) -> list[tuple[Any, ...]]:
+        root = u.find(x)
+        return [k for k in list(u.parent) if u.find(k) == root]
+
     for k in order:
         verdict = verdicts[k]
         if verdict is None or verdict["decision"] != "same":
             continue
-        a, b = pairs[k]["entity_a"], pairs[k]["entity_b"]
-        x, y = label(a), label(b)
-        chained = False
-        for hub, other, hx, ox in ((a, b, x, y), (b, a, y, x)):
-            if hx not in merged:
+        x, y = label(pairs[k]["entity_a"]), label(pairs[k]["entity_b"])
+        hx, hy = held(x), held(y)
+        xs = [n for s in hx for n in names.get(s, [])]
+        ys = [n for s in hy for n in names.get(s, [])]
+        if merged & {*hx, *hy} or settled(xs) or settled(ys):
+            if any(is_abbreviation(p, q) or is_abbreviation(q, p) for p in xs for q in ys):
                 continue
-            if is_abbreviation(hub["name"], other["name"]) or is_abbreviation(other["name"], hub["name"]):
-                chained = True
-                break
-            ends = {u.find(hx), u.find(ox)}
+            ends = {u.find(x), u.find(y)}
             if any({u.find(p), u.find(q)} == ends for p, q in different):
-                chained = True
-                break
-        if chained:
-            continue
+                continue
         if u.union(x, y):
-            merged.update(s for s in (x, y) if s[0] == "entity")
+            merged.update((x, y))
     return u
+
+
+def settled(names: list[str]) -> bool:
+    """The names hold an abbreviation and an expansion of it, not just a
+    spelling or plural of it (route.ts applySame)."""
+    return any(x != y and is_abbreviation(x, y) and skeleton(x) != skeleton(y) and not simple_plural(x, y)
+               for x in names for y in names)
+
+
+def skeleton(name: str) -> str:
+    """resolution.py _skeleton: no case, spaces, hyphens or punctuation."""
+    return re.sub(r"[^\w+#]|_", "", unicodedata.normalize("NFKC", name).lower())
+
+
+def simple_plural(a: str, b: str) -> bool:
+    """resolution.py _is_simple_plural: one name is the other plus a plural ending."""
+    sa, sb = skeleton(a), skeleton(b)
+    if len(sa) > len(sb):
+        a, b, sa, sb = b, a, sb, sa
+    if len(sa) < 3:
+        return len(sa) == 2 and a.isupper() and b == a + "s"
+    if sb == sa + "s":
+        return not sa.endswith("s")
+    if sb == sa + "es":
+        return sa.endswith(("s", "x", "z", "ch", "sh"))
+    return sa.endswith("y") and sb == sa[:-1] + "ies"
 
 
 def is_abbreviation(short: str, long: str) -> bool:
