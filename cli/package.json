@@ -35,7 +35,7 @@
     "@types/prompts": "^2.4.9",
     "jest": "^30.5.0",
     "ts-jest": "^29.4.12",
-    "tsup": "^8.3.0",
+    "tsup": "^9.0.0",
     "typescript": "^6.0.0"
   },
   "overrides": {
