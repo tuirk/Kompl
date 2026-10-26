@@ -321,6 +321,8 @@ export type Changes =
       staged: Listed<{ item: string; status: string; error: string | null }>;
       sources_added: Listed<AddedSource>;
       pages: Listed<ChangedPage>;
+      /** Retries the user pressed; absent from older apps. */
+      retries?: Listed<WikiEvent>;
       failures: Listed<WikiEvent>;
     }
   | {

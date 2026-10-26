@@ -609,6 +609,12 @@ function renderCompileCancelled(row: FeedActivityRow): RowContent {
   return { primary: <>Compile cancelled</>, secondary, action: null, isError: false };
 }
 
+function renderCompileRetried(row: FeedActivityRow): RowContent {
+  const { str } = makeGetters(row);
+  const secondary = <span style={MONO_DIM}>{str('message') ?? 'retry pressed'}</span>;
+  return { primary: <>Compile retried by you</>, secondary, action: null, isError: false };
+}
+
 function renderPendingDraftsCleaned(row: FeedActivityRow): RowContent {
   const { str, num } = makeGetters(row);
   const detailTitle = str('title');
@@ -912,6 +918,7 @@ export const ACTIVITY_EVENTS = {
   draft_queued_for_approval: { key: 'draft_queued_for_approval', badge: { label: 'QUEUED', tone: 'dim' as Tone }, render: renderDraftQueuedForApproval },
   labels_merged:          { key: 'labels_merged',          badge: { label: 'MERGED',     tone: 'neut' as Tone }, render: renderLabelsMerged },
   compile_cancelled:      { key: 'compile_cancelled',      badge: { label: 'CANCELLED',  tone: 'dim'  as Tone }, render: renderCompileCancelled },
+  compile_retried:        { key: 'compile_retried',        badge: { label: 'RETRYING',   tone: 'dim'  as Tone }, render: renderCompileRetried },
   compile_trigger_failed: { key: 'compile_trigger_failed', badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   compile_failed:         { key: 'compile_failed',         badge: { label: 'FAILED',     tone: 'red'  as Tone }, render: renderFailureWithRetry, retriable: true },
   // ── Sources ─────────────────────────────────────────────────────────────

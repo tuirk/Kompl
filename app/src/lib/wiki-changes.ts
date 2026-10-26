@@ -111,6 +111,8 @@ export interface SessionChanges {
   staged: Listed<{ item: string; status: string; error: string | null }>;
   sources_added: Listed<SourceAdded>;
   pages: Listed<PageChange>;
+  /** Retries the user pressed (not the service's automatic LLM retries), oldest first. */
+  retries: Listed<WikiEvent>;
   failures: Listed<WikiEvent>;
 }
 
@@ -160,6 +162,7 @@ export function changesForSession(sessionId: string, limit: number): SessionChan
     ),
     sources_added: listed(sources, limit),
     pages: listed(pageChanges(since, provenance), limit),
+    retries: listed(events(`a.session_id = ? AND a.action_type = 'compile_retried'`, null, [sessionId]).reverse(), limit),
     // Compile-level failures (n8n, the trigger, the stuck-queue reconciler)
     // carry the session only in their details.
     failures: listed(

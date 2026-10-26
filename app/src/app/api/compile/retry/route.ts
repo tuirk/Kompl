@@ -6,7 +6,7 @@
  * progress UI when status = 'failed'.
  */
 import { NextResponse } from 'next/server';
-import { getCompileProgress, getRunningCompileSession, resetForRetry } from '@/lib/db';
+import { getCompileProgress, getRunningCompileSession, logActivity, resetForRetry } from '@/lib/db';
 import { pageUpgradeBlock } from '@/lib/page-upgrade-state';
 import { wikiRepairBlock } from '@/lib/wiki-repair/state';
 import { triggerSessionCompile } from '@/lib/trigger-n8n';
@@ -59,6 +59,13 @@ export async function POST(request: Request) {
   // Reset only failed/pending steps — preserve completed work so runCompilePipeline
   // can skip expensive steps (extract, draft) that already succeeded.
   resetForRetry(session_id);
+  // The user pressed Retry: recent_changes(session_id) tells it from the
+  // service's own automatic LLM retries.
+  logActivity('compile_retried', {
+    source_id: null,
+    session_id,
+    details: { session_id, message: 'retry of the failed run' },
+  });
 
   const trigger = await triggerSessionCompile(session_id);
   if (!trigger.ok) {

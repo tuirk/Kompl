@@ -193,6 +193,7 @@ function seedWiki(h: TestDbHandle): { paper: string; blog: string } {
   syncPageTextDisagreements(db, { page_id: 'btc', title: 'Bitcoin' }, btc, { log: false });
   logActivity('page_dispute_recorded', { source_id: null, details: { page_id: 'btc', title: 'Bitcoin', topic: 'launch date' } });
   logActivity('ingest_url_failed', { source_id: null, details: { url: 'https://bad.test/', error: 'dns', session_id: 's1' } });
+  logActivity('compile_retried', { source_id: null, session_id: 's1', details: { session_id: 's1', message: 'retry of the failed run' } });
   logActivity('lint_complete', {
     source_id: null,
     details: { contradictions: [{ page_a_id: 'btc', page_a_title: 'Bitcoin', page_b_id: 'sat', page_b_title: 'Satoshi Nakamoto', claim: 'Launch year' }] },

@@ -164,6 +164,19 @@ describe('changes in a session', () => {
     expect(body.pages.items).toHaveLength(2);
   });
 
+  it('lists the retries the user pressed, for that session only', async () => {
+    handle = setupTestDb();
+    handle.db.prepare(`INSERT INTO compile_progress (session_id, status, steps) VALUES ('s3', 'completed', '{}')`).run();
+    logActivity('compile_retried', { source_id: null, session_id: 's3', details: { session_id: 's3', message: 'retry of 2 failed items' } });
+    logActivity('compile_retried', { source_id: null, session_id: 'other', details: { session_id: 'other', message: 'not this one' } });
+
+    const { body } = await changes('session_id=s3');
+    expect(body.retries).toEqual({
+      items: [expect.objectContaining({ kind: 'compile_retried', detail: 'retry of 2 failed items' })],
+      total: 1,
+    });
+  });
+
   it('answers 404 for an unknown session', async () => {
     handle = setupTestDb();
     expect((await changes('session_id=nope')).status).toBe(404);

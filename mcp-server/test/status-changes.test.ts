@@ -205,10 +205,16 @@ describe('recent_changes', () => {
         },
         sources_added: { items: [], total: 0 },
         pages: { items: [PAGE_CHANGE], total: 27 },
+        retries: {
+          items: [{ at: '2026-10-10 09:01:00', kind: 'compile_retried', page_id: null, page_title: null, source_title: null, detail: 'retry of 2 failed items' }],
+          total: 1,
+        },
         failures: { items: [], total: 0 },
       },
     });
     const res = await call(await connect(kompl.fetchImpl), 'recent_changes', { session_id: 'abc', days: 3 });
+    expect(res.text).toContain('Retries pressed by the user (not automatic) (1):');
+    expect(res.text).toContain('2026-10-10 09:01:00: compile retried (retry of 2 failed items)');
     expect(res.text).toContain('**Compile session `abc`**: completed, started 2026-10-10 09:00:00, finished 2026-10-10 09:02:00 UTC');
     expect(res.text).toContain('• https://bad.test/: failed (Could not fetch the page)');
     expect(res.text).toContain('Created **The Merge**');

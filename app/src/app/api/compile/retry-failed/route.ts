@@ -56,6 +56,7 @@ import {
   getCompileProgress,
   getDb,
   getRunningCompileSession,
+  logActivity,
 } from '@/lib/db';
 import { pageUpgradeBlock } from '@/lib/page-upgrade-state';
 import { wikiRepairBlock } from '@/lib/wiki-repair/state';
@@ -154,6 +155,15 @@ export async function POST(request: Request) {
     ).run(resetSteps, session_id);
   })();
 
+  // The user pressed Retry: recent_changes(session_id) tells it from the
+  // service's own automatic LLM retries.
+  const retried = failedRows.length + failedDraftCount + unextractedCount;
+  logActivity('compile_retried', {
+    source_id: null,
+    session_id,
+    details: { session_id, retried, message: `retry of ${retried} failed item${retried === 1 ? '' : 's'}` },
+  });
+
   const trigger = await triggerSessionCompile(session_id);
   if (!trigger.ok) {
     const httpStatus = trigger.reason === 'n8n_timeout' ? 504 : 502;
@@ -164,7 +174,7 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({
-    retried: failedRows.length + failedDraftCount + unextractedCount,
+    retried,
     status: 'retrying',
   });
 }

@@ -335,6 +335,10 @@
         ],
         "total": 1
       },
+      "retries": {
+        "items": [{ "at": "2026-10-23 18:37:49", "kind": "compile_retried", "page_id": null, "page_title": null, "source_title": null, "detail": "retry of the failed run" }],
+        "total": 1
+      },
       "failures": {
         "items": [{ "at": "2026-10-23 18:37:49", "kind": "ingest_url_failed", "page_id": null, "page_title": null, "source_title": null, "detail": "dns" }],
         "total": 1

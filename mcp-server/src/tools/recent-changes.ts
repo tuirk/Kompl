@@ -68,6 +68,7 @@ function formatSession(c: Extract<Changes, { mode: 'session' }>): string {
     section('Items', c.staged.items, c.staged.total, (s) => `${s.item}: ${s.status}${s.error ? ` (${s.error})` : ''}`),
     section('Sources added', c.sources_added.items, c.sources_added.total, sourceLine),
     section('Pages created or updated', c.pages.items, c.pages.total, pageLine),
+    c.retries ? section('Retries pressed by the user (not automatic)', c.retries.items, c.retries.total, eventLine) : '',
     section('Failures', c.failures.items, c.failures.total, eventLine),
   ]);
 }
