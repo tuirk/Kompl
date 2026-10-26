@@ -113,3 +113,35 @@ def test_a_page_without_a_title_is_named_by_its_first_heading(firecrawl):
     firecrawl["replies"] = [{"success": True, "data": {"markdown": body, "metadata": {}}}]
     result = convert()
     assert (result.title, result.title_source) == ("Censorship, Creativity, and the Polish School of Posters", "body_h2")
+
+
+ARTICLE = "".join(
+    f"<p>Paragraph {i}: Saul Bass designed the title sequence for The Man with the Golden Arm and many "
+    f"later films, and the book collects his posters, logos and storyboards from year {1950 + i}.</p>"
+    for i in range(8)
+)
+WALLPAPER = (
+    "<html><body><nav><a href='/art'>Art</a> <a href='/design'>Design</a></nav>"
+    "<div class='newsletter'><h3>Wallpaper* Newsletter</h3><p>Receive our daily digest.</p></div>"
+    f"<article><h1>Saul Bass: A Life in Film &amp; Design</h1>{ARTICLE}</article>"
+    "<footer>Future plc, Quay House</footer></body></html>"
+)
+
+
+def test_firecrawl_whole_page_keeps_only_the_article_picked_from_its_html(firecrawl):
+    """Firecrawl's own main-content mode gave a Wallpaper* article's newsletter
+    box (2026-10-26): the whole page comes back and the article is picked
+    from its HTML here."""
+    full = "Wallpaper* Newsletter\n\nReceive our daily digest.\n\n# Saul Bass\n\n" + "Text. " * 300
+    firecrawl["replies"] = [{"success": True, "data": {"markdown": full, "rawHtml": WALLPAPER,
+                                                       "metadata": {"title": "Saul Bass | Wallpaper*"}}}]
+    result = convert()
+    assert "title sequence for The Man with the Golden Arm" in result.markdown
+    assert "Newsletter" not in result.markdown and "Quay House" not in result.markdown
+
+
+def test_an_extract_too_short_to_trust_keeps_the_whole_page(firecrawl):
+    full = "# Saul Bass\n\n" + "The whole page text. " * 100
+    tiny = "<html><body><article><p>Wallpaper* Newsletter. Receive our daily digest.</p></article></body></html>"
+    firecrawl["replies"] = [{"success": True, "data": {"markdown": full, "rawHtml": tiny, "metadata": {}}}]
+    assert convert().markdown == full

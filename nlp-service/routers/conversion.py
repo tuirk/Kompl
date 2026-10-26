@@ -691,23 +691,35 @@ class _KeepBodySession(requests.Session):
         return response
 
 
-def _main_content(session: _KeepBodySession, markdown: str, url: str) -> str:
-    """The article's own text from the HTML page the session fetched, as
-    markdown with its headings, tables and links: no site menu, newsletter
-    box, related articles, comments or footer (a 6sqft interview came in at
-    50,745 characters, 13,881 of them the interview). MarkItDown's text is
-    kept when the page is not HTML or the extract is shorter than a usable
-    source, so a page the extractor misreads is never lost."""
-    if session.body is None or "html" not in session.content_type.lower():
-        return markdown
+# Shorter than this, an extract is not trusted as the article and the whole
+# page is kept: Firecrawl's own main-content mode once returned only an
+# 858-character newsletter box for a Wallpaper* article (2026-10-26). A
+# little site clutter beats a lost article.
+_MIN_ARTICLE_CHARS = 1000
+
+
+def _article(html: str, url: str) -> str | None:
+    """The article's own text in a web page's HTML, as markdown with its
+    headings, tables and links: no site menu, newsletter box, related
+    articles, comments or footer (a 6sqft interview came in at 50,745
+    characters, 13,881 of them the interview). None when the page cannot be
+    read or the extract is too short to trust (_MIN_ARTICLE_CHARS)."""
     try:
         article = trafilatura.extract(
-            session.body.decode("utf-8", errors="replace"), url=url, output_format="markdown",
+            html, url=url, output_format="markdown",
             include_tables=True, include_links=True, include_formatting=True, include_comments=False,
         )
-    except Exception:  # noqa: BLE001 — a page the extractor cannot parse keeps MarkItDown's text
+    except Exception:  # noqa: BLE001 — a page the extractor cannot parse keeps the whole text
+        return None
+    return article if article and len(article) >= _MIN_ARTICLE_CHARS else None
+
+
+def _main_content(session: _KeepBodySession, markdown: str, url: str) -> str:
+    """The article from the HTML page the session fetched, or MarkItDown's
+    whole text when the page is not HTML or no article can be trusted."""
+    if session.body is None or "html" not in session.content_type.lower():
         return markdown
-    return article if article and len(article) >= _MARKITDOWN_MIN_CHARS else markdown
+    return _article(session.body.decode("utf-8", errors="replace"), url) or markdown
 
 
 def _page_date(session: _KeepBodySession) -> PublishedDate | None:
@@ -921,9 +933,11 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
 
     firecrawl_body = {
         "url": req.url,
-        "formats": ["markdown"],
-        # Firecrawl's own main-content mode: no header, menu or footer.
-        "onlyMainContent": True,
+        # The whole page and its HTML, in one request: the article is picked
+        # from the HTML here (_article). Firecrawl's own main-content mode
+        # returned a newsletter box instead of a Wallpaper* article.
+        "formats": ["markdown", "rawHtml"],
+        "onlyMainContent": False,
         "timeout": 30000,
     }
     firecrawl_headers = {
@@ -982,6 +996,9 @@ def convert_url(req: UrlConvertRequest) -> ConvertResponse:
     # Retry failed can fetch it again later.
     if _is_bot_check(fc_metadata.get("title"), markdown):
         raise HTTPException(status_code=422, detail="bot_check_page: the site served a bot check instead of the page")
+    raw_html = data.get("rawHtml")
+    if isinstance(raw_html, str) and raw_html:
+        markdown = _article(raw_html, req.url) or markdown
 
     # Flatten per docs/research/2026-04-08-conversion-deps.md section 1.
     fc_title = _clean_title(fc_metadata.get("title"))
