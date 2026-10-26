@@ -30,8 +30,11 @@ pattern across all ten without you having to ask.
 - **Compiles at save time, not at question time.** Source #50 doesn't just become
   page #51: it rewrites the pages it touches, so the wiki never needs upkeep.
 - **Grows its own structure.** Entities and concepts that keep showing up get
-  their own pages. When sources disagree, a comparison page shows the
-  disagreement with provenance.
+  their own pages, and a topic map shows how they connect, each connection with
+  the sentence that states it.
+- **Says when sources disagree.** A page records a disputed claim with both
+  sides cited, and a claim that a newer source changed with its dates. You
+  confirm or dismiss each finding.
 - **Shows its sources.** Claims carry numbered citations that link to the
   sources each page was built from, so you can check any sentence.
 - **Answers through the agent you already use.** Claude Code, Claude Desktop,
@@ -44,7 +47,7 @@ pattern across all ten without you having to ask.
 | Dashboard | Compiled wiki page |
 |---|---|
 | ![Dashboard with Add Sources, Browse Wiki and Connect your AI](docs/assets/screens/dashboard.png) | ![A compiled wiki page with numbered citations, wikilinks and a table of contents](docs/assets/screens/wiki-page.png) |
-| **Entity graph** | **Settings: model, spend cap and MCP** |
+| **Topic map** | **Settings: model, spend cap and MCP** |
 | ![Graph of pages and the links between them](docs/assets/screens/graph.png) | ![Settings page with the compile model and spend cap](docs/assets/screens/settings.png) |
 
 ## How it works
@@ -56,7 +59,8 @@ flowchart LR
     C --> D["Entity resolution<br/>alias → fuzzy → embeddings → LLM"]
     D --> E["Page plan<br/>ranked by TF-IDF, confirmed by triage"]
     E --> F["LLM drafts and rewrites pages<br/>with citations"]
-    F --> G[("Your wiki")]
+    F --> X["Claim check<br/>disputed · changed"]
+    X --> G[("Your wiki")]
     G --> H["Your AI agent<br/>via MCP"]
 ```
 
@@ -225,6 +229,8 @@ kompl backup     # optional, recommended before major upgrades
 kompl update
 ```
 
+What changed in each release: [CHANGELOG.md](CHANGELOG.md).
+
 `kompl update` pulls the source, refreshes the CLI, pulls registry images,
 rebuilds `app` and `nlp-service` and waits for `/api/health`. **Your wiki is safe
 on a normal update:** pages live on the Docker volume `kompl-data`, which
@@ -316,9 +322,11 @@ TF-IDF, local sentence-transformer embeddings and Chroma, plus the LLM calls), a
   outputs go into the prompt as context, narrowing what the model has to work out.
 - **One LLM call extracts** the typed entities, concepts, claims, relationships,
   contradictions and summary for that source.
-- **Entity resolution runs as a cascade:** alias and exact-title lookup, then fuzzy
-  string matching, then local embeddings, with an LLM reserved for the genuinely
-  ambiguous pairs.
+- **Entity resolution runs as a cascade:** alias and exact-title lookup, then
+  name rules (spellings, plurals, abbreviations), then local embeddings, including
+  each name's closest names and pages by meaning, with an LLM check reserved for
+  the doubtful pairs. Two names become one page only when a rule or that check
+  says so.
 - **Page targeting is ranked, not generated.** TF–IDF ranks which pages a source
   should touch and a small triage call confirms them. The page plan (source
   summaries, entity, concept and comparison pages) stays deterministic.
@@ -326,9 +334,20 @@ TF-IDF, local sentence-transformer embeddings and Chroma, plus the LLM calls), a
   the new source's contribution and citation woven in. Sources are cited with
   short labels that Kompl stores as references to the source records, and
   wikilinks are injected by deterministic regex afterwards.
+- **Labels are merged once per compile:** one LLM call folds near-duplicate
+  categories into one.
+- **A claim check compares sources:** likely claim pairs from different sources
+  are judged by the LLM, and source dates tell a claim that changed over time
+  from a live dispute.
 - **Commits go through an outbox.** A source is either fully written or left for
-  the reconciler at boot. The previous version of every page is archived, so you
-  can see what changed.
+  the reconciler at boot. The last two versions of every page are kept, so you
+  can see what changed and restore one.
+
+**Upkeep.** Settings → Wiki health runs checks on request, updates pages written
+under older rules, and runs **Repair wiki**: a backup first, the plan and cost
+shown, then all or none (it re-checks names merged before, rebuilds connections
+and tidies links and labels). A compile's progress page offers **Retry failed**
+and **Redo** from the plan, writing or saving step, with a preview and cost.
 
 A daily spend cap (Settings → AI model & spend) stops LLM calls for the rest of
 the UTC day once the estimated spend reaches your limit.
@@ -344,8 +363,11 @@ the UTC day once the estimated spend reaches your limit.
 - **Connectors:** URLs (including YouTube transcripts and GitHub READMEs), file
   uploads (PDF, DOCX, PPTX, XLSX, TXT, MD, HTML), browser bookmarks, Twitter JSON
   export, Upnote and Apple Notes.
-- **No mobile app.** The web UI works in mobile browsers but isn't optimized for
-  small screens.
+- **Desktop browser only.** There is no mobile app, and the web UI isn't built
+  for small screens.
+- **Two names for one thing can stay two pages** when their descriptions don't
+  read alike (a rename, a translation, a nickname). Merging is careful on
+  purpose: a wrong merge is worse than a duplicate.
 
 ## Security
 
@@ -356,7 +378,6 @@ security posture is calibrated for that.
 - Markdown HTML output is not sanitized yet, so Firecrawl-scraped content can
   carry XSS payloads. Even on a single-user install an ingested bookmark can
   deliver one; the fix is DOMPurify in the render pipeline.
-- `/convert/url` does not yet share the SSRF gate that protects `/metadata/peek`.
 
 **CodeQL alerts.** Some `py/path-injection` and `js/path-injection` alerts re-fire
 on every push because CodeQL's taint tracker doesn't follow cross-function
