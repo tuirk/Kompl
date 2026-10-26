@@ -27,7 +27,7 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 import { getDb, logActivity } from './db';
-import { findPageDisputes, topicKey } from './page-disputes';
+import { findPageDisputes, matchStoredDisputes, sameSources, topicKey } from './page-disputes';
 
 /** disputed: a live disagreement; changed: a claim a later source superseded; contradiction: not classified yet. */
 export const DISAGREEMENT_KINDS = ['disputed', 'changed', 'contradiction', 'scope', 'opinion'] as const;
@@ -216,10 +216,6 @@ export function recordDisagreement(
   return { disagreement_id: id, created: true };
 }
 
-function sameSources(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && [...a].sort().join('\n') === [...b].sort().join('\n');
-}
-
 /** Was this page-text dispute logged to the feed before the record existed (activity rows only)? */
 function loggedBefore(db: Database.Database, pageId: string): Array<{ topic: string; sourceIds: string[] }> {
   const rows = db
@@ -244,7 +240,7 @@ function loggedBefore(db: Database.Database, pageId: string): Array<{ topic: str
 /**
  * Bring a page's page_text findings in line with the disputes its markdown
  * records. A dispute is the same finding as a stored one with the same
- * topic or the same cited sources (the model rewords between updates); a
+ * topic or, failing that, the same cited sources (matchStoredDisputes); a
  * finding the text no longer records is marked cleared, and comes back with
  * its verdict if the text records it again. Each new finding is logged once
  * as page_dispute_recorded unless `log` is false. Returns how many are new.
@@ -268,11 +264,9 @@ export function syncPageTextDisagreements(
   const used = new Set<string>();
   const added: Array<{ id: string; dispute: (typeof disputes)[number] }> = [];
 
-  for (const dispute of disputes) {
-    const topic = topicKey(dispute.topic);
-    const match = stored.find(
-      (s) => !used.has(s.disagreement_id) && (topicKey(s.topic) === topic || sameSources(s.source_ids, dispute.sourceIds)),
-    );
+  const matches = matchStoredDisputes(disputes, stored);
+  for (const [i, dispute] of disputes.entries()) {
+    const match = matches[i];
     if (match) {
       used.add(match.disagreement_id);
       const changed =

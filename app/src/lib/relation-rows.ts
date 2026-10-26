@@ -118,12 +118,18 @@ export function quoteVerifiedFromColumn(value: number | null | undefined): boole
   return value === 1 ? true : value === 0 ? false : null;
 }
 
+/** Kinds that can make something: a person or an organisation. */
+const MAKER_KINDS: ReadonlySet<string> = new Set(['PERSON', 'ORG']);
+
 /**
- * A created_by whose from is a person and whose to is not: the maker was
- * written first ("Saul Bass" created_by "The Man with the Golden Arm", one
- * source, film run 2026-10-25, with the quote "Bass ... after creating the
- * title sequence for ... The Man with the Golden Arm"). A person is never
- * made by a film, a product or an idea, so the row is turned.
+ * A created_by whose from is a person and whose to cannot make anything:
+ * the maker was written first ("Saul Bass" created_by "The Man with the
+ * Golden Arm", one source, film run 2026-10-25, with the quote "Bass ...
+ * after creating the title sequence for ... The Man with the Golden Arm").
+ * A person is never made by a film, a product or an idea, so the row is
+ * turned. A to that is a person or an organisation is left as written: a
+ * character is typed PERSON ("Mickey Mouse" created_by "The Walt Disney
+ * Company").
  */
 export function makerFirst(
   type: string,
@@ -133,7 +139,7 @@ export function makerFirst(
 ): boolean {
   if (type !== 'created_by') return false;
   const [a, b] = [kindOf(from), kindOf(to)];
-  return a === 'PERSON' && b !== undefined && b !== 'PERSON';
+  return a === 'PERSON' && b !== undefined && !MAKER_KINDS.has(b);
 }
 
 /** from/to in stored order: sorted lowercase for direction-agnostic types. */

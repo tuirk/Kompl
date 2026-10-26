@@ -3,8 +3,9 @@
  * lib/disagreement-duplicates.ts). The claim check keys its findings by page,
  * kind and the two SOURCES, not the claim pair, so two claim pairs between
  * the same sources are one finding; a pair the page's own open Changed or
- * Disputed section already cites is not recorded again (its quotes and
- * reason go on that section's finding instead). Duplicates stored by earlier
+ * Disputed section already cites is not shown again (its quotes and reason
+ * go on that section's finding, and its own finding waits out of sight in
+ * case a redraft drops the section). Duplicates stored by earlier
  * runs stay in the table, but the page panel, MCP read_page, recent changes
  * and wiki_status show one finding each. Owner verdicts are never touched.
  */
@@ -123,7 +124,7 @@ describe('claim-check findings: one per page, kind and pair of sources', () => {
     expect(row.reason).toContain('APCA will replace the WCAG 2 contrast ratio.');
   });
 
-  it('APCA: the page text cites both sources, so the claim check adds nothing and lends its quotes and reason', async () => {
+  it('APCA: the page text cites both sources, so the claim check shows nothing new and lends its quotes and reason', async () => {
     seedApca();
     syncPageTextDisagreements(handle!.db, APCA, CHANGED_TEXT);
     stubJudge('outdated');
@@ -132,10 +133,14 @@ describe('claim-check findings: one per page, kind and pair of sources', () => {
 
     expect(summary).toMatchObject({ judged: 2, findings: 0, by_kind: {} });
     const rows = listPageDisagreements(APCA.page_id);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ found_by: 'page_text', kind: 'changed', status: 'possible', source_a: DW, source_b: RS, quote_b: 'RS quote.' });
-    expect(rows[0].reason).toMatch(/^about: /);
-    expect(rows[0].source_ids).toEqual([DW, W3, RS]);
+    const panel = panelDisagreements(findPageDisputes(CHANGED_TEXT), rows);
+    expect(panel.map((r) => r.found_by)).toEqual(['page_text']);
+    const text = getDisagreement(panel[0].disagreement_id!)!;
+    expect(text).toMatchObject({ found_by: 'page_text', kind: 'changed', status: 'possible', source_a: DW, source_b: RS, quote_b: 'RS quote.' });
+    expect(text.reason).toMatch(/^about: /);
+    expect(text.source_ids).toEqual([DW, W3, RS]);
+    // The check's own finding is on record, out of sight while the page text cites the pair.
+    expect(rows.map((r) => r.found_by)).toEqual(['page_text', 'wiki_check']);
   });
 
   it('WCAG 3: a disputed claim pair the page text already disputes is one finding', async () => {
@@ -145,7 +150,27 @@ describe('claim-check findings: one per page, kind and pair of sources', () => {
 
     await run();
 
-    expect(listPageDisagreements(APCA.page_id)).toEqual([expect.objectContaining({ found_by: 'page_text', kind: 'disputed' })]);
+    const records = listPageDisagreements(APCA.page_id);
+    expect(panelDisagreements(findPageDisputes(DISPUTED_TEXT), records)).toEqual([
+      expect.objectContaining({ found_by: 'page_text', kind: 'disputed' }),
+    ]);
+    expect(pageDisagreementsOut(records, [], () => null)).toEqual([expect.objectContaining({ found_by: 'page_text' })]);
+  });
+
+  it('a covered verdict stays on record: when a redraft drops the section, its finding shows', async () => {
+    seedApca();
+    syncPageTextDisagreements(handle!.db, APCA, CHANGED_TEXT);
+    stubJudge('outdated');
+    await run();
+
+    syncPageTextDisagreements(handle!.db, APCA, 'APCA is a contrast method.');
+    const records = listPageDisagreements(APCA.page_id);
+    expect(panelDisagreements([], records).map((r) => [r.found_by, r.kind, r.source_ids])).toEqual([
+      ['wiki_check', 'changed', [DW, RS]],
+    ]);
+    expect(pageDisagreementsOut(records, [], () => null)).toHaveLength(1);
+    // The pairs stay judged: no second call to the judge.
+    expect((await run()).selected).toBe(0);
   });
 
   it('never overwrites what the page-text finding holds, nor the owner verdict', async () => {

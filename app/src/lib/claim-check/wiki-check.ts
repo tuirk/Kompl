@@ -215,8 +215,8 @@ export async function startWikiCheck(input: { expectedPairs: number; model: stri
         `The compile model is now ${LLM_MODEL_INFO[model].label}. Review the new estimate and confirm again.`,
       );
     }
-    const pairs = pendingClaimPairs(getDb()).length;
-    const next = Math.min(pairs, MAX_WIKI_CHECK_PAIRS_PER_RUN);
+    const pairs = pendingClaimPairs(getDb());
+    const next = Math.min(pairs.length, MAX_WIKI_CHECK_PAIRS_PER_RUN);
     if (next === 0) throw new WikiCheckError('no_pairs', 409, 'Every claim pair has been checked.');
     if (next > input.expectedPairs) {
       throw new WikiCheckError(
@@ -242,7 +242,7 @@ export async function startWikiCheck(input: { expectedPairs: number; model: stri
       finished_at: null,
     };
     s.run = run;
-    return { run: { ...run }, finished: checkWiki(run) };
+    return { run: { ...run }, finished: checkWiki(run, pairs) };
   } finally {
     s.starting = false;
   }
@@ -257,13 +257,14 @@ export function requestWikiCheckStop(): WikiCheckRun | null {
   return { ...run };
 }
 
-async function checkWiki(run: WikiCheckRun): Promise<void> {
+async function checkWiki(run: WikiCheckRun, pairs: CandidatePair[]): Promise<void> {
   let reason: WikiCheckStopReason | null = null;
   try {
     const summary = await runClaimCheck({
       found_by: 'wiki_check',
       model: run.model,
       maxPairs: run.total,
+      pairs,
       shouldStop: () => (run.stop_requested || getSetting(WIKI_CHECK_FLAG) !== '1' ? 'stopped' : null),
       onProgress: ({ judged, findings }) => {
         run.judged = judged;

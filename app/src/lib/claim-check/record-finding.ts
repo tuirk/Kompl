@@ -4,10 +4,13 @@
  * between those two sources the judge flags.
  *
  *   - An open page-text finding (not cleared, not dismissed) that already
- *     cites both sources is that disagreement: nothing new is recorded, and
- *     the verdict's sides, quotes and reason go on that finding when it has
- *     none of its own.
- *   - Else the finding for the pair is refreshed, whatever key an earlier
+ *     cites both sources is that disagreement: the verdict's sides, quotes
+ *     and reason go on that finding when it has none of its own. The check's
+ *     own finding is still recorded as below, and the read models leave it
+ *     out while the page text records the pair (lib/disagreement-
+ *     duplicates.ts): the pair is never judged again, so a redraft that
+ *     drops the section must not take the disagreement off the record.
+ *   - The finding for the pair is refreshed, whatever key an earlier
  *     run stored it under (runs before this keyed findings by claim pair),
  *     unless it holds more checked quotes than the verdict: the strongest
  *     quotes win, the most recent on a tie, and the sides, quotes and reason
@@ -37,7 +40,11 @@ export interface ClaimFinding {
   session_id: string | null;
 }
 
-/** recorded: a check finding was added or refreshed; kept: a stronger one was left as is; covered: the page text records it. */
+/**
+ * recorded: a check finding was added or refreshed; kept: a stronger one
+ * was left as is; covered: the page text records it (disagreement_id is the
+ * page text's), and the check's finding is kept on record out of sight.
+ */
 export type ClaimFindingOutcome = { outcome: 'recorded' | 'kept' | 'covered'; disagreement_id: string };
 
 /** The key of a new finding: kind and the two sources, in either order. */
@@ -71,15 +78,15 @@ export function recordClaimFinding(db: Database.Database, f: ClaimFinding): Clai
           WHERE disagreement_id = ?`,
       ).run(f.source_a, f.quote_a, f.source_b, f.quote_b, text.disagreement_id);
     }
-    return { outcome: 'covered', disagreement_id: text.disagreement_id };
   }
+  const covered = text ? ({ outcome: 'covered', disagreement_id: text.disagreement_id } as const) : null;
 
   const key = sourcePairKey(f.kind, f.source_a, f.source_b);
   const same = onPage.filter(
     (r) => r.found_by === f.found_by && r.kind === f.kind && (r.match_key === key || citesBoth(r.source_ids, pair)),
   );
   const stored = representative(same);
-  if (stored && checkedQuotes(stored) > checkedQuotes(f)) return { outcome: 'kept', disagreement_id: stored.disagreement_id };
+  if (stored && checkedQuotes(stored) > checkedQuotes(f)) return covered ?? { outcome: 'kept', disagreement_id: stored.disagreement_id };
 
   const result = recordDisagreement(
     db,
@@ -98,5 +105,5 @@ export function recordClaimFinding(db: Database.Database, f: ClaimFinding): Clai
     },
     { replaceQuotes: true },
   );
-  return { outcome: 'recorded', disagreement_id: result.disagreement_id };
+  return covered ?? { outcome: 'recorded', disagreement_id: result.disagreement_id };
 }

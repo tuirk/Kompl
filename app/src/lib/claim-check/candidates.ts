@@ -95,6 +95,11 @@ export function numbersDiffer(a: ReadonlySet<string>, b: ReadonlySet<string>): b
 }
 
 type Vector = Map<string, number>;
+/** A word's claims and its weight in each, side by side. */
+interface Posting {
+  claims: number[];
+  weights: number[];
+}
 
 /** TF-IDF vectors of the claims' texts, unit length. */
 function tfidf(claims: readonly WikiClaim[]): Vector[] {
@@ -118,11 +123,24 @@ function tfidf(claims: readonly WikiClaim[]): Vector[] {
   });
 }
 
-function cosine(a: Vector, b: Vector): number {
-  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
-  let sum = 0;
-  for (const [t, w] of small) sum += w * (large.get(t) ?? 0);
-  return sum;
+/**
+ * A subject's claims by word, with the word's weight in each. A claim is
+ * scored only against the claims it shares a subject and a word with
+ * (every other one scores 0), so a subject that anchors thousands of claims
+ * costs what their shared words cost, not a cosine for every pair.
+ */
+function wordsOf(members: readonly number[], vectors: readonly Vector[]): Map<string, Posting> {
+  const byWord = new Map<string, Posting>();
+  for (const j of members) {
+    for (const [t, w] of vectors[j]) {
+      const posting = byWord.get(t);
+      if (posting) {
+        posting.claims.push(j);
+        posting.weights.push(w);
+      } else byWord.set(t, { claims: [j], weights: [w] });
+    }
+  }
+  return byWord;
 }
 
 /** How many claims name each subject (mentionKey). */
@@ -149,19 +167,58 @@ export function findCandidatePairs(claims: readonly WikiClaim[], options: Candid
     }
   });
   const vectors = tfidf(claims);
+  // Built when a claim of the subject is first scored: a compile's check needs few.
+  const postings = new Map<string, Map<string, Posting>>();
   const numbers = claims.map((c) => numbersIn(c.text));
   const names = new Map<string, string>();
   for (const c of claims) for (const s of c.subjects) if (!names.has(mentionKey(s))) names.set(mentionKey(s), s);
+  const score = new Float64Array(claims.length);
+  // The claim score[j] is being summed for, and the claim j was last ranked for.
+  const scoredFor = new Int32Array(claims.length).fill(-1);
+  const rankedFor = new Int32Array(claims.length).fill(-1);
 
   const pairs = new Map<string, CandidatePair>();
   claims.forEach((claim, i) => {
+    if (anchors[i].size === 0) return;
     if (options.newSourceIds && !options.newSourceIds.has(claim.source_id)) return;
-    const others = new Set<number>();
-    for (const s of anchors[i]) for (const j of bySubject.get(s) ?? []) if (claims[j].source_id !== claim.source_id) others.add(j);
-    const top = [...others]
-      .map((j) => ({ j, similarity: cosine(vectors[i], vectors[j]) }))
-      .sort((x, y) => y.similarity - x.similarity || (claims[x.j].key < claims[y.j].key ? -1 : 1))
-      .slice(0, PAIRS_PER_CLAIM);
+    // Its PAIRS_PER_CLAIM most similar claims from other sources, ties by
+    // claim key, kept in order as they come: a subject can anchor thousands.
+    const top: Array<{ j: number; similarity: number }> = [];
+    const before = (j: number, similarity: number, other: { j: number; similarity: number }) =>
+      similarity > other.similarity || (similarity === other.similarity && claims[j].key < claims[other.j].key);
+    const rank = (j: number, similarity: number) => {
+      if (rankedFor[j] === i) return;
+      rankedFor[j] = i;
+      if (claims[j].source_id === claim.source_id) return;
+      let at = top.length;
+      while (at > 0 && before(j, similarity, top[at - 1])) at--;
+      if (at >= PAIRS_PER_CLAIM) return;
+      top.splice(at, 0, { j, similarity });
+      if (top.length > PAIRS_PER_CLAIM) top.pop();
+    };
+    // The cosine with each claim sharing a subject and a word, summed word by word.
+    for (const s of anchors[i]) {
+      let byWord = postings.get(s);
+      if (!byWord) postings.set(s, (byWord = wordsOf(bySubject.get(s)!, vectors)));
+      const scored: number[] = [];
+      for (const [t, w] of vectors[i]) {
+        const posting = byWord.get(t);
+        if (!posting) continue;
+        for (let k = 0; k < posting.claims.length; k++) {
+          const j = posting.claims[k];
+          if (rankedFor[j] === i) continue;
+          if (scoredFor[j] !== i) {
+            scoredFor[j] = i;
+            score[j] = 0;
+            scored.push(j);
+          }
+          score[j] += w * posting.weights[k];
+        }
+      }
+      for (const j of scored) rank(j, score[j]);
+    }
+    // Claims sharing no word score 0: they fill what is left, by claim key.
+    if (top.length < PAIRS_PER_CLAIM) for (const s of anchors[i]) for (const j of bySubject.get(s)!) rank(j, 0);
     for (const { j, similarity } of top) {
       const key = pairKey(claim.key, claims[j].key);
       if (pairs.has(key) || options.judged.has(key)) continue;

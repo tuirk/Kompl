@@ -105,3 +105,37 @@ def test_check_extraction_marks_every_item_and_drops_nothing():
     assert report.claims == 3 and report.claims_quoted == 2 and report.claims_verified == 1
     assert report.relations == 2 and report.relations_verified == 1
     assert report.unlisted_ends == ("Servo",)
+
+
+NEGATED = """\
+Analysts said the venture is unlikely to succeed. Smith said she resigned in
+2019 after the merger. Он неуспешно завершил проект. 他于2019年辞职并离开公司。
+"""
+
+
+def test_a_quote_must_start_and_end_on_word_boundaries():
+    source = SourceText(NEGATED)
+    for inside in ("likely to succeed", "he resigned in 2019", "she resigned in 201", "успешно завершил проект"):
+        assert check_quote(inside, source) == (inside, False), inside
+    assert check_quote("she resigned in 2019", source) == ("she resigned in 2019", True)
+    assert check_quote("неуспешно завершил проект", source)[1] is True
+    # Chinese is written without spaces: a quote may stop inside a run of it.
+    assert check_quote("他于2019年辞职", source) == ("他于2019年辞职", True)
+
+
+def test_an_ellipsis_quote_needs_whole_words_and_its_parts_close_together():
+    source = SourceText(NEGATED)
+    assert check_quote("Analysts ... likely to", source) == ("Analysts ... likely to", False)
+    assert check_quote("Analysts ... unlikely to", source) == ("Analysts ... unlikely to", True)
+    # Long enough for the fuzzy step, which stores the source's whole words.
+    assert check_quote("Analysts said the venture is ... likely to succeed", source) == (
+        "Analysts said the venture is unlikely to succeed.",
+        True,
+    )
+    far = SourceText("The board met on Monday. " + "Other business. " * 40 + "Shareholders approved the merger.")
+    assert check_quote("The board met on ... approved the merger", far)[1] is False
+    near = SourceText("The board met on Monday. Shareholders approved the merger.")
+    assert check_quote("The board met on ... approved the merger", near)[1] is True
+    # The parts may repeat: the pair that stands close together counts.
+    twice = SourceText("The board met on Monday. " + "Other business. " * 40 + "The board met on Friday; it approved the merger.")
+    assert check_quote("The board met on ... approved the merger", twice)[1] is True

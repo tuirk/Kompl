@@ -56,6 +56,8 @@ export interface ClaimCheckOptions {
   shouldStop?: () => JudgeStop | null;
   /** After each answered batch: pairs judged and findings so far. */
   onProgress?: (progress: { judged: number; findings: number }) => void;
+  /** pendingClaimPairs as the caller just found them (same newSourceIds), so they are not found twice. */
+  pairs?: CandidatePair[];
 }
 
 export interface ClaimCheckSummary {
@@ -127,7 +129,7 @@ function findingSides(p: Prepared, v: JudgedPair, newSourceIds?: ReadonlySet<str
 
 export async function runClaimCheck(options: ClaimCheckOptions): Promise<ClaimCheckSummary> {
   const db = getDb();
-  const pairs = pendingClaimPairs(db, options.newSourceIds);
+  const pairs = options.pairs ?? pendingClaimPairs(db, options.newSourceIds);
   const selected = pairs.slice(0, Math.max(0, options.maxPairs));
   const sourceIds = selected.flatMap((p) => [p.first.source_id, p.second.source_id]);
   const dates = sourceDates(db, sourceIds);

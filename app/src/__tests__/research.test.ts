@@ -209,3 +209,29 @@ describe('lastSentence', () => {
     expect(lastSentence('About 550,000 as of 2010[^a]; about 600,000 as of 2024[^b].')).toBe('About 550,000 as of 2010[^a]; about 600,000 as of 2024[^b].');
   });
 });
+
+describe('sectionText', () => {
+  it('finds the section page-disputes found, skipping headings and comments inside code', async () => {
+    const { sectionText } = await import('../lib/research');
+    const { findPageDisputes } = await import('../lib/page-disputes');
+    const md = [
+      '## Setup',
+      '',
+      '```bash',
+      '## not a heading',
+      '```',
+      '',
+      '### Changed: population',
+      '',
+      'About 550,000 as of 2010[^a].',
+      '',
+      '```',
+      '# a comment',
+      '```',
+      '',
+      'About 600,000 as of 2024[^b].',
+    ].join('\n');
+    const [changed] = findPageDisputes(md);
+    expect(sectionText(md, changed.headingIndex)).toBe('About 550,000 as of 2010[^a]. About 600,000 as of 2024[^b].');
+  });
+});

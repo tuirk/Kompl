@@ -144,8 +144,42 @@ export function topicKey(topic: string): string {
     .replace(/^[\s"'.,:;!?-]+|[\s"'.,:;!?-]+$/g, '');
 }
 
-/** Disputes recorded in a page's markdown (stored or display form), in page order. */
-export function findPageDisputes(markdown: string): PageDispute[] {
+/** The same set of cited sources, in any order. */
+export function sameSources(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && [...a].sort().join('\n') === [...b].sort().join('\n');
+}
+
+/**
+ * The stored finding each dispute continues, by position (undefined for a
+ * new one): the same topic first, across all the disputes, then the same
+ * cited sources for the rest (the model rewords between updates). Two
+ * sections often cite the same pair of sources, so a source match taken
+ * first would hand a dropped or moved section's finding, verdict and all,
+ * to its neighbour. Each stored finding continues at most one dispute.
+ */
+export function matchStoredDisputes<T extends { topic: string; source_ids: readonly string[] }>(
+  disputes: readonly PageDispute[],
+  stored: readonly T[],
+): Array<T | undefined> {
+  const used = new Set<T>();
+  const take = (found: T | undefined): T | undefined => {
+    if (found) used.add(found);
+    return found;
+  };
+  const matches = disputes.map((d) => {
+    const topic = topicKey(d.topic);
+    return take(stored.find((s) => !used.has(s) && topicKey(s.topic) === topic));
+  });
+  return matches.map(
+    (match, i) => match ?? take(stored.find((s) => !used.has(s) && sameSources(s.source_ids, disputes[i].sourceIds))),
+  );
+}
+
+/**
+ * A page's lines, its headings outside code (what looks like a heading in
+ * code is not one) after any frontmatter, and the lines that are code.
+ */
+function scanHeadings(markdown: string): { lines: string[]; headings: HeadingLine[]; isCode: boolean[] } {
   const lines = markdown.split('\n');
   let start = 0;
   if (lines[0]?.trim() === '---') {
@@ -153,8 +187,6 @@ export function findPageDisputes(markdown: string): PageDispute[] {
     if (end > 0) start = end + 1;
   }
 
-  // Headings outside code (what looks like a heading in code is not one),
-  // and the lines that are code.
   const headings: HeadingLine[] = [];
   const isCode = new Array<boolean>(lines.length).fill(false);
   let inFence = false;
@@ -184,7 +216,27 @@ export function findPageDisputes(markdown: string): PageDispute[] {
       text,
     });
   }
+  return { lines, headings, isCode };
+}
 
+/**
+ * The lines under a PageDispute's headingIndex (the page's
+ * headingIndex-th ## or ### heading) up to the next heading of any level,
+ * code left out; [] when there is no such heading.
+ */
+export function sectionLines(markdown: string, headingIndex: number): string[] {
+  const { lines, headings, isCode } = scanHeadings(markdown);
+  const h = headingIndex < 0 ? -1 : headings.findIndex((heading) => heading.tocIndex === headingIndex);
+  if (h < 0) return [];
+  const end = h + 1 < headings.length ? headings[h + 1].line : lines.length;
+  const out: string[] = [];
+  for (let i = headings[h].line + 1; i < end; i++) if (!isCode[i]) out.push(lines[i]);
+  return out;
+}
+
+/** Disputes recorded in a page's markdown (stored or display form), in page order. */
+export function findPageDisputes(markdown: string): PageDispute[] {
+  const { lines, headings, isCode } = scanHeadings(markdown);
   const disputes: PageDispute[] = [];
   headings.forEach((heading, h) => {
     if (!heading.kind) return;

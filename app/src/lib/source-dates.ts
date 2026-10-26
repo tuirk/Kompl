@@ -10,8 +10,9 @@
  *      services/published_date.py): page_published, page_modified,
  *      file_metadata, youtube, github_push
  *   2. a tweet's own date (the connector stores it as metadata.date_saved)
- *   3. source_text: a date the text gives near its top, next to
- *      "published", "posted", "updated"... or alone on a short line
+ *   3. source_text: a date a byline or metadata line near the text's top
+ *      gives, labelled "published", "posted", "updated"... or alone on a
+ *      short line
  *   4. ingested: the day the source was added
  *
  * Read everywhere through sourceDateOf: a source without a stored date
@@ -66,12 +67,25 @@ const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', '
 const MONTH = String.raw`(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?`;
 /** A full date as text writes it: 2024-03-05, 2024/03/05, March 5, 2024, 5 March 2024. */
 const DATE = String.raw`(?:\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?!\d)|\b${MONTH}\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b|\b(\d{1,2})(?:st|nd|rd|th)?\s+${MONTH},?\s+(\d{4})\b)`;
-const PUBLISHED_NEAR = new RegExp(
-  String.raw`\b(?:published|posted|released|written|dated|date)\b[^\n]{0,30}?${DATE}`,
-  'i'
-);
-const UPDATED_NEAR = new RegExp(String.raw`\b(?:updated|last\s+updated|modified|last\s+modified|revised)\b[^\n]{0,30}?${DATE}`, 'i');
-const ANY_DATE = new RegExp(DATE, 'i');
+/**
+ * Where a byline or metadata item starts: the line, or a part after "·",
+ * "•" or "|" ("By Ana · Published March 5, 2024"). On a short line also
+ * after a sentence or a dash ("Updated June 1, 2025. Published January 2,
+ * 2024."); in a long one those are prose ("The iPhone — released June 29,
+ * 2007 — changed…").
+ */
+const ITEM_START = String.raw`(?:^|[·•|]\s*)`;
+const SHORT_ITEM_START = String.raw`(?:^|(?:[·•|]|[.!?]\s|\s[—–-]\s|[—–])\s*)`;
+/** A label that dates the text, then its date: "Published March 5, 2024", "Posted by admin on 5th Mar 2024". */
+function labelled(start: string, label: string): RegExp {
+  return new RegExp(String.raw`${start}${label}\b[^\n]{0,30}?${DATE}`, 'i');
+}
+const PUBLISHED_LABEL = String.raw`(?:published|posted|released|written|dated|date)`;
+const UPDATED_LABEL = String.raw`(?:updated|last\s+updated|modified|last\s+modified|revised)`;
+const PUBLISHED_NEAR = { long: labelled(ITEM_START, PUBLISHED_LABEL), short: labelled(SHORT_ITEM_START, PUBLISHED_LABEL) };
+const UPDATED_NEAR = { long: labelled(ITEM_START, UPDATED_LABEL), short: labelled(SHORT_ITEM_START, UPDATED_LABEL) };
+/** A date that starts a short line's item: "Mar 5, 2024 · 5 min read", "Ana Ribeiro, March 5, 2024". */
+const ITEM_DATE = new RegExp(String.raw`(?:^|(?:[·•|,]|\s[—–-]|[—–])\s*)${DATE}`, 'i');
 const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})/;
 /** SQLite's default limit on bound parameters is far higher; this keeps statements small. */
 const CHUNK = 500;
@@ -102,24 +116,37 @@ function isoDay(value: unknown, now: Date = new Date()): string | null {
   return m ? plausible(Number(m[1]), Number(m[2]), Number(m[3]), now) : null;
 }
 
+/** A text's lines without heading, quote and list marks; table rows are left out. */
+function textLines(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.replace(/^[#>\s-]+/, '').trim())
+    .filter((line) => line && !line.startsWith('|'));
+}
+
 /**
- * A publication date the text itself gives near its top: one next to
+ * A publication date the text itself gives near its top: one labelled
  * "published", "posted", "date"..., else "updated", "modified"..., else a
  * full date standing on a short line of its own ("Mar 5, 2024 · 5 min
- * read"). A date in running prose is never taken: it is more often an
- * event's date than the text's.
+ * read"). Only a byline or metadata line counts: the label or date starts
+ * the line or one of its items (ITEM_START). A date in running prose or a
+ * table row is never taken: it is more often an event's date than the
+ * text's ("Python 3.0 was released on December 3, 2008", an infobox's
+ * "| Release date | June 29, 2007 |").
  */
 export function dateInText(markdown: string, now: Date = new Date()): string | null {
   const head = markdown.slice(0, TEXT_SCAN_CHARS).replace(/[*_`]/g, '');
+  const lines = textLines(head);
   for (const near of [PUBLISHED_NEAR, UPDATED_NEAR]) {
-    const m = head.match(near);
-    const day = m ? fromMatch(m, now) : null;
-    if (day) return day;
+    for (const line of lines) {
+      const m = line.match(line.length > SHORT_LINE_MAX_CHARS ? near.long : near.short);
+      const day = m ? fromMatch(m, now) : null;
+      if (day) return day;
+    }
   }
-  for (const line of head.slice(0, SHORT_LINE_SCAN_CHARS).split('\n')) {
-    const text = line.replace(/^[#>\s-]+/, '').trim();
-    if (!text || text.length > SHORT_LINE_MAX_CHARS) continue;
-    const m = text.match(ANY_DATE);
+  for (const line of textLines(head.slice(0, SHORT_LINE_SCAN_CHARS))) {
+    if (line.length > SHORT_LINE_MAX_CHARS) continue;
+    const m = line.match(ITEM_DATE);
     const day = m ? fromMatch(m, now) : null;
     if (day) return day;
   }

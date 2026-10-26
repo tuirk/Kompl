@@ -6,7 +6,7 @@
 
 import { hiddenDuplicates } from './disagreement-duplicates';
 import type { Disagreement, DisagreementFinder, DisagreementKind, DisagreementStatus } from './disagreements';
-import { topicKey, type PageDispute } from './page-disputes';
+import { matchStoredDisputes, type PageDispute } from './page-disputes';
 
 export interface PanelDisagreement {
   /** Stable React key. */
@@ -26,25 +26,16 @@ export interface PanelDisagreement {
   found_at: string | null;
 }
 
-function sameSources(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && [...a].sort().join('\n') === [...b].sort().join('\n');
-}
-
 /**
  * The panel's rows: the disputes the shown page text records (their anchors
  * come from the page view), each with its finding's id and status, then the
  * checks' findings, duplicates left out. Matched like the commit's sync:
- * same topic or same sources.
+ * same topic first, then same sources.
  */
 export function panelDisagreements(disputes: readonly PageDispute[], records: readonly Disagreement[]): PanelDisagreement[] {
-  const textRecords = records.filter((r) => r.found_by === 'page_text');
-  const used = new Set<string>();
+  const matches = matchStoredDisputes(disputes, records.filter((r) => r.found_by === 'page_text'));
   const rows: PanelDisagreement[] = disputes.map((d, i) => {
-    const topic = topicKey(d.topic);
-    const record = textRecords.find(
-      (r) => !used.has(r.disagreement_id) && (topicKey(r.topic) === topic || sameSources(r.source_ids, d.sourceIds)),
-    );
-    if (record) used.add(record.disagreement_id);
+    const record = matches[i];
     return {
       key: record?.disagreement_id ?? `text-${d.anchor}-${i}`,
       disagreement_id: record?.disagreement_id ?? null,

@@ -105,7 +105,7 @@ export interface GraphModel {
 }
 
 /**
- * The relations a line is drawn and named by: those no newer source
+ * The relations a line is named and coloured by: those no newer source
  * superseded (relation-outdated.ts), or all of them when every one may be
  * outdated. The panels and the hover card still list the outdated ones.
  */
@@ -114,9 +114,15 @@ export function currentRelations(relations: readonly EdgeRelation[]): readonly E
   return current.length > 0 ? current : relations;
 }
 
+/**
+ * The line's layer (shown by default, in bridges and paths): typed when any
+ * relation on it is specific, even one that may be outdated. A current
+ * "related to" beside an outdated "part of" names the line, but never takes
+ * it off the map the "part of" alone would keep it on.
+ */
 export function edgeKind(relations: readonly EdgeRelation[]): EdgeKind {
   if (relations.length === 0) return 'plain';
-  return currentRelations(relations).every((r) => r.type === RELATED_TO) ? 'related' : 'typed';
+  return relations.every((r) => r.type === RELATED_TO) ? 'related' : 'typed';
 }
 
 /** The strongest current relation that is not "related to", else "related to"; null when none. */
@@ -219,7 +225,8 @@ export function buildGraphModel(data: WikiGraph): GraphModel {
       outdated,
       sameCategory: a.category === b.category,
       width: edgeWidth(e.weight),
-      color: withAlpha(LINE_HEX, outdated ? LINE_OUTDATED : LINE_ALPHA[kind]),
+      // As bright as the relation it is named by; dimmed only when every relation may be outdated.
+      color: withAlpha(LINE_HEX, outdated ? LINE_OUTDATED : LINE_ALPHA[colorType === RELATED_TO ? 'related' : kind]),
       faded: LINE_FADED_COLOR,
       bright: LINE_LIT_HEX,
     });

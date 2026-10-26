@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { recordDisagreement, setOwnerVerdict, syncPageTextDisagreements } from '../lib/disagreements';
-import { buildGraphModel } from '../lib/graph-model';
+import { buildGraphModel, DEFAULT_FILTERS, filterGraph } from '../lib/graph-model';
 import { hoverCardText } from '../lib/graph-focus';
 import { LINE_ALPHA, LINE_HEX, LINE_OUTDATED, withAlpha } from '../lib/graph-palette';
 import { namesPhrase } from '../lib/relation-outdated';
@@ -88,9 +88,11 @@ describe('may be outdated', () => {
       { type: 'part_of', direction: 'out', source_count: 1, direction_disputed: false, outdated: true },
     ]);
     // The line is named by its current relation and not dimmed; the hover card names the outdated one.
+    // It stays on the default map and in the bridges, as it would without the "related to".
     const model = buildGraphModel(getWikiGraph(false));
     const line = model.links.find((l) => l.a === 'apca' && l.b === 'wcag3')!;
-    expect(line).toMatchObject({ outdated: false, kind: 'related', colorType: 'related_to', color: withAlpha(LINE_HEX, LINE_ALPHA.related) });
+    expect(line).toMatchObject({ outdated: false, kind: 'typed', colorType: 'related_to', color: withAlpha(LINE_HEX, LINE_ALPHA.related) });
+    expect(filterGraph(model, DEFAULT_FILTERS).links).toContain(line);
     expect(hoverCardText({ kind: 'link', link: line }, model.byId)).toEqual({
       title: 'APCA — Related to → WCAG 3.0 (+1 more)',
       detail: 'Click for the evidence · 2 sources · part of: may be outdated',
@@ -106,6 +108,7 @@ describe('may be outdated', () => {
     const model = buildGraphModel(getWikiGraph(false));
     const line = model.links.find((l) => l.a === 'apca' && l.b === 'wcag3')!;
     expect(line).toMatchObject({ outdated: true, kind: 'typed', colorType: 'part_of', color: withAlpha(LINE_HEX, LINE_OUTDATED) });
+    expect(filterGraph(model, DEFAULT_FILTERS).links).toContain(line);
     expect(hoverCardText({ kind: 'link', link: line }, model.byId)?.detail).toBe('Click for the evidence · 1 source · may be outdated');
   });
 

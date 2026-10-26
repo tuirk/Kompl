@@ -165,6 +165,25 @@ describe('findCandidatePairs', () => {
     expect(pairs[0].second.source_id).toBe('o1');
   });
 
+  it('ranks claims sharing a word first, then fills with the rest by claim key, each scored once', () => {
+    const focus = claim('new', 'Solana validators vote on blocks.', ['Solana', 'Validators']);
+    const voting = claim('o1', 'Solana validators vote on blocks.', ['Solana', 'Validators']);
+    const strangers = ['Anatoly founded it.', 'Outages happened twice.', 'Fees stay low.', 'Rust programs run there.'].map((text, i) =>
+      claim(`o${i + 2}`, text, ['Solana']),
+    );
+    const filler = Array.from({ length: 14 }, (_, i) => claim(`f${i}`, `Unrelated ${i}.`, [`X${i}`]));
+    const pairs = findCandidatePairs([focus, voting, ...strangers, ...filler], {
+      pageBySubject: pages('Solana', 'Validators'),
+      judged: new Set(),
+      newSourceIds: new Set(['new']),
+    });
+    // The same words through two shared subjects: one cosine, not two.
+    expect(pairs[0].second).toBe(voting);
+    expect(pairs[0].similarity).toBeCloseTo(1, 9);
+    const byKey = [...strangers].sort((a, b) => (a.key < b.key ? -1 : 1)).slice(0, PAIRS_PER_CLAIM - 1);
+    expect(pairs.slice(1).map((p) => [p.second, p.similarity])).toEqual(byKey.map((c) => [c, 0]));
+  });
+
   it('leaves judged pairs out after choosing the top pairs, so the set shrinks to nothing', () => {
     const claims = [
       claim('s1', 'Rust 1.0 shipped in 2015.', ['Rust']),

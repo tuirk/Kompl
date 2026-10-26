@@ -18,6 +18,12 @@ describe('dateInText', () => {
     ['Date: 2021/07/09', '2021-07-09'],
     ['Last updated: Sep 1, 2025', '2025-09-01'],
     ['# Night trams\n\nMar 5, 2024 · 5 min read\n\nBody.', '2024-03-05'],
+    ['By admin | Posted on March 5, 2024', '2024-03-05'],
+    ['- Ana Ribeiro, March 5, 2024', '2024-03-05'],
+    [
+      'By Ana Ribeiro · Senior correspondent, culture desk · Published March 5, 2024 · Updated March 6, 2024 · 12 min read',
+      '2024-03-05',
+    ],
   ])('finds the date in %j', (text, want) => {
     expect(dateInText(text, NOW)).toBe(want);
   });
@@ -34,6 +40,20 @@ describe('dateInText', () => {
     expect(dateInText('Published February 30, 2024', NOW)).toBeNull();
     expect(dateInText('Published March 5, 2099', NOW)).toBeNull();
     expect(dateInText('The dismay 5, 2024 meeting', NOW)).toBeNull();
+  });
+
+  it('never takes a labelled date from a sentence or a table row about something else', () => {
+    const python =
+      'Python 3.0 was released on December 3, 2008, and broke compatibility with Python 2 in ways that took years to settle.';
+    expect(dateInText(`# Python 3\n\n${python}`, NOW)).toBeNull();
+    expect(dateInText('# Python 3\n\nPython 3.0 was released on December 3, 2008.\n\nMore text.', NOW)).toBeNull();
+    const infobox = ['# iPhone', '', '| iPhone | |', '|---|---|', '| Developer | Apple |', '| Release date | June 29, 2007 |'];
+    expect(dateInText(infobox.join('\n'), NOW)).toBeNull();
+    expect(dateInText('| Published | Updated |\n|---|---|\n| March 5, 2024 | June 1, 2025 |', NOW)).toBeNull();
+    const dashes =
+      'The first iPhone — released June 29, 2007 — changed what people expected of a phone, and the line went on to sell billions.';
+    expect(dateInText(dashes, NOW)).toBeNull();
+    expect(dateInText('First flight (dated December 17, 1903)', NOW)).toBeNull();
   });
 });
 

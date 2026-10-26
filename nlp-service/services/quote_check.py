@@ -5,8 +5,10 @@ it copied. The check never drops anything. It sets ``quote_verified``, and a
 verified quote is stored as the source's own text (its case, without
 markdown), so a quote shown as "quoted" is always the source's wording:
 
-  exact   the quote, normalised, is in the source, normalised; with an
-          ellipsis, each part is, in order.
+  exact   the quote, normalised, is in the source, normalised, as whole
+          words: "likely to succeed" is not in "unlikely to succeed". With
+          an ellipsis, each part is, in order, each starting within
+          _ELLIPSIS_GAP_MAX_CHARS of the one before.
   fuzzy   quotes of QUOTE_FUZZY_MIN_CHARS or more: the best window of the
           source scores QUOTE_FUZZY_MIN_SCORE or more on rapidfuzz
           partial_ratio, i.e. at most about 1 character in 10 differs. The
@@ -43,6 +45,9 @@ QUOTE_FUZZY_MIN_SCORE = 90.0
 QUOTE_FUZZY_MIN_CHARS = 24
 # Each part of an ellipsis quote must be at least this long to count.
 _ELLIPSIS_PART_MIN_CHARS = 8
+# An ellipsis leaves out words of a sentence or two, never pages: each part
+# starts at most this far after the one before ends.
+_ELLIPSIS_GAP_MAX_CHARS = 200
 
 _FOLD = str.maketrans({
     "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'",
@@ -70,6 +75,12 @@ _ELLIPSIS = re.compile(r"\.\.\.|…")
 # and line-broken text often have no full stop where the LLM adds one.
 _QUOTE_EDGES = re.compile(r"^[\s\"']+|[\s\"'.,;:!?]+$")
 _SENTENCE_END = ".!?"
+# Scripts written without spaces between words (Thai, Lao, Myanmar, Khmer,
+# Japanese kana, Chinese characters): a quote may start or end inside a run.
+_UNSPACED = re.compile(
+    "[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff\u3400-\u4dbf"
+    "\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\U00020000-\U0003134f]"
+)
 
 
 def _plain(text: str) -> str:
@@ -99,6 +110,44 @@ class SourceText:
         self.folded = _fold_case(self.plain)
 
 
+def _word_char(c: str) -> bool:
+    """A letter, digit or mark of a word in a script that spaces its words."""
+    return (c == "_" or unicodedata.category(c)[0] in "LNM") and not _UNSPACED.match(c)
+
+
+def _bounded(text: str, start: int, end: int) -> bool:
+    """[start, end) neither starts nor ends inside a word."""
+    if start > 0 and _word_char(text[start - 1]) and _word_char(text[start]):
+        return False
+    return not (end < len(text) and _word_char(text[end - 1]) and _word_char(text[end]))
+
+
+def _find_words(text: str, part: str, start: int = 0, end: int | None = None) -> int:
+    """Where `part` first stands in text[start:end] as whole words, or -1."""
+    at = text.find(part, start, end)
+    while at >= 0 and not _bounded(text, at, at + len(part)):
+        at = text.find(part, at + 1, end)
+    return at
+
+
+def _parts_at(text: str, parts: list[str], start: int, latest: int | None) -> list[int] | None:
+    """Where each ellipsis part stands, in order: the first at or after
+    `start` and starting by `latest` (None: anywhere), each next one within
+    _ELLIPSIS_GAP_MAX_CHARS of the end of the one before. None if nowhere."""
+    part = parts[0]
+    end = None if latest is None else latest + len(part)
+    at = _find_words(text, part, start, end)
+    while at >= 0:
+        if len(parts) == 1:
+            return [at]
+        after = at + len(part)
+        rest = _parts_at(text, parts[1:], after, after + _ELLIPSIS_GAP_MAX_CHARS)
+        if rest is not None:
+            return [at, *rest]
+        at = _find_words(text, part, at + 1, end)
+    return None
+
+
 def _whole_words(plain: str, start: int, end: int) -> str:
     """The window widened to the words it cuts into."""
     while start > 0 and not plain[start - 1].isspace():
@@ -125,22 +174,16 @@ def check_quote(quote: str | None, source: SourceText) -> tuple[str | None, bool
     folded = _QUOTE_EDGES.sub("", _fold_case(_plain(written)))
     if not folded:
         return written, False
-    at = source.folded.find(folded)
+    at = _find_words(source.folded, folded)
     if at >= 0:
         return _window(source.plain, at, at + len(folded)), True
 
     parts = [p.strip() for p in _ELLIPSIS.split(folded)]
     parts = [p for p in parts if p]
     if len(parts) > 1 and all(len(p) >= _ELLIPSIS_PART_MIN_CHARS for p in parts):
-        pieces: list[str] = []
-        at = 0
-        for part in parts:
-            found = source.folded.find(part, at)
-            if found < 0:
-                break
-            pieces.append(_window(source.plain, found, found + len(part)))
-            at = found + len(part)
-        else:
+        found = _parts_at(source.folded, parts, 0, None)
+        if found is not None:
+            pieces = [_window(source.plain, at, at + len(part)) for at, part in zip(found, parts)]
             return " ... ".join(pieces), True
 
     if len(folded) >= QUOTE_FUZZY_MIN_CHARS:

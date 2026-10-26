@@ -80,6 +80,29 @@ describe('the page panel rows', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ disagreement_id: null, status: 'possible', topic: 'Founding year' });
   });
+
+  it('two sections citing the same sources each get their own finding, dropped or reordered', () => {
+    handle = setupTestDb();
+    const db = handle.db;
+    for (const id of [A, B]) seedSource(db, { source_id: id });
+    seedPage(db, { page_id: 'vilnius', title: 'Vilnius' });
+    const founding = ['### Disputed: founding date', '', `1323[^${A}] or 1320[^${B}].`].join('\n');
+    const hq = ['### Disputed: headquarters', '', `The old town[^${A}] or Antakalnis[^${B}].`].join('\n');
+    syncPageTextDisagreements(db, { page_id: 'vilnius', title: 'Vilnius' }, `${founding}\n\n${hq}`);
+    const [foundingId, hqId] = listPageDisagreements('vilnius').map((r) => r.disagreement_id);
+    setOwnerVerdict(foundingId, 'dismissed');
+    const records = listPageDisagreements('vilnius');
+
+    expect(panelDisagreements(findPageDisputes(hq), records).map((r) => [r.topic, r.disagreement_id, r.status])).toEqual([
+      ['Headquarters', hqId, 'possible'],
+    ]);
+    expect(
+      panelDisagreements(findPageDisputes(`${hq}\n\n${founding}`), records).map((r) => [r.topic, r.disagreement_id, r.status]),
+    ).toEqual([
+      ['Headquarters', hqId, 'possible'],
+      ['Founding date', foundingId, 'dismissed'],
+    ]);
+  });
 });
 
 describe('POST /api/disagreements/[id]/verdict', () => {

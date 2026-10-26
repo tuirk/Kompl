@@ -111,6 +111,35 @@ describe('page-text findings', () => {
     expect(getActivityCounts(db).page_dispute_recorded).toBe(2);
   });
 
+  describe('two sections citing the same sources', () => {
+    const FOUNDING = ['### Disputed: founding date', '', `1323[^${A}] or 1320[^${B}].`].join('\n');
+    const HQ = ['### Disputed: headquarters', '', `The old town[^${A}] or Antakalnis[^${B}].`].join('\n');
+
+    function syncBoth(db: TestDbHandle['db'], page: { page_id: string; title: string }) {
+      syncPageTextDisagreements(db, page, `${FOUNDING}\n\n${HQ}`);
+      const [founding, hq] = listPageDisagreements('vilnius');
+      setOwnerVerdict(founding.disagreement_id, 'dismissed');
+      return { founding: founding.disagreement_id, hq: hq.disagreement_id };
+    }
+
+    it('a redraft that keeps only the second keeps its finding, and clears the first with its verdict', () => {
+      const { db, page } = setup();
+      const ids = syncBoth(db, page);
+      syncPageTextDisagreements(db, page, HQ);
+      expect(getDisagreement(ids.hq)).toMatchObject({ topic: 'Headquarters', status: 'possible', cleared_at: null });
+      expect(getDisagreement(ids.founding)).toMatchObject({ topic: 'Founding date', status: 'dismissed' });
+      expect(getDisagreement(ids.founding)!.cleared_at).not.toBeNull();
+    });
+
+    it('a redraft that only reorders them keeps each finding on its own topic', () => {
+      const { db, page } = setup();
+      const ids = syncBoth(db, page);
+      expect(syncPageTextDisagreements(db, page, `${HQ}\n\n${FOUNDING}`)).toBe(0);
+      expect(getDisagreement(ids.hq)).toMatchObject({ topic: 'Headquarters', status: 'possible', cleared_at: null });
+      expect(getDisagreement(ids.founding)).toMatchObject({ topic: 'Founding date', status: 'dismissed', cleared_at: null });
+    });
+  });
+
   it('disputes logged by releases before the record are not logged again', () => {
     const { db, page } = setup();
     logActivity('page_dispute_recorded', {

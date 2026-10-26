@@ -13,7 +13,7 @@ import { getDb, readPageMarkdown } from './db';
 import { SOURCE_PAGE_TYPES } from './draft-cleanup';
 import { topicTerms } from './fts-query';
 import { hybridSearch } from './hybrid-search';
-import { findPageDisputes } from './page-disputes';
+import { findPageDisputes, sectionLines } from './page-disputes';
 import { displayPageBody, SYNTHESIZED_PAGE_TYPES } from './page-sections';
 import { getSourceTitleSet } from './page-sources';
 import { relationLabel } from './relation-labels';
@@ -305,24 +305,15 @@ export function packPages<T extends { page_type: string }>(items: T[], pages: nu
 
 /**
  * The prose of the section under the page's `headingIndex`-th ## or ###
- * heading (lib/page-disputes.ts counts them the same way), up to the next
- * heading; '' for another level or none.
+ * heading, found as lib/page-disputes.ts found the dispute (headings in
+ * code are not headings), up to the next heading; '' for another level or
+ * none.
  */
 export function sectionText(markdown: string, headingIndex: number): string {
-  if (headingIndex < 0) return '';
-  const lines = markdown.split('\n');
-  let seen = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (!/^#{2,3}\s/.test(lines[i])) continue;
-    if (++seen !== headingIndex) continue;
-    const out: string[] = [];
-    for (const line of lines.slice(i + 1)) {
-      if (/^#{1,6}\s/.test(line)) break;
-      if (line.trim()) out.push(line.trim().replace(/^[-*]\s+/, ''));
-    }
-    return out.join(' ');
-  }
-  return '';
+  return sectionLines(markdown, headingIndex)
+    .filter((line) => line.trim())
+    .map((line) => line.trim().replace(/^[-*]\s+/, ''))
+    .join(' ');
 }
 
 /** A section's last sentence: in a Changed section, the newer claim. */

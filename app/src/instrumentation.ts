@@ -157,7 +157,8 @@ async function backfillDisagreementsOnce(): Promise<void> {
 /**
  * Date the sources added before Kompl kept publication dates (plan 3.2),
  * once, from their stored text and metadata; no LLM calls, no fetches
- * (lib/source-date-backfill.ts). A date already set is never overwritten.
+ * (lib/source-date-backfill.ts). A date already set is never overwritten,
+ * except one read from the text, which a new version reads again.
  */
 async function backfillSourceDatesAtBoot(): Promise<void> {
   if (process.env.NEXT_RUNTIME === 'edge') return;

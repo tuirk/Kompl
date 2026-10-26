@@ -3,8 +3,9 @@
  * once from what they already hold (lib/source-date-backfill.ts): a tweet's
  * own date, else a date their stored text gives near its top. No LLM, no
  * fetch. Runs once per install at boot (versioned settings key, never
- * backed up) and after an import; never overwrites a date already set, and
- * leaves a source it can't date NULL, read as the day it was added.
+ * backed up) and after an import; never overwrites a date already set but,
+ * at boot, one read from the text, which it reads again; and leaves a
+ * source it can't date NULL, read as the day it was added.
  */
 
 import JSZip from 'jszip';
@@ -13,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { POST as importPOST } from '../app/api/import/route';
 import { isBackedUpSetting } from '../lib/backup-settings';
-import { getSetting, getSource } from '../lib/db';
+import { getSetting, getSource, readRawMarkdown, setSetting } from '../lib/db';
 import {
   backfillSourceDates,
   backfillSourceDatesOnce,
@@ -62,7 +63,7 @@ function stored(): Record<string, [string | null, string | null]> {
 describe('backfillSourceDates', () => {
   it('dates what it can from the stored text and metadata, and leaves the rest alone', () => {
     seed();
-    expect(backfillSourceDates(handle!.db)).toEqual({ undated: 5, dated: 3, no_text: 0 });
+    expect(backfillSourceDates(handle!.db)).toEqual({ undated: 5, dated: 3, no_text: 0, redated: 0 });
     expect(stored()).toEqual({
       article: ['2024-03-05', 'source_text'],
       kept: ['2019-05-05', 'page_published'],
@@ -78,8 +79,46 @@ describe('backfillSourceDates', () => {
     seed();
     backfillSourceDates(handle!.db);
     const after = stored();
-    expect(backfillSourceDates(handle!.db, () => null)).toEqual({ undated: 2, dated: 0, no_text: 2 });
+    expect(backfillSourceDates(handle!.db, () => null)).toEqual({ undated: 2, dated: 0, no_text: 2, redated: 0 });
     expect(stored()).toEqual(after);
+  });
+
+  it('at boot, reads a date taken from the text again, and drops one in a sentence or table row', () => {
+    seed();
+    backfillSourceDates(handle!.db);
+    const db = handle!.db;
+    const add = (id: string, text: string, date: string) => {
+      seedSource(db, { source_id: id, title: id, raw_markdown: text });
+      db.prepare(
+        "UPDATE sources SET date_ingested = '2026-06-01 10:00:00', published_at = ?, published_at_source = 'source_text' WHERE source_id = ?",
+      ).run(date, id);
+    };
+    // Dated by version 1 from an event's date in the text.
+    add('python', '# Python 3\n\nPython 3.0 was released on December 3, 2008, and broke compatibility with Python 2 in many ways.', '2008-12-03');
+    add('iphone', '# iPhone\n\n| Release date | June 29, 2007 |\n\nBy Ana · Updated March 6, 2024', '2007-06-29');
+    add('missing', 'gone', '2010-01-01');
+    const before = stored();
+
+    // An import restores the dates a backup carries as they are.
+    expect(backfillSourceDates(db).redated).toBe(0);
+    expect(stored()).toEqual(before);
+
+    // The boot run of a new version reads them again; a source whose text is gone keeps its date.
+    const readText = (id: string) => (id === 'missing' ? null : readRawMarkdown(id));
+    expect(backfillSourceDates(db, readText, { rereadText: true })).toEqual({ undated: 2, dated: 0, no_text: 0, redated: 2 });
+    expect(stored()).toEqual({
+      ...before,
+      python: [null, null],
+      iphone: ['2024-03-06', 'source_text'],
+    });
+    expect(sourceDateOf(getSource('python')!)).toEqual({ published_at: '2026-06-01', published_at_source: 'ingested' });
+    expect(backfillSourceDates(db, readText, { rereadText: true }).redated).toBe(0);
+
+    // What the boot run does on a database version 1 dated.
+    db.prepare("UPDATE sources SET published_at = '2008-12-03', published_at_source = 'source_text' WHERE source_id = 'python'").run();
+    setSetting(SOURCE_DATES_BACKFILL_KEY, '1');
+    backfillSourceDatesOnce(db);
+    expect(stored().python).toEqual([null, null]);
   });
 
   it('runs once per version at boot, and the version is never backed up', () => {

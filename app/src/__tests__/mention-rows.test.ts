@@ -92,6 +92,23 @@ describe('buildSourceMentionRows', () => {
     ]);
   });
 
+  it('leaves a created_by whose maker is an organisation as written: a character typed PERSON is made', () => {
+    const rows = buildSourceMentionRows(
+      {
+        entities: [
+          { name: 'Mickey Mouse', type: 'PERSON' },
+          { name: 'The Walt Disney Company', type: 'ORG' },
+        ],
+        relationships: [{ from_entity: 'Mickey Mouse', to: 'The Walt Disney Company', type: 'created_by' }],
+      },
+      's1',
+      (n) => n
+    );
+    expect(rows.relations.map((r) => [r.from_canonical, r.relationship_type, r.to_canonical])).toEqual([
+      ['Mickey Mouse', 'created_by', 'The Walt Disney Company'],
+    ]);
+  });
+
   it('keeps entity types, one row per canonical, and names relation ends as the source names its entities', () => {
     const rows = buildSourceMentionRows(
       {
