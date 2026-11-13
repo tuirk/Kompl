@@ -1,13 +1,14 @@
-<p align="center">
-  <img src="docs/assets/kompl-banner.png" alt="Kompl" width="800">
-</p>
-
 <h1 align="center">Kompl</h1>
 
 <p align="center">
   <b>Stop saving. Start compiling.</b><br>
   A self-hosted wiki that writes and maintains itself from what you save,<br>
   and answers your AI agent over MCP.
+</p>
+
+<p align="center">
+  <b>Website: <a href="https://kompl.wiki">kompl.wiki</a></b><br>
+  How it works, the demo films, articles and the FAQ.
 </p>
 
 <p align="center">
@@ -42,7 +43,8 @@ pattern across all ten without you having to ask.
 - **Runs on your machine, with your keys.** One Docker stack, a CLI, and your
   own DeepSeek or Gemini key. No accounts, no telemetry.
 
-▶ **Watch the 1-minute demo:** [Kompl, an open source LLM-wiki your AI agent can read](https://youtu.be/6zVYz6aHU1k)
+▶ **Watch the 1-minute demo:** [Kompl, an open source LLM-wiki your AI agent can read](https://youtu.be/6zVYz6aHU1k).
+The longer walkthrough, the articles and the FAQ are on [kompl.wiki](https://kompl.wiki).
 
 ![Kompl wiki in action](docs/assets/kompl-demo.gif)
 
@@ -288,26 +290,28 @@ macOS.*
 
 ## Your data
 
-Your wiki lives in Docker volumes on your machine. Outbound calls fall into three
+Your wiki lives in Docker volumes on your machine. Outbound calls fall into two
 groups.
 
 **Calls you trigger, which send content to a third party:**
 - **DeepSeek** (`api.deepseek.com`) or **Gemini** (`generativelanguage.googleapis.com`):
   compilation, whichever provider your compile model uses. Your source text is
   sent to that provider.
-- **Firecrawl** (`api.firecrawl.dev`): URL scraping fallback. The URL you pasted
-  is sent to Firecrawl.
+- **The pages you paste:** Kompl fetches each page itself first.
+- **Firecrawl** (`api.firecrawl.dev`): the fallback when Kompl's own fetch gets too
+  little text (a script-only page or a paywall). The URL you pasted is sent to
+  Firecrawl.
 - **GitHub public API** (`api.github.com`): README and metadata when you paste a
   GitHub repo URL.
 - **YouTube** (`youtube.com`, `youtube.googleapis.com`): captions through
   `youtube-transcript-api`, then metadata through the YouTube Data API.
-- **Link previews:** pasted URLs are fetched once with `User-Agent: KomplBot/1.0`
-  for their title and description.
+- **Link previews:** a link that can't be converted is fetched once more with
+  `User-Agent: KomplBot/1.0` for its title and description, and waits on
+  **Saved Links**.
 
-**Once, on first use:** HuggingFace Hub (`huggingface.co`), a ~90 MB download of
-the `all-MiniLM-L6-v2` embedding model on the first compile.
-
-**Build time only:** image builds pull from PyPI, npm, Docker Hub and apt mirrors.
+**Build time only:** image builds pull from PyPI, npm, Docker Hub, apt mirrors and
+Hugging Face (`huggingface.co`), which serves the ~90 MB `all-MiniLM-L6-v2`
+embedding model. The model is baked into the image and runs offline.
 
 Kompl sends no analytics, error reports or version pings. The bundled n8n
 container's telemetry, version checks, templates and personalization are disabled
@@ -315,10 +319,11 @@ in `docker-compose.yml`.
 
 ## Under the hood
 
-Three containers: a **Next.js** app (UI, API and the only process that writes the
-SQLite database), an **NLP service** (FastAPI with spaCy, YAKE/RAKE/KeyBERT/TextRank,
-TF-IDF, local sentence-transformer embeddings and Chroma, plus the LLM calls), and
-**n8n** for orchestration. A source goes through these steps:
+Three containers: a **Next.js** app (UI, API, the compile pipeline and the only
+process that writes the SQLite database), an **NLP service** (FastAPI with spaCy,
+YAKE/RAKE/KeyBERT/TextRank, TF-IDF, local sentence-transformer embeddings and
+Chroma, plus the LLM calls), and **n8n**, which only triggers each compile. A
+source goes through these steps:
 
 - **Local NLP first.** spaCy handles named entities, and a router picks keyphrase
   methods based on how long and how entity-dense the text is, with TF–IDF overlap
@@ -349,9 +354,12 @@ TF-IDF, local sentence-transformer embeddings and Chroma, plus the LLM calls), a
 
 **Upkeep.** Settings → Wiki health runs checks on request, updates pages written
 under older rules, and runs **Repair wiki**: a backup first, the plan and cost
-shown, then all or none (it re-checks names merged before, rebuilds connections
-and tidies links and labels). A compile's progress page offers **Retry failed**
-and **Redo** from the plan, writing or saving step, with a preview and cost.
+shown, then one step at a time (it re-checks names merged before, rebuilds
+connections and tidies links and labels). Each step is saved as it finishes. If a
+repair stops, running it again starts with the pages still to rebuild, and every
+page keeps its text from before the run as its previous version. A compile's
+progress page offers **Retry failed** and **Redo** from the plan, writing or
+saving step, with a preview and cost.
 
 A daily spend cap (Settings → AI model & spend) stops LLM calls for the rest of
 the UTC day once the estimated spend reaches your limit.
@@ -359,11 +367,11 @@ the UTC day once the estimated spend reaches your limit.
 ## Known limitations
 
 - **Single-tenant only:** no user accounts or access control.
-- **Dense, long sources on Gemini 2.5:** structured-output truncation on inputs
-  above ~50K characters (often academic PDFs and surveys) causes
-  `extract_llm_failed`. Switch to DeepSeek V4 Pro for that material; it handled up
-  to ~200K characters cleanly in testing. Kompl does not auto-chunk long sources.
-  Tracked in [issue #7](https://github.com/tuirk/Kompl/issues/7).
+- **Long sources:** Kompl does not split a long source into parts. Extraction
+  reads the first ~50K characters on Gemini models and ~200K on DeepSeek, cut at a
+  paragraph break, so entities and claims past that point are missed. For long
+  academic PDFs and surveys, use DeepSeek; V4 Pro handled ~200K characters cleanly
+  in testing. Tracked in [issue #7](https://github.com/tuirk/Kompl/issues/7).
 - **Connectors:** URLs (including YouTube transcripts and GitHub READMEs), file
   uploads (PDF, DOCX, PPTX, XLSX, TXT, MD, HTML), browser bookmarks, Twitter JSON
   export, Upnote and Apple Notes.
@@ -378,10 +386,10 @@ the UTC day once the estimated spend reaches your limit.
 Kompl is built to run on a personal computer behind loopback or a LAN, and its
 security posture is calibrated for that.
 
-**Known security debt:**
-- Markdown HTML output is not sanitized yet, so Firecrawl-scraped content can
-  carry XSS payloads. Even on a single-user install an ingested bookmark can
-  deliver one; the fix is DOMPurify in the render pipeline.
+**Rendering.** Pages and sources are rendered with raw HTML escaped, and link and
+image addresses are checked against an allowlist (http(s), anchors, relative
+paths), so a `<script>` or a `javascript:` link in a scraped page shows as text
+instead of running.
 
 **CodeQL alerts.** Some `py/path-injection` and `js/path-injection` alerts re-fire
 on every push because CodeQL's taint tracker doesn't follow cross-function
