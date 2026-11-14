@@ -39,7 +39,7 @@ transformers==5.9.0
 pytextrank==3.3.0
 scikit-learn==1.9.0
 # nltk: required by rake-nltk (stopwords + punkt tokenizer data).
-nltk==3.10.3
+nltk==3.10.4
 # Part 2b: fast Levenshtein/Jaro-Winkler matching for entity resolution.
 rapidfuzz>=3.14.5
 # Recovers truncated JSON from Gemini 2.5 Flash repetition-loop bug
